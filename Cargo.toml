@@ -1,0 +1,47 @@
+[package]
+name = "astroid_evolution"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = "0.20.0-rc.2"
+wgpu = "30.0.1"
+glam = "0.33"
+nalgebra = "0.35.0"
+num-rational = "0.4"
+bytemuck = { version = "1.25", features = ["derive"] }
+clarabel = "0.11.1"
+parry3d = "0.31.1"
+rayon = "1.12"
+pollster = "1.0"
+log = "0.4"
+env_logger = "0.11"
+gltf = "1.4"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.4", features = ["wasm_js"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Blob",
+    "Document",
+    "Element",
+    "EventTarget",
+    "Gpu",
+    "HtmlCanvasElement",
+    "Location",
+    "Navigator",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Url",
+    "Window",
+    "console",
+] }

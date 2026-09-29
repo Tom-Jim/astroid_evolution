@@ -1,0 +1,83 @@
+# =============================================================================
+# Ryugu Cauchy Cross Model (Calibrated Mean Density & Frontal +Z Cruciform Anomaly)
+#
+# rho(y) = sum_k w_k * [1 + sigma_k^2 ||y - c_k||^2]^(-alpha_k)
+#
+# Features:
+# 1. Frontal cruciform Cauchy density anomaly facing the camera (+Z face, c_z ~ 0.43 km),
+#    with vertical arm along Y in [-0.36, +0.36] and horizontal arm along X in [-0.36, +0.36].
+# 2. Side cruciform Cauchy density anomaly on +X face.
+# 3. Explicit mean_density = 1190.0 calibrated to the enclosed volume of Ryugu
+#    via divergence-theorem volume integration.
+# =============================================================================
+type = "arbitrary_density_cauchy_mixture"
+alpha_default = 1.0
+model_id = "ryugu_cauchy_cross_v2"
+mean_density = 1190.0
+bulk_density_ref = 1190.0
+total_mass_target = 4.50e11
+homogeneous = false
+design_goal = "high_contrast_cruciform_feature_on_surface"
+notes = "Calibrated cruciform Cauchy density anomaly on the +Z frontal face producing a prominent cross in the gravity gradient (H) colormap."
+
+kernels = [
+  # Background baseline density field
+  { role = "bg_center_matrix", c = [0.0000, 0.0000, 0.0000], sigma = 0.8, w = 920.0, alpha = 1.0 },
+  { role = "bg_core", c = [0.0000, 0.0000, 0.0000], sigma = 2.0, w = 150.0, alpha = 1.0 },
+  { role = "bg_polar_north", c = [0.0000, 0.2500, 0.0000], sigma = 3.5, w = 40.0, alpha = 1.0 },
+  { role = "bg_polar_south", c = [0.0000, -0.2500, 0.0000], sigma = 3.5, w = 40.0, alpha = 1.0 },
+
+  # Frontal cross: Vertical arm along Y axis (+Z camera-facing front)
+  { role = "front_cross_v_-360", c = [0.0000, -0.3600, 0.2475], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-320", c = [0.0000, -0.3200, 0.2985], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-280", c = [0.0000, -0.2800, 0.3356], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-240", c = [0.0000, -0.2400, 0.3642], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-200", c = [0.0000, -0.2000, 0.3868], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-160", c = [0.0000, -0.1600, 0.4042], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-120", c = [0.0000, -0.1200, 0.4172], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-080", c = [0.0000, -0.0800, 0.4258], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_-040", c = [0.0000, -0.0400, 0.4302], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_center",  c = [0.0000,  0.0000, 0.4320], sigma = 25.0, w = 3500.0, alpha = 1.0 },
+  { role = "front_cross_v_+040", c = [0.0000,  0.0400, 0.4302], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+080", c = [0.0000,  0.0800, 0.4258], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+120", c = [0.0000,  0.1200, 0.4172], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+160", c = [0.0000,  0.1600, 0.4042], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+200", c = [0.0000,  0.2000, 0.3868], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+240", c = [0.0000,  0.2400, 0.3642], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+280", c = [0.0000,  0.2800, 0.3356], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+320", c = [0.0000,  0.3200, 0.2985], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_v_+360", c = [0.0000,  0.3600, 0.2475], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+
+  # Frontal cross: Horizontal arm along X axis (+Z camera-facing front)
+  { role = "front_cross_h_-360", c = [-0.3600, 0.0000, 0.2891], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-320", c = [-0.3200, 0.0000, 0.3248], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-280", c = [-0.2800, 0.0000, 0.3530], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-240", c = [-0.2400, 0.0000, 0.3757], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-200", c = [-0.2000, 0.0000, 0.3938], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-160", c = [-0.1600, 0.0000, 0.4080], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-120", c = [-0.1200, 0.0000, 0.4187], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-080", c = [-0.0800, 0.0000, 0.4262], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_-040", c = [-0.0400, 0.0000, 0.4305], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+040", c = [ 0.0400, 0.0000, 0.4305], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+080", c = [ 0.0800, 0.0000, 0.4262], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+120", c = [ 0.1200, 0.0000, 0.4187], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+160", c = [ 0.1600, 0.0000, 0.4080], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+200", c = [ 0.2000, 0.0000, 0.3938], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+240", c = [ 0.2400, 0.0000, 0.3757], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+280", c = [ 0.2800, 0.0000, 0.3530], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+320", c = [ 0.3200, 0.0000, 0.3248], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+  { role = "front_cross_h_+360", c = [ 0.3600, 0.0000, 0.2891], sigma = 25.0, w = 3200.0, alpha = 1.0 },
+
+  # Side cross: +X face (equatorial profile)
+  { role = "side_cross_v_-360", c = [0.2910, 0.0000, -0.3600], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_v_-240", c = [0.3774, 0.0000, -0.2400], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_v_-120", c = [0.4208, 0.0000, -0.1200], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_v_+000", c = [0.4343, 0.0000,  0.0000], sigma = 22.0, w = 2800.0, alpha = 1.0 },
+  { role = "side_cross_v_+120", c = [0.4208, 0.0000,  0.1200], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_v_+240", c = [0.3774, 0.0000,  0.2400], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_v_+360", c = [0.2910, 0.0000,  0.3600], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_h_-240", c = [0.3821, -0.2400, 0.0000], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_h_-120", c = [0.4219, -0.1200, 0.0000], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_h_+120", c = [0.4219,  0.1200, 0.0000], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+  { role = "side_cross_h_+240", c = [0.3821,  0.2400, 0.0000], sigma = 22.0, w = 2600.0, alpha = 1.0 },
+]
