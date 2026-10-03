@@ -1,9 +1,7 @@
-pub mod file_support;
-pub mod model_calculation;
-pub mod realtime_display;
-pub mod rheology;
-pub mod rtfp;
-pub mod scf_calculation;
-pub mod wasm_browser_display;
-pub mod error_analysis;
-pub mod ui_interaction;
+pub mod common;
+
+#[cfg(feature = "tier1")]
+pub mod rtfp_solver;
+
+#[cfg(feature = "tier2")]
+pub mod scf_simulator;

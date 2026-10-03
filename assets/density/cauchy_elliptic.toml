@@ -10,6 +10,7 @@
 # 3. Explicit mean_density = 1190.0 calibrated to the enclosed volume of Ryugu
 #    via divergence-theorem volume integration.
 # =============================================================================
+length_unit = "km"
 type = "arbitrary_density_cauchy_mixture"
 alpha_default = 1.0
 model_id = "ryugu_cauchy_cross_v2"

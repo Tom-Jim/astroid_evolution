@@ -2,46 +2,37 @@
 name = "astroid_evolution"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[features]
+default = ["tier1"]
+tier1 = []
+tier2 = ["tier1", "dep:clarabel"]
+tier3 = ["tier2", "dep:bevy"]
+diagnostics = []
+
+[[test]]
+name = "tier1_rtfp"
+path = "src/tests/tier1_rtfp.rs"
+required-features = ["diagnostics"]
 
 [dependencies]
-bevy = "0.20.0-rc.2"
-wgpu = "30.0.1"
-glam = "0.33"
 nalgebra = "0.35.0"
-num-rational = "0.4"
-bytemuck = { version = "1.25", features = ["derive"] }
-clarabel = "0.11.1"
-parry3d = "0.31.1"
 rayon = "1.12"
-pollster = "1.0"
-log = "0.4"
-env_logger = "0.11"
-gltf = "1.4"
+wgpu = "30.0.1"
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = "0.33"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
+thiserror = "2"
+clarabel = { version = "0.11.1", optional = true }
+bevy = { version = "0.20.0-rc.2", optional = true }
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1"
-getrandom = { version = "0.4", features = ["wasm_js"] }
-js-sys = "0.3"
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = [
-    "Blob",
-    "Document",
-    "Element",
-    "EventTarget",
-    "Gpu",
-    "HtmlCanvasElement",
-    "Location",
-    "Navigator",
-    "Request",
-    "RequestInit",
-    "Response",
-    "Url",
-    "Window",
-    "console",
-] }
+[profile.dev]
+debug = 1
+
+[profile.test]
+debug = 1
