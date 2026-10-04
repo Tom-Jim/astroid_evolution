@@ -10,8 +10,7 @@ use crate::rtfp_solver::backend::hw_rt::HardwareMesh;
 use crate::scf_simulator::basis::jacobi::psi;
 use crate::scf_simulator::basis::layout::velocity_dof_count;
 use crate::scf_simulator::error::ScfError;
-use crate::scf_simulator::rheology::closure::flow_viscosity;
-use crate::scf_simulator::rheology::picard::apply_under_relaxation;
+use crate::rheo_friction::closure::flow_viscosity;
 
 use super::range_space::range_space_velocity;
 use super::rigid::{assemble_rigid_constraint, real_harmonics, velocity_bases};
@@ -730,4 +729,15 @@ fn axis_vector(axis: usize) -> DVec3 {
         1 => DVec3::new(0.0, 1.0, 0.0),
         _ => DVec3::new(0.0, 0.0, 1.0),
     }
+}
+
+/// Linear under-relaxation `(1 - lambda) r + lambda r*` of a Picard iterate; `lambda` is clamped to `[0.01, 1]`.
+pub fn apply_under_relaxation(r_current: &[f64], r_star: &[f64], lambda: f64) -> Vec<f64> {
+    assert_eq!(r_current.len(), r_star.len());
+    let factor = lambda.clamp(0.01, 1.0);
+    r_current
+        .iter()
+        .zip(r_star.iter())
+        .map(|(&r_curr, &r_st)| (1.0 - factor) * r_curr + factor * r_st)
+        .collect()
 }

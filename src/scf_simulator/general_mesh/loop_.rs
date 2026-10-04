@@ -17,7 +17,7 @@ use crate::rtfp_solver::{RtfpOptions, bind_and_eval_ray_rule};
 use crate::scf_simulator::error::ScfError;
 use crate::scf_simulator::mesh_io::write_glb;
 use crate::scf_simulator::mesh_loop::{MeshJob, MeshOptions};
-use crate::scf_simulator::rheology::tide_stress::tidal_backstress;
+use crate::rheo_friction::closure::tidal_backstress;
 use crate::scf_simulator::simulation::ClosedRun;
 use crate::scf_simulator::stepping::timestep::{TimestepBounds, decide_timestep};
 

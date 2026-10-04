@@ -5,14 +5,20 @@ edition = "2024"
 autobins = false
 
 [features]
-default = ["tier1"]
+default = ["tier1", "rheo"]
 tier1 = []
-tier2 = ["tier1", "dep:clarabel"]
+rheo = []
+tier2 = ["tier1", "rheo", "dep:clarabel"]
 tier3 = ["tier2", "dep:bevy"]
 
 [[test]]
 name = "tier1_rtfp"
 path = "tests/tier1_rtfp.rs"
+
+[[test]]
+name = "rheo_friction"
+path = "tests/rheo_friction.rs"
+required-features = ["rheo"]
 
 [[test]]
 name = "tier2_scf"
@@ -62,6 +68,11 @@ objc2-metal = { version = "0.3.2", default-features = false, features = [
 name = "rtfp-cli"
 path = "src/bin/rtfp_cli.rs"
 required-features = ["tier1"]
+
+[[bin]]
+name = "rheo-cli"
+path = "src/bin/rheo_cli.rs"
+required-features = ["rheo"]
 
 [[bin]]
 name = "scf-cli"

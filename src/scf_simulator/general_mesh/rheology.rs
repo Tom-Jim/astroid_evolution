@@ -3,10 +3,8 @@
 
 use crate::common::math::DVec3;
 use crate::scf_simulator::error::ScfError;
-use crate::scf_simulator::rheology::closure::flow_viscosity;
-use crate::scf_simulator::rheology::friction_law::mu_dynamic;
-use crate::scf_simulator::rheology::inertial_number::modified_inertial_number;
-use crate::scf_simulator::rheology::picard::apply_under_relaxation;
+use crate::rheo_friction::closure::{flow_viscosity, inertial_number, mu_of_inertial};
+use crate::scf_simulator::stokes::picard_loop::apply_under_relaxation;
 
 use super::pressure::{PressureProblem, PressureSolution, solve_pressure};
 use super::stokes::{StokesInput, StokesSolution, solve_stokes, tet_strain};
@@ -92,13 +90,13 @@ pub fn picard(
             let shear = (2.0 * dev_dot(&strain)).sqrt();
             shear_rate[tet] = shear;
             let p_tilde = tet_pressure[tet].max(material.p_min);
-            inertial[tet] = modified_inertial_number(
+            inertial[tet] = inertial_number(
                 material.grain_diameter,
                 shear,
                 p_tilde,
                 material.rho_grain.max(material.p_min),
             );
-            mu[tet] = mu_dynamic(inertial[tet], material.mu_s, material.mu_2, material.i_0);
+            mu[tet] = mu_of_inertial(inertial[tet], material.mu_s, material.mu_2, material.i_0);
             eta[tet] = flow_viscosity(material.cohesion, mu[tet], p_tilde, shear, gamma_used)
                 .max(material.p_min);
         }

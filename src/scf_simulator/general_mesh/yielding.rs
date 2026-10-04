@@ -3,10 +3,9 @@
 
 use crate::common::math::DVec3;
 use crate::scf_simulator::error::ScfError;
-use crate::scf_simulator::rheology::closure::{equivalent_flow_stress, flow_stress};
-use crate::scf_simulator::rheology::friction_law::mu_dynamic;
-use crate::scf_simulator::rheology::inertial_number::modified_inertial_number;
-use crate::scf_simulator::surface::friction::friction_angle;
+use crate::rheo_friction::closure::{
+    equivalent_flow_stress, flow_stress, inertial_number, mu_of_inertial,
+};
 use crate::scf_simulator::yielding::core_fit::{fit_core_motion, slip_velocity};
 use crate::scf_simulator::yielding::core_graph::rigid_core;
 use crate::scf_simulator::yielding::yield_fn::combined_yield_function;
@@ -157,7 +156,7 @@ pub fn surface_friction(
             grain,
             rho_grain,
         );
-        face_phi[boundary.surface_face] += friction_angle(mu) * boundary.area;
+        face_phi[boundary.surface_face] += mu.max(0.0).atan() * boundary.area;
         face_mu[boundary.surface_face] += mu * boundary.area;
         face_shear_rate[boundary.surface_face] += shear * boundary.area;
         weight[boundary.surface_face] += boundary.area;
@@ -221,8 +220,8 @@ fn face_shear(
     let bitangent = normal.cross(tangent);
     let grad = in_plane_gradient(corners, speeds, tangent, bitangent, normal);
     let shear = (2.0 * dev_dot(&grad)).sqrt();
-    let inertial = modified_inertial_number(grain, shear, pressure.max(1e-12), rho.max(1e-12));
-    let mu = mu_dynamic(inertial, mu_s, mu_2, i_0);
+    let inertial = inertial_number(grain, shear, pressure.max(1e-12), rho.max(1e-12));
+    let mu = mu_of_inertial(inertial, mu_s, mu_2, i_0);
     (shear, mu)
 }
 

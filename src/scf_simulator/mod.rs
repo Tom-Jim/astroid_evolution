@@ -13,7 +13,6 @@ pub mod mesh_loop;
 pub mod pressure;
 pub mod quadrature;
 pub mod reserved;
-pub mod rheology;
 pub mod run_sim;
 pub mod simulation;
 pub mod spin;

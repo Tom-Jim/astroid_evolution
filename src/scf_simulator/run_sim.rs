@@ -31,14 +31,13 @@ use crate::scf_simulator::geometry_update::socp::{
 };
 use crate::scf_simulator::quadrature::classify_grid::classify_shells;
 use crate::scf_simulator::quadrature::volume_points::volume_points;
-use crate::scf_simulator::rheology::closure::{
-    equivalent_flow_stress, flow_stress, flow_viscosity,
+use crate::rheo_friction::closure::{
+    equivalent_flow_stress, flow_stress, flow_viscosity, inertial_number, mu_of_inertial,
 };
 use crate::scf_simulator::spin::SpinSchedule;
 use crate::scf_simulator::stepping::timestep::{TimestepBounds, decide_timestep};
 use crate::scf_simulator::stokes::picard_loop::{GravSample, PicardMaterial, picard_solve};
 use crate::scf_simulator::stokes::rigid::assemble_rigid_constraint;
-use crate::scf_simulator::surface::friction::{check_slope_violation, friction_angle};
 use crate::scf_simulator::yielding::core_fit::{fit_core_motion, slip_velocity};
 use crate::scf_simulator::yielding::core_graph::rigid_core;
 use crate::scf_simulator::yielding::yield_fn::{classic_yield_function, is_yielded};
@@ -897,18 +896,13 @@ fn nodal_phi(
                 "nodal density for the inertial number is not positive",
             ));
         }
-        let mu_i = crate::scf_simulator::rheology::friction_law::mu_dynamic(
-            crate::scf_simulator::rheology::inertial_number::classic_inertial_number(
-                project.grain_diameter,
-                gamma,
-                p.max(project.p_min),
-                rho,
-            ),
+        let mu_i = mu_of_inertial(
+            inertial_number(project.grain_diameter, gamma, p.max(project.p_min), rho),
             project.mu_s,
             project.mu_2,
             project.i_0,
         );
-        phi.push(friction_angle(mu_i));
+        phi.push(mu_i.max(0.0).atan());
         mu.push(mu_i);
         pressure.push(p.max(project.p_min));
         shear.push(gamma);
@@ -1110,9 +1104,16 @@ fn slope_residual(mesh: &TriMesh, phi: &[f64], forward: &Forward) -> f64 {
     for (i, g) in forward.surface_g.iter().enumerate() {
         let ids = mesh.faces[i];
         let angle = (phi[ids[0] as usize] + phi[ids[1] as usize] + phi[ids[2] as usize]) / 3.0;
-        let (_, slope, friction) = check_slope_violation(*g, forward.surface_normal[i], angle);
+        let g = DVec3::from_array(*g);
+        let n = DVec3::from_array(forward.surface_normal[i]);
+        let denom = g.length_squared() * n.length_squared();
+        let slope = if denom > 1e-20 {
+            (g.cross(n).length_squared() / denom).min(1.0)
+        } else {
+            0.0
+        };
         sin2_slope.push(slope);
-        sin2_phi.push(friction);
+        sin2_phi.push(angle.sin().powi(2));
     }
     compute_slope_residual(&sin2_slope, &sin2_phi)
 }
