@@ -1,27 +1,24 @@
-//! Quasi-static Stokes simulator. Pure functions and SoA components. No trait dispatch.
+//! Tier 2: quasi-static geometric self-consistent-field (SCF) evolution of a rotating
+//! granular star-shaped body (mathstrict.md §2.8–2.16, §8–§10).
+//!
+//! Gravity is Tier 1 (`rtfp_solver`) and the friction-angle chain is `rheo_friction`;
+//! both are called, never re-implemented.
 
-pub mod accept;
 pub mod basis;
-pub mod checkpoint;
+pub mod body;
 pub mod error;
-pub mod general_mesh;
-pub mod geometry_update;
-pub mod history_review;
-pub mod mesh_exec;
-pub mod mesh_io;
-pub mod mesh_loop;
-pub mod pressure;
-pub mod quadrature;
-pub mod reserved;
-pub mod run_sim;
-pub mod simulation;
+pub mod harmonics;
+pub mod jets;
+pub mod quad;
 pub mod spin;
-pub mod state;
-pub mod stepping;
+pub mod forward;
+pub mod params;
 pub mod stokes;
-pub mod surface;
-pub mod yielding;
-
-pub use error::ScfError;
-
-pub use state::SurfaceState;
+pub mod classify;
+pub mod transport;
+pub mod socp;
+pub mod frame;
+pub mod mechanics;
+pub mod relax;
+pub mod evolve;
+pub mod io;
