@@ -1,8 +1,7 @@
 //! Tier 1: ray-traced finite-part (RTFP) gravity.
 //!
 //! [`rtfp`] is the solver and runs only on hardware ray tracing.
-//! [`reference`] holds the Feynman, Carlson and Werner benchmarks, which are
-//! used only when an accuracy comparison is requested.
+//! [`reference`] holds the independent Werner benchmark used by acceptance tests.
 
 pub mod api;
 pub mod error;

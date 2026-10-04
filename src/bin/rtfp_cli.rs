@@ -1,8 +1,7 @@
 //! RTFP command line.
 //!
 //! `eval-field` runs the ray-traced finite-part solver on the hardware ray
-//! tracer. The Feynman, Carlson and Werner benchmarks run only when
-//! `--compare` names one of them.
+//! tracer. An optional Werner comparison reports an independent uniform-density check.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -10,7 +9,7 @@ use std::time::Instant;
 
 use astroid_evolution::common::density::CauchyDensity;
 use astroid_evolution::common::geometry::TriMesh;
-use astroid_evolution::common::math::{DVec3, Sym6};
+use astroid_evolution::common::math::DVec3;
 use astroid_evolution::rtfp_solver::api::{FieldBatch, FieldMask, PointRole, PointSet};
 use astroid_evolution::rtfp_solver::io::aevb::{Comparison, FieldRecord, write_field};
 use astroid_evolution::rtfp_solver::io::{
@@ -18,8 +17,6 @@ use astroid_evolution::rtfp_solver::io::{
     density_to_kg_m3, face_centroids, load_density, load_mesh_file, positivity_points,
     vertex_points, write_obj,
 };
-use astroid_evolution::rtfp_solver::reference::ellipsoid::Ellipsoid;
-use astroid_evolution::rtfp_solver::reference::feynman::Feynman;
 use astroid_evolution::rtfp_solver::reference::werner;
 use astroid_evolution::rtfp_solver::{RtfpError, RtfpOptions, RtfpSolver};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -62,13 +59,9 @@ enum Command {
         /// A patch is split while its edge exceeds this fraction of its distance from the point.
         #[arg(long)]
         angular_ratio: Option<f64>,
-        /// Also run a high-precision benchmark and report the relative error.
+        /// Compare uniform-density results with the independent Werner benchmark.
         #[arg(long, value_enum)]
         compare: Option<CompareArg>,
-        /// Semi-axes `a,b,c` of the ellipsoid the mesh samples, for `--compare carlson`
-        /// (Cauchy kernels need a sphere with kernels at its centre).
-        #[arg(long, value_delimiter = ',', num_args = 3)]
-        ellipsoid: Option<Vec<f64>>,
     },
     /// Volume, mass, centroid and inertia of the density on the mesh.
     Integrals {
@@ -123,17 +116,16 @@ enum ReconstructArg {
 enum CompareArg {
     /// Exact uniform polyhedron.
     Werner,
-    /// Feynman-parameter evaluation of the Cauchy kernels.
-    Feynman,
-    /// Exact homogeneous ellipsoid through Carlson integrals.
-    Carlson,
 }
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::ImportMesh { input, out, length_unit, reconstruct } => {
-            import_mesh(&input, &out, &length_unit, reconstruct)
-        }
+        Command::ImportMesh {
+            input,
+            out,
+            length_unit,
+            reconstruct,
+        } => import_mesh(&input, &out, &length_unit, reconstruct),
         Command::EvalField {
             mesh,
             density,
@@ -143,9 +135,21 @@ fn main() -> ExitCode {
             g,
             angular_ratio,
             compare,
-            ellipsoid,
-        } => eval_field(&mesh, &density, &samples, &want, &out, g, angular_ratio, compare, ellipsoid),
-        Command::Integrals { mesh, density, angular_ratio } => integrals(&mesh, &density, angular_ratio),
+        } => eval_field(
+            &mesh,
+            &density,
+            &samples,
+            &want,
+            &out,
+            g,
+            angular_ratio,
+            compare,
+        ),
+        Command::Integrals {
+            mesh,
+            density,
+            angular_ratio,
+        } => integrals(&mesh, &density, angular_ratio),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -183,7 +187,10 @@ fn import_mesh(
 }
 
 fn options(g: f64, angular_ratio: Option<f64>) -> RtfpOptions {
-    let mut options = RtfpOptions { g, ..RtfpOptions::default() };
+    let mut options = RtfpOptions {
+        g,
+        ..RtfpOptions::default()
+    };
     if let Some(ratio) = angular_ratio {
         options.angular_ratio = ratio;
     }
@@ -200,7 +207,6 @@ fn eval_field(
     g: f64,
     angular_ratio: Option<f64>,
     compare: Option<CompareArg>,
-    ellipsoid: Option<Vec<f64>>,
 ) -> Result<(), RtfpError> {
     let want = parse_want(want)?;
     let document = open_mesh(mesh_args)?;
@@ -209,16 +215,29 @@ fn eval_field(
     let probes = positivity_points(&document.mesh, &points)?;
     assert_nonnegative(&density.density, &probes)?;
 
-    let solver = RtfpSolver::bind(options(g, angular_ratio), document.mesh.clone(), density.density.clone())?;
+    let solver = RtfpSolver::bind(
+        options(g, angular_ratio),
+        document.mesh.clone(),
+        density.density.clone(),
+    )?;
     let start = Instant::now();
     let batch = solver.eval(&PointSet::from_points(&points), role, want)?;
     let seconds = start.elapsed().as_secs_f64();
     if !field_is_finite(&batch) {
-        return Err(RtfpError::geometry("the evaluated field contains a non-finite value"));
+        return Err(RtfpError::geometry(
+            "the evaluated field contains a non-finite value",
+        ));
     }
 
     let comparison = match compare {
-        Some(kind) => Some(run_comparison(kind, &document.mesh, &density.density, &points, role, want, &batch, g, ellipsoid)?),
+        Some(kind) => Some(run_comparison(
+            kind,
+            &document.mesh,
+            &density.density,
+            &points,
+            &batch,
+            g,
+        )?),
         None => None,
     };
 
@@ -254,95 +273,47 @@ fn eval_field(
     Ok(())
 }
 
-/// Relative errors against the requested benchmark, per point and as maxima.
-#[allow(clippy::too_many_arguments)]
+/// Relative errors against the independent uniform-polyhedron benchmark.
 fn run_comparison(
     kind: CompareArg,
     mesh: &TriMesh,
     density: &CauchyDensity,
     points: &[DVec3],
-    role: PointRole,
-    want: FieldMask,
     batch: &FieldBatch,
     g: f64,
-    ellipsoid: Option<Vec<f64>>,
 ) -> Result<Comparison, RtfpError> {
-    let uniform = density.kernels.is_empty();
-    let body = match (kind, ellipsoid) {
-        (CompareArg::Carlson, Some(axes)) if axes.len() == 3 => Some(Ellipsoid::new(DVec3::ZERO, [axes[0], axes[1], axes[2]])),
-        (CompareArg::Carlson, _) => {
-            return Err(RtfpError::model_not_closed("--compare carlson needs --ellipsoid a,b,c"));
-        }
-        _ => None,
-    };
-    if kind == CompareArg::Werner && !uniform {
+    if kind != CompareArg::Werner || !density.kernels.is_empty() {
         return Err(RtfpError::model_not_closed(
-            "--compare werner is exact for a uniform density; use --compare feynman or carlson for kernels",
+            "--compare werner requires a uniform density",
         ));
     }
-    let feynman = (kind == CompareArg::Feynman).then(|| Feynman::new(mesh, density, g));
     let mut per_point = Vec::with_capacity(points.len());
-    let (mut max_u, mut max_g, mut max_h): (Option<f64>, Option<f64>, Option<f64>) = (None, None, None);
-    let bump = |slot: &mut Option<f64>, value: Option<f64>| {
-        if let Some(v) = value {
-            *slot = Some(slot.map_or(v, |m| m.max(v)));
-        }
-    };
+    let mut max_u: Option<f64> = None;
+    let mut max_g: Option<f64> = None;
+    let mut max_h: Option<f64> = None;
     for (i, x) in points.iter().enumerate() {
-        let (u, grad, hess): (f64, DVec3, Option<Sym6>) = match kind {
-            CompareArg::Werner => {
-                let w = werner::uniform_polyhedron(mesh, *x, g, density.bulk);
-                (w.potential, w.gradient, Some(w.hessian))
-            }
-            CompareArg::Carlson => {
-                let f = body
-                    .expect("ellipsoid was checked")
-                    .cauchy_field(*x, g, density)
-                    .map_err(RtfpError::model_not_closed)?;
-                (f.potential, f.gradient, (role == PointRole::Field).then_some(f.hessian))
-            }
-            CompareArg::Feynman => {
-                let reference = feynman.as_ref().expect("feynman reference");
-                let (u, grad) = reference.potential_gradient(*x);
-                let hess = if !want.hessian {
-                    None
-                } else {
-                    match role {
-                        PointRole::Field => Some(reference.hessian(*x)?),
-                        PointRole::SurfaceFace => {
-                            let face = werner::face_containing(mesh, *x)
-                                .ok_or_else(|| RtfpError::geometry("face point is not inside a face"))?;
-                            Some(reference.face_hessian(*x, face)?)
-                        }
-                        PointRole::SurfaceVertex => None,
-                    }
-                };
-                (u, grad, hess)
-            }
-        };
-        let eu = want.potential.then(|| (batch.potential[i] - u).abs() / u.abs().max(1e-300));
-        let eg = want.gradient.then(|| (batch.gradient[i] - grad).length() / grad.length().max(1e-300));
-        let eh = hess.filter(|_| want.hessian).map(|h| {
-            let scale = h.iter().fold(0.0_f64, |m, v| m.max(v.abs())).max(1e-300);
-            (0..6).fold(0.0_f64, |m, c| m.max((batch.hessian[i][c] - h[c]).abs())) / scale
-        });
-        bump(&mut max_u, eu);
-        bump(&mut max_g, eg);
-        bump(&mut max_h, eh);
-        per_point.push([eu, eg, eh]);
+        let w = werner::uniform_polyhedron(mesh, *x, g, density.bulk);
+        let eu = (batch.potential[i] - w.potential).abs() / w.potential.abs().max(1e-300);
+        let eg = (batch.gradient[i] - w.gradient).length() / w.gradient.length().max(1e-300);
+        let scale = w
+            .hessian
+            .iter()
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+            .max(1e-300);
+        let eh = (0..6).fold(0.0_f64, |m, c| {
+            m.max((batch.hessian[i][c] - w.hessian[c]).abs())
+        }) / scale;
+        max_u = Some(max_u.map_or(eu, |m| m.max(eu)));
+        max_g = Some(max_g.map_or(eg, |m| m.max(eg)));
+        max_h = Some(max_h.map_or(eh, |m| m.max(eh)));
+        per_point.push([Some(eu), Some(eg), Some(eh)]);
     }
-    let name = match kind {
-        CompareArg::Werner => "werner",
-        CompareArg::Feynman => "feynman",
-        CompareArg::Carlson => "carlson",
-    };
-    let show = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| format!("{v:.3e}"));
-    println!("reference {name}");
-    println!("max_error_u {}", show(max_u));
-    println!("max_error_grad {}", show(max_g));
-    println!("max_error_hess {}", show(max_h));
+    println!("reference werner");
+    println!("max_error_u {:.3e}", max_u.unwrap_or(0.0));
+    println!("max_error_grad {:.3e}", max_g.unwrap_or(0.0));
+    println!("max_error_hess {:.3e}", max_h.unwrap_or(0.0));
     Ok(Comparison {
-        reference: name.into(),
+        reference: "werner".into(),
         max_error_u: max_u,
         max_error_grad: max_g,
         max_error_hess: max_h,
@@ -350,17 +321,33 @@ fn run_comparison(
     })
 }
 
-fn integrals(mesh_args: &MeshArgs, density_args: &DensityArgs, angular_ratio: Option<f64>) -> Result<(), RtfpError> {
+fn integrals(
+    mesh_args: &MeshArgs,
+    density_args: &DensityArgs,
+    angular_ratio: Option<f64>,
+) -> Result<(), RtfpError> {
     let document = open_mesh(mesh_args)?;
     let density = open_density(density_args)?;
-    let solver = RtfpSolver::bind(options(RtfpOptions::default().g, angular_ratio), document.mesh.clone(), density.density.clone())?;
+    let solver = RtfpSolver::bind(
+        options(RtfpOptions::default().g, angular_ratio),
+        document.mesh.clone(),
+        density.density.clone(),
+    )?;
     let got = solver.density_integrals()?;
     println!("volume {:.16e}", got.volume);
     println!("mass {:.16e}", got.mass);
-    println!("centroid {:.16e} {:.16e} {:.16e}", got.centroid.x, got.centroid.y, got.centroid.z);
+    println!(
+        "centroid {:.16e} {:.16e} {:.16e}",
+        got.centroid.x, got.centroid.y, got.centroid.z
+    );
     println!(
         "inertia {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e}",
-        got.inertia[0], got.inertia[1], got.inertia[2], got.inertia[3], got.inertia[4], got.inertia[5]
+        got.inertia[0],
+        got.inertia[1],
+        got.inertia[2],
+        got.inertia[3],
+        got.inertia[4],
+        got.inertia[5]
     );
     println!("density_model {}", density.model);
     println!("density_hash {}", density.hash);
@@ -372,22 +359,38 @@ fn sample_points(
     mesh: &TriMesh,
     samples: &SampleArgs,
 ) -> Result<(PointRole, &'static str, Vec<DVec3>), RtfpError> {
-    let selected = [samples.surface_faces, samples.surface_vertices, samples.points.is_some()]
-        .iter()
-        .filter(|flag| **flag)
-        .count();
+    let selected = [
+        samples.surface_faces,
+        samples.surface_vertices,
+        samples.points.is_some(),
+    ]
+    .iter()
+    .filter(|flag| **flag)
+    .count();
     if selected != 1 {
         return Err(RtfpError::model_not_closed(
             "eval-field requires exactly one of --surface-faces, --surface-vertices, or --points",
         ));
     }
     if samples.surface_faces {
-        Ok((PointRole::SurfaceFace, "surface_face", face_centroids(mesh, samples.max_points)))
+        Ok((
+            PointRole::SurfaceFace,
+            "surface_face",
+            face_centroids(mesh, samples.max_points),
+        ))
     } else if samples.surface_vertices {
-        Ok((PointRole::SurfaceVertex, "surface_vertex", vertex_points(mesh, samples.max_points)))
+        Ok((
+            PointRole::SurfaceVertex,
+            "surface_vertex",
+            vertex_points(mesh, samples.max_points),
+        ))
     } else {
         let path = samples.points.as_ref().expect("selected");
-        Ok((PointRole::Field, "field", read_points(path, samples.max_points)?))
+        Ok((
+            PointRole::Field,
+            "field",
+            read_points(path, samples.max_points)?,
+        ))
     }
 }
 
@@ -439,7 +442,9 @@ fn open_density(args: &DensityArgs) -> Result<DensityInput, RtfpError> {
             "density is missing; pass --density or --uniform and --density-unit. The value is not defaulted to 1",
         )),
         (Some(path), None, _) => load_density(path),
-        (None, Some(_), None) => Err(RtfpError::model_not_closed("uniform density requires --density-unit")),
+        (None, Some(_), None) => Err(RtfpError::model_not_closed(
+            "uniform density requires --density-unit",
+        )),
         (None, Some(value), Some(unit)) => {
             let density = CauchyDensity::uniform(value * density_to_kg_m3(unit)?)?;
             let mut input = DensityInput {
@@ -456,7 +461,11 @@ fn open_density(args: &DensityArgs) -> Result<DensityInput, RtfpError> {
 }
 
 fn parse_want(text: &str) -> Result<FieldMask, RtfpError> {
-    let mut mask = FieldMask { potential: false, gradient: false, hessian: false };
+    let mut mask = FieldMask {
+        potential: false,
+        gradient: false,
+        hessian: false,
+    };
     for part in text.split(',') {
         match part.trim() {
             "u" => mask.potential = true,
@@ -475,6 +484,9 @@ fn parse_want(text: &str) -> Result<FieldMask, RtfpError> {
 fn field_is_finite(batch: &FieldBatch) -> bool {
     batch.potential.iter().all(|v| v.is_finite())
         && batch.gradient.iter().all(|v| v.is_finite())
-        && batch.hessian.iter().all(|h| h.iter().all(|v| v.is_finite()))
+        && batch
+            .hessian
+            .iter()
+            .all(|h| h.iter().all(|v| v.is_finite()))
         && batch.theta.iter().all(|v| v.is_finite())
 }

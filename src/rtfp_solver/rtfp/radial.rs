@@ -140,7 +140,11 @@ mod tests {
         let rule = General::new(12);
         for &(b, d, r0, r1) in &[(0.7, 0.4, 0.3, 2.0), (-1.2, 0.05, 0.0, 3.0), (5.0, 2.0, 1e-4, 9.0)] {
             let k = kernel(b, d);
-            let ln_ratio = if r0 > 0.0 { (r1 / r0).ln() } else { (r1 / 0.7_f64).ln() };
+            let ln_ratio = if r0 > 0.0 {
+                (r1 as f64 / r0 as f64).ln()
+            } else {
+                (r1 / 0.7_f64).ln()
+            };
             let a = alpha_one(k, r0, r1, ln_ratio, NEED);
             let g = rule.integrals(1.0, k, r0, r1, ln_ratio);
             assert!((a.u - g.u).abs() < 1e-9 * (1.0 + a.u.abs()), "{a:?} {g:?}");
