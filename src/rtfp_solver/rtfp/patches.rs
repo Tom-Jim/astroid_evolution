@@ -53,7 +53,11 @@ impl Faces {
                 .length()
                 .max((tri[2] - tri[1]).length())
                 .max((tri[0] - tri[2]).length());
-            geometry.push(FaceGeometry { tri, normal, diameter });
+            geometry.push(FaceGeometry {
+                tri,
+                normal,
+                diameter,
+            });
         }
         let mut edges: Vec<(u32, u32, u32)> = Vec::with_capacity(3 * mesh.faces.len());
         for (f, face) in mesh.faces.iter().enumerate() {
@@ -74,7 +78,10 @@ impl Faces {
                 slot[g] += 1;
             }
         }
-        Ok(Self { geometry, neighbors })
+        Ok(Self {
+            geometry,
+            neighbors,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -104,7 +111,11 @@ pub struct Sample {
 
 impl Leaf {
     fn of_face(index: usize, face: &FaceGeometry) -> Self {
-        Self { tri: face.tri, face: index as u32, diameter: face.diameter }
+        Self {
+            tri: face.tri,
+            face: index as u32,
+            diameter: face.diameter,
+        }
     }
 
     fn centroid(&self) -> DVec3 {
@@ -112,15 +123,26 @@ impl Leaf {
     }
 
     fn area(&self) -> f64 {
-        0.5 * (self.tri[1] - self.tri[0]).cross(self.tri[2] - self.tri[0]).length()
+        0.5 * (self.tri[1] - self.tri[0])
+            .cross(self.tri[2] - self.tri[0])
+            .length()
     }
 
     fn children(&self) -> [Leaf; 4] {
         let [a, b, c] = self.tri;
         let (ab, bc, ca) = ((a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5);
         let d = self.diameter * 0.5;
-        let make = |tri| Leaf { tri, face: self.face, diameter: d };
-        [make([a, ab, ca]), make([ab, b, bc]), make([ca, bc, c]), make([ab, bc, ca])]
+        let make = |tri| Leaf {
+            tri,
+            face: self.face,
+            diameter: d,
+        };
+        [
+            make([a, ab, ca]),
+            make([ab, b, bc]),
+            make([ca, bc, c]),
+            make([ab, bc, ca]),
+        ]
     }
 
     /// The three interior samples (barycentric `(2/3, 1/6, 1/6)`, a degree-2 rule of weight `A/3`
@@ -128,7 +150,11 @@ impl Leaf {
     pub fn samples(&self, x: DVec3, normal: DVec3) -> Option<[Sample; 3]> {
         let [a, b, c] = self.tri;
         let area = self.area();
-        let mut out = [Sample { dir: DVec3::ZERO, dist: 0.0, weight: 0.0 }; 3];
+        let mut out = [Sample {
+            dir: DVec3::ZERO,
+            dist: 0.0,
+            weight: 0.0,
+        }; 3];
         for (slot, point) in out.iter_mut().zip([
             a * (2.0 / 3.0) + (b + c) * (1.0 / 6.0),
             b * (2.0 / 3.0) + (c + a) * (1.0 / 6.0),
@@ -144,7 +170,11 @@ impl Leaf {
             if cos <= GRAZING {
                 return None;
             }
-            *slot = Sample { dir, dist, weight: cos * area / (3.0 * dist * dist) };
+            *slot = Sample {
+                dir,
+                dist,
+                weight: cos * area / (3.0 * dist * dist),
+            };
         }
         Some(out)
     }
@@ -204,7 +234,10 @@ fn validity(
     xs: &[DVec3],
     leaves: &[Vec<Leaf>],
 ) -> Result<Vec<Vec<Status>>, RtfpError> {
-    let mut out: Vec<Vec<Status>> = leaves.iter().map(|l| vec![Status::Hidden; l.len()]).collect();
+    let mut out: Vec<Vec<Status>> = leaves
+        .iter()
+        .map(|l| vec![Status::Hidden; l.len()])
+        .collect();
     let jobs: Vec<(usize, usize)> = leaves
         .iter()
         .enumerate()
@@ -279,7 +312,9 @@ pub fn settle(
             let straddles = v == Status::Partial
                 || !uniform(f)
                 || faces.neighbors[f].iter().any(|&g| {
-                    g != u32::MAX && has[g as usize] && (any[g as usize] != any[f] || !uniform(g as usize))
+                    g != u32::MAX
+                        && has[g as usize]
+                        && (any[g as usize] != any[f] || !uniform(g as usize))
                 });
             if straddles {
                 pending[p].push(Pending { leaf, status: v });
@@ -298,7 +333,10 @@ pub fn settle(
                 pending[p]
                     .iter()
                     .flat_map(|q| q.leaf.children())
-                    .filter(|c| c.samples(xs[p], faces.geometry[c.face as usize].normal).is_some())
+                    .filter(|c| {
+                        c.samples(xs[p], faces.geometry[c.face as usize].normal)
+                            .is_some()
+                    })
                     .collect()
             })
             .collect();
@@ -312,12 +350,16 @@ pub fn settle(
                 let mut group = Vec::with_capacity(4);
                 for kid in q.leaf.children() {
                     if kid.samples(xs[p], normal).is_some() {
-                        group.push(Pending { leaf: kid, status: child_status[p][cursor] });
+                        group.push(Pending {
+                            leaf: kid,
+                            status: child_status[p][cursor],
+                        });
                         cursor += 1;
                     }
                 }
                 let first = group.first().map(|k| k.status);
-                let uniform = first != Some(Status::Partial) && group.iter().all(|k| Some(k.status) == first);
+                let uniform =
+                    first != Some(Status::Partial) && group.iter().all(|k| Some(k.status) == first);
                 if !uniform {
                     next[p].extend(group);
                 } else if first == Some(q.status) {
@@ -325,7 +367,12 @@ pub fn settle(
                         done[p].push(q.leaf);
                     }
                 } else {
-                    done[p].extend(group.into_iter().filter(|k| k.status == Status::Visible).map(|k| k.leaf));
+                    done[p].extend(
+                        group
+                            .into_iter()
+                            .filter(|k| k.status == Status::Visible)
+                            .map(|k| k.leaf),
+                    );
                 }
             }
         }

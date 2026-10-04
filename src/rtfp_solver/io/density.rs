@@ -4,8 +4,8 @@ use super::{density_to_kg_m3, length_to_meters};
 use crate::common::density::{CauchyDensity, CauchyKernel};
 use crate::common::geometry::TriMesh;
 use crate::common::math::DVec3;
-use crate::rtfp_solver::rtfp::hw_rt::HardwareMesh;
 use crate::rtfp_solver::error::RtfpError;
+use crate::rtfp_solver::rtfp::hw_rt::HardwareMesh;
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -44,7 +44,11 @@ pub fn load_density(path: &Path) -> Result<DensityInput, RtfpError> {
     } else {
         parse_cauchy(table, length_scale, density_scale)?
     };
-    let model = if density.kernels.is_empty() { "uniform" } else { "cauchy" };
+    let model = if density.kernels.is_empty() {
+        "uniform"
+    } else {
+        "cauchy"
+    };
     let mut input = DensityInput {
         model: model.to_string(),
         density_unit: density_unit.to_string(),

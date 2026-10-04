@@ -30,7 +30,11 @@ pub fn uniform_polyhedron(mesh: &TriMesh, x: DVec3, g: f64, rho: f64) -> Uniform
         };
         // Seen from a point on its own plane the face subtends +2π from inside and −2π from
         // outside; the mean of the one-sided Hessians takes zero.
-        let omega = if own_face == Some(f) { 0.0 } else { solid_angle(ra, rb, rc) };
+        let omega = if own_face == Some(f) {
+            0.0
+        } else {
+            solid_angle(ra, rb, rc)
+        };
         let h = n.dot(ra);
         integral -= 0.5 * h * h * omega;
         gradient = gradient + n * (h * omega);

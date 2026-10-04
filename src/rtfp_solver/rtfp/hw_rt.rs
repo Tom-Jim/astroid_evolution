@@ -3,8 +3,9 @@
 //!
 //! The mesh is stored in `f32` in a frame centred on its bounding sphere and
 //! scaled to unit radius, so a hit distance carries a relative error of about
-//! `1e-7` of the body size whatever the length unit. All field arithmetic stays
-//! in `f64` on the host; the GPU only reports crossing distances.
+//! `1e-7` of the body size whatever the length unit. Patch visibility still
+//! reads those distances back. The field and density-moment integrals stay on
+//! the device and return one ten-component record per sample point.
 
 use std::sync::{Arc, OnceLock};
 
@@ -73,7 +74,13 @@ impl RayBatch {
         let o = (origin - self.frame.center) * (1.0 / self.frame.scale);
         let expect = expect.map_or(0.0, |d| (d / self.frame.scale) as f32);
         self.packed.push([
-            o.x as f32, o.y as f32, o.z as f32, LAUNCH_OFFSET, dir.x as f32, dir.y as f32, dir.z as f32,
+            o.x as f32,
+            o.y as f32,
+            o.z as f32,
+            LAUNCH_OFFSET,
+            dir.x as f32,
+            dir.y as f32,
+            dir.z as f32,
             expect,
         ]);
     }
@@ -111,6 +118,10 @@ mod metal_rt {
     use std::ffi::c_void;
     use std::ptr::NonNull;
 
+    use super::{DeviceKernel, LAUNCH_OFFSET};
+    use crate::common::math::DVec3;
+    use crate::rtfp_solver::rtfp::chords::{MERGE_ABS, MERGE_REL, ORIGIN_ABS};
+
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
     use objc2_foundation::{NSArray, NSString};
@@ -118,13 +129,20 @@ mod metal_rt {
         MTLAccelerationStructure, MTLAccelerationStructureCommandEncoder,
         MTLAccelerationStructureGeometryDescriptor,
         MTLAccelerationStructureTriangleGeometryDescriptor, MTLBuffer, MTLCommandBuffer,
-        MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
-        MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLGPUFamily,
-        MTLIndexType, MTLLibrary, MTLPrimitiveAccelerationStructureDescriptor, MTLResourceOptions,
-        MTLSize,
+        MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions,
+        MTLComputeCommandEncoder, MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice,
+        MTLGPUFamily, MTLIndexType, MTLLibrary, MTLMathFloatingPointFunctions, MTLMathMode,
+        MTLPrimitiveAccelerationStructureDescriptor, MTLResourceOptions, MTLSize,
     };
 
-    const SOURCE: &str = include_str!("trace.metal");
+    const SOURCE: &str = concat!(
+        include_str!("ds_math.metal"),
+        "\n",
+        include_str!("trace.metal"),
+        "\n",
+        include_str!("field_kernel.metal"),
+    );
+    const FIELD_THREADS: usize = 256;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {}
@@ -145,7 +163,9 @@ mod metal_rt {
     pub struct Core {
         device: Retained<Device>,
         queue: Retained<Queue>,
-        pipeline: Retained<Pipeline>,
+        trace: Retained<Pipeline>,
+        field: Retained<Pipeline>,
+        moments: Retained<Pipeline>,
         submit: std::sync::Mutex<()>,
     }
 
@@ -169,21 +189,44 @@ mod metal_rt {
         let queue = device
             .newCommandQueue()
             .ok_or("Metal command queue unavailable")?;
+        let options = MTLCompileOptions::new();
+        options.setMathMode(MTLMathMode::Safe);
+        options.setMathFloatingPointFunctions(MTLMathFloatingPointFunctions::Precise);
         let library = device
-            .newLibraryWithSource_options_error(&NSString::from_str(SOURCE), None)
+            .newLibraryWithSource_options_error(&NSString::from_str(SOURCE), Some(&options))
             .map_err(|err| format!("Metal shader: {err:?}"))?;
-        let function = library
-            .newFunctionWithName(&NSString::from_str("trace"))
-            .ok_or("trace kernel missing from the Metal library")?;
-        let pipeline = device
-            .newComputePipelineStateWithFunction_error(&function)
-            .map_err(|err| format!("Metal pipeline: {err:?}"))?;
+        let trace = pipeline(&device, &library, "trace")?;
+        let field = pipeline(&device, &library, "rtfp_field")?;
+        let moments = pipeline(&device, &library, "rtfp_moments")?;
+        for (name, state) in [("rtfp_field", &field), ("rtfp_moments", &moments)] {
+            let width = state.maxTotalThreadsPerThreadgroup();
+            if width < FIELD_THREADS {
+                return Err(format!(
+                    "{name} supports {width} threads per group; RTFP uses {FIELD_THREADS}"
+                ));
+            }
+        }
         Ok(Core {
             device,
             queue,
-            pipeline,
+            trace,
+            field,
+            moments,
             submit: std::sync::Mutex::new(()),
         })
+    }
+
+    fn pipeline(
+        device: &Device,
+        library: &ProtocolObject<dyn MTLLibrary>,
+        name: &str,
+    ) -> Result<Retained<Pipeline>, String> {
+        let function = library
+            .newFunctionWithName(&NSString::from_str(name))
+            .ok_or_else(|| format!("{name} kernel missing from the Metal library"))?;
+        device
+            .newComputePipelineStateWithFunction_error(&function)
+            .map_err(|err| format!("Metal pipeline {name}: {err:?}"))
     }
 
     pub struct Built {
@@ -299,7 +342,7 @@ mod metal_rt {
         let encoder = command
             .computeCommandEncoder()
             .ok_or("Metal compute encoder unavailable")?;
-        encoder.setComputePipelineState(&core.pipeline);
+        encoder.setComputePipelineState(&core.trace);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(counts.as_ref()), 0, 1);
@@ -334,12 +377,396 @@ mod metal_rt {
             )
         })
     }
+
+    #[repr(C)]
+    struct GpuPoint {
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        theta: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+        rho: f32,
+    }
+
+    #[repr(C)]
+    struct GpuRay {
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        weight: f32,
+    }
+
+    #[repr(C)]
+    struct GpuRange {
+        begin: u32,
+        count: u32,
+    }
+
+    #[repr(C)]
+    struct GpuKernel {
+        cx: f32,
+        cy: f32,
+        cz: f32,
+        inv_sigma2: f32,
+        coeff: f32,
+        alpha: f32,
+    }
+
+    #[repr(C)]
+    struct FieldParams {
+        kernel_count: u32,
+        node_count: u32,
+        want_potential: u32,
+        want_hessian: u32,
+        bulk: f32,
+        ell: f32,
+        body_scale: f32,
+        g: f32,
+        merge_rel: f32,
+        merge_abs: f32,
+        origin_abs: f32,
+        launch_offset: f32,
+    }
+
+    #[repr(C)]
+    struct MomentParams {
+        kernel_count: u32,
+        node_count: u32,
+        ray_count: u32,
+        max_panels: u32,
+        bulk: f32,
+        finest: f32,
+        body_scale: f32,
+        launch_offset: f32,
+        merge_rel: f32,
+        merge_abs: f32,
+        origin_abs: f32,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+        pad: f32,
+    }
+
+    fn ds_f64(hi: f32, lo: f32) -> Result<f64, String> {
+        let value = f64::from(hi) + f64::from(lo);
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err("RTFP GPU integral is not finite".into())
+        }
+    }
+
+    fn pack_kernels(kernels: &[DeviceKernel]) -> Vec<GpuKernel> {
+        kernels
+            .iter()
+            .map(|k| GpuKernel {
+                cx: k.center.x as f32,
+                cy: k.center.y as f32,
+                cz: k.center.z as f32,
+                inv_sigma2: k.inv_sigma2 as f32,
+                coeff: k.coeff as f32,
+                alpha: k.alpha as f32,
+            })
+            .collect()
+    }
+
+    pub fn launch_field(
+        core: &Core,
+        built: &Built,
+        center: DVec3,
+        scale: f64,
+        points: &[DVec3],
+        thetas: &[f64],
+        rhos: &[f64],
+        ranges: &[[u32; 2]],
+        dirs: &[DVec3],
+        weights: &[f64],
+        bulk: f64,
+        kernels: &[DeviceKernel],
+        nodes: &[[f32; 2]],
+        g: f64,
+        want_potential: bool,
+        want_hessian: bool,
+    ) -> Result<Vec<[f64; 10]>, String> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err("mesh scale is not a positive finite length".into());
+        }
+        if points.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inv = 1.0 / scale;
+        let gpu_points: Vec<GpuPoint> = points
+            .iter()
+            .zip(thetas)
+            .zip(rhos)
+            .map(|((p, &theta), &rho)| {
+                let unit = (*p - center) * inv;
+                GpuPoint {
+                    ox: unit.x as f32,
+                    oy: unit.y as f32,
+                    oz: unit.z as f32,
+                    theta: theta as f32,
+                    wx: p.x as f32,
+                    wy: p.y as f32,
+                    wz: p.z as f32,
+                    rho: rho as f32,
+                }
+            })
+            .collect();
+        let gpu_ranges: Vec<GpuRange> = ranges
+            .iter()
+            .map(|r| GpuRange {
+                begin: r[0],
+                count: r[1],
+            })
+            .collect();
+        let gpu_rays: Vec<GpuRay> = dirs
+            .iter()
+            .zip(weights)
+            .map(|(d, &w)| GpuRay {
+                dx: d.x as f32,
+                dy: d.y as f32,
+                dz: d.z as f32,
+                weight: w as f32,
+            })
+            .collect();
+        let gpu_kernels = pack_kernels(kernels);
+        let params = FieldParams {
+            kernel_count: gpu_kernels.len() as u32,
+            node_count: nodes.len() as u32,
+            want_potential: u32::from(want_potential),
+            want_hessian: u32::from(want_hessian),
+            bulk: bulk as f32,
+            ell: scale as f32,
+            body_scale: scale as f32,
+            g: g as f32,
+            merge_rel: MERGE_REL as f32,
+            merge_abs: (MERGE_ABS * scale) as f32,
+            origin_abs: (ORIGIN_ABS * scale) as f32,
+            launch_offset: LAUNCH_OFFSET,
+        };
+        let options = MTLResourceOptions::StorageModeShared;
+        let point_buffer = buffer_with(&core.device, &gpu_points)?;
+        let range_buffer = buffer_with(&core.device, &gpu_ranges)?;
+        let ray_buffer = buffer_with(&core.device, &gpu_rays)?;
+        let kernel_buffer = buffer_with(&core.device, &gpu_kernels)?;
+        let node_buffer = buffer_with(&core.device, nodes)?;
+        let out_len = gpu_points.len() * 20 * 4;
+        let out = core
+            .device
+            .newBufferWithLength_options(out_len.max(4), options)
+            .ok_or("Metal field buffer allocation failed")?;
+        let flags = core
+            .device
+            .newBufferWithLength_options(gpu_points.len() * 4, options)
+            .ok_or("Metal flag buffer allocation failed")?;
+        let _guard = core.submit.lock().unwrap_or_else(|err| err.into_inner());
+        let command = core
+            .queue
+            .commandBuffer()
+            .ok_or("Metal command buffer unavailable")?;
+        let encoder = command
+            .computeCommandEncoder()
+            .ok_or("Metal compute encoder unavailable")?;
+        encoder.setComputePipelineState(&core.field);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(point_buffer.as_ref()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(range_buffer.as_ref()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(kernel_buffer.as_ref()), 0, 3);
+            encoder.setBuffer_offset_atIndex(Some(node_buffer.as_ref()), 0, 4);
+            encoder.setBytes_length_atIndex(
+                NonNull::from(&params).cast::<c_void>(),
+                std::mem::size_of::<FieldParams>(),
+                5,
+            );
+            encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 6);
+            encoder.setBuffer_offset_atIndex(Some(flags.as_ref()), 0, 7);
+            encoder.setAccelerationStructure_atBufferIndex(Some(built.accel.as_ref()), 8);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: gpu_points.len(),
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: FIELD_THREADS,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.endEncoding();
+        finish(&command)?;
+        let flag_ptr = flags.contents().as_ptr() as *const u32;
+        let flag_slice = unsafe { std::slice::from_raw_parts(flag_ptr, gpu_points.len()) };
+        if flag_slice.iter().any(|f| *f != 0) {
+            return Err(
+                "a ray crossed the body more times than the register chord table holds".into(),
+            );
+        }
+        let words = unsafe {
+            std::slice::from_raw_parts(out.contents().as_ptr() as *const f32, gpu_points.len() * 20)
+        };
+        let mut columns = Vec::with_capacity(gpu_points.len());
+        for p in 0..gpu_points.len() {
+            let mut col = [0.0; 10];
+            for c in 0..10 {
+                col[c] = ds_f64(words[p * 20 + c * 2], words[p * 20 + c * 2 + 1])?;
+            }
+            columns.push(col);
+        }
+        Ok(columns)
+    }
+
+    pub fn launch_moments(
+        core: &Core,
+        built: &Built,
+        center: DVec3,
+        scale: f64,
+        origin: DVec3,
+        dirs: &[DVec3],
+        weights: &[f64],
+        bulk: f64,
+        kernels: &[DeviceKernel],
+        nodes: &[[f32; 2]],
+        finest: f64,
+        max_panels: u32,
+    ) -> Result<[f64; 10], String> {
+        if dirs.is_empty() {
+            return Ok([0.0; 10]);
+        }
+        let inv = 1.0 / scale;
+        let unit = (origin - center) * inv;
+        let gpu_rays: Vec<GpuRay> = dirs
+            .iter()
+            .zip(weights)
+            .map(|(d, &w)| GpuRay {
+                dx: d.x as f32,
+                dy: d.y as f32,
+                dz: d.z as f32,
+                weight: w as f32,
+            })
+            .collect();
+        let gpu_kernels = pack_kernels(kernels);
+        let params = MomentParams {
+            kernel_count: gpu_kernels.len() as u32,
+            node_count: nodes.len() as u32,
+            ray_count: gpu_rays.len() as u32,
+            max_panels,
+            bulk: bulk as f32,
+            finest: finest as f32,
+            body_scale: scale as f32,
+            launch_offset: LAUNCH_OFFSET,
+            merge_rel: MERGE_REL as f32,
+            merge_abs: (MERGE_ABS * scale) as f32,
+            origin_abs: (ORIGIN_ABS * scale) as f32,
+            ox: unit.x as f32,
+            oy: unit.y as f32,
+            oz: unit.z as f32,
+            wx: origin.x as f32,
+            wy: origin.y as f32,
+            wz: origin.z as f32,
+            pad: 0.0,
+        };
+        let options = MTLResourceOptions::StorageModeShared;
+        let ray_buffer = buffer_with(&core.device, &gpu_rays)?;
+        let kernel_buffer = buffer_with(&core.device, &gpu_kernels)?;
+        let node_buffer = buffer_with(&core.device, nodes)?;
+        let out = core
+            .device
+            .newBufferWithLength_options(20 * 4, options)
+            .ok_or("Metal moment buffer allocation failed")?;
+        let flags = core
+            .device
+            .newBufferWithLength_options(4, options)
+            .ok_or("Metal flag buffer allocation failed")?;
+        let _guard = core.submit.lock().unwrap_or_else(|err| err.into_inner());
+        let command = core
+            .queue
+            .commandBuffer()
+            .ok_or("Metal command buffer unavailable")?;
+        let encoder = command
+            .computeCommandEncoder()
+            .ok_or("Metal compute encoder unavailable")?;
+        encoder.setComputePipelineState(&core.moments);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(kernel_buffer.as_ref()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(node_buffer.as_ref()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::from(&params).cast::<c_void>(),
+                std::mem::size_of::<MomentParams>(),
+                3,
+            );
+            encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(flags.as_ref()), 0, 5);
+            encoder.setAccelerationStructure_atBufferIndex(Some(built.accel.as_ref()), 6);
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: FIELD_THREADS,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.endEncoding();
+        finish(&command)?;
+        let flag = unsafe { *(flags.contents().as_ptr() as *const u32) };
+        if flag != 0 {
+            return Err(
+                "a ray crossed the body more times than the register chord table holds".into(),
+            );
+        }
+        let words =
+            unsafe { std::slice::from_raw_parts(out.contents().as_ptr() as *const f32, 20) };
+        let mut col = [0.0; 10];
+        for c in 0..10 {
+            col[c] = ds_f64(words[c * 2], words[c * 2 + 1])?;
+        }
+        Ok(col)
+    }
 }
 
 #[cfg(target_os = "macos")]
 type MetalCore = metal_rt::Core;
 #[cfg(not(target_os = "macos"))]
 type MetalCore = ();
+
+/// One Cauchy kernel uploaded with the field launch.
+#[derive(Clone, Copy)]
+pub(crate) struct DeviceKernel {
+    pub center: DVec3,
+    pub inv_sigma2: f64,
+    pub coeff: f64,
+    pub alpha: f64,
+}
+
+/// One GPU field launch. Directions and weights are the accepted patch samples.
+pub(crate) struct FieldJob<'a> {
+    pub points: &'a [DVec3],
+    pub thetas: &'a [f64],
+    pub rhos: &'a [f64],
+    pub ranges: &'a [[u32; 2]],
+    pub dirs: &'a [DVec3],
+    pub weights: &'a [f64],
+    pub bulk: f64,
+    pub kernels: &'a [DeviceKernel],
+    pub nodes: &'a [[f32; 2]],
+    pub g: f64,
+    pub want_potential: bool,
+    pub want_hessian: bool,
+}
 
 fn core() -> Result<Arc<MetalCore>, RtfpError> {
     static CORE: OnceLock<Result<Arc<MetalCore>, String>> = OnceLock::new();
@@ -387,8 +814,8 @@ impl HardwareMesh {
                 })
                 .collect();
             let indices: Vec<u32> = mesh.faces.iter().flatten().copied().collect();
-            let built = metal_rt::build(&core, &vertices, &indices)
-                .map_err(RtfpError::gpu_unavailable)?;
+            let built =
+                metal_rt::build(&core, &vertices, &indices).map_err(RtfpError::gpu_unavailable)?;
             Ok(Self { core, built, frame })
         }
         #[cfg(not(target_os = "macos"))]
@@ -409,6 +836,82 @@ impl HardwareMesh {
         RayBatch {
             frame: self.frame,
             packed: Vec::new(),
+        }
+    }
+
+    /// Potential, gradient and Hessian at each point. Index layout is
+    /// `(U, gx, gy, gz, Hxx, Hyy, Hzz, Hxy, Hxz, Hyz)`, already scaled by `G`
+    /// and, when the Hessian was requested, including the contact term.
+    pub(crate) fn eval_field(&self, job: &FieldJob<'_>) -> Result<Vec<[f64; 10]>, RtfpError> {
+        #[cfg(target_os = "macos")]
+        {
+            metal_rt::launch_field(
+                &self.core,
+                &self.built,
+                self.frame.center,
+                self.frame.scale,
+                job.points,
+                job.thetas,
+                job.rhos,
+                job.ranges,
+                job.dirs,
+                job.weights,
+                job.bulk,
+                job.kernels,
+                job.nodes,
+                job.g,
+                job.want_potential,
+                job.want_hessian,
+            )
+            .map_err(RtfpError::gpu_unavailable)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = job;
+            Err(RtfpError::gpu_unavailable(
+                "hardware ray tracing requires Metal",
+            ))
+        }
+    }
+
+    /// Mass, first moments and second moments `(xx, yy, zz, xy, xz, yz)` of one origin's rays.
+    pub(crate) fn integrate_moments(
+        &self,
+        origin: DVec3,
+        dirs: &[DVec3],
+        weights: &[f64],
+        bulk: f64,
+        kernels: &[DeviceKernel],
+        nodes: &[[f32; 2]],
+        finest: f64,
+        max_panels: u32,
+    ) -> Result<[f64; 10], RtfpError> {
+        #[cfg(target_os = "macos")]
+        {
+            metal_rt::launch_moments(
+                &self.core,
+                &self.built,
+                self.frame.center,
+                self.frame.scale,
+                origin,
+                dirs,
+                weights,
+                bulk,
+                kernels,
+                nodes,
+                finest,
+                max_panels,
+            )
+            .map_err(RtfpError::gpu_unavailable)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (
+                origin, dirs, weights, bulk, kernels, nodes, finest, max_panels,
+            );
+            Err(RtfpError::gpu_unavailable(
+                "hardware ray tracing requires Metal",
+            ))
         }
     }
 

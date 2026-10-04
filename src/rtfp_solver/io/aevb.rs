@@ -85,12 +85,28 @@ pub fn write_field(path: &Path, record: &FieldRecord) -> Result<(), RtfpError> {
             "point",
             format!(
                 "{:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {:.16e} {} {} {}",
-                p.x, p.y, p.z, record.potential[i], g.x, g.y, g.z, h[0], h[1], h[2], h[3], h[4], h[5],
-                record.theta[i], record.solid_angle[i],
-                optional(errors[0]), optional(errors[1]), optional(errors[2]),
+                p.x,
+                p.y,
+                p.z,
+                record.potential[i],
+                g.x,
+                g.y,
+                g.z,
+                h[0],
+                h[1],
+                h[2],
+                h[3],
+                h[4],
+                h[5],
+                record.theta[i],
+                record.solid_angle[i],
+                optional(errors[0]),
+                optional(errors[1]),
+                optional(errors[2]),
             ),
         );
     }
-    std::fs::write(path, text)
-        .map_err(|err| RtfpError::model_not_closed(format!("cannot write {}: {err}", path.display())))
+    std::fs::write(path, text).map_err(|err| {
+        RtfpError::model_not_closed(format!("cannot write {}: {err}", path.display()))
+    })
 }

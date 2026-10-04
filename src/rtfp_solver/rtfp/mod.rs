@@ -1,26 +1,27 @@
 //! The RTFP solver: ray-traced finite-part gravity of a polyhedron with a
-//! generalized-Cauchy density. Every surface query runs on the hardware
-//! ray-tracing units; there is no software ray tracer.
+//! generalized-Cauchy density. Patch geometry is built on the host. Ray
+//! intersection, chord integrals and the field reduction run on the GPU.
 
 pub mod chords;
 pub mod field;
 pub mod hw_rt;
 pub mod moments;
 pub mod patches;
-pub mod radial;
 
 use std::f64::consts::PI;
+use std::num::NonZeroUsize;
 
+use gauss_quad::GaussLegendre;
 use rayon::prelude::*;
 
 use crate::common::density::CauchyDensity;
 use crate::common::geometry::TriMesh;
-use crate::common::math::{DVec3, Sym6};
+use crate::common::math::DVec3;
 use crate::rtfp_solver::api::{FieldBatch, FieldMask, PointRole, PointSet};
 use crate::rtfp_solver::error::RtfpError;
 
-use field::{Medium, PointKernels, RayContext, Sums};
-use hw_rt::HardwareMesh;
+use field::Medium;
+use hw_rt::{DeviceKernel, FieldJob, HardwareMesh};
 use patches::Faces;
 
 #[cfg_attr(feature = "tier3", derive(bevy::prelude::Resource))]
@@ -44,18 +45,17 @@ impl Default for RtfpOptions {
     }
 }
 
-/// Rays kept in flight per evaluation group.
+/// Rays kept in one GPU launch.
 const GROUP_RAYS: usize = 1_500_000;
 const MAX_GROUP: usize = 256;
-/// Rays handled by one rayon task during accumulation.
-const TASK_RAYS: usize = 2048;
 
 pub struct RtfpSolver {
     options: RtfpOptions,
     mesh: TriMesh,
     density: CauchyDensity,
     medium: Medium,
-    general: radial::General,
+    /// Gauss–Legendre nodes for kernels whose `α` is not 1, and for mass moments.
+    quad: Vec<[f32; 2]>,
     faces: Faces,
     hw: HardwareMesh,
 }
@@ -73,14 +73,16 @@ impl RtfpSolver {
             ));
         }
         if !(options.angular_ratio.is_finite() && options.angular_ratio > 0.0) {
-            return Err(RtfpError::model_not_closed("angular ratio must be finite and positive"));
+            return Err(RtfpError::model_not_closed(
+                "angular ratio must be finite and positive",
+            ));
         }
         mesh.validate_solid()?;
         let faces = Faces::new(&mesh)?;
         let hw = HardwareMesh::build(&mesh)?;
         Ok(Self {
             medium: Medium::new(&density),
-            general: radial::General::new(options.radial_nodes),
+            quad: legendre_nodes(options.radial_nodes.max(16)),
             options,
             mesh,
             density,
@@ -153,94 +155,86 @@ impl RtfpSolver {
         offset: usize,
     ) -> Result<(), RtfpError> {
         let leaves = patches::settle(&self.hw, &self.faces, xs, self.options.angular_ratio)?;
-
-        // Phase 2: every accepted patch ray, with all of its crossings.
         let samples: Vec<Vec<patches::Sample>> = xs
-            .iter()
+            .par_iter()
             .zip(&leaves)
             .map(|(x, list)| patches::flatten(*x, list, &self.faces))
             .collect();
-        let mut batch = self.hw.new_batch();
-        let mut starts = Vec::with_capacity(xs.len());
-        for (x, list) in xs.iter().zip(&samples) {
-            starts.push(batch.len());
-            let parts: Vec<_> = list
-                .par_chunks(4096)
-                .map(|piece| {
-                    let mut part = self.hw.new_batch();
-                    for s in piece {
-                        part.push(*x, s.dir, None);
-                    }
-                    part
-                })
-                .collect();
-            for mut part in parts {
-                batch.append(&mut part);
-            }
-        }
-        let hits = self.hw.trace(&batch, false)?;
-
+        let solid: Vec<f64> = samples
+            .iter()
+            .map(|list| list.iter().map(|s| s.weight).sum())
+            .collect();
         let inside = match role {
             PointRole::Field => self.hw.inside(xs)?,
             _ => Vec::new(),
         };
-
-        let kernels: Vec<PointKernels> = xs.iter().map(|x| PointKernels::new(&self.medium, *x)).collect();
-        let tasks: Vec<(usize, usize, usize)> = samples
-            .iter()
-            .enumerate()
-            .flat_map(|(p, list)| {
-                (0..list.len())
-                    .step_by(TASK_RAYS)
-                    .map(move |lo| (p, lo, (lo + TASK_RAYS).min(list.len())))
-            })
-            .collect();
-        let partial: Vec<(usize, Sums)> = tasks
-            .par_iter()
-            .map(|&(p, lo, hi)| {
-                let ctx = RayContext {
-                    medium: &self.medium,
-                    point: &kernels[p],
-                    general: &self.general,
-                    want,
-                    ell: self.hw.scale(),
-                    body_scale: self.hw.scale(),
-                };
-                let slice = &samples[p][lo..hi];
-                let dirs: Vec<DVec3> = slice.iter().map(|s| s.dir).collect();
-                let weights: Vec<f64> = slice.iter().map(|s| s.weight).collect();
-                (p, field::accumulate(&ctx, &hits, starts[p] + lo, &dirs, &weights))
-            })
-            .collect();
-        let mut sums = vec![Sums::ZERO; xs.len()];
-        for (p, s) in &partial {
-            sums[*p].merge(s);
-        }
-
-        let g = self.options.g;
-        for (p, s) in sums.iter().enumerate() {
-            let i = offset + p;
+        let mut thetas = Vec::with_capacity(xs.len());
+        let mut rhos = Vec::with_capacity(xs.len());
+        for p in 0..xs.len() {
             let theta = match role {
                 PointRole::SurfaceFace => 0.5,
-                PointRole::SurfaceVertex => s.solid_angle / (4.0 * PI),
+                PointRole::SurfaceVertex => solid[p] / (4.0 * PI),
                 PointRole::Field => f64::from(u8::from(inside[p])),
             };
-            let contact = -4.0 * PI / 3.0 * g * theta * self.density.rho(xs[p]);
-            let mut h: Sym6 = [0.0; 6];
-            if want.hessian {
-                for c in 0..6 {
-                    h[c] = g * s.hessian[c];
-                }
-                for c in 0..3 {
-                    h[c] += contact;
-                }
-            }
-            out.potential[i] = g * s.potential;
-            out.gradient[i] = s.gradient * g;
-            out.hessian[i] = h;
+            thetas.push(theta);
+            rhos.push(self.density.rho(xs[p]));
+            let i = offset + p;
             out.theta[i] = theta;
-            out.solid_angle[i] = s.solid_angle;
+            out.solid_angle[i] = solid[p];
+        }
+        let mut ranges = Vec::with_capacity(samples.len());
+        let mut dirs = Vec::new();
+        let mut weights = Vec::new();
+        for list in &samples {
+            let begin = dirs.len() as u32;
+            for s in list {
+                dirs.push(s.dir);
+                weights.push(s.weight);
+            }
+            ranges.push([begin, dirs.len() as u32 - begin]);
+        }
+        let kernels: Vec<DeviceKernel> = self
+            .medium
+            .kernels()
+            .iter()
+            .map(|k| DeviceKernel {
+                center: k.center,
+                inv_sigma2: k.inv_sigma2,
+                coeff: k.coeff,
+                alpha: k.alpha,
+            })
+            .collect();
+        let columns = self.hw.eval_field(&FieldJob {
+            points: xs,
+            thetas: &thetas,
+            rhos: &rhos,
+            ranges: &ranges,
+            dirs: &dirs,
+            weights: &weights,
+            bulk: self.medium.bulk(),
+            kernels: &kernels,
+            nodes: &self.quad,
+            g: self.options.g,
+            want_potential: want.potential,
+            want_hessian: want.hessian,
+        })?;
+        for (p, col) in columns.iter().enumerate() {
+            let i = offset + p;
+            out.potential[i] = col[0];
+            out.gradient[i] = DVec3::new(col[1], col[2], col[3]);
+            if want.hessian {
+                out.hessian[i] = [col[4], col[5], col[6], col[7], col[8], col[9]];
+            }
         }
         Ok(())
     }
+}
+
+fn legendre_nodes(count: usize) -> Vec<[f32; 2]> {
+    let rule = GaussLegendre::new(NonZeroUsize::new(count.max(4)).expect("at least four nodes"));
+    let mut nodes = Vec::new();
+    for &(x, w) in rule.as_node_weight_pairs() {
+        nodes.push([x as f32, w as f32]);
+    }
+    nodes
 }

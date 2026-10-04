@@ -10,18 +10,20 @@
 /// Relative and absolute (in units of the body radius) distance below which
 /// two crossings are one geometric point: an edge or vertex reported by both
 /// triangles that share it.
-const MERGE_REL: f64 = 1.0e-6;
-const MERGE_ABS: f64 = 1.0e-6;
+pub(crate) const MERGE_REL: f64 = 1.0e-6;
+pub(crate) const MERGE_ABS: f64 = 1.0e-6;
 
 /// Crossings nearer than this fraction of the body radius belong to the launch
 /// point itself, not to the body.
-const ORIGIN_ABS: f64 = 1.0e-6;
+pub(crate) const ORIGIN_ABS: f64 = 1.0e-6;
 
 /// Crossings of one ray with coincident reports merged and launch-point hits dropped.
 fn merged(hits: &[f64], scale: f64) -> impl Iterator<Item = f64> + '_ {
     let mut last = f64::NEG_INFINITY;
     hits.iter().copied().filter(move |&t| {
-        if !(t.is_finite() && t > ORIGIN_ABS * scale) || t - last <= MERGE_ABS * scale + MERGE_REL * t {
+        if !(t.is_finite() && t > ORIGIN_ABS * scale)
+            || t - last <= MERGE_ABS * scale + MERGE_REL * t
+        {
             return false;
         }
         last = t;
@@ -39,7 +41,11 @@ pub fn starts_inside(hits: &[f64], scale: f64) -> bool {
 /// interval that begins at `0.0` marks a ray that starts inside the solid.
 pub fn intervals(hits: &[f64], scale: f64, out: &mut Vec<(f64, f64)>) {
     out.clear();
-    let mut open = if starts_inside(hits, scale) { Some(0.0) } else { None };
+    let mut open = if starts_inside(hits, scale) {
+        Some(0.0)
+    } else {
+        None
+    };
     for t in merged(hits, scale) {
         match open.take() {
             Some(start) => out.push((start, t)),
@@ -69,10 +75,7 @@ mod tests {
     fn even_count_starts_outside() {
         assert!(run(&[]).is_empty());
         assert_eq!(run(&[1.0, 3.0]), vec![(1.0, 3.0)]);
-        assert_eq!(
-            run(&[1.0, 2.0, 3.0, 4.0]),
-            vec![(1.0, 2.0), (3.0, 4.0)]
-        );
+        assert_eq!(run(&[1.0, 2.0, 3.0, 4.0]), vec![(1.0, 2.0), (3.0, 4.0)]);
         assert!(!starts_inside(&[1.0, 3.0], 1.0));
     }
 
