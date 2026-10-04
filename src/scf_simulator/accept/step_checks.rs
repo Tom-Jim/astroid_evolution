@@ -26,11 +26,20 @@ impl Default for ScfTolerances {
         }
     }
 }
+/// A residual is inside its tolerance only when both numbers are finite and ordered.
+/// `NaN > tol` and `NaN <= tol` are both false, so a comparison alone must not accept.
+pub fn residual_within(residual: f64, tol: f64) -> bool {
+    residual.is_finite() && tol.is_finite() && residual <= tol
+}
+
 pub fn compute_geometry_residual(r_next: &[f64], r_curr: &[f64]) -> f64 {
     assert_eq!(r_next.len(), r_curr.len());
     let mut diff_sq = 0.0;
     let mut curr_sq = 0.0;
     for (&rn, &rc) in r_next.iter().zip(r_curr.iter()) {
+        if !rn.is_finite() || !rc.is_finite() {
+            return f64::NAN;
+        }
         let d = rn - rc;
         diff_sq += d * d;
         curr_sq += rc * rc;
@@ -38,11 +47,17 @@ pub fn compute_geometry_residual(r_next: &[f64], r_curr: &[f64]) -> f64 {
     (diff_sq.sqrt() / curr_sq.sqrt().max(1e-12)).max(0.0)
 }
 pub fn compute_mass_residual(actual_mass: f64, target_mass: f64) -> f64 {
+    if !actual_mass.is_finite() || !target_mass.is_finite() {
+        return f64::NAN;
+    }
     (actual_mass - target_mass).abs() / target_mass.max(1e-12)
 }
 pub fn compute_slope_residual(sin2_slope_list: &[f64], sin2_phi_list: &[f64]) -> f64 {
     let mut max_viol = 0.0;
     for (&s2, &p2) in sin2_slope_list.iter().zip(sin2_phi_list.iter()) {
+        if !s2.is_finite() || !p2.is_finite() {
+            return f64::NAN;
+        }
         let diff = s2 - p2;
         if diff > max_viol {
             max_viol = diff;
@@ -56,6 +71,9 @@ pub fn compute_transport_residual(m_next: &[[f64; 4]], m_curr: &[[f64; 4]]) -> f
     let mut curr_sq = 0.0;
     for (mn, mc) in m_next.iter().zip(m_curr.iter()) {
         for k in 0..4 {
+            if !mn[k].is_finite() || !mc[k].is_finite() {
+                return f64::NAN;
+            }
             let d = mn[k] - mc[k];
             diff_sq += d * d;
             curr_sq += mc[k] * mc[k];
@@ -72,6 +90,14 @@ pub fn compute_kkt_residual(
 ) -> f64 {
     let mut max_grad = 0.0;
     for i in 0..r_sol.len() {
+        if !weights[i].is_finite()
+            || !r_sol[i].is_finite()
+            || !r_eq[i].is_finite()
+            || !mass_coeffs[i].is_finite()
+            || !lambda.is_finite()
+        {
+            return f64::NAN;
+        }
         let kkt_stationarity = weights[i] * (r_sol[i] - r_eq[i]) + lambda * mass_coeffs[i];
         let abs_val = kkt_stationarity.abs();
         if abs_val > max_grad {
@@ -85,35 +111,25 @@ pub fn check_scf_convergence(
     tols: &ScfTolerances,
 ) -> (bool, Vec<String>) {
     let mut failed_reasons = Vec::new();
-    if residuals.geometry_residual > tols.geometry_tol {
-        failed_reasons.push(format!(
-            "几何残差未收敛: {:.2e} > 容差 {:.2e}",
-            residuals.geometry_residual, tols.geometry_tol
-        ));
-    }
-    if residuals.mass_residual > tols.mass_tol {
-        failed_reasons.push(format!(
-            "质量残差未收敛: {:.2e} > 容差 {:.2e}",
-            residuals.mass_residual, tols.mass_tol
-        ));
-    }
-    if residuals.slope_residual > tols.slope_tol {
-        failed_reasons.push(format!(
-            "坡度超限未收敛: {:.2e} > 容差 {:.2e}",
-            residuals.slope_residual, tols.slope_tol
-        ));
-    }
-    if residuals.transport_residual > tols.transport_tol {
-        failed_reasons.push(format!(
-            "输运残差未收敛: {:.2e} > 容差 {:.2e}",
-            residuals.transport_residual, tols.transport_tol
-        ));
-    }
-    if residuals.kkt_residual > tols.kkt_tol {
-        failed_reasons.push(format!(
-            "KKT 残差未收敛: {:.2e} > 容差 {:.2e}",
-            residuals.kkt_residual, tols.kkt_tol
-        ));
+    let gates = [
+        (
+            residuals.geometry_residual,
+            tols.geometry_tol,
+            "几何残差未收敛",
+        ),
+        (residuals.mass_residual, tols.mass_tol, "质量残差未收敛"),
+        (residuals.slope_residual, tols.slope_tol, "坡度超限未收敛"),
+        (
+            residuals.transport_residual,
+            tols.transport_tol,
+            "输运残差未收敛",
+        ),
+        (residuals.kkt_residual, tols.kkt_tol, "KKT 残差未收敛"),
+    ];
+    for (residual, tol, label) in gates {
+        if !residual_within(residual, tol) {
+            failed_reasons.push(format!("{label}: {residual:.2e} 容差 {tol:.2e}"));
+        }
     }
     let is_converged = failed_reasons.is_empty();
     (is_converged, failed_reasons)
@@ -141,5 +157,24 @@ mod tests {
         let tols = ScfTolerances::default();
         let (converged, reasons) = check_scf_convergence(&residuals, &tols);
         assert!(converged, "残差应判定为收敛, 失败原因: {:?}", reasons);
+    }
+
+    #[test]
+    fn non_finite_residuals_fail_even_though_nan_comparisons_are_false() {
+        assert!(f64::NAN.is_nan());
+        let mut residuals = ScfResiduals {
+            geometry_residual: f64::NAN,
+            mass_residual: 0.0,
+            slope_residual: 0.0,
+            transport_residual: 0.0,
+            kkt_residual: 0.0,
+        };
+        let (ok, _) = check_scf_convergence(&residuals, &ScfTolerances::default());
+        assert!(!ok);
+        residuals.geometry_residual = 0.0;
+        residuals.mass_residual = f64::INFINITY;
+        let (ok, _) = check_scf_convergence(&residuals, &ScfTolerances::default());
+        assert!(!ok);
+        assert!(!residual_within(f64::NAN, 1.0));
     }
 }

@@ -1,5 +1,5 @@
-use super::cohesion::{cohesive_pressure, effective_pressure};
 use super::closure::{equivalent_flow_stress, flow_stress, flow_viscosity};
+use super::cohesion::{cohesive_pressure, effective_pressure};
 use super::friction_law::{mu_classic, mu_dynamic};
 use super::inertial_number::{classic_inertial_number, modified_inertial_number};
 use super::tide_stress::tidal_backstress;

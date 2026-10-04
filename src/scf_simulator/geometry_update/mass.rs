@@ -37,6 +37,53 @@ where
     }
     total_mass
 }
+/// ∂M/∂R_i = ω_i ρ_K(R_i u_i) R_i² for the star-ray mass.
+pub fn surface_mass_jacobian(solid_angle: f64, rho_k: f64, radius: f64) -> f64 {
+    solid_angle * rho_k * radius * radius
+}
+
+/// Flux thickness counted in the Cauchy density: Δh* = (ρ_bulk / ρ_K) Δh.
+pub fn flux_density_weight(rho_bulk: f64, rho_k: f64) -> Result<f64, String> {
+    if !(rho_bulk.is_finite() && rho_bulk > 0.0) || !(rho_k.is_finite() && rho_k > 0.0) {
+        return Err("rho_bulk and rho_K must be finite and positive".into());
+    }
+    Ok(rho_bulk / rho_k)
+}
+
+pub fn solid_angle_weights(
+    vertices: &[crate::common::math::DVec3],
+    faces: &[[u32; 3]],
+) -> Result<Vec<f64>, String> {
+    let mut weights = vec![0.0; vertices.len()];
+    for face in faces {
+        let ids = [face[0] as usize, face[1] as usize, face[2] as usize];
+        let corner = |index: usize| {
+            vertices[index]
+                .try_normalize()
+                .ok_or_else(|| "solid angle needs a vertex off the origin".to_string())
+        };
+        let a = corner(ids[0])?;
+        let b = corner(ids[1])?;
+        let c = corner(ids[2])?;
+        let triple = a.dot(b.cross(c));
+        let denom = 1.0 + a.dot(b) + b.dot(c) + c.dot(a);
+        if !triple.is_finite() || !denom.is_finite() || denom.abs() <= 1e-14 {
+            return Err("a face solid angle is undefined".into());
+        }
+        let omega = 2.0 * (triple / denom).atan();
+        if !omega.is_finite() {
+            return Err("a face solid angle is not finite".into());
+        }
+        for id in ids {
+            weights[id] += omega / 3.0;
+        }
+    }
+    if weights.iter().any(|w| !w.is_finite() || *w <= 0.0) {
+        return Err("a vertex solid angle is not positive".into());
+    }
+    Ok(weights)
+}
+
 pub fn evaluate_mass_gradient<D>(
     radii: &[f64],
     directions: &[[f64; 3]],

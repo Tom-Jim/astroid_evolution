@@ -2,16 +2,15 @@
 
 use crate::common::math::{DVec3, Sym6};
 
+/// What kind of point is evaluated; it fixes the contact term of the Hessian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointRole {
-    /// Node samples. Hessian is refused: MS §10.3 forbids a vertex Hessian in `T_tide`.
+    /// A mesh node. The Hessian is refused: MS §10.3 forbids a vertex or edge Hessian.
     SurfaceVertex,
-    /// Face-center samples. The finite-part Hessian is independent of `ℓ0` when `C = 0`.
+    /// A face interior point. The one-sided finite-part Hessian has `θ = 1/2`.
     SurfaceFace,
-    /// Interior Stokes nodes. Only the gradient is classical and required.
-    VolumeQuad,
-    /// Interior classification nodes. Gradient and classical Hessian.
-    ClassifyGrid,
+    /// A point strictly inside or strictly outside the body, told apart by the hardware ray parity.
+    Field,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,19 +63,15 @@ impl PointSet {
     }
 }
 
-pub struct FieldRequest<'a> {
-    pub points: &'a PointSet,
-    pub role: PointRole,
-    pub want: FieldMask,
-}
-
 #[derive(Clone, Debug)]
 pub struct FieldBatch {
     pub potential: Vec<f64>,
     pub gradient: Vec<DVec3>,
     pub hessian: Vec<Sym6>,
-    /// Solid-angle fraction used by the contact term. Interior is 1, exterior is 0.
+    /// Fraction used by the contact term: 1 inside, 0 outside, 1/2 on a face.
     pub theta: Vec<f64>,
+    /// Solid angle of the accepted first-hit patches: `4π` inside, `2π` on a face, the body's cone outside.
+    pub solid_angle: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

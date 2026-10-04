@@ -12,6 +12,6 @@ pub mod units;
 
 pub use density::{CauchyDensity, CauchyKernel};
 pub use error::CommonError;
-pub use geometry::{FlattenedBvh, StarMesh, TriMesh};
+pub use geometry::{StarMesh, TriMesh};
 pub use math::{DMat3, DVec3, Sym6};
 pub use units::UnitSystem;

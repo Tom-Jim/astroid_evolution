@@ -31,8 +31,8 @@ pub fn recover_physical_states_batch(inv_m: &[[f64; 4]; 4], m_batch: &[[f64; 4]]
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::assemble::{assemble_mass_matrix, invert_mass_matrix};
+    use super::*;
     #[test]
     fn test_conservative_roundtrip() {
         let m_mat = assemble_mass_matrix();

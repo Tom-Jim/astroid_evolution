@@ -3,6 +3,79 @@ name = "ryugu_scf"
 length_unit = "m"
 density_unit = "kg/m3"
 
+[geometry]
+path = "../models/ryugu.glb"
+length_unit = "km"
+representation = "general_mesh"
+
+[geometry.raw_input_mesh]
+role = "raw_input_mesh"
+path = "../models/ryugu.glb"
+
+[geometry.smoothed_initial_mesh]
+role = "smoothed_initial_mesh"
+
+[geometry.evolving_mesh]
+role = "evolving_mesh"
+
+[smoothing]
+method = "slope_relaxation"
+preserve_topology = true
+star_min_cos = 0.05
+require_star = false
+
+[smoothing.grain_diameter]
+value = 3.0
+unit = "m"
+uncertainty = 2.0
+source = "Michikami et al., Icarus 331, 179 (2019), doi:10.1016/j.icarus.2019.05.019"
+calibration = "representative boulder diameter in sqrt(|g_eff| * d); the 1-5 m window is the mobility range, not a sieve median"
+
+[smoothing.friction_angle]
+value = 0.5515240436302081
+unit = "rad"
+uncertainty = 0.04363323129985824
+source = "Robin et al., Nat Commun 15, 6203 (2024), doi:10.1038/s41467-024-50147-w; Ryugu boulder internal friction 31.6 +/- 2.5 deg"
+calibration = "cohesionless Mohr-Coulomb angle from boulder roundness"
+
+[smoothing.critical_slope]
+value = 0.5515240436302081
+unit = "rad"
+uncertainty = 0.04363323129985824
+source = "Robin et al., Nat Commun 15, 6203 (2024), doi:10.1038/s41467-024-50147-w; same 31.6 +/- 2.5 deg boulder friction"
+calibration = "cohesionless Mohr-Coulomb threshold; no separate Ryugu slope-failure catalog is used"
+
+[smoothing.spin_rate]
+value = 0.00022866712242903872
+unit = "rad/s"
+uncertainty = 5.991838252894517e-10
+provenance = "observational_constraint"
+source = "Watanabe et al., Science 364, 268 (2019), doi:10.1126/science.aav8032; period 7.63262 +/- 0.00002 h"
+calibration = "omega = 2*pi/period; rotation.omega uses this value"
+
+[smoothing.gravitational_constant]
+value = 6.67430e-11
+unit = "m^3/kg/s^2"
+uncertainty = 1.5e-15
+source = "CODATA 2018"
+calibration = "stokes.g must lie inside this uncertainty"
+
+[smoothing.timestep]
+value = 0.25
+unit = "s"
+uncertainty = 0.0
+provenance = "numerical_stability"
+source = "accept.dt_max in this project"
+calibration = "model step bound, not an observation; the runtime dt is min(decide_timestep, this bound)"
+
+[smoothing.observational_calibration]
+value = 1.0
+unit = "1"
+uncertainty = 1.0
+provenance = "unmeasured"
+source = "dimensional grain-inertial scale; no separate Ryugu migration-rate fit"
+calibration = "displacement = dt * calibration * sqrt(|g_eff| * d) * excess / tan(phi), capped by omega*dt*R"
+
 [point_cloud]
 path = "../point_cloud/sample_asteroid.xyz"
 has_normals = true
@@ -10,28 +83,220 @@ reconstruction = "spherical_grid"
 closed_surface_required = true
 
 [rotation]
-omega = [0.0, 0.0, 0.00028]
+omega = [0.0, 0.0, 0.00022866712242903872]
 
 [surface]
 surface_mode = "granular_static"
 yield_tolerance = 1.0e-8
 trust_radius = 1.0e-3
 
-[material]
-young_modulus = 1.0e8
-poisson_ratio = 0.25
-cohesion = 0.0
-mu_y = 0.6
-eta_c = 1.0e6
-hardening_modulus = 0.0
-flow_rule = "associated"
+[density]
+bulk = 0.0
+mass_target = 4.50e11
 
-[transport]
-surface_density = 1200.0
-erosion_coefficient = 0.0
-stress_scale = 1.0
-deposition_kernel = "normalized_surface_kernel"
-external_mass_flux = 0.0
+[density.mass]
+value = 4.50e11
+unit = "kg"
+uncertainty = 5.85e9
+source = "Watanabe et al., Science 364, 268 (2019), doi:10.1126/science.aav8032; mass 4.50e11 kg with 1.3 percent uncertainty"
+calibration = "spacecraft gravity mass; the mesh and the density are not scaled to force this value"
+
+[density.bulk_density]
+value = 1190.0
+unit = "kg/m^3"
+uncertainty = 30.0
+source = "Watanabe et al., Science 364, 268 (2019); bulk density 1.19 +/- 0.03 g/cm^3"
+calibration = "measured mean bulk density; kernel weight equals this value and density.bulk is zero so it is not added twice"
+
+[density.grain_density]
+value = 2420.0
+unit = "kg/m^3"
+uncertainty = 60.0
+source = "Macke, Consolmagno, and Britt, Chem. Erde 71, 1 (2011), Orgueil 2.42 +/- 0.06 g/cm^3, as cited by Watanabe et al. 2019"
+calibration = "constituent grain density for porosity = 1 - bulk_density/grain_density"
+
+[density.porosity]
+value = 0.5082644628099173
+unit = "1"
+uncertainty = 0.017387287747317483
+source = "Watanabe et al. 2019 bulk density and the Orgueil grain density cited there"
+calibration = "porosity = 1 - 1190/2420; the paper states that the total porosity is greater than 50 percent"
+
+[spin_schedule]
+kind = "stages"
+
+[spin_schedule.time]
+value = 1000000.0
+unit = "s"
+uncertainty = 0.0
+source = "model stage horizon in SI seconds; Watanabe et al. 2019 report no detected spin change"
+calibration = "the stage holds the measured rotation rate; t_end is not an observed duration"
+
+[[spin_schedule.stages]]
+t_end = 1000000.0
+omega = [0.0, 0.0, 0.00022866712242903872]
+
+[material]
+
+[material.p_min]
+value = 1.0e-6
+unit = "Pa"
+uncertainty = 0.0
+source = "numerical pressure floor, far below the Watanabe et al. 2019 central pressure"
+calibration = "p_min is below 0.001 of the measured central pressure, so the floor does not replace that pressure in the yield function"
+
+[material.delta_y]
+value = 0.0
+unit = "1"
+uncertainty = 0.0
+source = "no Ryugu softening measurement"
+calibration = "the yield gap stays closed; a nonzero delta_y would be an unsourced coefficient"
+
+[material.gamma_eps]
+value = 1.0e-6
+unit = "1/s"
+uncertainty = 0.0
+source = "numerical shear-rate floor, below the Watanabe et al. 2019 spin rate"
+calibration = "gamma_eps is below 0.1 of the measured spin rate and equals stokes.shear_floor"
+
+[material.cohesion]
+value = 0.05
+unit = "Pa"
+uncertainty = 0.45
+source = "Jutzi et al., Nat. Commun. 13, 7134 (2022), doi:10.1038/s41467-022-34540-x"
+calibration = "SCI crater scaling best fit is 0.05 Pa at the nominal friction; the same paper bounds surface cohesion by about 0.5 Pa"
+
+[material.mu_s]
+value = 0.6152041047020307
+unit = "1"
+uncertainty = 0.060147366095589995
+source = "Robin et al., Nat. Commun. 15, 6203 (2024), doi:10.1038/s41467-024-50147-w; Ryugu boulder internal friction 31.6 +/- 2.5 deg"
+calibration = "mu_s = tan(31.6 deg); the uncertainty is sec(phi)^2 times the angle uncertainty"
+
+[material.mu_y]
+value = 0.6152041047020307
+unit = "1"
+uncertainty = 0.060147366095589995
+source = "Robin et al., Nat. Commun. 15, 6203 (2024), doi:10.1038/s41467-024-50147-w"
+calibration = "yield friction uses the same measured Mohr-Coulomb coefficient as mu_s"
+
+[material.mu_2]
+value = 0.6152041047020307
+unit = "1"
+uncertainty = 0.060147366095589995
+provenance = "unmeasured"
+source = "Robin et al., Nat. Commun. 15, 6203 (2024), doi:10.1038/s41467-024-50147-w"
+calibration = "no Ryugu mu(I) rate sweep exists, so the high-I plateau is the measured friction and adds no extra strengthening"
+
+[material.i_0]
+value = 1.0
+unit = "1"
+uncertainty = 1.0
+provenance = "unmeasured"
+source = "no Ryugu inertial-number experiment; mu_2 equals mu_s"
+calibration = "inertial number multiplies (mu_2 - mu_s) = 0, so I_0 does not enter mu(I); the stored value is not a glass-bead fit"
+
+[material.grain_diameter]
+value = 3.0
+unit = "m"
+uncertainty = 2.0
+source = "Michikami et al., Icarus 331, 179 (2019), doi:10.1016/j.icarus.2019.05.019"
+calibration = "same representative boulder diameter as smoothing.grain_diameter"
+
+[material.central_pressure]
+value = 8.0
+unit = "Pa"
+uncertainty = 4.0
+source = "Watanabe et al., Science 364, 268 (2019); calculated central pressure of about 8 Pa"
+calibration = "one-significant-figure central pressure used in eta_c = mu_s * P / omega"
+
+[material.eta_c]
+value = 21523.132776306986
+unit = "Pa*s"
+uncertainty = 10965.367852023006
+source = "mu_s from Robin et al. 2024, central pressure and spin from Watanabe et al. 2019"
+calibration = "eta_c = mu_s * central_pressure / spin_rate"
+
+[[density.kernels]]
+role = "homogeneous_bulk"
+center = [0.3661716243981386, 0.15631767629057336, 0.00653073639280704]
+center_unit = "m"
+center_uncertainty = 2.0
+sigma = 6.081303192631498e-05
+sigma_unit = "1/m"
+sigma_uncertainty = 6.081303192631498e-05
+weight = 1190.0
+weight_unit = "kg/m^3"
+weight_uncertainty = 30.0
+alpha = 1.0
+alpha_unit = "1"
+alpha_uncertainty = 0.0
+source = "Watanabe et al., Science 364, 268 (2019), bulk density 1.19 +/- 0.03 g/cm^3 and the reported global material homogeneity"
+calibration = "weight is the measured bulk density; the center is the volume centroid of assets/models/ryugu.glb after converting km to m; sigma keeps sigma^2 R^2 = 0.001 at R = 520 m, inside the density uncertainty; alpha = 1 is the Cauchy exponent and does not move that limit"
+
+[mode_c]
+
+[mode_c.erosion_coefficient]
+value = 0.0
+unit = "1"
+uncertainty = 0.0
+source = "no closed Ryugu mass-loss measurement"
+calibration = "erosion stays identically zero; a nonzero rate would be an unsourced coefficient"
+
+[mode_c.external_mass_flux]
+value = 0.0
+unit = "kg/s"
+uncertainty = 0.0
+source = "no closed Ryugu external mass flux"
+calibration = "external mass flux stays identically zero"
+
+[mode_c.stress_scale]
+value = 1.0
+unit = "1"
+uncertainty = 0.0
+source = "no measured stress normalization; erosion is closed"
+calibration = "stress_scale stays 1 while the erosion coefficient is zero"
+
+[galerkin]
+l_max = 1
+directions = 14
+radial_degree = 2
+near_radius = 0.01
+ell0 = 1.0
+
+[stokes]
+g = 6.67430e-11
+
+[stokes.gamma]
+value = 1.0
+unit = "1"
+uncertainty = 0.0
+source = "augmented-Lagrange penalty in the range-space Stokes solve"
+calibration = "solver penalty, not a Ryugu material constant"
+
+[stokes.shear_floor]
+value = 1.0e-6
+unit = "1/s"
+uncertainty = 0.0
+source = "same numerical shear-rate floor as material.gamma_eps"
+calibration = "equals material.gamma_eps and stays below 0.1 of the measured spin rate"
+
+[picard]
+under_relaxation = 0.5
+max_iterations = 1
+
+[accept]
+geometry_tol = 1.0e-4
+mass_tol = 0.013
+slope_tol = 1.0e-1
+transport_tol = 1.0e-8
+kkt_tol = 1.0e-4
+trust_radius = 1.0e-3
+cfl = 1.0
+coupling = 1.0
+characteristic = 1.0
+spin = 1.0
+dt_max = 0.25
 
 [solver]
 galerkin_order = 4
@@ -41,99 +306,3 @@ near_field_radius = 0.01
 finite_part_scale = 1.0
 under_relaxation = 0.5
 max_iterations = 1000
-
-# =============================================================================
-# Cauchy 混合密度场配置 (基于龙宫天体物理学内部异质性与宏观空洞模型)
-# 依照碎石堆积体 (Rubble Pile) 内部多孔隙结构：
-# 1. 正密度基底与致密体 (Background & Mascons):
-#    - 整数 (Integers):
-#      * bg_matrix: alpha = 1.0 (基质基底, 洛伦兹型多孔碎石基质)
-#      * mascon_otohime: alpha = 2.0 (乙姬巨砾致密核心, 陡峭高阶衰减)
-#    - 半整数 (Half-integers):
-#      * diffuse_envelope: alpha = 0.5 (疏松浅表碎石层, 亚洛伦兹缓降包层)
-#      * compact_core: alpha = 1.5 (撞击中心压缩致密核, 超洛伦兹衰减)
-#      * deep_nodule_ejima: alpha = 2.5 (深部重积聚微晶/球粒包体, 极陡高阶衰减)
-#    - 小数/分数 (Decimals):
-#      * polar_north_cap: alpha = 1.25 (北极区积聚异质包体)
-#      * polar_south_crust: alpha = 1.4 (南极区壳层质量扰动)
-#
-# 2. 内部宏观空洞与断裂囊腔 (Negative Deficit Voids):
-#    - 整数 (Integers):
-#      * void_urashima_cavern: alpha = 2.0 (浦岛撞击坑下部震碎洞穴, 局部孔隙率激增)
-#    - 半整数 (Half-integers):
-#      * void_equatorial_dilatancy: alpha = 1.5 (赤道内部颗粒自转剪胀空洞带)
-#    - 小数/分数 (Decimals):
-#      * void_subsurface_porous: alpha = 0.75 (次表层海绵状高孔隙度断裂气孔囊)
-#
-# 综合平均密度: ~1190.0 kg/m³, 积分总质量: ~4.50e11 kg, 内部各点密度处处严格非负 (rho >= 934 kg/m³)
-# =============================================================================
-
-[[density.kernels]]
-role = "bg_matrix"
-center = [0.0, 0.0, 0.0]
-weight = 1107.0
-sigma = 0.0008
-alpha = 1.0
-
-[[density.kernels]]
-role = "diffuse_envelope"
-center = [0.0, 0.0, 0.0]
-weight = 168.9
-sigma = 0.0010
-alpha = 0.5
-
-[[density.kernels]]
-role = "compact_core"
-center = [0.0, 0.0, 0.0]
-weight = 225.1
-sigma = 0.0022
-alpha = 1.5
-
-[[density.kernels]]
-role = "mascon_otohime"
-center = [140.0, -60.0, -180.0]
-weight = 112.6
-sigma = 0.0055
-alpha = 2.0
-
-[[density.kernels]]
-role = "deep_nodule_ejima"
-center = [-160.0, 120.0, 10.0]
-weight = 75.0
-sigma = 0.0060
-alpha = 2.5
-
-[[density.kernels]]
-role = "polar_north_cap"
-center = [0.0, 0.0, 220.0]
-weight = 61.0
-sigma = 0.0038
-alpha = 1.25
-
-[[density.kernels]]
-role = "polar_south_crust"
-center = [0.0, 0.0, -220.0]
-weight = 56.3
-sigma = 0.0038
-alpha = 1.4
-
-[[density.kernels]]
-role = "void_urashima_cavern"
-center = [140.0, 110.0, -50.0]
-weight = -394.0
-sigma = 0.0070
-alpha = 2.0
-
-[[density.kernels]]
-role = "void_equatorial_dilatancy"
-center = [-110.0, -130.0, 10.0]
-weight = -328.3
-sigma = 0.0055
-alpha = 1.5
-
-[[density.kernels]]
-role = "void_subsurface_porous"
-center = [0.0, 150.0, 180.0]
-weight = -262.7
-sigma = 0.0045
-alpha = 0.75

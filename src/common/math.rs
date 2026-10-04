@@ -116,11 +116,7 @@ impl DMat3 {
     #[inline]
     pub fn from_columns(c0: DVec3, c1: DVec3, c2: DVec3) -> Self {
         Self {
-            m: [
-                [c0.x, c1.x, c2.x],
-                [c0.y, c1.y, c2.y],
-                [c0.z, c1.z, c2.z],
-            ],
+            m: [[c0.x, c1.x, c2.x], [c0.y, c1.y, c2.y], [c0.z, c1.z, c2.z]],
         }
     }
 
@@ -178,7 +174,14 @@ pub fn quadrupole(u: DVec3) -> Sym6 {
 
 #[inline]
 pub fn sym6_outer(n: DVec3) -> Sym6 {
-    [n.x * n.x, n.y * n.y, n.z * n.z, n.x * n.y, n.x * n.z, n.y * n.z]
+    [
+        n.x * n.x,
+        n.y * n.y,
+        n.z * n.z,
+        n.x * n.y,
+        n.x * n.z,
+        n.y * n.z,
+    ]
 }
 
 #[inline]
