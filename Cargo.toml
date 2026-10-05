@@ -21,6 +21,10 @@ path = "tests/rheo_friction.rs"
 required-features = ["rheo"]
 
 [[test]]
+name = "sh_smooth"
+path = "tests/sh_smooth.rs"
+
+[[test]]
 name = "tier2_scf"
 path = "tests/tier2_scf.rs"
 required-features = ["tier2"]
@@ -73,6 +77,10 @@ required-features = ["tier1"]
 name = "rheo-cli"
 path = "src/bin/rheo_cli.rs"
 required-features = ["rheo"]
+
+[[bin]]
+name = "sh-cli"
+path = "src/bin/sh_cli.rs"
 
 [[bin]]
 name = "scf-cli"

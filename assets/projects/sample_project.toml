@@ -7,8 +7,10 @@ g = 6.6743e-11            # gravitational constant G
 
 [body]
 level = 3                 # icosphere level: 20 * 4^level faces, fixed for the whole run
-shape = "ellipsoid"       # "ellipsoid" | "mesh"
-semi_axes = [520.0, 500.0, 450.0]   # m, standard frame (a_x >= a_y >= a_z => I_zz maximal)
+shape = "mesh"            # "ellipsoid" | "mesh"
+mesh = "../../output/out.obj"
+mesh_unit = "m"
+semi_axes = [520.0, 500.0, 450.0]   # unused when shape = "mesh"
 
 [density]
 bulk = 1190.0             # constant part of rho_K (kg m^-3)
@@ -19,10 +21,10 @@ nu0 = 0.6
 z0 = 6.0
 d_p = 0.05
 rho_p = 2500.0
-mu_s = 0.38
-mu_2 = 0.64
+mu_s = 0.42
+mu_2 = 0.70
 i_0 = 0.279
-cohesion = 0.1
+cohesion = 0.05
 c_c = 1.0
 f_h = 1.0e-4
 c_t = 1.0
@@ -75,16 +77,16 @@ max_steps = 100000
 c0 = 0.2
 eps_n = 0.01
 eps_mass = 3.0e-3
-trust0 = 0.05
+trust0 = 0.015
 trust_min = 1.0e-5
 trust_shrink = 0.5
 varrho = 1.0e3
-sh_fit_tol = 0.15
+sh_fit_tol = 0.28
 eps_frame = 1.0e-3
 eps_deg = 1.0e-6
 
 [relief]
-max_sweeps = 40
+max_sweeps = 16
 tol_slack = 1.0e-3
 radius_anomaly = 0.03
 curvature_quantile = 0.999
