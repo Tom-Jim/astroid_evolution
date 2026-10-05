@@ -29,7 +29,8 @@ fn d3(v: Vector3<f64>) -> DVec3 {
 /// Inertia about the centroid, `I_c = I_O − M (|c|² 1 − c cᵀ)`.
 pub fn inertia_about_centroid(m: &Moments) -> Matrix3<f64> {
     let c = v3(m.centroid);
-    inertia_matrix(m.inertia) - m.mass * (Matrix3::identity() * c.norm_squared() - c * c.transpose())
+    inertia_matrix(m.inertia)
+        - m.mass * (Matrix3::identity() * c.norm_squared() - c * c.transpose())
 }
 
 /// Dimensionless departure of the current frame from the standard one.
@@ -73,7 +74,11 @@ pub fn needs_realign(m: &Moments, r_ref: f64, prm: &GeometryParams) -> bool {
 pub fn principal_rotation(ic: &Matrix3<f64>, eps_deg: f64) -> Matrix3<f64> {
     let eig = SymmetricEigen::new(*ic);
     let mut idx = [0usize, 1, 2];
-    idx.sort_by(|a, b| eig.eigenvalues[*b].partial_cmp(&eig.eigenvalues[*a]).unwrap());
+    idx.sort_by(|a, b| {
+        eig.eigenvalues[*b]
+            .partial_cmp(&eig.eigenvalues[*a])
+            .unwrap()
+    });
     let val = idx.map(|i| eig.eigenvalues[i]);
     let vec = idx.map(|i| eig.eigenvectors.column(i).into_owned());
     let i1 = val[0];
@@ -87,7 +92,11 @@ pub fn principal_rotation(ic: &Matrix3<f64>, eps_deg: f64) -> Matrix3<f64> {
         let p = v - to * v.dot(to);
         p.try_normalize(1e-12).unwrap_or_else(|| {
             // v parallel to `to`: any perpendicular
-            let h = if to.x.abs() < 0.9 { Vector3::x() } else { Vector3::y() };
+            let h = if to.x.abs() < 0.9 {
+                Vector3::x()
+            } else {
+                Vector3::y()
+            };
             (h - to * h.dot(to)).normalize()
         })
     };
@@ -152,10 +161,10 @@ fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, ScfError>
             CauchyKernel::try_new(centre, k.weight, k.sigma, k.alpha).map_err(ScfError::from)
         })
         .collect::<Result<_, _>>()?;
-    // Material transfer of ρ_s: the new vertex i sits at x' = R'_i ω̂_i, i.e. at the old point
-    // Qᵀ x' + c.
-    let area_before = vertex_areas(body);
-    let mass_before: f64 = (0..radius.len()).map(|i| area_before[i] * body.rho_s[i]).sum();
+    // Material transfer of ρ_s (§10.4.4 step 8b (vi)): barycentric interpolation only.
+    // The new vertex i sits at x' = R'_i ω̂_i, i.e. at the old point Qᵀ x' + c.
+    // No global multiplicative rescaling: the barycentric interpolation error is
+    // recorded in frame_mass_change of the FrameReport.
     let mut rho_s = vec![0.0; radius.len()];
     for i in 0..radius.len() {
         let x_new = v3(body.topo.dirs[i]) * radius[i];
@@ -164,13 +173,6 @@ fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, ScfError>
         rho_s[i] = interp_vertex_field(&body.topo, &body.rho_s, dir_old);
     }
     let next = Body::new(body.topo.clone(), radius, body.bulk, kernels, rho_s)?;
-    let area_after = vertex_areas(&next);
-    let mass_after: f64 = (0..next.radius.len()).map(|i| area_after[i] * next.rho_s[i]).sum();
-    let mut next = next;
-    if mass_after > 0.0 && mass_before > 0.0 {
-        let s = mass_before / mass_after;
-        next.rho_s.iter_mut().for_each(|v| *v *= s);
-    }
     Ok(next)
 }
 
@@ -187,8 +189,13 @@ pub fn vertex_areas(body: &Body) -> Vec<f64> {
 }
 
 /// Re-align `body` (centroid at the origin, `I_zz` maximal, `I_xx` minimal). `force` skips the
-/// trigger test for the first pass (initialisation). At most three passes: the ray re-sampling perturbs the moments at the discretisation level, so the frame
-/// is re-verified after every pass and the loop stops as soon as the thresholds hold.
+/// trigger test for the first pass (initialisation). At most three passes: the ray re-sampling
+/// perturbs the moments at the discretisation level, so the frame is re-verified after every
+/// pass and the loop stops as soon as the thresholds hold.
+///
+/// After three passes, the residual departure is verified. If it still exceeds
+/// `ε_frame · R_ref` (centroid) or `ε_frame · I₁` (off-diagonal), the function returns
+/// `RigidRankDeficient` per §10.4.4 step 8b (vii) and §A.3.
 pub fn realign(
     body: &Body,
     forward: Option<Forward>,
@@ -221,6 +228,25 @@ pub fn realign(
         passes += 1;
     }
     let after = departure(&fwd.moments, r_ref, prm.eps_deg);
+    // Ray resampling must preserve the star-shaped acceptance condition.
+    for (fi, (_, n, _)) in current.face_geometry().iter().enumerate() {
+        let c = n.dot(current.topo.face_dirs[fi]);
+        if c < prm.c0 {
+            return Err(ScfError::geometry(format!(
+                "frame resampling face {fi}: n·e_r={c:.4} < c0={:.4}",
+                prm.c0
+            )));
+        }
+    }
+    // §10.4.4 step 8b (vii): re-verify after at most three passes.
+    // If the frame is still out of tolerance, the rigid-body condition is incompatible.
+    if passes > 0 && (after.centroid > prm.eps_frame || after.off_diagonal > prm.eps_frame) {
+        return Err(ScfError::rigid_rank(format!(
+            "frame re-alignment did not converge after {passes} passes: \
+             centroid offset = {:.3e} (tol {}), off-diagonal = {:.3e} (tol {})",
+            after.centroid, prm.eps_frame, after.off_diagonal, prm.eps_frame
+        )));
+    }
     let trace = q_acc.trace();
     let angle = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees();
     let max_change = current
@@ -288,7 +314,9 @@ mod tests {
         assert!(rep.after.centroid < 1e-3, "{:?}", rep.after);
         // The new long axis (max R) is along e_x? No: e_z is the max-inertia (short body) axis,
         // so the shortest radius must now lie on z and the longest on x or y.
-        let zi = (0..nv).max_by(|a, b| topo.dirs[*a].z.partial_cmp(&topo.dirs[*b].z).unwrap()).unwrap();
+        let zi = (0..nv)
+            .max_by(|a, b| topo.dirs[*a].z.partial_cmp(&topo.dirs[*b].z).unwrap())
+            .unwrap();
         assert!((out.radius[zi] - 0.6).abs() < 0.03, "{}", out.radius[zi]);
         assert!(rep.mass_change.abs() < 5e-3);
     }

@@ -161,7 +161,17 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let mut t_col = vec![usize::MAX; nf];
     let mut nt = 0usize;
     for f in 0..nf {
-        if inp.slope_row[f] && topo.faces[f].iter().any(|v| inp.kind[*v as usize] == Kind::Mobile) {
+        let gnorm = inp.gravity[f].length();
+        let overhang_ok = gnorm > 1e-14 && {
+            let (_, n, _) = body.face_geometry()[f];
+            n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n
+        };
+        if inp.slope_row[f]
+            && overhang_ok
+            && topo.faces[f]
+                .iter()
+                .any(|v| inp.kind[*v as usize] == Kind::Mobile)
+        {
             t_col[f] = na + nt;
             nt += 1;
         }
@@ -173,7 +183,10 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     // Objective.
     let mut p_diag = vec![0.0; nx];
     let mut q = vec![0.0; nx];
-    let wsum: f64 = (0..nv).filter(|i| inp.kind[*i] == Kind::Mobile).map(|i| inp.weight[i]).sum();
+    let wsum: f64 = (0..nv)
+        .filter(|i| inp.kind[*i] == Kind::Mobile)
+        .map(|i| inp.weight[i])
+        .sum();
     for i in 0..nv {
         if col_of[i] != usize::MAX {
             let w = inp.weight[i] / wsum.max(1e-300);
@@ -243,6 +256,11 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         }
         let g = inp.gravity[f];
         let gn = g.length();
+        if gn <= 1e-14 {
+            // A zero effective gravity direction has no defined slope or overhang
+            // constraint (§2.8); do not divide by zero or manufacture a NaN row.
+            continue;
+        }
         let ghat = g * (1.0 / gn);
         let e_f = topo.face_dirs[f];
 
@@ -294,7 +312,11 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let mut b = Vec::new();
     let mut cones = Vec::new();
     let mut offset = 0usize;
-    let mut push = |blk: &Block, rows: &mut Vec<usize>, cols: &mut Vec<usize>, vals: &mut Vec<f64>, b: &mut Vec<f64>| {
+    let mut push = |blk: &Block,
+                    rows: &mut Vec<usize>,
+                    cols: &mut Vec<usize>,
+                    vals: &mut Vec<f64>,
+                    b: &mut Vec<f64>| {
         for (r, c, v) in &blk.trip {
             rows.push(offset + r);
             cols.push(*c);
@@ -325,8 +347,13 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     solver.solve();
     let sol = &solver.solution;
     let status = format!("{:?}", sol.status);
-    if !matches!(sol.status, SolverStatus::Solved | SolverStatus::AlmostSolved) {
-        return Err(ScfError::solver(format!("step SOCP ended with status {status}")));
+    if !matches!(
+        sol.status,
+        SolverStatus::Solved | SolverStatus::AlmostSolved
+    ) {
+        return Err(ScfError::solver(format!(
+            "step SOCP ended with status {status}"
+        )));
     }
     let mut d = vec![0.0; nv];
     for i in 0..nv {
@@ -375,7 +402,10 @@ mod tests {
         let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![0.0; nv]).unwrap();
         let dens = body.density().unwrap();
         let geo = body.face_geometry();
-        let gravity: Vec<DVec3> = geo.iter().map(|(c, _, _)| c.try_normalize().unwrap() * -9.8).collect();
+        let gravity: Vec<DVec3> = geo
+            .iter()
+            .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
+            .collect();
         let nf = topo.n_faces();
         let jac = mass_jacobian(&body, &dens);
         let inp = SocpInput {

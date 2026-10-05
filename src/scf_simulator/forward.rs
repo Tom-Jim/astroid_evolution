@@ -78,10 +78,16 @@ impl Forward {
     /// Gradient and Hessian at the face centres of the polyhedron.
     pub fn eval_faces(&mut self, body: &Body) -> Result<(), ScfError> {
         let centres: Vec<DVec3> = body.face_geometry().iter().map(|f| f.0).collect();
+        // Gradient and finite-part Hessian only. The potential is not an input of the
+        // Stokes load or the slope row, so it is not requested.
         let batch = self.solver.eval(
             &PointSet::from_points(&centres),
             PointRole::SurfaceFace,
-            FieldMask::ALL,
+            FieldMask {
+                potential: false,
+                gradient: true,
+                hessian: true,
+            },
         )?;
         self.face = PointFields {
             points: centres,

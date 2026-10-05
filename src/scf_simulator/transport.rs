@@ -21,6 +21,8 @@ pub struct SurfaceFlow {
     pub div: Vec<f64>,
     /// `‖∇_{S²} c‖_∞`.
     pub grad_max: f64,
+    /// Determinant of the tangential velocity gradient at each vertex.
+    pub tangent_det: Vec<f64>,
 }
 
 fn to_vec(v: DVec3) -> Vector3<f64> {
@@ -45,6 +47,7 @@ pub fn surface_flow(
         })
         .collect();
     let mut div = vec![0.0; nv];
+    let mut tangent_det = vec![0.0; nv];
     let mut grad_max = 0.0_f64;
     for i in 0..nv {
         let w = to_vec(topo.dirs[i]);
@@ -61,10 +64,31 @@ pub fn surface_flow(
         if let Some(inv) = ata.try_inverse() {
             let g = rhs * inv;
             div[i] = (proj * g).trace();
+            let t = topo.dirs[i];
+            let e1v = t.cross(DVec3::new(1.0, 0.0, 0.0));
+            let e1 = if e1v.length_squared() > 1e-20 {
+                e1v.try_normalize().unwrap_or(DVec3::new(1.0, 0.0, 0.0))
+            } else {
+                t.cross(DVec3::new(0.0, 1.0, 0.0))
+                    .try_normalize()
+                    .unwrap_or(DVec3::new(1.0, 0.0, 0.0))
+            };
+            let e2 = t
+                .cross(e1)
+                .try_normalize()
+                .unwrap_or(DVec3::new(0.0, 0.0, 1.0));
+            let g1 = DVec3::new(g[(0, 0)], g[(1, 0)], g[(2, 0)]);
+            let g2 = DVec3::new(g[(0, 1)], g[(1, 1)], g[(2, 1)]);
+            tangent_det[i] = e1.dot(g1) * e2.dot(g2) - e1.dot(g2) * e2.dot(g1);
             grad_max = grad_max.max(g.norm());
         }
     }
-    SurfaceFlow { c, div, grad_max }
+    SurfaceFlow {
+        c,
+        div,
+        grad_max,
+        tangent_det,
+    }
 }
 
 /// Barycentric coordinates of the direction `p` in the spherical triangle `abc`.
@@ -112,9 +136,8 @@ pub fn interp_vertex_field(topo: &Topology, field: &[f64], p: DVec3) -> f64 {
 /// One semi-Lagrangian step of the vertex field `field` (`ρ_s`) with the area densities
 /// `j_old`, `j_new` (area per solid angle before and after the geometric update).
 ///
-/// `j_new,a ρ_a = J_a j_old(ω_d) ρ(ω_d)` with `J_a = 1 − Δt ∇·c` to first order, followed by a
-/// global multiplicative fixer that restores `Σ A ρ` exactly. The relative size of the
-/// fixer is returned.
+/// `j_new,a ρ_a = J_a j_old(ω_d) ρ(ω_d)` with the tangent Jacobian, then one global
+/// multiplier that restores `Σ j ρ`. The returned scalar is the relative size of that multiplier.
 pub fn transport(
     topo: &Topology,
     flow: &SurfaceFlow,
@@ -122,7 +145,7 @@ pub fn transport(
     j_old: &[f64],
     j_new: &[f64],
     dt: f64,
-) -> (Vec<f64>, f64) {
+) -> Result<(Vec<f64>, f64), String> {
     let nv = topo.n_vertices();
     let mut out = vec![0.0; nv];
     for a in 0..nv {
@@ -147,24 +170,52 @@ pub fn transport(
                 }
             }
         }
-        for f in seen {
+        let mut found = false;
+        let deposit = |f: usize, value: &mut f64, found: &mut bool| {
             let t = topo.faces[f];
             let [i, j, k] = t.map(|x| x as usize);
             if let Some(l) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], foot) {
                 if l.iter().all(|x| *x >= -1e-12) {
-                    value = l[0] * field[i] * j_old[i]
+                    *value = l[0] * field[i] * j_old[i]
                         + l[1] * field[j] * j_old[j]
                         + l[2] * field[k] * j_old[k];
+                    *found = true;
+                }
+            }
+        };
+        for f in seen {
+            deposit(f, &mut value, &mut found);
+            if found {
+                break;
+            }
+        }
+        if !found {
+            // The two-ring search is only a locality optimisation. A closed spherical
+            // mesh still covers the foot; scan the rest before declaring the step invalid.
+            for f in 0..topo.n_faces() {
+                deposit(f, &mut value, &mut found);
+                if found {
                     break;
                 }
             }
         }
-        let jac = (1.0 - dt * flow.div[a]).max(0.0);
+        if !found {
+            return Err(format!(
+                "characteristic foot point not covered at vertex {a}"
+            ));
+        }
+        let jac = (1.0 - dt * flow.div[a] + dt * dt * flow.tangent_det[a]).max(1e-12);
         out[a] = (jac * value / j_new[a]).max(0.0);
     }
-    // Conservative fixer on Σ j Ω ρ.
-    let before: f64 = (0..nv).map(|i| j_old[i] * topo.vertex_solid[i] * field[i]).sum();
-    let after: f64 = (0..nv).map(|i| j_new[i] * topo.vertex_solid[i] * out[i]).sum();
+    // The tangent Jacobian is the conservation factor of §9.2. It is a truncation of
+    // det(Dω_d), so a single global multiplier restores Σ j ρ exactly. The returned
+    // number is the relative size of that correction.
+    let before: f64 = (0..nv)
+        .map(|i| j_old[i] * topo.vertex_solid[i] * field[i])
+        .sum();
+    let after: f64 = (0..nv)
+        .map(|i| j_new[i] * topo.vertex_solid[i] * out[i])
+        .sum();
     let mut fix = 0.0;
     if after > 0.0 && before > 0.0 {
         let s = before / after;
@@ -173,7 +224,7 @@ pub fn transport(
             *v *= s;
         }
     }
-    (out, fix)
+    Ok((out, fix))
 }
 
 /// Erosion and deposition rates per vertex (kg m⁻² s⁻¹).
@@ -279,6 +330,7 @@ mod tests {
                 .collect(),
             div: vec![0.0; nv],
             grad_max: 0.05,
+            tangent_det: vec![0.0; nv],
         };
         let field: Vec<f64> = topo
             .dirs
@@ -286,13 +338,17 @@ mod tests {
             .map(|d| (-(d.x - 1.0).powi(2) * 6.0 - d.y * d.y * 6.0 - d.z * d.z * 6.0).exp())
             .collect();
         let j = vec![1.0; nv];
-        let (out, fix) = transport(&topo, &flow, &field, &j, &j, 1.0);
+        let (out, fix) = transport(&topo, &flow, &field, &j, &j, 1.0).unwrap();
         let mass = |f: &[f64]| (0..nv).map(|i| f[i] * topo.vertex_solid[i]).sum::<f64>();
         assert!((mass(&out) - mass(&field)).abs() < 1e-12 * mass(&field));
         assert!(fix < 0.1);
         // The bump centre moved from +x towards +y.
-        let cy_before: f64 = (0..nv).map(|i| field[i] * topo.dirs[i].y * topo.vertex_solid[i]).sum();
-        let cy_after: f64 = (0..nv).map(|i| out[i] * topo.dirs[i].y * topo.vertex_solid[i]).sum();
+        let cy_before: f64 = (0..nv)
+            .map(|i| field[i] * topo.dirs[i].y * topo.vertex_solid[i])
+            .sum();
+        let cy_after: f64 = (0..nv)
+            .map(|i| out[i] * topo.dirs[i].y * topo.vertex_solid[i])
+            .sum();
         assert!(cy_after > cy_before + 1e-3, "{cy_before} -> {cy_after}");
     }
 }

@@ -41,6 +41,11 @@ impl ScfError {
         Self::make("TrustRadiusExhausted", detail)
     }
 
+    /// The configured `step.max_steps` limit was reached before `T_end` (§10.4.4 step 9).
+    pub fn step_limit_exhausted(detail: impl Into<String>) -> Self {
+        Self::make("StepLimitExhausted", detail)
+    }
+
     pub fn solver(detail: impl Into<String>) -> Self {
         Self::make("SolverFailure", detail)
     }
@@ -60,6 +65,7 @@ impl ScfError {
             "RigidRankDeficient" => 13,
             "RheologyNotConverged" => 20,
             "TrustRadiusExhausted" => 23,
+            "StepLimitExhausted" => 24,
             "SolverFailure" => 30,
             "Io" => 31,
             "GpuUnavailable" => 50,

@@ -29,7 +29,13 @@ pub struct Protection {
     pub identification: &'static str,
 }
 
-fn read_mask(path: &Path, nv: usize, nf: usize, body: &Body, name: &str) -> Result<Vec<f64>, ScfError> {
+fn read_mask(
+    path: &Path,
+    nv: usize,
+    nf: usize,
+    body: &Body,
+    name: &str,
+) -> Result<Vec<f64>, ScfError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ScfError::io(format!("cannot read {name} {}: {e}", path.display())))?;
     let mut values = Vec::new();
@@ -38,11 +44,14 @@ fn read_mask(path: &Path, nv: usize, nf: usize, body: &Body, name: &str) -> Resu
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let v: f64 = line
-            .parse()
-            .map_err(|_| ScfError::model_not_closed(format!("{name} line {} is not a weight", k + 1)))?;
+        let v: f64 = line.parse().map_err(|_| {
+            ScfError::model_not_closed(format!("{name} line {} is not a weight", k + 1))
+        })?;
         if !(0.0..=1.0).contains(&v) {
-            return Err(ScfError::model_not_closed(format!("{name} line {} is outside [0, 1]", k + 1)));
+            return Err(ScfError::model_not_closed(format!(
+                "{name} line {} is outside [0, 1]",
+                k + 1
+            )));
         }
         values.push(v);
     }
@@ -78,7 +87,9 @@ pub fn vertex_normals(body: &Body) -> Vec<DVec3> {
             n[v] = n[v] + area;
         }
     }
-    n.iter().map(|x| x.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0))).collect()
+    n.iter()
+        .map(|x| x.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0)))
+        .collect()
 }
 
 /// Crater-feature detector: radius anomaly against the neighbour mean, and curvature rank.
@@ -146,27 +157,53 @@ pub fn protection(project: &Project, body: &Body) -> Result<Protection, ScfError
     })
 }
 
+/// Failure kind returned by [`accept`].
+#[derive(Clone, Debug)]
+pub enum AcceptError {
+    /// Positive volume, star-shape (`n·e_r ≥ c0`) or topology failure.
+    /// The caller must shrink `Δ` and re-solve the SOCP (§2.13, §10.4.3).
+    Geometry(String),
+    /// Mass residual `|ℳ − M| > ε_M`.  The caller must apply a conservative
+    /// correction in the mobile set; `Δ` must **not** be shrunk (§2.14).
+    Mass(f64),
+}
+
+impl std::fmt::Display for AcceptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AcceptError::Geometry(s) => write!(f, "geometry: {s}"),
+            AcceptError::Mass(r) => write!(f, "mass residual {r:.3e}"),
+        }
+    }
+}
+
 /// Outer geometric acceptance (§10.4.4 step 8a): star-shape, positive volume, mass.
+///
+/// Returns `Ok(relative_mass_residual)` on pass.
+/// Returns `Err(AcceptError::Geometry(_))` for mesh/topology failures that require trust shrink.
+/// Returns `Err(AcceptError::Mass(resid))` for mass failures that require conservative correction.
 pub fn accept(
     body: &Body,
     fwd: &Forward,
     mass_target: f64,
     c0: f64,
     eps_mass: f64,
-) -> Result<f64, String> {
+) -> Result<f64, AcceptError> {
     if !(fwd.moments.volume > 0.0) {
-        return Err("non-positive volume".into());
+        return Err(AcceptError::Geometry("non-positive volume".into()));
     }
     let geo = body.face_geometry();
     for (f, (_, n, _)) in geo.iter().enumerate() {
         let c = n.dot(body.topo.face_dirs[f]);
         if !(c >= c0) {
-            return Err(format!("face {f}: n·e_r = {c:.4} < c0 = {c0}"));
+            return Err(AcceptError::Geometry(format!(
+                "face {f}: n·e_r = {c:.4} < c0 = {c0}"
+            )));
         }
     }
     let resid = (fwd.moments.mass - mass_target).abs() / mass_target;
     if resid > eps_mass {
-        return Err(format!("mass residual {resid:.3e} > eps_mass {eps_mass:.3e}"));
+        return Err(AcceptError::Mass(resid));
     }
     Ok(resid)
 }
@@ -222,7 +259,12 @@ fn slope_state(
         .zip(&centres)
         .map(|(g, x)| effective_gravity(*g, *x, omega))
         .collect();
-    let hess_w: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(|h| hessian_w(*h, omega)).collect();
+    let hess_w: Vec<[f64; 6]> = fwd
+        .face
+        .hess_u
+        .iter()
+        .map(|h| hessian_w(*h, omega))
+        .collect();
     let pressure: Vec<f64> = hess_w
         .iter()
         .zip(&dirs)
@@ -262,9 +304,19 @@ pub fn relax(
     let kind: Vec<Kind> = prot
         .weight
         .iter()
-        .map(|w| if *w >= project.relief.lock_weight { Kind::Locked } else { Kind::Mobile })
+        .map(|w| {
+            if *w >= project.relief.lock_weight {
+                Kind::Locked
+            } else {
+                Kind::Mobile
+            }
+        })
         .collect();
-    let weight: Vec<f64> = prot.weight.iter().map(|w| 1.0 / (1.0 - w).max(1e-3)).collect();
+    let weight: Vec<f64> = prot
+        .weight
+        .iter()
+        .map(|w| 1.0 / (1.0 - w).max(1e-3))
+        .collect();
     let n_locked = kind.iter().filter(|k| **k == Kind::Locked).count();
     let n_protected = prot.weight.iter().filter(|w| **w > 0.0).count();
     let face_locked: Vec<bool> = topo
@@ -333,13 +385,23 @@ pub fn relax(
             for i in 0..nv {
                 cand.radius[i] += out.d[i];
             }
-            let verdict = Body::new(topo.clone(), cand.radius.clone(), cand.bulk, cand.kernels.clone(), cand.rho_s.clone())
-                .map_err(|e| e.to_string())
-                .and_then(|b| {
-                    Forward::bind(&b, project.g)
-                        .map_err(|e| e.to_string())
-                        .and_then(|f| accept(&b, &f, mass_target, g.c0, g.eps_mass).map(|r| (b, f, r)))
-                });
+            let verdict = Body::new(
+                topo.clone(),
+                cand.radius.clone(),
+                cand.bulk,
+                cand.kernels.clone(),
+                cand.rho_s.clone(),
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|b| {
+                Forward::bind(&b, project.g)
+                    .map_err(|e| e.to_string())
+                    .and_then(|f| {
+                        accept(&b, &f, mass_target, g.c0, g.eps_mass)
+                            .map(|r| (b, f, r))
+                            .map_err(|e| e.to_string())
+                    })
+            });
             match verdict {
                 Ok((b, f, resid)) => {
                     let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));

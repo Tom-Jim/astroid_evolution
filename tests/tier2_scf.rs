@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use astroid_evolution::rheo_friction::RheoGpu;
 use astroid_evolution::scf_simulator::evolve::{self, RunOptions};
+use astroid_evolution::scf_simulator::frame;
 use astroid_evolution::scf_simulator::io::{Snapshot, initial_body, read_snapshot, write_snapshot};
 use astroid_evolution::scf_simulator::params::Project;
 use astroid_evolution::scf_simulator::relax::relax;
@@ -101,4 +102,121 @@ fn relaxation_and_stage_run_on_gpu() {
     let r = &res.records[0];
     assert_eq!(r.kind, "stage-equilibrium");
     assert!(r.eps_momentum < 1e-6);
+}
+
+/// Relax is only the pre-evolution shape. Tier 2 then calls RTFP, the rheology
+/// chain, and the SCF geometry step. A loose layer that is still supercritical
+/// after that partial relax must change radius.
+#[test]
+fn cauchy_meshes_evolve_past_relax() {
+    // 4 h. Fast enough for topographic slopes, short enough that one geometry
+    // step is the whole stage when the mobile set is the slope proxy.
+    let omega = 2.0 * std::f64::consts::PI / (4.0 * 3600.0);
+    let schedule = SpinSchedule::parse(&format!("const:{omega:.8}@1e4")).unwrap();
+    let gpu = RheoGpu::new().expect("Metal device");
+    let only = std::env::var("SCF_ONLY").ok();
+    let mut any_geometry = false;
+    for (name, file) in [
+        (
+            "ryugu",
+            include_str!("../assets/projects/ryugu_cauchy.toml"),
+        ),
+        (
+            "phobos",
+            include_str!("../assets/projects/phobos_cauchy.toml"),
+        ),
+        (
+            "deimos",
+            include_str!("../assets/projects/deimos_cauchy.toml"),
+        ),
+    ] {
+        let p = Project::parse(file, PathBuf::from("assets/projects")).unwrap_or_else(|e| {
+            panic!("{name} project: {e}");
+        });
+        if only.as_deref().is_some_and(|want| want != name) {
+            continue;
+        }
+        let alphas: Vec<f64> = p.kernels().iter().map(|k| k.alpha).collect();
+        assert!(
+            alphas.iter().any(|a| (*a - 1.0).abs() > 1e-9),
+            "{name} alphas {alphas:?} are all 1"
+        );
+        let t0 = std::time::Instant::now();
+        let (mut state, _) = evolve::start(&p, initial_body(&p).unwrap())
+            .unwrap_or_else(|e| panic!("{name} start: {e}"));
+        let (relaxed, rep) =
+            relax(&p, &gpu, &state.body, omega).unwrap_or_else(|e| panic!("{name} relax: {e}"));
+        let (body, _, fwd) = frame::realign(&relaxed, None, p.g, &p.geometry, false)
+            .unwrap_or_else(|e| panic!("{name} realign: {e}"));
+        let radius_in = body.radius.clone();
+        state.body = body;
+        state.velocity.clear();
+        let res = evolve::run(
+            &p,
+            &gpu,
+            &schedule,
+            state,
+            fwd,
+            &RunOptions {
+                max_steps: Some(2),
+                until: None,
+            },
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_or_else(|e| panic!("{name} evolve: {e}"));
+        let rec = res
+            .records
+            .first()
+            .unwrap_or_else(|| panic!("{name} produced no step"));
+        let radius_out = &res.state.body.radius;
+        let (mut max_abs, mut max_rel) = (0.0_f64, 0.0_f64);
+        for (a, b) in radius_in.iter().zip(radius_out) {
+            let d = (a - b).abs();
+            max_abs = max_abs.max(d);
+            max_rel = max_rel.max(d / a.abs().max(1e-30));
+        }
+        eprintln!(
+            "{name}: {:.2}s mass={:.4e} alphas={alphas:?} relax_sweeps={} slack {:.3e}->{:.3e} kind={} n_mobile={} yielded={:.3e} super={} max_slack={:.3e} dR={:.4e} m ({:.3e} rel) d*={:.4e} socp={} frame={} ({:.3e} deg) picard={} eps_mom={:.3e} eps_lam={:.3e}",
+            t0.elapsed().as_secs_f64(),
+            rec.mass,
+            rep.sweeps.len(),
+            rep.slack_before,
+            rep.slack_after,
+            rec.kind,
+            rec.n_mobile,
+            rec.yielded_fraction,
+            rec.n_supercritical_faces,
+            rec.max_slack,
+            max_abs,
+            max_rel,
+            rec.max_displacement,
+            rec.socp_iterations,
+            rec.frame_applied,
+            rec.frame_angle_deg,
+            rec.picard_iterations,
+            rec.eps_momentum,
+            rec.eps_lambda,
+        );
+        assert!(rec.mass.is_finite() && rec.mass > 0.0, "{name} mass");
+        assert!(rec.eps_momentum < p.stokes.tol_momentum, "{name} momentum");
+        assert!(rec.rheo_seconds.is_finite(), "{name} rheo");
+        if rec.n_supercritical_faces > 0 {
+            any_geometry = true;
+            assert_eq!(rec.kind, "geometry", "{name} stayed at {}", rec.kind);
+            assert!(rec.n_mobile > 0, "{name} supercritical but n_mobile=0");
+            assert!(
+                rec.max_displacement > 1.0,
+                "{name} geometry step did not move radii (max |d*|={})",
+                rec.max_displacement
+            );
+            assert!(
+                max_abs > 1.0,
+                "{name} relax→final radius change is {max_abs} m"
+            );
+        }
+    }
+    assert!(
+        any_geometry,
+        "none of Ryugu, Phobos, Deimos entered a geometry step"
+    );
 }

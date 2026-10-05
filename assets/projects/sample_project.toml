@@ -22,11 +22,11 @@ rho_p = 2500.0
 mu_s = 0.38
 mu_2 = 0.64
 i_0 = 0.279
-cohesion = 25.0
+cohesion = 0.1
 c_c = 1.0
 f_h = 1.0e-4
 c_t = 1.0
-gamma_eps = 1.0e-9
+gamma_eps = 1.0e-6
 p_min = 1.0e-6
 h_s = 5.0
 eps_overhang = 0.01
@@ -45,11 +45,11 @@ n_theta = 10
 n_phi = 20
 n_radial = 5
 p_ext = 0.0
-picard_max = 60
-tol_picard = 1.0e-8
-tol_momentum = 1.0e-6
-theta_eta = 1.0
-continuation = 2
+picard_max = 120
+tol_picard = 1.0e-6
+tol_momentum = 1.0e-5
+theta_eta = 0.5
+continuation = 3
 rigid_sigma_min = 1.0e-6
 
 [yielding]
@@ -74,18 +74,18 @@ max_steps = 100000
 [geometry]
 c0 = 0.2
 eps_n = 0.01
-eps_mass = 1.0e-5
-trust0 = 0.01
+eps_mass = 3.0e-3
+trust0 = 0.05
 trust_min = 1.0e-5
 trust_shrink = 0.5
 varrho = 1.0e3
-sh_fit_tol = 0.05
+sh_fit_tol = 0.15
 eps_frame = 1.0e-3
 eps_deg = 1.0e-6
 
 [relief]
-max_sweeps = 20
+max_sweeps = 40
 tol_slack = 1.0e-3
 radius_anomaly = 0.03
-curvature_quantile = 0.9
+curvature_quantile = 0.999
 lock_weight = 0.999999999

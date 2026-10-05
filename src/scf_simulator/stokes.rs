@@ -166,8 +166,9 @@ impl Operators {
                 gs.row_mut(3 * p + a).scale_mut(s);
             }
         }
-        let a_chol = Cholesky::new(gs.tr_mul(&gs))
-            .ok_or_else(|| ScfError::solver("the pressure stiffness matrix is not positive definite"))?;
+        let a_chol = Cholesky::new(gs.tr_mul(&gs)).ok_or_else(|| {
+            ScfError::solver("the pressure stiffness matrix is not positive definite")
+        })?;
         // Boundary-lift least squares on the face-centre nodes.
         let nl = play.n_lift();
         let ns = surface.dirs.len();
@@ -327,7 +328,10 @@ fn strain_fields(ops: &Operators, u: &DVector<f64>) -> Fields {
     let np = ops.vol.pts.len();
     let shear = (0..np)
         .map(|p| {
-            let dd = d6_dot(&d.as_slice()[6 * p..6 * p + 6], &d.as_slice()[6 * p..6 * p + 6]);
+            let dd = d6_dot(
+                &d.as_slice()[6 * p..6 * p + 6],
+                &d.as_slice()[6 * p..6 * p + 6],
+            );
             (2.0 * dd).sqrt()
         })
         .collect();
@@ -384,7 +388,10 @@ fn load_scale(ops: &Operators, ld: &Loads) -> f64 {
                 + ops.rows.v[(3 * p + 1, j)].powi(2)
                 + ops.rows.v[(3 * p + 2, j)].powi(2))
             .sqrt();
-            let dmag = (0..6).map(|c| ops.rows.d[(6 * p + c, j)].powi(2)).sum::<f64>().sqrt();
+            let dmag = (0..6)
+                .map(|c| ops.rows.d[(6 * p + c, j)].powi(2))
+                .sum::<f64>()
+                .sqrt();
             acc[j] += wg * vmag + wt * dmag;
         }
     }
@@ -414,11 +421,7 @@ fn factor_range(ops: &Operators, k: &DMatrix<f64>) -> Result<RangeSolve, ScfErro
     Ok(RangeSolve { chol, y, s_chol })
 }
 
-fn solve_range(
-    ops: &Operators,
-    rs: &RangeSolve,
-    f: &DVector<f64>,
-) -> (DVector<f64>, DVector<f64>) {
+fn solve_range(ops: &Operators, rs: &RangeSolve, f: &DVector<f64>) -> (DVector<f64>, DVector<f64>) {
     let y0 = rs.chol.solve(f);
     let lam = rs.s_chol.solve(&(&ops.rigid * &y0));
     let u = y0 - &rs.y * &lam;
@@ -456,111 +459,138 @@ pub fn solve(
     let mut lift = DVector::zeros(ops.play.n_lift());
     let mut lambda = DVector::zeros(6);
     let mut p_vals = vec![p_min; np];
+    // Previous-sweep un-truncated Poisson pressure (for the L² pressure criterion (a)).
+    let mut p_prev = vec![p_min; np];
     let mut eps_used = m.spec.gamma_eps;
+    let mut theta = prm.theta_eta;
+    let mut theta_retries = 0u32;
 
     for level in (0..=prm.continuation).rev() {
         let eps = m.spec.gamma_eps * 10f64.powi(level as i32);
         eps_used = eps;
-        converged = false;
-        eta_prev.clear();
-        for _ in 0..prm.picard_max {
-            total_iters += 1;
-            let fields = strain_fields(ops, &u);
-            let lapv = &ops.rows.lap * &u;
-            let gdv = &ops.rows.gd * &u;
-            // (P1) pressure from the frozen (u^k, p̃^k).
-            let mut rhs_f = DVector::zeros(3 * np);
-            for p in 0..np {
-                let d6 = &fields.d.as_slice()[6 * p..6 * p + 6];
-                let ev = eta_eval(m, fields.shear[p], ptil[p], eps);
-                let sh = fields.shear[p];
-                let mut grad_eta = DVec3::ZERO;
-                if sh > 1e-300 {
-                    let mut gs = [0.0; 3];
-                    for k in 0..3 {
-                        let gd6 = &gdv.as_slice()[18 * p + 6 * k..18 * p + 6 * k + 6];
-                        gs[k] = 2.0 * d6_dot(d6, gd6) / sh;
-                    }
-                    grad_eta = DVec3::from_array(gs) * ev.d_shear;
-                }
-                if ptil[p] > p_min + 0.0 && p_vals[p] > p_min {
-                    grad_eta = grad_eta + gradp[p] * ev.d_p;
-                }
-                let lap = DVec3::new(lapv[3 * p], lapv[3 * p + 1], lapv[3 * p + 2]);
-                let div_flow = lap * ev.eta + d_apply(d6, grad_eta) * 2.0;
-                let f = ld.g_eff[p] * ops.vol.rho[p]
-                    + ops.vol.grho[p] * grho_scale
-                    + div_flow;
-                rhs_f[3 * p] = f.x;
-                rhs_f[3 * p + 1] = f.y;
-                rhs_f[3 * p + 2] = f.z;
-            }
-            // Dirichlet data p_Γ at the surface nodes.
-            let ds = &ops.surf_d * &u;
-            let mut weighted = DVector::zeros(ns);
-            for s in 0..ns {
-                let d6 = &ds.as_slice()[6 * s..6 * s + 6];
-                let shear = (2.0 * d6_dot(d6, d6)).sqrt();
-                let ev = eta_eval(m, shear, p_surf_til[s], eps);
-                let n = ops.surface.normals[s];
-                let nn = 2.0 * ev.eta * d_apply(d6, n).dot(n);
-                p_gamma[s] = prm.p_ext + ld.tide_nn[s] + nn;
-                weighted[s] = ops.surface.solid[s] * p_gamma[s];
-            }
-            lift = ops.lift_chol.solve(&ops.lift_y.tr_mul(&weighted));
-            let grad_pb = &ops.pres.lift_grad * &lift;
-            let mut wf = DVector::zeros(3 * np);
-            for p in 0..np {
-                for a in 0..3 {
-                    wf[3 * p + a] = ops.vol.w[p] * (rhs_f[3 * p + a] - grad_pb[3 * p + a]);
-                }
-            }
-            pres_c = ops.a_chol.solve(&ops.pres.grad.tr_mul(&wf));
-            let pv = &ops.pres.val * &pres_c + &ops.pres.lift_val * &lift;
-            let gp = &ops.pres.grad * &pres_c + grad_pb;
-            let mut new_ptil = vec![0.0; np];
-            for p in 0..np {
-                p_vals[p] = pv[p];
-                new_ptil[p] = pv[p].max(p_min);
-                gradp[p] = DVec3::new(gp[3 * p], gp[3 * p + 1], gp[3 * p + 2]);
-            }
-            for s in 0..ns {
-                p_surf_til[s] = p_gamma[s].max(p_min);
-            }
-            // (P2) viscosity from (γ̇(u^k), p̃^{k+1}).
-            let mut eta: Vec<f64> = (0..np)
-                .map(|p| eta_eval(m, fields.shear[p], new_ptil[p], eps).eta)
-                .collect();
-            if !eta_prev.is_empty() {
+        loop {
+            converged = false;
+            eta_prev.clear();
+            // The pressure history is local to each continuation level.
+            let mut p_prev_set = false;
+            for _ in 0..prm.picard_max {
+                total_iters += 1;
+                let fields = strain_fields(ops, &u);
+                let lapv = &ops.rows.lap * &u;
+                let gdv = &ops.rows.gd * &u;
+                // (P1) pressure from the frozen (u^k, p̃^k).
+                let mut rhs_f = DVector::zeros(3 * np);
                 for p in 0..np {
-                    eta[p] = prm.theta_eta * eta[p] + (1.0 - prm.theta_eta) * eta_prev[p];
+                    let d6 = &fields.d.as_slice()[6 * p..6 * p + 6];
+                    let ev = eta_eval(m, fields.shear[p], ptil[p], eps);
+                    let sh = fields.shear[p];
+                    let mut grad_eta = DVec3::ZERO;
+                    if sh > 1e-300 {
+                        let mut gs = [0.0; 3];
+                        for k in 0..3 {
+                            let gd6 = &gdv.as_slice()[18 * p + 6 * k..18 * p + 6 * k + 6];
+                            gs[k] = 2.0 * d6_dot(d6, gd6) / sh;
+                        }
+                        grad_eta = DVec3::from_array(gs) * ev.d_shear;
+                    }
+                    if ptil[p] > p_min + 0.0 && p_vals[p] > p_min {
+                        grad_eta = grad_eta + gradp[p] * ev.d_p;
+                    }
+                    let lap = DVec3::new(lapv[3 * p], lapv[3 * p + 1], lapv[3 * p + 2]);
+                    let div_flow = lap * ev.eta + d_apply(d6, grad_eta) * 2.0;
+                    let f = ld.g_eff[p] * ops.vol.rho[p] + ops.vol.grho[p] * grho_scale + div_flow;
+                    rhs_f[3 * p] = f.x;
+                    rhs_f[3 * p + 1] = f.y;
+                    rhs_f[3 * p + 2] = f.z;
+                }
+                // Dirichlet data p_Γ at the surface nodes.
+                let ds = &ops.surf_d * &u;
+                let mut weighted = DVector::zeros(ns);
+                for s in 0..ns {
+                    let d6 = &ds.as_slice()[6 * s..6 * s + 6];
+                    let shear = (2.0 * d6_dot(d6, d6)).sqrt();
+                    let ev = eta_eval(m, shear, p_surf_til[s], eps);
+                    let n = ops.surface.normals[s];
+                    let nn = 2.0 * ev.eta * d_apply(d6, n).dot(n);
+                    p_gamma[s] = prm.p_ext + ld.tide_nn[s] + nn;
+                    weighted[s] = ops.surface.solid[s] * p_gamma[s];
+                }
+                lift = ops.lift_chol.solve(&ops.lift_y.tr_mul(&weighted));
+                let grad_pb = &ops.pres.lift_grad * &lift;
+                let mut wf = DVector::zeros(3 * np);
+                for p in 0..np {
+                    for a in 0..3 {
+                        wf[3 * p + a] = ops.vol.w[p] * (rhs_f[3 * p + a] - grad_pb[3 * p + a]);
+                    }
+                }
+                pres_c = ops.a_chol.solve(&ops.pres.grad.tr_mul(&wf));
+                let pv = &ops.pres.val * &pres_c + &ops.pres.lift_val * &lift;
+                let gp = &ops.pres.grad * &pres_c + grad_pb;
+                let mut new_ptil = vec![0.0; np];
+                for p in 0..np {
+                    p_vals[p] = pv[p];
+                    new_ptil[p] = pv[p].max(p_min);
+                    gradp[p] = DVec3::new(gp[3 * p], gp[3 * p + 1], gp[3 * p + 2]);
+                }
+                for s in 0..ns {
+                    p_surf_til[s] = p_gamma[s].max(p_min);
+                }
+                // (P2) viscosity from (γ̇(u^k), p̃^{k+1}).
+                let mut eta: Vec<f64> = (0..np)
+                    .map(|p| eta_eval(m, fields.shear[p], new_ptil[p], eps).eta)
+                    .collect();
+                if !eta_prev.is_empty() {
+                    for p in 0..np {
+                        eta[p] = theta * eta[p] + (1.0 - theta) * eta_prev[p];
+                    }
+                }
+                // (P3) velocity.
+                let k = assemble_k(ops, &eta);
+                let rs = factor_range(ops, &k)?;
+                let (un, lam) = solve_range(ops, &rs, &f_load);
+                // (P4) criterion (a): velocity in K-norm, pressure in L².
+                // ‖u^{k+1} - u^k‖_K / max{‖u^{k+1}‖_K, ε_u}
+                let du_vec = &un - &u;
+                let ku_num = du_vec.dot(&(&k * &du_vec)).max(0.0).sqrt();
+                let ku_den = un.dot(&(&k * &un)).max(0.0).sqrt().max(1e-300);
+                let du = ku_num / ku_den;
+                // ‖p^{k+1} - p^k‖_{L²} / max{‖p^{k+1}‖_{L²}, ε_p}
+                let dp = {
+                    let num: f64 = (0..np)
+                        .map(|p| ops.vol.w[p] * (p_vals[p] - p_prev[p]).powi(2))
+                        .sum();
+                    let den: f64 = (0..np).map(|p| ops.vol.w[p] * p_vals[p].powi(2)).sum();
+                    // First Picard sweep: p_prev is all p_min, treat as unconverged.
+                    if p_prev_set {
+                        (num / den.max(1e-300)).sqrt()
+                    } else {
+                        f64::INFINITY
+                    }
+                };
+                let du_floor = un.norm() <= 1e-300;
+                u = un;
+                lambda = lam;
+                ptil = new_ptil;
+                p_prev = p_vals.clone();
+                p_prev_set = true;
+                eta_prev = eta;
+                last = (du.max(dp), dp);
+                if (du <= prm.tol_picard || du_floor) && dp <= prm.tol_picard {
+                    converged = true;
+                    break;
                 }
             }
-            // (P3) velocity.
-            let k = assemble_k(ops, &eta);
-            let rs = factor_range(ops, &k)?;
-            let (un, lam) = solve_range(ops, &rs, &f_load);
-            // (P4) criterion (a).
-            let du = (&un - &u).norm() / un.norm().max(1e-300);
-            let deta = if eta_prev.is_empty() {
-                f64::INFINITY
-            } else {
-                let num: f64 = (0..np)
-                    .map(|p| ops.vol.w[p] * (eta[p] - eta_prev[p]).powi(2))
-                    .sum();
-                let den: f64 = (0..np).map(|p| ops.vol.w[p] * eta[p].powi(2)).sum();
-                (num / den.max(1e-300)).sqrt()
-            };
-            let du_floor = un.norm() <= 1e-300;
-            u = un;
-            lambda = lam;
-            ptil = new_ptil;
-            eta_prev = eta;
-            last = (du.max(deta), deta);
-            if (du <= prm.tol_picard || du_floor) && deta <= prm.tol_picard {
-                converged = true;
+            if converged {
                 break;
             }
+            // §10.4.2: on the finest γ̇_ε, decrease θ_η and retry this level only.
+            // Restarting the whole continuation would repeat work that already ran.
+            if level == 0 && theta > 0.25 + 1e-12 && theta_retries < 3 {
+                theta = (0.5 * theta).max(0.25);
+                theta_retries += 1;
+                continue;
+            }
+            break;
         }
         if !converged && level == 0 {
             return Err(ScfError::rheology_not_converged(format!(
@@ -586,9 +616,11 @@ pub fn solve(
             prm.tol_momentum
         )));
     }
-    if eps_lambda > prm.tol_momentum.max(1e-3) {
+    if eps_lambda > prm.tol_momentum {
         return Err(ScfError::rigid_rank(format!(
-            "rigid-body multiplier {eps_lambda:.3e}: the load is incompatible with the rigid modes"
+            "rigid-body multiplier {eps_lambda:.3e} exceeds tol_momentum {:.1e}: \
+             the load is incompatible with the rigid modes (§2.15(b), §A.3)",
+            prm.tol_momentum
         )));
     }
     // Strong-form rotational residual f - ∇p (diagnostic of §8.7).
@@ -603,7 +635,8 @@ pub fn solve(
         if sh > 1e-300 {
             let mut gs = [0.0; 3];
             for kk in 0..3 {
-                gs[kk] = 2.0 * d6_dot(d6, &gdv.as_slice()[18 * p + 6 * kk..18 * p + 6 * kk + 6]) / sh;
+                gs[kk] =
+                    2.0 * d6_dot(d6, &gdv.as_slice()[18 * p + 6 * kk..18 * p + 6 * kk + 6]) / sh;
             }
             grad_eta = DVec3::from_array(gs) * ev.d_shear;
         }
