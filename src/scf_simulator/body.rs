@@ -304,15 +304,12 @@ mod tests {
         assert!((total - 4.0 * PI).abs() < 1e-10);
         let vs: f64 = t.vertex_solid.iter().sum();
         assert!((vs - 4.0 * PI).abs() < 1e-10);
-        assert!(t.face_neighbors.iter().all(|n| n.iter().all(|&x| x != usize::MAX)));
-        let body = Body::new(
-            Arc::new(t),
-            vec![10.0; 162],
-            1.0,
-            vec![],
-            vec![0.0; 162],
-        )
-        .unwrap();
+        assert!(
+            t.face_neighbors
+                .iter()
+                .all(|n| n.iter().all(|&x| x != usize::MAX))
+        );
+        let body = Body::new(Arc::new(t), vec![10.0; 162], 1.0, vec![], vec![0.0; 162]).unwrap();
         let mesh = body.mesh().unwrap();
         assert!(mesh.signed_volume() > 0.0);
         let v = 4.0 / 3.0 * PI * 1000.0;

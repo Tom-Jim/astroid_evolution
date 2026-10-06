@@ -138,14 +138,19 @@ fn a_vertex_at_the_center_is_not_star_shaped() {
     )
     .unwrap();
     let err = mesh
-        .radial_samples(astroid_evolution::sh_smooth::Center::Origin.resolve(&mesh).unwrap())
+        .radial_samples(
+            astroid_evolution::sh_smooth::Center::Origin
+                .resolve(&mesh)
+                .unwrap(),
+        )
         .unwrap_err();
     assert_eq!(err.kind, "GeometryInvalid");
 }
 
 #[test]
 fn too_few_samples_cannot_determine_the_fit() {
-    let err = astroid_evolution::sh_smooth::fit::fit(2, &[[0.0, 0.0, 1.0]], &[1.0], &[1.0], 1e-12).unwrap_err();
+    let err = astroid_evolution::sh_smooth::fit::fit(2, &[[0.0, 0.0, 1.0]], &[1.0], &[1.0], 1e-12)
+        .unwrap_err();
     assert_eq!(err.kind, "InvalidInput");
 }
 
@@ -208,7 +213,9 @@ fn fuse_adds_a_coarse_bulge_and_keeps_a_crater() {
         }
         sum / n - radius_about([0.0; 3], high.vertices[crater])
     };
-    let coarse = astroid_evolution::sh_smooth::Mesh::from_radial(5, |theta, _| 1.2 + 0.3 * theta.sin()).unwrap();
+    let coarse =
+        astroid_evolution::sh_smooth::Mesh::from_radial(5, |theta, _| 1.2 + 0.3 * theta.sin())
+            .unwrap();
     assert_ne!(coarse.face_count(), high.face_count());
     let out = astroid_evolution::sh_smooth::fuse(
         &high,

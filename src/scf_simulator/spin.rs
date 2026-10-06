@@ -43,13 +43,15 @@ fn number(token: &str, what: &str) -> Result<f64, ScfError> {
         .parse::<f64>()
         .ok()
         .filter(|v| v.is_finite())
-        .ok_or_else(|| ScfError::model_not_closed(format!("spin: {what} '{token}' is not a finite number")))
+        .ok_or_else(|| {
+            ScfError::model_not_closed(format!("spin: {what} '{token}' is not a finite number"))
+        })
 }
 
 fn pair(token: &str) -> Result<(f64, f64), ScfError> {
-    let (a, b) = token
-        .split_once('@')
-        .ok_or_else(|| ScfError::model_not_closed(format!("spin: '{token}' is not of the form A@B")))?;
+    let (a, b) = token.split_once('@').ok_or_else(|| {
+        ScfError::model_not_closed(format!("spin: '{token}' is not of the form A@B"))
+    })?;
     Ok((number(a, "time")?, number(b, "omega")?))
 }
 
@@ -102,7 +104,11 @@ impl SpinSchedule {
                     .map_err(|e| ScfError::io(format!("spin table {}: {e}", body.trim())))?;
                 let mut times = Vec::new();
                 let mut omegas = Vec::new();
-                for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                for line in text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                {
                     let mut it = line.split_whitespace();
                     let (t, w) = (it.next(), it.next());
                     match (t, w) {
@@ -133,10 +139,14 @@ impl SpinSchedule {
                 }
                 for &(duration, omega) in stages {
                     if !(duration.is_finite() && duration > 0.0) {
-                        return Err(ScfError::model_not_closed("spin: stage duration must be positive"));
+                        return Err(ScfError::model_not_closed(
+                            "spin: stage duration must be positive",
+                        ));
                     }
                     if !(omega.is_finite() && omega >= 0.0) {
-                        return Err(ScfError::model_not_closed("spin: omega must be non-negative"));
+                        return Err(ScfError::model_not_closed(
+                            "spin: omega must be non-negative",
+                        ));
                     }
                 }
             }
@@ -146,7 +156,9 @@ impl SpinSchedule {
                 t_end,
             } => {
                 if !(t_end.is_finite() && *t_end > 0.0) {
-                    return Err(ScfError::model_not_closed("spin: linear T must be positive"));
+                    return Err(ScfError::model_not_closed(
+                        "spin: linear T must be positive",
+                    ));
                 }
                 if !(omega0.is_finite() && rate.is_finite())
                     || *omega0 < 0.0
@@ -159,7 +171,9 @@ impl SpinSchedule {
             }
             Self::Table { times, omegas } => {
                 if times.len() < 2 || times.len() != omegas.len() {
-                    return Err(ScfError::model_not_closed("spin: a table needs at least two nodes"));
+                    return Err(ScfError::model_not_closed(
+                        "spin: a table needs at least two nodes",
+                    ));
                 }
                 if times.windows(2).any(|w| w[1] <= w[0]) || times[0] < 0.0 {
                     return Err(ScfError::model_not_closed(
@@ -167,7 +181,9 @@ impl SpinSchedule {
                     ));
                 }
                 if omegas.iter().any(|w| !w.is_finite() || *w < 0.0) {
-                    return Err(ScfError::model_not_closed("spin: omega must be non-negative"));
+                    return Err(ScfError::model_not_closed(
+                        "spin: omega must be non-negative",
+                    ));
                 }
             }
         }

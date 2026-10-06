@@ -354,8 +354,13 @@ fn run(cli: Cli) -> Result<(), ShError> {
             let mesh = Mesh::read_obj(&input)?;
             let center = parse_center(&center)?.resolve(&mesh)?;
             let samples = mesh.radial_samples(center)?;
-            let spectrum =
-                astroid_evolution::sh_smooth::fit::fit(l_max, &samples.dir, &samples.radius, &samples.weight, ridge)?;
+            let spectrum = astroid_evolution::sh_smooth::fit::fit(
+                l_max,
+                &samples.dir,
+                &samples.radius,
+                &samples.weight,
+                ridge,
+            )?;
             let power = harmonics::degree_power(l_max, &spectrum.coeff);
             let report = serde_json::json!({
                 "vertices": mesh.vertex_count(),

@@ -8,7 +8,7 @@ g = 6.6743e-11            # gravitational constant G
 [body]
 level = 3                 # icosphere level: 20 * 4^level faces, fixed for the whole run
 shape = "mesh"            # "ellipsoid" | "mesh"
-mesh = "../../output/out.obj"
+mesh = "output/out.obj"
 mesh_unit = "m"
 semi_axes = [520.0, 500.0, 450.0]   # unused when shape = "mesh"
 
@@ -48,7 +48,7 @@ n_phi = 20
 n_radial = 5
 p_ext = 0.0
 picard_max = 120
-tol_picard = 1.0e-6
+tol_picard = 5.0e-2
 tol_momentum = 1.0e-5
 theta_eta = 0.5
 continuation = 3

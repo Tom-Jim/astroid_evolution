@@ -229,7 +229,9 @@ impl Project {
         positive("gravity.g", f.gravity.g)?;
         let b = &f.body;
         if b.level > 6 {
-            return Err(ScfError::model_not_closed("body.level above 6 is not supported"));
+            return Err(ScfError::model_not_closed(
+                "body.level above 6 is not supported",
+            ));
         }
         match b.shape.as_str() {
             "ellipsoid" => {
@@ -253,36 +255,43 @@ impl Project {
         }
         non_negative("density.bulk", f.density.bulk)?;
         f.density.kernels.iter().try_for_each(|k| {
-            CauchyKernel::try_new(
-                DVec3::from_array(k.center),
-                k.weight,
-                k.sigma,
-                k.alpha,
-            )
-            .map(|_| ())
-            .map_err(ScfError::from)
+            CauchyKernel::try_new(DVec3::from_array(k.center), k.weight, k.sigma, k.alpha)
+                .map(|_| ())
+                .map_err(ScfError::from)
         })?;
         let s = &f.stokes;
         if s.l_surface == 0 || s.l_surface > 24 {
-            return Err(ScfError::model_not_closed("stokes.l_surface must lie in 1..=24"));
+            return Err(ScfError::model_not_closed(
+                "stokes.l_surface must lie in 1..=24",
+            ));
         }
         if s.l_velocity == 0 || s.l_velocity > 8 {
-            return Err(ScfError::model_not_closed("stokes.l_velocity must lie in 1..=8"));
+            return Err(ScfError::model_not_closed(
+                "stokes.l_velocity must lie in 1..=8",
+            ));
         }
         if s.k_pressure == 0 || s.k_pressure > 8 {
-            return Err(ScfError::model_not_closed("stokes.k_pressure must lie in 1..=8"));
+            return Err(ScfError::model_not_closed(
+                "stokes.k_pressure must lie in 1..=8",
+            ));
         }
         if s.n_theta < 2 || s.n_phi < 4 || s.n_radial < 2 {
-            return Err(ScfError::model_not_closed("stokes quadrature is too coarse"));
+            return Err(ScfError::model_not_closed(
+                "stokes quadrature is too coarse",
+            ));
         }
         if s.picard_max == 0 {
-            return Err(ScfError::model_not_closed("stokes.picard_max must be positive"));
+            return Err(ScfError::model_not_closed(
+                "stokes.picard_max must be positive",
+            ));
         }
         positive("stokes.tol_picard", s.tol_picard)?;
         positive("stokes.tol_momentum", s.tol_momentum)?;
         positive("stokes.rigid_sigma_min", s.rigid_sigma_min)?;
         if !(s.theta_eta.is_finite() && s.theta_eta > 0.0 && s.theta_eta <= 1.0) {
-            return Err(ScfError::model_not_closed("stokes.theta_eta must lie in (0, 1]"));
+            return Err(ScfError::model_not_closed(
+                "stokes.theta_eta must lie in (0, 1]",
+            ));
         }
         if !s.p_ext.is_finite() {
             return Err(ScfError::model_not_closed("stokes.p_ext must be finite"));
@@ -294,7 +303,9 @@ impl Project {
         let t = &f.step;
         unit_interval("step.theta_cfl", t.theta_cfl)?;
         if t.theta_cfl > 0.5 {
-            return Err(ScfError::model_not_closed("step.theta_cfl must not exceed 0.5"));
+            return Err(ScfError::model_not_closed(
+                "step.theta_cfl must not exceed 0.5",
+            ));
         }
         unit_interval("step.theta_c", t.theta_c)?;
         unit_interval("step.theta_char", t.theta_char)?;
@@ -306,7 +317,9 @@ impl Project {
             return Err(ScfError::model_not_closed("step.lambda must lie in (0, 1]"));
         }
         if t.max_steps == 0 {
-            return Err(ScfError::model_not_closed("step.max_steps must be positive"));
+            return Err(ScfError::model_not_closed(
+                "step.max_steps must be positive",
+            ));
         }
         let g = &f.geometry;
         unit_interval("geometry.c0", g.c0)?;
@@ -326,7 +339,9 @@ impl Project {
         }
         let r = &f.relief;
         if r.max_sweeps == 0 {
-            return Err(ScfError::model_not_closed("relief.max_sweeps must be positive"));
+            return Err(ScfError::model_not_closed(
+                "relief.max_sweeps must be positive",
+            ));
         }
         non_negative("relief.tol_slack", r.tol_slack)?;
         non_negative("relief.radius_anomaly", r.radius_anomaly)?;

@@ -1,18 +1,17 @@
 //! The RTFP solver: ray-traced finite-part gravity of a polyhedron with a
-//! generalized-Cauchy density. Patch geometry is built on the host. Ray
-//! intersection, chord integrals and the field reduction run on the GPU.
+//! generalized-Cauchy density. The angular integral is one fixed Lebedev–Laikov
+//! rule. Ray intersection, chord integrals and the field reduction run on the GPU.
 
 pub mod chords;
 pub mod field;
 pub mod hw_rt;
+pub mod lebedev;
 pub mod moments;
-pub mod patches;
 
 use std::f64::consts::PI;
 use std::num::NonZeroUsize;
 
 use gauss_quad::GaussLegendre;
-use rayon::prelude::*;
 
 use crate::common::density::CauchyDensity;
 use crate::common::geometry::TriMesh;
@@ -22,14 +21,13 @@ use crate::rtfp_solver::error::RtfpError;
 
 use field::Medium;
 use hw_rt::{DeviceKernel, FieldJob, HardwareMesh};
-use patches::Faces;
 
 #[cfg_attr(feature = "tier3", derive(bevy::prelude::Resource))]
 #[derive(Clone, Debug)]
 pub struct RtfpOptions {
     /// Gravitational constant.
     pub g: f64,
-    /// A surface patch is split while its edge exceeds this fraction of its distance from the point.
+    /// Kept for the field-record file. The angular integral does not use it.
     pub angular_ratio: f64,
     /// Gauss–Legendre nodes per radial panel for kernels with `α ≠ 1`.
     pub radial_nodes: usize,
@@ -39,7 +37,7 @@ impl Default for RtfpOptions {
     fn default() -> Self {
         Self {
             g: 6.674_30e-11,
-            angular_ratio: patches::DEFAULT_ANGULAR_RATIO,
+            angular_ratio: 0.06,
             radial_nodes: 12,
         }
     }
@@ -56,7 +54,6 @@ pub struct RtfpSolver {
     medium: Medium,
     /// Gauss–Legendre nodes for kernels whose `α` is not 1, and for mass moments.
     quad: Vec<[f32; 2]>,
-    faces: Faces,
     hw: HardwareMesh,
 }
 
@@ -78,7 +75,6 @@ impl RtfpSolver {
             ));
         }
         mesh.validate_solid()?;
-        let faces = Faces::new(&mesh)?;
         let hw = HardwareMesh::build(&mesh)?;
         Ok(Self {
             medium: Medium::new(&density),
@@ -86,7 +82,6 @@ impl RtfpSolver {
             options,
             mesh,
             density,
-            faces,
             hw,
         })
     }
@@ -132,7 +127,7 @@ impl RtfpSolver {
             theta: vec![0.0; n],
             solid_angle: vec![0.0; n],
         };
-        let group = (GROUP_RAYS / (self.faces.len() + 2000)).clamp(1, MAX_GROUP);
+        let group = (GROUP_RAYS / lebedev::COUNT).clamp(1, MAX_GROUP);
         let mut start = 0;
         while start < n {
             let end = (start + group).min(n);
@@ -154,16 +149,7 @@ impl RtfpSolver {
         out: &mut FieldBatch,
         offset: usize,
     ) -> Result<(), RtfpError> {
-        let leaves = patches::settle(&self.hw, &self.faces, xs, self.options.angular_ratio)?;
-        let samples: Vec<Vec<patches::Sample>> = xs
-            .par_iter()
-            .zip(&leaves)
-            .map(|(x, list)| patches::flatten(*x, list, &self.faces))
-            .collect();
-        let solid: Vec<f64> = samples
-            .iter()
-            .map(|list| list.iter().map(|s| s.weight).sum())
-            .collect();
+        let sphere = lebedev::rule();
         let inside = match role {
             PointRole::Field => self.hw.inside(xs)?,
             _ => Vec::new(),
@@ -171,28 +157,22 @@ impl RtfpSolver {
         let mut thetas = Vec::with_capacity(xs.len());
         let mut rhos = Vec::with_capacity(xs.len());
         for p in 0..xs.len() {
-            let theta = match role {
-                PointRole::SurfaceFace => 0.5,
-                PointRole::SurfaceVertex => solid[p] / (4.0 * PI),
-                PointRole::Field => f64::from(u8::from(inside[p])),
+            let (theta, solid) = match role {
+                PointRole::SurfaceFace => (0.5, 2.0 * PI),
+                PointRole::SurfaceVertex => (0.0, 0.0),
+                PointRole::Field => {
+                    let inside = u8::from(inside[p]);
+                    (f64::from(inside), f64::from(inside) * 4.0 * PI)
+                }
             };
             thetas.push(theta);
             rhos.push(self.density.rho(xs[p]));
             let i = offset + p;
             out.theta[i] = theta;
-            out.solid_angle[i] = solid[p];
+            out.solid_angle[i] = solid;
         }
-        let mut ranges = Vec::with_capacity(samples.len());
-        let mut dirs = Vec::new();
-        let mut weights = Vec::new();
-        for list in &samples {
-            let begin = dirs.len() as u32;
-            for s in list {
-                dirs.push(s.dir);
-                weights.push(s.weight);
-            }
-            ranges.push([begin, dirs.len() as u32 - begin]);
-        }
+        let count = sphere.dirs.len() as u32;
+        let ranges = vec![[0u32, count]; xs.len()];
         let kernels: Vec<DeviceKernel> = self
             .medium
             .kernels()
@@ -209,8 +189,8 @@ impl RtfpSolver {
             thetas: &thetas,
             rhos: &rhos,
             ranges: &ranges,
-            dirs: &dirs,
-            weights: &weights,
+            dirs: &sphere.dirs,
+            weights: &sphere.weights,
             bulk: self.medium.bulk(),
             kernels: &kernels,
             nodes: &self.quad,

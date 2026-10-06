@@ -3,7 +3,7 @@ using namespace metal;
 using namespace metal::raytracing;
 
 // Fused RTFP field. One threadgroup owns one sample point; each thread owns a
-// strided set of patch rays. Crossings stay in a private array, chords are
+// strided set of Lebedev rays. Crossings stay in a private array, chords are
 // paired by occupancy parity, and every density kernel is integrated on the
 // spot: the α = 1 antiderivative, or a fixed Gauss–Legendre rule otherwise.
 // The threadgroup then tree-reduces the ten field components. No atomics.
@@ -107,7 +107,7 @@ uint collect_hits(
     isect.assume_geometry_type(geometry_type::triangle);
     isect.force_opacity(forced_opacity::opaque);
     ray r;
-    r.origin = origin_u;
+    r.origin = origin_u + edge_shift(dir);
     r.direction = dir;
     r.min_distance = launch_offset;
     r.max_distance = 1.0e20f;

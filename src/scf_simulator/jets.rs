@@ -43,9 +43,7 @@ fn tables() -> &'static Tables {
             }
         }
         debug_assert_eq!(n, NC);
-        let index = |m: [u8; 3]| -> usize {
-            (0..NC).find(|&i| mono[i] == m).unwrap_or(NC)
-        };
+        let index = |m: [u8; 3]| -> usize { (0..NC).find(|&i| mono[i] == m).unwrap_or(NC) };
         let mut up = [[NC; NC]; 3];
         for axis in 0..3 {
             for i in 0..NC {

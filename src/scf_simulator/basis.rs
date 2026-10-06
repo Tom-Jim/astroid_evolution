@@ -174,10 +174,7 @@ fn poloidal_field(phi: &Jet, x0: [f64; 3]) -> [Jet; 3] {
     for a in 0..3 {
         e = e.add(&g[a].mul_x(a, x0[a]));
     }
-    let lap = g[0]
-        .deriv(0)
-        .add(&g[1].deriv(1))
-        .add(&g[2].deriv(2));
+    let lap = g[0].deriv(0).add(&g[1].deriv(1)).add(&g[2].deriv(2));
     [0, 1, 2].map(|a| e.deriv(a).sub(&lap.mul_x(a, x0[a])))
 }
 
@@ -206,7 +203,8 @@ fn pack(v: &[Jet; 3], want: Want, out: &mut PointVel) {
     if want.lap || want.gd {
         let h = [v[0].hess(), v[1].hess(), v[2].hess()];
         if want.lap {
-            out.lap.push([0, 1, 2].map(|a| h[a][0][0] + h[a][1][1] + h[a][2][2]));
+            out.lap
+                .push([0, 1, 2].map(|a| h[a][0][0] + h[a][1][1] + h[a][2][2]));
         }
         if want.gd {
             let mut g = [0.0; 18];
@@ -470,22 +468,32 @@ mod tests {
         for j in 0..lay.n_u {
             let scale = (0..3).map(|a| rows.v[(a, j)].abs()).fold(1e-30, f64::max);
             let tr = rows.d[(0, j)] + rows.d[(1, j)] + rows.d[(2, j)];
-            assert!(tr.abs() < 1e-8 * scale / 40.0 * 10.0 + 1e-12, "trace dof {j}: {tr}");
+            assert!(
+                tr.abs() < 1e-8 * scale / 40.0 * 10.0 + 1e-12,
+                "trace dof {j}: {tr}"
+            );
             // gradient by central differences of the value rows
             let gr = |a: usize, b: usize| (plus[b].v[(a, j)] - minus[b].v[(a, j)]) / (2.0 * h);
             let dxx = gr(0, 0);
             let dxy = 0.5 * (gr(0, 1) + gr(1, 0));
-            assert!((dxx - rows.d[(0, j)]).abs() < 1e-5 * scale / 40.0, "Dxx dof {j}");
-            assert!((S2 * dxy - rows.d[(3, j)]).abs() < 1e-5 * scale / 40.0, "Dxy dof {j}");
+            assert!(
+                (dxx - rows.d[(0, j)]).abs() < 1e-5 * scale / 40.0,
+                "Dxx dof {j}"
+            );
+            assert!(
+                (S2 * dxy - rows.d[(3, j)]).abs() < 1e-5 * scale / 40.0,
+                "Dxy dof {j}"
+            );
             // Laplacian
             let mut lap = [0.0; 3];
             for a in 0..3 {
                 for b in 0..3 {
-                    lap[a] += (plus[b].v[(a, j)] - 2.0 * mid.v[(a, j)] + minus[b].v[(a, j)])
-                        / (h * h);
+                    lap[a] +=
+                        (plus[b].v[(a, j)] - 2.0 * mid.v[(a, j)] + minus[b].v[(a, j)]) / (h * h);
                 }
                 assert!(
-                    (lap[a] - rows.lap[(a, j)]).abs() < 2e-4 * scale / 40.0 / 40.0 * 40.0 + 1e-6 * scale,
+                    (lap[a] - rows.lap[(a, j)]).abs()
+                        < 2e-4 * scale / 40.0 / 40.0 * 40.0 + 1e-6 * scale,
                     "Laplacian dof {j} comp {a}: {} vs {}",
                     lap[a],
                     rows.lap[(a, j)]

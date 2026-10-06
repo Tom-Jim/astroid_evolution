@@ -70,7 +70,7 @@ pub struct FieldBatch {
     pub hessian: Vec<Sym6>,
     /// Fraction used by the contact term: 1 inside, 0 outside, 1/2 on a face.
     pub theta: Vec<f64>,
-    /// Solid angle of the accepted first-hit patches: `4π` inside, `2π` on a face, the body's cone outside.
+    /// Spherical measure of the tangent cone: `4π` inside, `2π` on a face, `0` outside and at a vertex.
     pub solid_angle: Vec<f64>,
 }
 

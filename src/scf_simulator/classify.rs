@@ -166,11 +166,7 @@ pub fn classify(
     let total_mass: f64 = (0..np).map(|p| wgt[p] * rho_of(pts[p])).sum();
     let core_root = mass
         .iter()
-        .max_by(|a, b| {
-            a.1.0
-                .total_cmp(&b.1.0)
-                .then(a.1.1.cmp(&b.1.1))
-        })
+        .max_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)))
         .map(|(r, _)| *r);
     let in_core = |dsu: &mut Dsu, p: usize| -> bool {
         match core_root {
@@ -223,7 +219,11 @@ pub fn classify(
         // Collinear point sets leave the rotation about their axis undetermined: the
         // normal matrix is then singular and the core is declared degenerate.
         let eig = a_mat.clone().symmetric_eigen();
-        let lo = eig.eigenvalues.iter().copied().fold(f64::INFINITY, f64::min);
+        let lo = eig
+            .eigenvalues
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
         if lo > 1e-12 * scale {
             if let Some(ch) = nalgebra::Cholesky::new(a_mat) {
                 let s = ch.solve(&b_vec);

@@ -2,6 +2,21 @@
 using namespace metal;
 using namespace metal::raytracing;
 
+// A ray that travels exactly along an edge falls through the f32 triangulation
+// and reports no crossing. Shift its origin this far, in unit-radius
+// coordinates, perpendicular to the direction.
+#define EDGE_SHIFT 1.0e-6f
+
+inline float3 edge_shift(float3 dir) {
+    float len2 = dot(dir, dir);
+    if (!(len2 > 0.0f)) {
+        return float3(0.0f);
+    }
+    float3 axis = abs(dir.y) < 0.9f * sqrt(len2) ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    float3 side = cross(dir, axis);
+    return side * (EDGE_SHIFT * rsqrt(dot(side, side)));
+}
+
 // One thread walks one ray through the whole mesh and records every crossing in
 // order of distance. The walk restarts just past the previous hit, so a chord
 // through a non-convex body reports all of its crossings.
@@ -34,7 +49,7 @@ kernel void trace(
 
     const Ray input = rays[id];
     ray r;
-    r.origin = float3(input.origin);
+    r.origin = float3(input.origin) + edge_shift(float3(input.dir));
     r.direction = float3(input.dir);
     r.min_distance = input.t_min;
     r.max_distance = 1.0e20f;

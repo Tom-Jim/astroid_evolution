@@ -3,9 +3,8 @@
 //!
 //! The mesh is stored in `f32` in a frame centred on its bounding sphere and
 //! scaled to unit radius, so a hit distance carries a relative error of about
-//! `1e-7` of the body size whatever the length unit. Patch visibility still
-//! reads those distances back. The field and density-moment integrals stay on
-//! the device and return one ten-component record per sample point.
+//! `1e-7` of the body size whatever the length unit. Field and density-moment
+//! integrals stay on the device and accumulate in double-single arithmetic.
 
 use std::sync::{Arc, OnceLock};
 
@@ -736,6 +735,7 @@ mod metal_rt {
         }
         Ok(col)
     }
+
 }
 
 #[cfg(target_os = "macos")]
@@ -752,7 +752,7 @@ pub(crate) struct DeviceKernel {
     pub alpha: f64,
 }
 
-/// One GPU field launch. Directions and weights are the accepted patch samples.
+/// One GPU field launch. Directions are one Lebedev–Laikov rule; weights are its `ω_q`.
 pub(crate) struct FieldJob<'a> {
     pub points: &'a [DVec3],
     pub thetas: &'a [f64],

@@ -88,7 +88,13 @@ impl Snapshot {
                     .map_err(ScfError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Body::new(topo, self.radius.clone(), self.bulk, kernels, self.rho_s.clone())
+        Body::new(
+            topo,
+            self.radius.clone(),
+            self.bulk,
+            kernels,
+            self.rho_s.clone(),
+        )
     }
 }
 
@@ -101,8 +107,8 @@ pub fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<(), ScfError> {
 pub fn read_snapshot(path: &Path) -> Result<Snapshot, ScfError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| ScfError::io(format!("{}: {e}", path.display())))?;
-    let snap: Snapshot =
-        serde_json::from_str(&text).map_err(|e| ScfError::io(format!("{}: {e}", path.display())))?;
+    let snap: Snapshot = serde_json::from_str(&text)
+        .map_err(|e| ScfError::io(format!("{}: {e}", path.display())))?;
     if snap.format != FORMAT {
         return Err(ScfError::io(format!(
             "{} is a '{}' container; expected '{FORMAT}'",

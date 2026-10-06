@@ -111,8 +111,9 @@ impl SurfaceFit {
                 gram[(i, i)] += 1.0e-12 * scale * (1.0 + (l * (l + 1)) as f64);
             }
         }
-        let chol = Cholesky::new(gram)
-            .ok_or_else(|| ScfError::geometry("spherical-harmonic normal equations are singular"))?;
+        let chol = Cholesky::new(gram).ok_or_else(|| {
+            ScfError::geometry("spherical-harmonic normal equations are singular")
+        })?;
         let coeff = chol.solve(&rhs).iter().copied().collect();
         Ok(Self { l_max, coeff })
     }
@@ -174,14 +175,22 @@ mod tests {
         let golden = PI * (3.0 - 5.0_f64.sqrt());
         let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
         let r = (1.0 - z * z).sqrt();
-        DVec3::new(r * (golden * i as f64).cos(), r * (golden * i as f64).sin(), z)
+        DVec3::new(
+            r * (golden * i as f64).cos(),
+            r * (golden * i as f64).sin(),
+            z,
+        )
     }
 
     #[test]
     fn jets_reproduce_the_scalar_recursion_and_its_gradient() {
         let l_max = 5;
         let w = point(7, 31);
-        let x = [Jet::var(0, w.x, 3), Jet::var(1, w.y, 3), Jet::var(2, w.z, 3)];
+        let x = [
+            Jet::var(0, w.x, 3),
+            Jet::var(1, w.y, 3),
+            Jet::var(2, w.z, 3),
+        ];
         let jets = sh_jets(l_max, &x);
         let plain = sh_all(l_max, w.to_array());
         let h = 1e-6;
@@ -196,7 +205,10 @@ mod tests {
             };
             for axis in 0..3 {
                 let fd = (shifted(axis, h) - shifted(axis, -h)) / (2.0 * h);
-                assert!((jets[k].grad()[axis] - fd).abs() < 1e-6, "gradient {k} {axis}");
+                assert!(
+                    (jets[k].grad()[axis] - fd).abs() < 1e-6,
+                    "gradient {k} {axis}"
+                );
             }
         }
     }

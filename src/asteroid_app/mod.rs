@@ -1,61 +1,45 @@
-//! Tier 3 viewer. Render and playback systems only read the physics components.
+//! Tier 3 viewer: shows the original model, and on Space fuses it live with the Tier 2
+//! evolution (`pipeline`). Render systems only read the pipeline output.
 
-pub mod components;
-pub mod driver;
-pub mod events;
-pub mod playback;
+pub mod pipeline;
 pub mod render;
 pub mod resources;
 pub mod ui;
 
+use std::sync::Arc;
+
+use bevy::pbr::wireframe::WireframePlugin;
 use bevy::prelude::*;
+use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
-use crate::asteroid_app::events::ParamPatch;
-use crate::asteroid_app::render::surface_mesh::{ensure_surface_view, sync_wireframe};
-use crate::asteroid_app::render::vector_overlay::draw_vectors;
-use crate::asteroid_app::render::{sync_surface_mesh, update_field_colors};
-use crate::asteroid_app::resources::{OrbitCamera, StepControl, StepPhase, ViewerConfig};
-use crate::asteroid_app::ui::camera::{orbit_camera, spawn_camera};
-use crate::asteroid_app::ui::diagnostics_view::{refresh_diagnostics, spawn_diagnostics};
-use crate::asteroid_app::ui::timeline::timeline_keys;
-
-#[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
-pub struct PublishBody;
+use crate::asteroid_app::resources::{AppConfig, Evolution, Scene};
+use crate::scf_simulator::params::Project;
 
 pub struct AsteroidPlugin {
+    pub config: AppConfig,
+    /// `false` loads the original model without any rendering (tests).
     pub windowed: bool,
 }
 
 impl Plugin for AsteroidPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ViewerConfig>()
-            .init_resource::<OrbitCamera>()
-            .init_resource::<StepControl>()
-            .init_resource::<StepPhase>()
-            .add_message::<ParamPatch>()
-            .configure_sets(Startup, PublishBody);
+        app.insert_resource(self.config.clone())
+            .init_resource::<Evolution>()
+            .add_systems(Startup, load_scene);
         if self.windowed {
-            app.add_plugins(bevy::pbr::wireframe::WireframePlugin::default())
-                .add_systems(
-                    Startup,
-                    (
-                        spawn_camera,
-                        spawn_diagnostics,
-                        ensure_surface_view.after(PublishBody),
-                    ),
-                )
+            app.add_plugins((PanOrbitCameraPlugin, WireframePlugin::default()))
+                .add_systems(Startup, ui::spawn_scene.after(load_scene))
                 .add_systems(
                     Update,
-                    (
-                        orbit_camera,
-                        timeline_keys,
-                        refresh_diagnostics,
-                        sync_surface_mesh,
-                        update_field_colors,
-                        sync_wireframe,
-                        draw_vectors,
-                    ),
+                    (ui::control_keys, ui::poll_worker, ui::refresh_hud).chain(),
                 );
         }
     }
+}
+
+fn load_scene(mut commands: Commands, config: Res<AppConfig>) {
+    let project = Project::parse(&config.project_text, config.project_dir.clone())
+        .unwrap_or_else(|e| panic!("project: {e}"));
+    let original = pipeline::load_original(&project).unwrap_or_else(|e| panic!("model: {e}"));
+    commands.insert_resource(Scene::new(Arc::new(original)));
 }

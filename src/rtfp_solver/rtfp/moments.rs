@@ -1,10 +1,10 @@
 //! Mass, centroid and inertia of the whole density (bulk plus every Cauchy kernel).
 //!
-//! Rays leave the polyhedron's volume centroid through the same face-partition
-//! patches as the field. Occupied intervals and the density quadrature run on
-//! the GPU. The body need not be star-shaped about the centroid.
+//! Rays leave the polyhedron's volume centroid on the same Lebedev–Laikov rule
+//! as the field. Occupied intervals and the density quadrature run on the GPU.
+//! The body need not be star-shaped about the centroid.
 
-use super::{RtfpSolver, hw_rt::DeviceKernel, patches};
+use super::{RtfpSolver, hw_rt::DeviceKernel, lebedev};
 use crate::common::math::DVec3;
 use crate::rtfp_solver::api::VolumeIntegrals;
 use crate::rtfp_solver::error::RtfpError;
@@ -25,12 +25,7 @@ impl RtfpSolver {
             return Ok(uniform_integrals(&self.mesh, self.density.bulk));
         }
         let origin = geometric.centroid;
-        let leaves = patches::settle(&self.hw, &self.faces, &[origin], self.options.angular_ratio)?
-            .pop()
-            .unwrap_or_default();
-        let samples = patches::flatten(origin, &leaves, &self.faces);
-        let dirs: Vec<DVec3> = samples.iter().map(|s| s.dir).collect();
-        let weights: Vec<f64> = samples.iter().map(|s| s.weight).collect();
+        let sphere = lebedev::rule();
         let kernels: Vec<DeviceKernel> = self
             .medium
             .kernels()
@@ -51,8 +46,8 @@ impl RtfpSolver {
                 .fold(0.0_f64, f64::max);
         let total = self.hw.integrate_moments(
             origin,
-            &dirs,
-            &weights,
+            &sphere.dirs,
+            &sphere.weights,
             self.medium.bulk(),
             &kernels,
             &self.quad,

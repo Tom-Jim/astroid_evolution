@@ -109,7 +109,11 @@ mod tests {
         assert!((total - 4.0 * PI).abs() < 1e-12);
         let zz: f64 = d.iter().zip(&w).map(|(d, w)| w * d.z * d.z).sum();
         assert!((zz - 4.0 * PI / 3.0).abs() < 1e-12);
-        let xxyy: f64 = d.iter().zip(&w).map(|(d, w)| w * d.x * d.x * d.y * d.y).sum();
+        let xxyy: f64 = d
+            .iter()
+            .zip(&w)
+            .map(|(d, w)| w * d.x * d.x * d.y * d.y)
+            .sum();
         assert!((xxyy - 4.0 * PI / 15.0).abs() < 1e-12);
         let odd: f64 = d.iter().zip(&w).map(|(d, w)| w * d.x * d.y * d.z).sum();
         assert!(odd.abs() < 1e-12);

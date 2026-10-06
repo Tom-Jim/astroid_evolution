@@ -5,7 +5,9 @@ use clap::{Parser, Subcommand};
 
 use astroid_evolution::rheo_friction::RheoGpu;
 use astroid_evolution::scf_simulator::error::ScfError;
-use astroid_evolution::scf_simulator::evolve::{self, RunOptions, State, StepRecord, compose_frame};
+use astroid_evolution::scf_simulator::evolve::{
+    self, RunOptions, State, StepRecord, compose_frame,
+};
 use astroid_evolution::scf_simulator::forward::Forward;
 use astroid_evolution::scf_simulator::frame::{self, departure};
 use astroid_evolution::scf_simulator::io::{
@@ -146,7 +148,9 @@ fn state_from(snap: &Snapshot) -> Result<State, ScfError> {
         step: snap.step,
         omega: snap.omega,
         frame_rotation: snap.frame_rotation,
-        frame_translation: astroid_evolution::common::math::DVec3::from_array(snap.frame_translation),
+        frame_translation: astroid_evolution::common::math::DVec3::from_array(
+            snap.frame_translation,
+        ),
         velocity: snap.velocity.clone(),
     })
 }
@@ -253,7 +257,10 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                     s.max_displacement
                 );
             }
-            println!("frame: applied={} angle={:.3e} deg", frep.applied, frep.angle_deg);
+            println!(
+                "frame: applied={} angle={:.3e} deg",
+                frep.applied, frep.angle_deg
+            );
             let mut next = state;
             next.body = body;
             next.omega = omega;
@@ -275,7 +282,11 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let (body, rep, _) = frame::realign(&state.body, None, p.g, &p.geometry, true)?;
             println!(
                 "realign: passes={} angle={:.4e} deg  dM/M={:.2e} dV/V={:.2e} max dR/R={:.2e}",
-                rep.passes, rep.angle_deg, rep.mass_change, rep.volume_change, rep.max_radius_change
+                rep.passes,
+                rep.angle_deg,
+                rep.mass_change,
+                rep.volume_change,
+                rep.max_radius_change
             );
             println!(
                 "  before: centroid={:.2e} offdiag={:.2e} order={:.2e}\n  after:  centroid={:.2e} offdiag={:.2e} order={:.2e}",
@@ -332,7 +343,11 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 state.body = body;
                 fwd = f;
             }
-            let dep = departure(&fwd.moments, state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64, p.geometry.eps_deg);
+            let dep = departure(
+                &fwd.moments,
+                state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64,
+                p.geometry.eps_deg,
+            );
             println!(
                 "start: t={:.5e} mass={:.6e} kg  frame departure centroid={:.1e} offdiag={:.1e}",
                 state.t, fwd.moments.mass, dep.centroid, dep.off_diagonal
@@ -359,11 +374,18 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             std::fs::write(&log_path, &log)
                 .map_err(|e| ScfError::io(format!("{}: {e}", log_path.display())))?;
             let result = result?;
-            write_snapshot(&out_dir.join("final.json"), &snapshot_of(&result.state, level))?;
+            write_snapshot(
+                &out_dir.join("final.json"),
+                &snapshot_of(&result.state, level),
+            )?;
             write_obj(&out_dir.join("final.obj"), &result.state.body)?;
             println!(
                 "{}: t={:.6e} steps={} -> {}",
-                if result.complete { "complete" } else { "stopped" },
+                if result.complete {
+                    "complete"
+                } else {
+                    "stopped"
+                },
                 result.state.t,
                 result.records.len(),
                 out_dir.display()
@@ -425,10 +447,12 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 },
                 "rho_s_total": rho_total,
             });
-            let text = serde_json::to_string_pretty(&report).map_err(|e| ScfError::io(e.to_string()))?;
+            let text =
+                serde_json::to_string_pretty(&report).map_err(|e| ScfError::io(e.to_string()))?;
             println!("{text}");
             if let Some(o) = out {
-                std::fs::write(&o, text).map_err(|e| ScfError::io(format!("{}: {e}", o.display())))?;
+                std::fs::write(&o, text)
+                    .map_err(|e| ScfError::io(format!("{}: {e}", o.display())))?;
             }
         }
         Command::Export {

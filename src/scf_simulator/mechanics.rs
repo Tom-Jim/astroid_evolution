@@ -91,7 +91,11 @@ pub fn evaluate(
     guess: Option<&[f64]>,
 ) -> Result<Mechanics, ScfError> {
     let tm = std::time::Instant::now();
-    let lap = |what: &str| if std::env::var_os("SCF_TIMING").is_some() { eprintln!("  [{:>8.3}s] {what}", tm.elapsed().as_secs_f64()); };
+    let lap = |what: &str| {
+        if std::env::var_os("SCF_TIMING").is_some() {
+            eprintln!("  [{:>8.3}s] {what}", tm.elapsed().as_secs_f64());
+        }
+    };
     let topo = body.topo.clone();
     let density = body.density()?;
     let material = &project.material;
@@ -136,7 +140,12 @@ pub fn evaluate(
         .zip(&centres)
         .map(|(g, x)| effective_gravity(*g, *x, omega))
         .collect();
-    let hess_w: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(|h| hessian_w(*h, omega)).collect();
+    let hess_w: Vec<[f64; 6]> = fwd
+        .face
+        .hess_u
+        .iter()
+        .map(|h| hessian_w(*h, omega))
+        .collect();
     let tide_nn: Vec<f64> = hess_w
         .iter()
         .zip(&ops.surface.normals)
