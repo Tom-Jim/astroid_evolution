@@ -280,9 +280,10 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), Commo
         if share_edge(mesh.faces[lo], mesh.faces[hi]) {
             return Ok(());
         }
-        if triangles_intersect(mesh.triangle(lo), mesh.triangle(hi), eps) {
+        if let Some(hit) = intersection_gap(mesh.triangle(lo), mesh.triangle(hi), eps) {
             return Err(CommonError::model_not_closed(format!(
-                "triangles {lo} and {hi} intersect"
+                "triangles {lo} and {hi} intersect (gap {:.4} m)",
+                hit.gap
             )));
         }
         Ok(())
@@ -307,16 +308,26 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), Commo
 }
 
 fn share_edge(a: [u32; 3], b: [u32; 3]) -> bool {
+    shared_vertex_count(a, b) >= 2
+}
+
+fn shared_vertex_count(a: [u32; 3], b: [u32; 3]) -> usize {
     let mut shared = 0;
     for vertex in a {
         if b.contains(&vertex) {
             shared += 1;
         }
     }
-    shared >= 2
+    shared
 }
 
-fn triangles_intersect(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
+struct InteriorHit {
+    gap: f64,
+}
+
+/// Distance from an interior intersection point to the triangle boundary, in metres.
+/// `None` when the triangles do not meet in their interiors.
+fn intersection_gap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let na = (a[1] - a[0]).cross(a[2] - a[0]);
     let nb = (b[1] - b[0]).cross(b[2] - b[0]);
     let da = [0, 1, 2].map(|i| na.dot(b[i] - a[0]));
@@ -326,28 +337,33 @@ fn triangles_intersect(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
     let a_coplanar = da.iter().all(|d| d.abs() <= 1e-9 * a_scale);
     let b_coplanar = db.iter().all(|d| d.abs() <= 1e-9 * b_scale);
     if a_coplanar && b_coplanar {
-        return coplanar_overlap(a, b, eps);
+        return coplanar_overlap(a, b, eps).then_some(InteriorHit { gap: 0.0 });
     }
     if da.iter().all(|d| *d > eps) || da.iter().all(|d| *d < -eps) {
-        return false;
+        return None;
     }
     if db.iter().all(|d| *d > eps) || db.iter().all(|d| *d < -eps) {
-        return false;
+        return None;
     }
+    let mut best: Option<InteriorHit> = None;
     for edge in [[a[0], a[1]], [a[1], a[2]], [a[2], a[0]]] {
-        if segment_hits_interior(edge[0], edge[1], b, eps) {
-            return true;
+        if let Some(hit) = segment_interior_gap(edge[0], edge[1], b, eps) {
+            if best.as_ref().is_none_or(|kept| hit.gap < kept.gap) {
+                best = Some(hit);
+            }
         }
     }
     for edge in [[b[0], b[1]], [b[1], b[2]], [b[2], b[0]]] {
-        if segment_hits_interior(edge[0], edge[1], a, eps) {
-            return true;
+        if let Some(hit) = segment_interior_gap(edge[0], edge[1], a, eps) {
+            if best.as_ref().is_none_or(|kept| hit.gap < kept.gap) {
+                best = Some(hit);
+            }
         }
     }
-    false
+    best
 }
 
-fn segment_hits_interior(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> bool {
+fn segment_interior_gap(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let dir = q - p;
     let e1 = tri[1] - tri[0];
     let e2 = tri[2] - tri[0];
@@ -355,7 +371,7 @@ fn segment_hits_interior(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> bool 
     let det = e1.dot(pv);
     let scale = e1.length() * e2.length() * dir.length();
     if scale == 0.0 || det.abs() <= 1e-12 * scale {
-        return false;
+        return None;
     }
     let inv = 1.0 / det;
     let tvec = p - tri[0];
@@ -364,7 +380,27 @@ fn segment_hits_interior(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> bool 
     let v = dir.dot(qv) * inv;
     let t = e2.dot(qv) * inv;
     let margin = (eps / scale.max(eps)).clamp(1e-8, 1e-3);
-    t > margin && t < 1.0 - margin && u > margin && v > margin && u + v < 1.0 - margin
+    if t > margin && t < 1.0 - margin && u > margin && v > margin && u + v < 1.0 - margin {
+        let point = p + dir * t;
+        Some(InteriorHit {
+            gap: distance_to_boundary(point, tri),
+        })
+    } else {
+        None
+    }
+}
+
+fn distance_to_boundary(point: DVec3, tri: [DVec3; 3]) -> f64 {
+    let mut gap = f64::MAX;
+    for edge in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
+        let side = edge[1] - edge[0];
+        let len = side.length();
+        if len == 0.0 {
+            continue;
+        }
+        gap = gap.min((point - edge[0]).cross(side).length() / len);
+    }
+    gap
 }
 
 fn coplanar_overlap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
@@ -640,10 +676,254 @@ fn ray_hit(origin: DVec3, dir: DVec3, tri: [DVec3; 3], eps: f64) -> RayClass {
     }
 }
 
+/// How far radial-cone alignment moved the imported vertices.
+#[derive(Clone, Copy, Debug)]
+pub struct RadialAlignReport {
+    /// Longest tangential displacement, in the same units as the mesh.
+    pub max_offset: f64,
+    /// Force passes that were applied. Zero when no cones overlapped.
+    pub passes: usize,
+}
+
+/// Separate radial cones of triangles that share one vertex and no edge.
+///
+/// The origin is the coordinate origin. Vertices that sit in a crossed pair are
+/// drawn toward their neighbours, keeping radius, vertex count and face count.
+/// Afterwards a positive radius field on these directions is an embedded
+/// polyhedron, which is what §10.4.4 step 8b resampling requires. A convex mesh
+/// is left unchanged.
+pub fn align_radial_cones(
+    vertices: &mut [DVec3],
+    faces: &[[u32; 3]],
+) -> Result<RadialAlignReport, CommonError> {
+    for face in faces {
+        if face.iter().any(|&i| i as usize >= vertices.len()) {
+            return Err(CommonError::model_not_closed(
+                "mesh face index is outside the vertex array",
+            ));
+        }
+    }
+    let n = vertices.len();
+    let mut incident: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (face, tri) in faces.iter().enumerate() {
+        for vertex in tri {
+            incident[*vertex as usize].push(face);
+        }
+    }
+    let original = vertices.to_vec();
+    let mut passes = 0usize;
+    let mut bad = usize::MAX;
+    for _ in 0..120 {
+        let found = relax_crossed_vertices(vertices, faces, &incident);
+        bad = found;
+        if bad == 0 {
+            break;
+        }
+        passes += 1;
+    }
+    let max_offset = vertices
+        .iter()
+        .zip(&original)
+        .map(|(now, was)| (*now - *was).length())
+        .fold(0.0, f64::max);
+    if bad > 0 {
+        return Err(CommonError::model_not_closed(format!(
+            "radial cones still overlap on {bad} face pairs after alignment (max offset {max_offset:.3} m)"
+        )));
+    }
+    Ok(RadialAlignReport { max_offset, passes })
+}
+
+/// Pull vertices of overlapping cones toward their neighbours. A global push
+/// fights itself; this only moves vertices that sit in a crossed pair.
+fn relax_crossed_vertices(
+    vertices: &mut [DVec3],
+    faces: &[[u32; 3]],
+    incident: &[Vec<usize>],
+) -> usize {
+    let mut dir: Vec<DVec3> = vertices
+        .iter()
+        .map(|v| v.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0)))
+        .collect();
+    let radius: Vec<f64> = vertices.iter().map(|v| v.length()).collect();
+    let mut bad_vertex = vec![false; vertices.len()];
+    let mut bad = 0usize;
+    for (s, faces_at) in incident.iter().enumerate() {
+        if faces_at.len() < 2 {
+            continue;
+        }
+        let sd = dir[s];
+        let tmp = if sd.x.abs() < 0.9 {
+            DVec3::new(1.0, 0.0, 0.0)
+        } else {
+            DVec3::new(0.0, 1.0, 0.0)
+        };
+        let Some(e1) = sd.cross(tmp).try_normalize() else {
+            continue;
+        };
+        let Some(e2) = sd.cross(e1).try_normalize() else {
+            continue;
+        };
+        for i in 0..faces_at.len() {
+            for j in (i + 1)..faces_at.len() {
+                let fa = faces[faces_at[i]];
+                let fb = faces[faces_at[j]];
+                if shared_vertex_count(fa, fb) != 1 {
+                    continue;
+                }
+                let mut crossed = false;
+                for e in 0..3 {
+                    let a = tangent_of(dir[fa[e] as usize], e1, e2);
+                    let b = tangent_of(dir[fa[(e + 1) % 3] as usize], e1, e2);
+                    for g in 0..3 {
+                        let c = tangent_of(dir[fb[g] as usize], e1, e2);
+                        let d = tangent_of(dir[fb[(g + 1) % 3] as usize], e1, e2);
+                        if segments_cross_2d(a, b, c, d) {
+                            crossed = true;
+                        }
+                    }
+                }
+                if crossed {
+                    bad += 1;
+                    for v in fa.into_iter().chain(fb) {
+                        bad_vertex[v as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    if bad == 0 {
+        return 0;
+    }
+    let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); vertices.len()];
+    for face in faces {
+        for e in 0..3 {
+            let a = face[e] as usize;
+            let b = face[(e + 1) % 3] as usize;
+            if !neighbors[a].contains(&b) {
+                neighbors[a].push(b);
+            }
+            if !neighbors[b].contains(&a) {
+                neighbors[b].push(a);
+            }
+        }
+    }
+    const KEEP: f64 = 0.8;
+    for i in 0..vertices.len() {
+        if !bad_vertex[i] || neighbors[i].is_empty() {
+            continue;
+        }
+        let mut acc = DVec3::ZERO;
+        for &nb in &neighbors[i] {
+            acc = acc + dir[nb];
+        }
+        let Some(mean) = (acc * (1.0 / neighbors[i].len() as f64)).try_normalize() else {
+            continue;
+        };
+        let Some(next) = (dir[i] * KEEP + mean * (1.0 - KEEP)).try_normalize() else {
+            continue;
+        };
+        dir[i] = next;
+        vertices[i] = next * radius[i];
+    }
+    bad
+}
+
+fn tangent_of(dir: DVec3, e1: DVec3, e2: DVec3) -> (f64, f64) {
+    (dir.dot(e1), dir.dot(e2))
+}
+
+fn segments_cross_2d(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    let ab_c = orient2(a, b, c);
+    let ab_d = orient2(a, b, d);
+    let cd_a = orient2(c, d, a);
+    let cd_b = orient2(c, d, b);
+    ab_c * ab_d < 0.0 && cd_a * cd_b < 0.0
+}
+
+fn orient2(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
 #[cfg(test)]
 mod solid_rules {
     use super::TriMesh;
     use crate::common::math::DVec3;
+
+    #[test]
+    fn a_convex_mesh_needs_no_radial_alignment() {
+        let cube = TriMesh::unit_cube();
+        let mut vertices = cube.vertices.clone();
+        let report = super::align_radial_cones(&mut vertices, &cube.faces).unwrap();
+        assert_eq!(report.passes, 0);
+        assert!(report.max_offset < 1e-12);
+    }
+
+    /// `output/out.obj` is a closed mesh whose radial cones overlap, so a later
+    /// radius resample self-intersects. Alignment must make every positive radius
+    /// field on those directions an embedded polyhedron. Release only: the mesh
+    /// has ~2e5 faces.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn radial_alignment_makes_equal_radii_intersection_free() {
+        let path = std::path::Path::new("output/out.obj");
+        if !path.exists() {
+            return;
+        }
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut vertices = Vec::new();
+        let mut faces = Vec::new();
+        for line in text.lines() {
+            let mut parts = line.split_whitespace();
+            match parts.next() {
+                Some("v") => {
+                    let x: f64 = parts.next().unwrap().parse().unwrap();
+                    let y: f64 = parts.next().unwrap().parse().unwrap();
+                    let z: f64 = parts.next().unwrap().parse().unwrap();
+                    vertices.push(DVec3::new(x, y, z));
+                }
+                Some("f") => {
+                    let ids: Vec<u32> = parts
+                        .map(|token| token.split('/').next().unwrap().parse::<i64>().unwrap())
+                        .map(|id| (id - 1) as u32)
+                        .collect();
+                    if ids.len() == 3 {
+                        faces.push([ids[0], ids[1], ids[2]]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let n = vertices.len();
+        let origin =
+            vertices.iter().copied().fold(DVec3::ZERO, |acc, v| acc + v) * (1.0 / n as f64);
+        for v in &mut vertices {
+            *v = *v - origin;
+        }
+        let before = TriMesh::try_new(vertices.clone(), faces.clone())
+            .expect("centred import")
+            .signed_volume();
+        let report = super::align_radial_cones(&mut vertices, &faces).unwrap();
+        let after = TriMesh::try_new(vertices.clone(), faces.clone())
+            .expect("aligned mesh")
+            .signed_volume();
+        let mean_r = vertices.iter().map(|v| v.length()).sum::<f64>() / n as f64;
+        let sphere: Vec<DVec3> = vertices
+            .iter()
+            .map(|v| v.try_normalize().unwrap() * mean_r)
+            .collect();
+        TriMesh::try_new(sphere, faces).unwrap_or_else(|err| {
+            panic!("equal radius after alignment: {err}");
+        });
+        eprintln!(
+            "radial align passes {} max offset {:.4} m volume {:.6}",
+            report.passes,
+            report.max_offset,
+            after / before
+        );
+        assert!(report.max_offset < 20.0, "{}", report.max_offset);
+        assert!((after - before).abs() / before < 0.01, "{}", after / before);
+    }
 
     #[test]
     fn reference_solids_are_closed() {

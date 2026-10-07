@@ -14,19 +14,24 @@
 //!      |d_i| ≤ Δ  (mobile only)                                   (trust region)
 //! ```
 //!
-//! `n̂_f(d)` is the first-order expansion of the face normal. The nonlinear acceptance test
-//! (valid mesh, mass residual) belongs to the caller, which also shrinks `Δ` on failure.
+//! `n̂_f(d)` is the first-order expansion of the face normal. Those frames are the
+//! double-single Metal kernel; a device or kernel failure is returned, not replaced
+//! by a CPU evaluation. The nonlinear acceptance test (valid mesh, mass residual)
+//! belongs to the caller, which also shrinks `Δ` on a geometry failure.
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
     DefaultSettingsBuilder, DefaultSolver, IPSolver, SolverStatus, SupportedConeT,
 };
 
+use rayon::prelude::*;
+
 use crate::common::density::CauchyDensity;
 use crate::common::math::DVec3;
 
 use super::body::Body;
 use super::error::ScfError;
+use super::socp_gpu::{FaceFrame, face_frames};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -81,37 +86,62 @@ pub struct SocpOutput {
 pub fn mass_jacobian(body: &Body, density: &CauchyDensity) -> Vec<f64> {
     let p = body.positions();
     let geo = body.face_geometry();
-    let mut j = vec![0.0; body.topo.n_vertices()];
-    for (f, t) in body.topo.faces.iter().enumerate() {
-        let [a, b, c] = t.map(|x| x as usize);
-        let (_, n, area) = geo[f];
-        let mid = |u: usize, v: usize| density.rho((p[u] + p[v]) * 0.5);
-        let (mab, mac, mbc) = (mid(a, b), mid(a, c), mid(b, c));
-        let share = area / 3.0;
-        let flux = [
-            share * 0.5 * (mab + mac),
-            share * 0.5 * (mab + mbc),
-            share * 0.5 * (mac + mbc),
-        ];
-        for (k, v) in [a, b, c].into_iter().enumerate() {
-            j[v] += body.topo.dirs[v].dot(n) * flux[k];
-        }
-    }
-    j
+    let faces = &body.topo.faces;
+    let dirs = &body.topo.dirs;
+    let nv = body.topo.n_vertices();
+    let nf = faces.len();
+    let nthreads = rayon::current_num_threads().max(1);
+    let partial: Vec<Vec<f64>> = (0..nthreads)
+        .into_par_iter()
+        .map(|thread| {
+            let mut j = vec![0.0; nv];
+            let mut f = thread;
+            while f < nf {
+                let [a, b, c] = faces[f].map(|x| x as usize);
+                let (_, n, area) = geo[f];
+                let rho = |u: usize, v: usize| density.rho((p[u] + p[v]) * 0.5);
+                let (mab, mac, mbc) = (rho(a, b), rho(a, c), rho(b, c));
+                let share = area / 3.0;
+                let flux = [
+                    share * 0.5 * (mab + mac),
+                    share * 0.5 * (mab + mbc),
+                    share * 0.5 * (mac + mbc),
+                ];
+                for (k, v) in [a, b, c].into_iter().enumerate() {
+                    j[v] += dirs[v].dot(n) * flux[k];
+                }
+                f += nthreads;
+            }
+            j
+        })
+        .collect();
+    partial
+        .into_iter()
+        .reduce(|mut acc, part| {
+            for (a, b) in acc.iter_mut().zip(part) {
+                *a += b;
+            }
+            acc
+        })
+        .unwrap_or_else(|| vec![0.0; nv])
 }
 
-/// `N_j = (I − n nᵀ)(∂A/∂R_j)/|A|` for the three vertices of the face (columns of `∂n̂/∂R`).
-pub fn normal_sensitivity(pa: DVec3, pb: DVec3, pc: DVec3, w: [DVec3; 3]) -> (DVec3, [DVec3; 3]) {
-    let area_vec = (pb - pa).cross(pc - pa);
-    let len = area_vec.length();
-    let n = area_vec * (1.0 / len);
-    let da = [
-        w[0].cross(pb - pc),
-        w[1].cross(pc - pa),
-        w[2].cross(pa - pb),
-    ];
-    let proj = |v: DVec3| (v - n * v.dot(n)) * (1.0 / len);
-    (n, [proj(da[0]), proj(da[1]), proj(da[2])])
+fn require_frame(frames: &[FaceFrame], f: usize) -> Result<(), ScfError> {
+    let frame = &frames[f];
+    if !frame.n.is_finite() || (frame.n.length() - 1.0).abs() > 1.0e-4 {
+        return Err(ScfError::gpu(format!(
+            "face {f}: double-single normal is not a finite unit vector (|n| = {})",
+            frame.n.length()
+        )));
+    }
+    for (k, column) in frame.nj.iter().enumerate() {
+        if !column.is_finite() {
+            return Err(ScfError::gpu(format!(
+                "face {f}: double-single normal sensitivity column {k} is not finite"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -151,6 +181,13 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     }
     let p = body.positions();
     let ps: Vec<DVec3> = p.iter().map(|x| *x * (1.0 / r0)).collect();
+    let frames = face_frames(&ps, &topo.dirs, &topo.faces).map_err(ScfError::gpu)?;
+    if frames.len() != nf {
+        return Err(ScfError::gpu(format!(
+            "face-frame kernel returned {} frames for {nf} faces",
+            frames.len()
+        )));
+    }
     // Known (scaled) displacement of non-mobile vertices.
     let known: Vec<f64> = (0..nv)
         .map(|i| match inp.kind[i] {
@@ -161,13 +198,14 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let mut t_col = vec![usize::MAX; nf];
     let mut nt = 0usize;
     for f in 0..nf {
+        if !inp.slope_row[f] {
+            continue;
+        }
+        require_frame(&frames, f)?;
         let gnorm = inp.gravity[f].length();
-        let overhang_ok = gnorm > 1e-14 && {
-            let (_, n, _) = body.face_geometry()[f];
-            n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n
-        };
-        if inp.slope_row[f]
-            && overhang_ok
+        let overhang_ok =
+            gnorm > 1e-14 && frames[f].n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n;
+        if overhang_ok
             && topo.faces[f]
                 .iter()
                 .any(|v| inp.kind[*v as usize] == Kind::Mobile)
@@ -245,8 +283,8 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         if !tri.iter().any(|v| col_of[*v] != usize::MAX) {
             continue;
         }
-        let w = tri.map(|v| topo.dirs[v]);
-        let (n, nj) = normal_sensitivity(ps[tri[0]], ps[tri[1]], ps[tri[2]], w);
+        require_frame(&frames, f)?;
+        let (n, nj) = (frames[f].n, frames[f].nj);
         // Constant part of n̂(d) from the known displacements.
         let mut n0 = n;
         for k in 0..3 {
@@ -435,5 +473,139 @@ mod tests {
         assert!(after < before, "{before} -> {after}");
         let dm: f64 = (0..nv).map(|i| jac[i] * out.d[i]).sum();
         assert!(dm.abs() < 1e-6 * 4.0e3 * 3.0, "mass change {dm}");
+    }
+
+    /// f64 oracle for the face frame. Production assembly does not call this.
+    fn reference_frame(pa: DVec3, pb: DVec3, pc: DVec3, w: [DVec3; 3]) -> (DVec3, [DVec3; 3]) {
+        let area_vec = (pb - pa).cross(pc - pa);
+        let len = area_vec.length();
+        let n = area_vec * (1.0 / len);
+        let da = [
+            w[0].cross(pb - pc),
+            w[1].cross(pc - pa),
+            w[2].cross(pa - pb),
+        ];
+        let proj = |v: DVec3| (v - n * v.dot(n)) * (1.0 / len);
+        (n, [proj(da[0]), proj(da[1]), proj(da[2])])
+    }
+
+    fn relative(a: DVec3, b: DVec3) -> f64 {
+        (a - b).length() / a.length().max(b.length()).max(1e-30)
+    }
+
+    #[test]
+    fn gpu_face_frames_match_f64() {
+        let topo = Topology::icosphere(4);
+        let nv = topo.n_vertices();
+        let radius: Vec<f64> = (0..nv)
+            .map(|i| 1.0 + 0.08 * ((i * 17) % 11) as f64 / 11.0)
+            .collect();
+        let r0 = radius.iter().sum::<f64>() / nv as f64;
+        let ps: Vec<DVec3> = topo
+            .dirs
+            .iter()
+            .zip(&radius)
+            .map(|(d, r)| *d * (*r / r0))
+            .collect();
+        let gpu = super::super::socp_gpu::face_frames(&ps, &topo.dirs, &topo.faces)
+            .expect("Metal face-frame kernel");
+        let mut worst_n = 0.0_f64;
+        let mut worst_j = 0.0_f64;
+        for (f, tri) in topo.faces.iter().enumerate() {
+            let v = tri.map(|i| i as usize);
+            let (n, nj) = reference_frame(ps[v[0]], ps[v[1]], ps[v[2]], v.map(|i| topo.dirs[i]));
+            worst_n = worst_n.max(relative(n, gpu[f].n));
+            for k in 0..3 {
+                worst_j = worst_j.max(relative(nj[k], gpu[f].nj[k]));
+            }
+        }
+        eprintln!("face-frame ds error: normal {worst_n:.3e}, sensitivity {worst_j:.3e}");
+        assert!(
+            worst_n < 1e-6,
+            "unit normal left the f64 oracle by {worst_n:.3e}"
+        );
+        assert!(
+            worst_j < 1e-6,
+            "normal sensitivity left the f64 oracle by {worst_j:.3e}"
+        );
+    }
+
+    #[test]
+    fn supercritical_patch_socp_finishes_quickly() {
+        // Icosphere level 7 is 327680 faces, past the 196k mesh that made the
+        // full-sphere cone program take more than an hour. Only a polar cap
+        // (about three percent of the faces) is mobile.
+        let topo = Arc::new(Topology::icosphere(7));
+        let nv = topo.n_vertices();
+        let nf = topo.n_faces();
+        let radius = vec![1.0; nv];
+        let axis = DVec3::new(0.0, 0.0, 1.0);
+        let mut score: Vec<(usize, f64)> = topo
+            .faces
+            .iter()
+            .enumerate()
+            .map(|(f, tri)| {
+                let mean = tri
+                    .iter()
+                    .map(|v| topo.dirs[*v as usize])
+                    .fold(DVec3::ZERO, |acc, d| acc + d);
+                (f, mean.try_normalize().unwrap().dot(axis))
+            })
+            .collect();
+        score.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let n_cap = (0.03 * nf as f64).round() as usize;
+        let mut slope_row = vec![false; nf];
+        let mut touch = vec![false; nv];
+        for (f, _) in score.iter().take(n_cap) {
+            slope_row[*f] = true;
+            for v in topo.faces[*f] {
+                touch[v as usize] = true;
+            }
+        }
+        let n_active = touch.iter().filter(|t| **t).count();
+        let kind: Vec<Kind> = touch
+            .iter()
+            .map(|on| if *on { Kind::Mobile } else { Kind::Locked })
+            .collect();
+        let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![0.0; nv]).unwrap();
+        let dens = body.density().unwrap();
+        let geo = body.face_geometry();
+        let gravity: Vec<DVec3> = geo
+            .iter()
+            .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
+            .collect();
+        let jac = mass_jacobian(&body, &dens);
+        let inp = SocpInput {
+            body: &body,
+            kind: &kind,
+            d_pred: &vec![0.0; nv],
+            weight: &vec![1.0; nv],
+            gravity: &gravity,
+            sin_phi: &vec![0.25; nf],
+            slope_row: &slope_row,
+            mass_jac: &jac,
+            mass_residual: 0.0,
+            mass: 4.0e3,
+            trust: 0.05,
+            c0: 0.2,
+            eps_n: 0.01,
+            varrho: 1e3,
+        };
+        let wall = std::time::Instant::now();
+        let out = solve(&inp).expect("local SOCP");
+        let wall_s = wall.elapsed().as_secs_f64();
+        let moved_locked = (0..nv)
+            .filter(|i| kind[*i] == Kind::Locked)
+            .any(|i| out.d[i].abs() > 1e-12);
+        eprintln!(
+            "local SOCP: faces={nf} slope_rows={n_cap} mobile={n_active} clarabel={:.3}s wall={:.3}s iters={} status={}",
+            out.solve_seconds, wall_s, out.iterations, out.status
+        );
+        assert!(!moved_locked, "a locked vertex left static friction");
+        assert!(
+            wall_s < 600.0 && out.solve_seconds < 600.0,
+            "Clarabel wall {wall_s:.1}s, reported {:.1}s",
+            out.solve_seconds
+        );
     }
 }

@@ -1,20 +1,23 @@
 //! Supercritical-slope relaxation with crater protection.
 //!
-//! Relaxation is the geometric SOCP of §10.4.3 with a zero predictor (`d_pred = 0`): the
-//! face-based slope cone `‖ĝ × n̂(d)‖ ≤ sin φ + t` with the friction angle `φ` of
-//! `rheo_friction` pulls supercritical faces down while the fidelity term keeps everything
-//! else where it is. Crater features are protected by the old geometric detector
-//! (radius anomaly against the neighbour mean, top-decile curvature) or by observed
-//! floor/wall/rim masks: protected vertices are hard-locked (weight ≥ `lock_weight`) or
-//! made proportionally stiffer. Mass is restored by the SOCP mass row inside the mobile set,
-//! never by a global rescale.
+//! Relaxation is the geometric SOCP of §10.4.3 with a zero predictor (`d_pred = 0`).
+//! The slope cone is imposed only on faces whose slack exceeds `tol_slack` and that
+//! are not fully crater-locked. Every other vertex is in the locked set for that
+//! sweep, so a subcritical face stays in static friction (`d = 0`). That is the
+//! relaxation reading of `S_slope ⊆ A`: locked nodes do not receive the repose
+//! proxy, and the mass row runs only inside the mobile patch. Crater features are
+//! protected by the geometric detector (radius anomaly against the neighbour mean,
+//! curvature above the configured quantile) or by observed floor/wall/rim masks.
+//! Protected vertices are hard-locked (weight ≥ `lock_weight`) or made
+//! proportionally stiffer. Mass is restored inside the mobile set, never by a
+//! global rescale. A GPU, solver, or acceptance failure is returned as itself.
 
 use std::path::Path;
 
 use crate::common::math::DVec3;
 use crate::rheo_friction::{RheoGpu, VelocityField};
 
-use super::body::Body;
+use super::body::{Body, Topology};
 use super::error::ScfError;
 use super::forward::{Forward, deviator, effective_gravity, hessian_w};
 use super::mechanics::{face_chain, fit_surface, quad_form};
@@ -216,6 +219,10 @@ pub struct SweepRecord {
     pub trust: f64,
     pub trust_retries: usize,
     pub socp_iterations: u32,
+    /// Vertices free in this sweep (incident to a supercritical face, not crater-locked).
+    pub n_active: usize,
+    /// Clarabel's own `solve_time`, in seconds.
+    pub socp_seconds: f64,
     pub dropped_overhang: usize,
     pub mass_residual: f64,
     pub max_displacement: f64,
@@ -265,12 +272,12 @@ fn slope_state(
         .iter()
         .map(|h| hessian_w(*h, omega))
         .collect();
+    let normals = surf.normals(&dirs);
     let pressure: Vec<f64> = hess_w
         .iter()
-        .zip(&dirs)
-        .map(|(h, d)| {
-            let n = surf.normal(*d).1;
-            project.stokes.p_ext + project.material.tide_coef * quad_form(deviator(*h), n)
+        .zip(&normals)
+        .map(|(h, (_, n))| {
+            project.stokes.p_ext + project.material.tide_coef * quad_form(deviator(*h), *n)
         })
         .collect();
     let (nodes, _) = face_chain(
@@ -288,6 +295,52 @@ fn slope_state(
         slack: nodes.iter().map(|n| n.slack).collect(),
         gravity,
     })
+}
+
+/// Mobile set of one relaxation sweep.
+///
+/// A face enters `S_slope` when its slack exceeds `tol` and at least one vertex is
+/// not already crater-locked. Vertices that do not touch such a face are locked,
+/// which is the static-friction condition on subcritical faces. Crater-locked
+/// vertices stay locked even if a neighbour face is supercritical.
+fn friction_lock(
+    topo: &Topology,
+    protect: &[Kind],
+    slack: &[f64],
+    tol: f64,
+) -> (Vec<Kind>, Vec<bool>) {
+    use rayon::prelude::*;
+    let nv = topo.n_vertices();
+    let slope_row: Vec<bool> = (0..topo.n_faces())
+        .into_par_iter()
+        .map(|f| {
+            slack[f] > tol
+                && !topo.faces[f]
+                    .iter()
+                    .all(|v| protect[*v as usize] == Kind::Locked)
+        })
+        .collect();
+    let mut touch = vec![false; nv];
+    for (f, on) in slope_row.iter().enumerate() {
+        if *on {
+            for v in topo.faces[f] {
+                let i = v as usize;
+                if protect[i] != Kind::Locked {
+                    touch[i] = true;
+                }
+            }
+        }
+    }
+    let kind = (0..nv)
+        .map(|i| {
+            if protect[i] == Kind::Locked || !touch[i] {
+                Kind::Locked
+            } else {
+                Kind::Mobile
+            }
+        })
+        .collect();
+    (kind, slope_row)
 }
 
 /// Relax the supercritical slopes of `body` under the spin `omega`.
@@ -358,20 +411,47 @@ pub fn relax(
             converged = true;
             break;
         }
+        if state.slack.iter().any(|s| !s.is_finite())
+            || state.sin_phi.iter().any(|s| !s.is_finite())
+        {
+            return Err(ScfError::solver(format!(
+                "relaxation sweep {sweep}: friction chain returned a non-finite slope slack or sin φ"
+            )));
+        }
+        let (sweep_kind, slope_row) =
+            friction_lock(&topo, &kind, &state.slack, project.relief.tol_slack);
+        let n_active = sweep_kind.iter().filter(|k| **k == Kind::Mobile).count();
+        if n_active == 0 {
+            return Err(ScfError::solver(format!(
+                "relaxation sweep {sweep}: {n_super} supercritical faces but the mobile set is empty"
+            )));
+        }
         let r_mean = current.radius.iter().sum::<f64>() / nv as f64;
         let mut trust = g.trust0 * r_mean;
         let jac = mass_jacobian(&current, &current.density()?);
-        let nf = topo.n_faces();
+        let d_pred = vec![0.0; nv];
         let mut retries = 0;
+        let mut last_failure;
+        let shrink =
+            |trust: &mut f64, retries: &mut usize, last_failure: &str| -> Result<(), ScfError> {
+                *trust *= g.trust_shrink;
+                *retries += 1;
+                if *trust < g.trust_min * r_mean {
+                    return Err(ScfError::trust_exhausted(format!(
+                        "relaxation sweep {sweep}: {last_failure} down to Δ = {trust:.3e} m"
+                    )));
+                }
+                Ok(())
+            };
         let accepted = loop {
             let inp = SocpInput {
                 body: &current,
-                kind: &kind,
-                d_pred: &vec![0.0; nv],
+                kind: &sweep_kind,
+                d_pred: &d_pred,
                 weight: &weight,
                 gravity: &state.gravity,
                 sin_phi: &state.sin_phi,
-                slope_row: &vec![true; nf],
+                slope_row: &slope_row,
                 mass_jac: &jac,
                 mass_residual: mass_target - fwd.moments.mass,
                 mass: mass_target,
@@ -385,35 +465,87 @@ pub fn relax(
             for i in 0..nv {
                 cand.radius[i] += out.d[i];
             }
-            let verdict = Body::new(
+            let built = match Body::new(
                 topo.clone(),
                 cand.radius.clone(),
                 cand.bulk,
                 cand.kernels.clone(),
                 cand.rho_s.clone(),
-            )
-            .map_err(|e| e.to_string())
-            .and_then(|b| {
-                Forward::bind(&b, project.g)
-                    .map_err(|e| e.to_string())
-                    .and_then(|f| {
-                        accept(&b, &f, mass_target, g.c0, g.eps_mass)
-                            .map(|r| (b, f, r))
-                            .map_err(|e| e.to_string())
-                    })
-            });
-            match verdict {
-                Ok((b, f, resid)) => {
-                    let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-                    break (b, f, resid, out, dmax);
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    last_failure = format!("geometry: {e}");
+                    shrink(&mut trust, &mut retries, &last_failure)?;
+                    continue;
                 }
-                Err(_) => {
-                    trust *= g.trust_shrink;
-                    retries += 1;
-                    if trust < g.trust_min * r_mean {
-                        return Err(ScfError::trust_exhausted(format!(
-                            "relaxation sweep {sweep}: no acceptable geometry down to Δ = {trust:.3e} m"
+            };
+            let bound = match Forward::bind(&built, project.g) {
+                Ok(f) => f,
+                Err(e) => {
+                    last_failure = format!("geometry: {e}");
+                    shrink(&mut trust, &mut retries, &last_failure)?;
+                    continue;
+                }
+            };
+            match accept(&built, &bound, mass_target, g.c0, g.eps_mass) {
+                Ok(resid) => {
+                    let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                    break (built, bound, resid, out, dmax);
+                }
+                Err(AcceptError::Geometry(why)) => {
+                    last_failure = format!("geometry: {why}");
+                    shrink(&mut trust, &mut retries, &last_failure)?;
+                }
+                Err(AcceptError::Mass(resid)) => {
+                    // §2.14: the nonlinear remainder is corrected in the mobile set.
+                    // A degenerate Jacobian is reported; it is not turned into a
+                    // smaller trust radius.
+                    let dm = bound.moments.mass - mass_target;
+                    let denom: f64 = sweep_kind
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, k)| **k == Kind::Mobile)
+                        .map(|(i, _)| jac[i] * jac[i])
+                        .sum();
+                    if !(denom.is_finite() && denom > 0.0) {
+                        return Err(ScfError::solver(format!(
+                            "relaxation sweep {sweep}: mass residual {resid:.3e} and the mobile mass Jacobian is degenerate"
                         )));
+                    }
+                    let alpha = (-dm / denom).clamp(-trust, trust);
+                    let mut rr = built.radius.clone();
+                    for i in 0..nv {
+                        if sweep_kind[i] == Kind::Mobile {
+                            rr[i] += alpha * jac[i];
+                        }
+                    }
+                    let corrected = Body::new(
+                        topo.clone(),
+                        rr,
+                        built.bulk,
+                        built.kernels.clone(),
+                        built.rho_s.clone(),
+                    )
+                    .and_then(|cb| Forward::bind(&cb, project.g).map(|cf| (cb, cf)));
+                    match corrected {
+                        Ok((cb, cf)) => match accept(&cb, &cf, mass_target, g.c0, g.eps_mass) {
+                            Ok(cr) => {
+                                let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                                break (cb, cf, cr, out, dmax);
+                            }
+                            Err(e) => {
+                                last_failure = format!(
+                                    "mass residual {resid:.3e} after mobile-set correction ({e})"
+                                );
+                                shrink(&mut trust, &mut retries, &last_failure)?;
+                            }
+                        },
+                        Err(e) => {
+                            last_failure = format!(
+                                "mass residual {resid:.3e}; mobile-set correction was rejected ({e})"
+                            );
+                            shrink(&mut trust, &mut retries, &last_failure)?;
+                        }
                     }
                 }
             }
@@ -429,6 +561,8 @@ pub fn relax(
             trust,
             trust_retries: retries,
             socp_iterations: out.iterations,
+            n_active,
+            socp_seconds: out.solve_seconds,
             dropped_overhang: out.dropped_overhang,
             mass_residual: resid,
             max_displacement: dmax,
@@ -463,4 +597,47 @@ pub fn relax(
             sweeps,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scf_simulator::body::Topology;
+
+    #[test]
+    fn subcritical_vertices_stay_locked() {
+        let topo = Topology::icosphere(2);
+        let nv = topo.n_vertices();
+        let nf = topo.n_faces();
+        let tri = topo.faces[0];
+        let mut slack = vec![0.0; nf];
+        slack[0] = 0.1;
+
+        let protect = vec![Kind::Mobile; nv];
+        let (kind, slope) = friction_lock(&topo, &protect, &slack, 1.0e-3);
+        assert!(slope[0]);
+        assert_eq!(slope.iter().filter(|on| **on).count(), 1);
+        for i in 0..nv {
+            let on_face = tri.contains(&(i as u32));
+            assert_eq!(
+                kind[i] == Kind::Mobile,
+                on_face,
+                "vertex {i} mobile={} but on the supercritical face={on_face}",
+                kind[i] == Kind::Mobile
+            );
+        }
+
+        let mut protect = vec![Kind::Mobile; nv];
+        protect[tri[0] as usize] = Kind::Locked;
+        let (kind, slope) = friction_lock(&topo, &protect, &slack, 1.0e-3);
+        assert!(slope[0]);
+        assert_eq!(kind[tri[0] as usize], Kind::Locked);
+        assert_eq!(kind[tri[1] as usize], Kind::Mobile);
+        assert_eq!(kind[tri[2] as usize], Kind::Mobile);
+
+        let protect = vec![Kind::Locked; nv];
+        let (kind, slope) = friction_lock(&topo, &protect, &slack, 1.0e-3);
+        assert!(!slope[0]);
+        assert!(kind.iter().all(|k| *k == Kind::Locked));
+    }
 }

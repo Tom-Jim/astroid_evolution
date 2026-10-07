@@ -159,7 +159,7 @@ fn initial_state(project: &Project, snapshot: Option<&Path>) -> Result<State, Sc
     match snapshot {
         Some(p) => {
             let snap = read_snapshot(p)?;
-            if snap.level != project.body.level {
+            if project.body.shape == "ellipsoid" && snap.level != project.body.level {
                 return Err(ScfError::model_not_closed(format!(
                     "snapshot level {} differs from body.level {}",
                     snap.level, project.body.level
@@ -246,13 +246,15 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             );
             for s in &rep.sweeps {
                 println!(
-                    "  sweep {:<3} slack={:.3e} super={:<5} trust={:.2e} retries={} socp_it={} dM={:.2e} dmax={:.2e}",
+                    "  sweep {:<3} slack={:.3e} super={:<5} active={:<5} trust={:.2e} retries={} socp_it={} socp={:.2}s dM={:.2e} dmax={:.2e}",
                     s.sweep,
                     s.max_slack,
                     s.n_supercritical,
+                    s.n_active,
                     s.trust,
                     s.trust_retries,
                     s.socp_iterations,
+                    s.socp_seconds,
                     s.mass_residual,
                     s.max_displacement
                 );

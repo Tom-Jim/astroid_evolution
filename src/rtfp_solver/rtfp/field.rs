@@ -10,8 +10,9 @@
 //! ∇∇U = G ∮ dΩ T(u) Σ_chords f.p. ∫ ρ / R dR  −  (4π/3) G θ ρ(x) I
 //! ```
 //!
-//! with `T(u) = 3uuᵀ − I`. A kernel with `α = 1` uses the closed antiderivative;
-//! any other `α` uses the fixed Gauss–Legendre rule.
+//! with `T(u) = 3uuᵀ − I`. A kernel with `α = 1` uses the closed antiderivative.
+//! Any other `α` uses one Gauss–Legendre panel in `R` (16 nodes, or 32 when the
+//! chord is longer than `8d`).
 
 use crate::common::density::CauchyDensity;
 use crate::common::math::DVec3;

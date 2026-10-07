@@ -76,7 +76,7 @@ eps_inertia = 1.0e-2
 max_steps = 100000
 
 [geometry]
-c0 = 0.2
+c0 = 0.005
 eps_n = 0.01
 eps_mass = 1.0e-4
 trust0 = 0.02

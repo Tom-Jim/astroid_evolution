@@ -5,12 +5,13 @@
 //! marks yield; the unyielded points are connected through the graph `G_Y` and the heaviest
 //! component is the rigid core. Everything else is mobile.
 
+use disjoint_sets::UnionFind;
 use nalgebra::{DMatrix, DVector};
 
 use crate::common::math::DVec3;
 use crate::rheo_friction::Material;
 
-use super::basis::{Want, eval_pressure, eval_velocity};
+use super::basis::{Want, eval_pressure, eval_velocity_rays};
 use super::body::Topology;
 use super::harmonics::SurfaceFit;
 use super::quad::gauss_jacobi_zeta2;
@@ -43,33 +44,6 @@ pub struct Classification {
     pub inverse_ekman: f64,
 }
 
-struct Dsu {
-    parent: Vec<usize>,
-}
-
-impl Dsu {
-    fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-        }
-    }
-
-    fn find(&mut self, mut a: usize) -> usize {
-        while self.parent[a] != a {
-            self.parent[a] = self.parent[self.parent[a]];
-            a = self.parent[a];
-        }
-        a
-    }
-
-    fn union(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            self.parent[ra] = rb;
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn classify(
     ops: &Operators,
@@ -87,8 +61,7 @@ pub fn classify(
     let (zeta, wr) = gauss_jacobi_zeta2(n_radial);
     let layers = n_radial + 1;
     // Grid X_Y: layer q < n_radial is interior, layer n_radial the surface.
-    let radius: Vec<f64> = topo.dirs.iter().map(|d| surf.radius(*d)).collect();
-    let normal: Vec<DVec3> = topo.dirs.iter().map(|d| surf.normal(*d).1).collect();
+    let (radius, normal): (Vec<f64>, Vec<DVec3>) = surf.normals(&topo.dirs).into_iter().unzip();
     let mut pts = Vec::with_capacity(nv * layers);
     let mut wgt = Vec::with_capacity(nv * layers);
     for i in 0..nv {
@@ -103,7 +76,7 @@ pub fn classify(
         }
     }
     let u = DVector::from_column_slice(&sol.u);
-    let rows = eval_velocity(surf, &ops.lay, &pts, Want::VD);
+    let rows = eval_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD);
     let v = &rows.v * &u;
     let d = &rows.d * &u;
     let pres = eval_pressure(surf, &ops.play, &pts, false);
@@ -125,7 +98,7 @@ pub fn classify(
     }
     // Graph G_Y on the unyielded points.
     let virt = np;
-    let mut dsu = Dsu::new(np + 1);
+    let mut dsu = UnionFind::new(np + 1);
     let ok = |p: usize| fdelta[p] <= 0.0;
     for i in 0..nv {
         for q in 0..layers {
@@ -168,7 +141,7 @@ pub fn classify(
         .iter()
         .max_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)))
         .map(|(r, _)| *r);
-    let in_core = |dsu: &mut Dsu, p: usize| -> bool {
+    let in_core = |p: usize| -> bool {
         match core_root {
             Some(r) => ok(p) && dsu.find(p) == r,
             None => false,
@@ -179,7 +152,7 @@ pub fn classify(
     for i in 0..nv {
         for q in 0..layers {
             let p = i * layers + q;
-            if in_core(&mut dsu, p) {
+            if in_core(p) {
                 core_pts.push(p);
                 if q == layers - 1 {
                     movable[i] = false;

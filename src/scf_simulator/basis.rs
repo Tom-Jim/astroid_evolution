@@ -1,5 +1,7 @@
-//! The divergence-free modal basis of §8 and the scalar pressure basis of §8.7,
-//! evaluated pointwise through truncated Taylor jets.
+//! The divergence-free modal basis of §8 and the scalar pressure basis of §8.7.
+//!
+//! Evaluation runs on the GPU in double-single arithmetic. The operators are the
+//! Taylor jets of `P[Φ] = ∇(Φ + x·∇Φ) − x ΔΦ` and `T[Ψ] = ∇Ψ × x`.
 //!
 //! Velocity: `V_{lkm} = ∇×∇×(Φ x)`, `Φ = R² ψ_{lk}(ζ) Y_{lm}`;
 //! `W_{lkm} = ∇×(Ψ x)`, `Ψ = R ψ_{lk}(ζ) Y_{lm}`; `ζ = r / R(ω̂)`, `ω̂ = x/r`.
@@ -7,14 +9,13 @@
 //! analytically: `v` and `∇v` need jets of order 3, `Δv` and `∇∇v` order 4.
 
 use nalgebra::DMatrix;
-use rayon::prelude::*;
 
 use crate::common::math::DVec3;
-use crate::rheo_friction::basis::{K, lm_index, psi_poly};
+use crate::rheo_friction::basis::{K, lm_index};
 
-use super::harmonics::{SurfaceFit, sh_jets};
-use super::jets::Jet;
+use super::harmonics::SurfaceFit;
 
+#[cfg(test)]
 const S2: f64 = std::f64::consts::SQRT_2;
 
 /// Velocity unknown layout: for every `(l, m)` with `l >= 1` eight consecutive entries,
@@ -103,7 +104,7 @@ impl Want {
         gd: true,
     };
 
-    fn order(self) -> usize {
+    pub(crate) fn order(self) -> usize {
         if self.lap || self.gd {
             4
         } else if self.d {
@@ -125,208 +126,33 @@ pub struct VelRows {
     pub gd: DMatrix<f64>,
 }
 
-struct PointVel {
-    v: Vec<[f64; 3]>,
-    d: Vec<[f64; 6]>,
-    lap: Vec<[f64; 3]>,
-    gd: Vec<[f64; 18]>,
+/// Evaluate the velocity basis at `pts`. Each point is its own ray.
+pub fn eval_velocity(surf: &SurfaceFit, lay: &VelLayout, pts: &[DVec3], want: Want) -> VelRows {
+    eval_velocity_rays(surf, lay, pts, 1, want)
 }
 
-fn unit_jets(x0: DVec3, ord: usize) -> ([Jet; 3], Jet, [Jet; 3]) {
-    let x = [
-        Jet::var(0, x0.x, ord),
-        Jet::var(1, x0.y, ord),
-        Jet::var(2, x0.z, ord),
-    ];
-    let r2 = x[0].mul(&x[0]).add(&x[1].mul(&x[1])).add(&x[2].mul(&x[2]));
-    let r = r2.sqrt();
-    let inv = r.recip();
-    let u = [x[0].mul(&inv), x[1].mul(&inv), x[2].mul(&inv)];
-    (x, r, u)
-}
-
-/// Jets `ζ^n` for `n = 0..=top`.
-fn zeta_powers(zeta: &Jet, top: usize) -> Vec<Jet> {
-    let mut p = Vec::with_capacity(top + 1);
-    p.push(Jet::constant(1.0, zeta.ord));
-    for n in 1..=top {
-        let next = p[n - 1].mul(zeta);
-        p.push(next);
-    }
-    p
-}
-
-/// `Σ_j a_j ζ^j` with the Jacobi coefficients of `ψ_{lk}`.
-fn psi_jet(poly: &[f64], pow: &[Jet]) -> Jet {
-    let mut s = Jet::constant(0.0, pow[0].ord);
-    for (j, a) in poly.iter().enumerate() {
-        if *a != 0.0 {
-            s.axpy(*a, &pow[j]);
-        }
-    }
-    s
-}
-
-fn poloidal_field(phi: &Jet, x0: [f64; 3]) -> [Jet; 3] {
-    let n = phi.ord;
-    let g = [phi.deriv(0), phi.deriv(1), phi.deriv(2)];
-    let mut e = phi.truncate(n - 1);
-    for a in 0..3 {
-        e = e.add(&g[a].mul_x(a, x0[a]));
-    }
-    let lap = g[0].deriv(0).add(&g[1].deriv(1)).add(&g[2].deriv(2));
-    [0, 1, 2].map(|a| e.deriv(a).sub(&lap.mul_x(a, x0[a])))
-}
-
-fn toroidal_field(psi: &Jet, x0: [f64; 3]) -> [Jet; 3] {
-    let g = [psi.deriv(0), psi.deriv(1), psi.deriv(2)];
-    let vx = g[1].mul_x(2, x0[2]).sub(&g[2].mul_x(1, x0[1]));
-    let vy = g[2].mul_x(0, x0[0]).sub(&g[0].mul_x(2, x0[2]));
-    let vz = g[0].mul_x(1, x0[1]).sub(&g[1].mul_x(0, x0[0]));
-    [vx, vy, vz].map(|j| j.truncate(psi.ord - 2))
-}
-
-fn pack(v: &[Jet; 3], want: Want, out: &mut PointVel) {
-    out.v.push([v[0].val(), v[1].val(), v[2].val()]);
-    if want.d || want.lap || want.gd {
-        let gr = [v[0].grad(), v[1].grad(), v[2].grad()];
-        let dd = |a: usize, b: usize| 0.5 * (gr[a][b] + gr[b][a]);
-        out.d.push([
-            dd(0, 0),
-            dd(1, 1),
-            dd(2, 2),
-            S2 * dd(0, 1),
-            S2 * dd(0, 2),
-            S2 * dd(1, 2),
-        ]);
-    }
-    if want.lap || want.gd {
-        let h = [v[0].hess(), v[1].hess(), v[2].hess()];
-        if want.lap {
-            out.lap
-                .push([0, 1, 2].map(|a| h[a][0][0] + h[a][1][1] + h[a][2][2]));
-        }
-        if want.gd {
-            let mut g = [0.0; 18];
-            for k in 0..3 {
-                let dk = |i: usize, j: usize| 0.5 * (h[i][j][k] + h[j][i][k]);
-                g[6 * k] = dk(0, 0);
-                g[6 * k + 1] = dk(1, 1);
-                g[6 * k + 2] = dk(2, 2);
-                g[6 * k + 3] = S2 * dk(0, 1);
-                g[6 * k + 4] = S2 * dk(0, 2);
-                g[6 * k + 5] = S2 * dk(1, 2);
-            }
-            out.gd.push(g);
-        }
-    }
-}
-
-fn eval_point_velocity(
+/// Same evaluation, with `n_per` samples packed along each ray.
+///
+/// Points are ray-major: sample `s` of ray `i` is `pts[i * n_per + s]`, and every
+/// sample of a ray is a positive multiple of the same direction. Order-3 kernels
+/// scale the degree-0 jets of `R` and `Y` along that ray.
+pub fn eval_velocity_rays(
     surf: &SurfaceFit,
     lay: &VelLayout,
-    polys: &[Vec<Vec<f64>>],
-    x0: DVec3,
+    pts: &[DVec3],
+    n_per: usize,
     want: Want,
-) -> PointVel {
-    let ord = want.order();
-    let (x, r, u) = unit_jets(x0, ord);
-    let l_top = lay.l_max.max(surf.l_max);
-    let y = sh_jets(l_top, &u);
-    let rr = surf.radius_jet(&y);
-    let zeta = r.mul(&rr.recip());
-    let r2 = rr.mul(&rr);
-    let pow = zeta_powers(&zeta, lay.l_max + K);
-    let xs = [x0.x, x0.y, x0.z];
-    let _ = x;
-    let mut out = PointVel {
-        v: Vec::with_capacity(lay.n_u),
-        d: Vec::new(),
-        lap: Vec::new(),
-        gd: Vec::new(),
-    };
-    // Per (l, k) radial factors; then per m.
-    let mut a_lk: Vec<Vec<Jet>> = vec![Vec::new(); lay.l_max + 1];
-    let mut b_lk: Vec<Vec<Jet>> = vec![Vec::new(); lay.l_max + 1];
-    for l in 1..=lay.l_max {
-        for k in 0..K {
-            let psi = psi_jet(&polys[l][k], &pow);
-            a_lk[l].push(r2.mul(&psi));
-            b_lk[l].push(rr.mul(&psi));
-        }
+) -> VelRows {
+    #[cfg(target_os = "macos")]
+    {
+        return super::basis_gpu::velocity(surf, lay, pts, n_per, want)
+            .unwrap_or_else(|err| panic!("velocity basis GPU: {err}"));
     }
-    for l in 1..=lay.l_max {
-        for m in -(l as i32)..=(l as i32) {
-            let ylm = &y[lm_index(l, m)];
-            for tor in [false, true] {
-                for k in 0..K {
-                    let field = if tor {
-                        toroidal_field(&b_lk[l][k].mul(ylm), xs)
-                    } else {
-                        poloidal_field(&a_lk[l][k].mul(ylm), xs)
-                    };
-                    pack(&field, want, &mut out);
-                }
-            }
-        }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (surf, lay, pts, n_per, want);
+        panic!("velocity basis requires Metal");
     }
-    out
-}
-
-/// Evaluate the velocity basis at `pts`.
-pub fn eval_velocity(surf: &SurfaceFit, lay: &VelLayout, pts: &[DVec3], want: Want) -> VelRows {
-    let np = pts.len();
-    let n_u = lay.n_u;
-    let mk = |on: bool, rows: usize| {
-        if on {
-            DMatrix::zeros(rows * np, n_u)
-        } else {
-            DMatrix::zeros(0, n_u)
-        }
-    };
-    let mut rows = VelRows {
-        n_points: np,
-        v: mk(want.v, 3),
-        d: mk(want.d || want.lap || want.gd, 6),
-        lap: mk(want.lap, 3),
-        gd: mk(want.gd, 18),
-    };
-    const CHUNK: usize = 128;
-    let polys: Vec<Vec<Vec<f64>>> = (0..=lay.l_max)
-        .map(|l| (0..K).map(|k| psi_poly(l.max(1), k)).collect())
-        .collect();
-    for (c, chunk) in pts.chunks(CHUNK).enumerate() {
-        let eval: Vec<PointVel> = chunk
-            .par_iter()
-            .map(|p| eval_point_velocity(surf, lay, &polys, *p, want))
-            .collect();
-        for (i, pv) in eval.iter().enumerate() {
-            let p = c * CHUNK + i;
-            for j in 0..n_u {
-                if want.v {
-                    for a in 0..3 {
-                        rows.v[(3 * p + a, j)] = pv.v[j][a];
-                    }
-                }
-                if !pv.d.is_empty() {
-                    for a in 0..6 {
-                        rows.d[(6 * p + a, j)] = pv.d[j][a];
-                    }
-                }
-                if want.lap {
-                    for a in 0..3 {
-                        rows.lap[(3 * p + a, j)] = pv.lap[j][a];
-                    }
-                }
-                if want.gd {
-                    for a in 0..18 {
-                        rows.gd[(18 * p + a, j)] = pv.gd[j][a];
-                    }
-                }
-            }
-        }
-    }
-    rows
 }
 
 /// Scalar basis `(1 − ζ) ψ_{lk}(ζ) Y_{lm}`, `0 <= l <= l_p`, `k < k_p`, and the
@@ -366,73 +192,16 @@ pub fn eval_pressure(
     pts: &[DVec3],
     gradients: bool,
 ) -> PresRows {
-    let np = pts.len();
-    let n = lay.n_p();
-    let nl = lay.n_lift();
-    let ord = if gradients { 1 } else { 0 };
-    let polys: Vec<Vec<Vec<f64>>> = (0..=lay.l_max)
-        .map(|l| (0..lay.k_max).map(|k| psi_poly(l, k)).collect())
-        .collect();
-    let per_point: Vec<(Vec<f64>, Vec<[f64; 3]>, Vec<f64>, Vec<[f64; 3]>)> = pts
-        .par_iter()
-        .map(|p| {
-            let (_, r, u) = unit_jets(*p, ord);
-            let l_top = lay.l_max.max(surf.l_max);
-            let y = sh_jets(l_top, &u);
-            let rr = surf.radius_jet(&y);
-            let zeta = r.mul(&rr.recip());
-            let pow = zeta_powers(&zeta, lay.l_max + lay.k_max);
-            let one_minus = zeta.scale(-1.0).add_scalar(1.0);
-            let mut val = vec![0.0; n];
-            let mut grad = vec![[0.0; 3]; n];
-            let mut lval = vec![0.0; nl];
-            let mut lgrad = vec![[0.0; 3]; nl];
-            for l in 0..=lay.l_max {
-                for m in -(l as i32)..=(l as i32) {
-                    let ylm = &y[lm_index(l, m)];
-                    let lift = pow[l].mul(ylm);
-                    lval[lm_index(l, m)] = lift.val();
-                    if gradients {
-                        lgrad[lm_index(l, m)] = lift.grad();
-                    }
-                    for k in 0..lay.k_max {
-                        let psi = psi_jet(&polys[l][k], &pow);
-                        let phi = one_minus.mul(&psi).mul(ylm);
-                        val[lay.index(l, m, k)] = phi.val();
-                        if gradients {
-                            grad[lay.index(l, m, k)] = phi.grad();
-                        }
-                    }
-                }
-            }
-            (val, grad, lval, lgrad)
-        })
-        .collect();
-    let mut rows = PresRows {
-        val: DMatrix::zeros(np, n),
-        grad: DMatrix::zeros(if gradients { 3 * np } else { 0 }, n),
-        lift_val: DMatrix::zeros(np, nl),
-        lift_grad: DMatrix::zeros(if gradients { 3 * np } else { 0 }, nl),
-    };
-    for (p, (val, grad, lval, lgrad)) in per_point.iter().enumerate() {
-        for j in 0..n {
-            rows.val[(p, j)] = val[j];
-            if gradients {
-                for a in 0..3 {
-                    rows.grad[(3 * p + a, j)] = grad[j][a];
-                }
-            }
-        }
-        for j in 0..nl {
-            rows.lift_val[(p, j)] = lval[j];
-            if gradients {
-                for a in 0..3 {
-                    rows.lift_grad[(3 * p + a, j)] = lgrad[j][a];
-                }
-            }
-        }
+    #[cfg(target_os = "macos")]
+    {
+        return super::basis_gpu::pressure(surf, lay, pts, gradients)
+            .unwrap_or_else(|err| panic!("pressure basis GPU: {err}"));
     }
-    rows
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (surf, lay, pts, gradients);
+        panic!("pressure basis requires Metal");
+    }
 }
 
 #[cfg(test)]
@@ -491,9 +260,11 @@ mod tests {
                     lap[a] +=
                         (plus[b].v[(a, j)] - 2.0 * mid.v[(a, j)] + minus[b].v[(a, j)]) / (h * h);
                 }
+                // h = 1e-3, so a double-single error in v is amplified by 1/h².
+                let diff = (lap[a] - rows.lap[(a, j)]).abs();
+                let mag = lap[a].abs().max(rows.lap[(a, j)].abs());
                 assert!(
-                    (lap[a] - rows.lap[(a, j)]).abs()
-                        < 2e-4 * scale / 40.0 / 40.0 * 40.0 + 1e-6 * scale,
+                    diff < 2.0e-3 * mag + 1.0e-4,
                     "Laplacian dof {j} comp {a}: {} vs {}",
                     lap[a],
                     rows.lap[(a, j)]

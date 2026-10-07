@@ -17,7 +17,9 @@ use crate::rheo_friction::Material;
 use crate::rheo_friction::basis::sh_all;
 use crate::rheo_friction::closure::dynamic_friction;
 
-use super::basis::{PresLayout, PresRows, VelLayout, VelRows, Want, eval_pressure, eval_velocity};
+use super::basis::{
+    PresLayout, PresRows, VelLayout, VelRows, Want, eval_pressure, eval_velocity_rays,
+};
 use super::error::ScfError;
 use super::harmonics::SurfaceFit;
 use super::params::StokesParams;
@@ -74,13 +76,13 @@ pub struct SurfaceSet {
 
 impl SurfaceSet {
     pub fn build(surf: &SurfaceFit, dirs: Vec<DVec3>, solid: Vec<f64>) -> Self {
-        let mut pts = Vec::with_capacity(dirs.len());
-        let mut normals = Vec::with_capacity(dirs.len());
-        for d in &dirs {
-            let (r, n) = surf.normal(*d);
-            pts.push(*d * r);
-            normals.push(n);
-        }
+        let samples = surf.normals(&dirs);
+        let pts = dirs
+            .iter()
+            .zip(&samples)
+            .map(|(d, (r, _))| *d * *r)
+            .collect();
+        let normals = samples.into_iter().map(|(_, n)| n).collect();
         Self {
             dirs,
             pts,
@@ -120,12 +122,13 @@ impl Operators {
             k_max: prm.k_pressure,
         };
         let vol = VolumeSet::build(surf, density, prm.n_theta, prm.n_phi, prm.n_radial);
-        let rows = eval_velocity(surf, &lay, &vol.pts, Want::ALL);
+        let rows = eval_velocity_rays(surf, &lay, &vol.pts, prm.n_radial, Want::ALL);
         let pres = eval_pressure(surf, &play, &vol.pts, true);
-        let surf_rows = eval_velocity(
+        let surf_rows = eval_velocity_rays(
             surf,
             &lay,
             &surface.pts,
+            1,
             Want {
                 v: false,
                 d: true,

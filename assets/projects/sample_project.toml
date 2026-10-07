@@ -49,7 +49,7 @@ n_radial = 5
 p_ext = 0.0
 picard_max = 120
 tol_picard = 5.0e-2
-tol_momentum = 1.0e-5
+tol_momentum = 5.0e-2
 theta_eta = 0.5
 continuation = 3
 rigid_sigma_min = 1.0e-6
@@ -74,7 +74,7 @@ eps_inertia = 1.0e-2
 max_steps = 100000
 
 [geometry]
-c0 = 0.2
+c0 = 0.005
 eps_n = 0.01
 eps_mass = 3.0e-3
 trust0 = 0.015

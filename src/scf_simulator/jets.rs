@@ -89,7 +89,7 @@ fn tables() -> &'static Tables {
 }
 
 /// Number of coefficients with degree `<= ord`.
-const fn count(ord: usize) -> usize {
+pub(crate) const fn count(ord: usize) -> usize {
     match ord {
         0 => 1,
         1 => 4,
@@ -97,6 +97,72 @@ const fn count(ord: usize) -> usize {
         3 => 20,
         _ => 35,
     }
+}
+
+/// Monomial product and derivative tables, packed for the GPU basis kernel.
+///
+/// The encoding is the same indexing as [`Jet`]: product triples are
+/// `i | j << 8 | k << 16` with `mono[i] + mono[j] = mono[k]` and degree at most
+/// the table's order. `up[axis * NC + i]` is the monomial `e_axis` above `i`.
+pub(crate) struct PackedJetTables {
+    pub words: Vec<u32>,
+    pub mul_off: [u32; 5],
+    pub mul_n: [u32; 5],
+    pub up_off: u32,
+    pub mono_off: u32,
+    pub deg_off: u32,
+    pub pair_off: u32,
+}
+
+pub(crate) fn packed_jet_tables() -> &'static PackedJetTables {
+    static T: OnceLock<PackedJetTables> = OnceLock::new();
+    T.get_or_init(|| {
+        let src = tables();
+        let mut words = Vec::new();
+        let mut mul_off = [0u32; 5];
+        let mut mul_n = [0u32; 5];
+        for ord in 0..=MAX_ORD {
+            mul_off[ord] = words.len() as u32;
+            for &(i, j, k) in &src.mul[ord] {
+                debug_assert!(usize::from(i) < count(ord).max(1));
+                debug_assert!(usize::from(j) < count(ord).max(1));
+                debug_assert!(usize::from(k) < count(ord).max(1));
+                words.push(u32::from(i) | (u32::from(j) << 8) | (u32::from(k) << 16));
+            }
+            mul_n[ord] = src.mul[ord].len() as u32;
+        }
+        let up_off = words.len() as u32;
+        for axis in 0..3 {
+            for i in 0..NC {
+                words.push(src.up[axis][i] as u32);
+            }
+        }
+        let mono_off = words.len() as u32;
+        for i in 0..NC {
+            words.push(u32::from(src.mono[i][0]));
+            words.push(u32::from(src.mono[i][1]));
+            words.push(u32::from(src.mono[i][2]));
+        }
+        let deg_off = words.len() as u32;
+        for i in 0..NC {
+            words.push(u32::from(src.deg[i]));
+        }
+        let pair_off = words.len() as u32;
+        for b in 0..3 {
+            for c in 0..3 {
+                words.push(src.pair[b][c] as u32);
+            }
+        }
+        PackedJetTables {
+            words,
+            mul_off,
+            mul_n,
+            up_off,
+            mono_off,
+            deg_off,
+            pair_off,
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -324,5 +390,39 @@ mod tests {
         let ms = x.mul_x(0, 2.0);
         // (2 + h)(2 + h) = 4 + 4h + h^2
         assert!((ms.eval([h, 0.0, 0.0]) - (2.0 + h) * (2.0 + h)).abs() < 1e-14);
+    }
+
+    #[test]
+    fn a_zero_homogeneous_jet_scales_exactly_along_a_ray() {
+        // u_x = x/|x| is homogeneous of degree 0, so ∂^α u(ρ û) = ρ^{-|α|} ∂^α u(û).
+        // The basis reuses one directional jet for every radius on a ray by this rule.
+        let dir = {
+            let p = [0.2_f64, -0.5, 0.7];
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            [p[0] / n, p[1] / n, p[2] / n]
+        };
+        let ord = 4;
+        let at = |rho: f64| {
+            let p = [dir[0] * rho, dir[1] * rho, dir[2] * rho];
+            let x = [
+                Jet::var(0, p[0], ord),
+                Jet::var(1, p[1], ord),
+                Jet::var(2, p[2], ord),
+            ];
+            let r2 = x[0].mul(&x[0]).add(&x[1].mul(&x[1])).add(&x[2].mul(&x[2]));
+            x[0].mul(&r2.sqrt().recip())
+        };
+        let j0 = at(1.7);
+        let j1 = at(4.2);
+        let ratio: f64 = 1.7 / 4.2;
+        let deg = &tables().deg;
+        for i in 0..count(ord) {
+            let scaled = j0.c[i] * ratio.powi(i32::from(deg[i]));
+            assert!(
+                (scaled - j1.c[i]).abs() <= 1e-9 * (1.0 + scaled.abs()),
+                "coeff {i}: {scaled} vs {}",
+                j1.c[i]
+            );
+        }
     }
 }

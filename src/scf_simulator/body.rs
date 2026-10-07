@@ -1,15 +1,18 @@
-//! The star-shaped body: fixed icosphere directions `ω̂_i` and faces, variable radii `R_i`.
+//! The star-shaped body: vertex directions `ω̂_i`, faces, and variable radii `R_i`.
 //!
-//! The frame is always the standard one (§10.4.4 step 8b): centroid at the origin,
-//! inertia principal axes along `e_x, e_y, e_z`, spin about `e_z`. Directions and
-//! topology never change; only the radii, the Cauchy-kernel centres and the loose-layer
-//! density `ρ_s` do. There is no tetrahedral volume mesh anywhere in Tier 2.
+//! An imported mesh is that polyhedron. Each vertex keeps its own direction and radius
+//! about the vertex centroid, and its face stays the imported triangle. An ellipsoid,
+//! which has no imported faces, is the subdivided icosphere of `body.level`. The frame
+//! is the standard one (§10.4.4 step 8b): centroid at the origin, inertia principal
+//! axes along `e_x, e_y, e_z`, spin about `e_z`. Directions and topology stay fixed
+//! between realignments; a geological step moves vertices by changing `R_i`. There is
+//! no tetrahedral volume mesh anywhere in Tier 2.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::common::density::{CauchyDensity, CauchyKernel};
-use crate::common::geometry::TriMesh;
+use crate::common::geometry::{TriMesh, align_radial_cones};
 use crate::common::math::DVec3;
 use crate::rtfp_solver::rtfp::hw_rt::HardwareMesh;
 
@@ -88,7 +91,55 @@ impl Topology {
         }
     }
 
+    /// Star nodes of an imported polyhedron, centred on the vertex mean.
+    ///
+    /// Faces are the imported triangles. Where two non-adjacent faces overlap in
+    /// radial projection, their vertices are moved tangentially at constant radius
+    /// until the cones are disjoint, so a later radius update (§10.4.4 step 8a)
+    /// or the step-8b resample cannot make those faces intersect. A mesh that is
+    /// already a star about the vertex mean is unchanged.
+    pub fn star_from_mesh(
+        vertices: &[DVec3],
+        faces: Vec<[u32; 3]>,
+    ) -> Result<(Self, Vec<f64>, DVec3), ScfError> {
+        if vertices.len() < 4 || faces.len() < 4 {
+            return Err(ScfError::geometry(
+                "a solid mesh needs at least 4 vertices and 4 triangles",
+            ));
+        }
+        let origin = vertices.iter().copied().fold(DVec3::ZERO, |acc, v| acc + v)
+            * (1.0 / vertices.len() as f64);
+        let mut placed = Vec::with_capacity(vertices.len());
+        for (i, v) in vertices.iter().enumerate() {
+            let offset = *v - origin;
+            let r = offset.length();
+            if !(r.is_finite() && r > 0.0) {
+                return Err(ScfError::geometry(format!(
+                    "vertex {i} lies on the centroid and is not a star node"
+                )));
+            }
+            placed.push(offset);
+        }
+        align_radial_cones(&mut placed, &faces)?;
+        let mut dirs = Vec::with_capacity(placed.len());
+        let mut radius = Vec::with_capacity(placed.len());
+        for (i, p) in placed.iter().enumerate() {
+            let Some(d) = p.try_normalize() else {
+                return Err(ScfError::geometry(format!(
+                    "vertex {i} lies on the centroid and is not a star node"
+                )));
+            };
+            dirs.push(d);
+            radius.push(p.length());
+        }
+        let topo = Self::new(dirs, faces);
+        TriMesh::try_new(placed, topo.faces.clone())?;
+        Ok((topo, radius, origin))
+    }
+
     /// Subdivided icosahedron with outward, counter-clockwise faces.
+    ///
+    /// Used for `shape = "ellipsoid"` only. An imported mesh does not pass through this.
     pub fn icosphere(level: usize) -> Self {
         let t = (1.0 + 5.0_f64.sqrt()) / 2.0;
         let mut verts: Vec<DVec3> = [
@@ -293,6 +344,7 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::geometry::TriMesh;
     use std::f64::consts::PI;
 
     #[test]
@@ -314,5 +366,22 @@ mod tests {
         assert!(mesh.signed_volume() > 0.0);
         let v = 4.0 / 3.0 * PI * 1000.0;
         assert!((mesh.signed_volume() / v - 1.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn an_imported_mesh_keeps_every_vertex_and_face() {
+        let cube = TriMesh::unit_cube();
+        let shift = DVec3::new(3.0, -2.0, 5.0);
+        let moved: Vec<DVec3> = cube.vertices.iter().map(|v| *v + shift).collect();
+        let (topo, radius, origin) = Topology::star_from_mesh(&moved, cube.faces.clone()).unwrap();
+        assert_eq!(topo.n_vertices(), cube.vertices.len());
+        assert_eq!(topo.n_faces(), cube.faces.len());
+        assert_ne!(topo.n_vertices(), 162);
+        assert_ne!(topo.n_faces(), 320);
+        assert!((origin - shift).length() < 1e-12);
+        for (i, v) in moved.iter().enumerate() {
+            let back = topo.dirs[i] * radius[i] + origin;
+            assert!((back - *v).length() < 1e-12, "{i}");
+        }
     }
 }

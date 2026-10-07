@@ -5,6 +5,8 @@
 //! both are called, never re-implemented.
 
 pub mod basis;
+#[cfg(target_os = "macos")]
+mod basis_gpu;
 pub mod body;
 pub mod classify;
 pub mod error;
@@ -19,6 +21,7 @@ pub mod params;
 pub mod quad;
 pub mod relax;
 pub mod socp;
+mod socp_gpu;
 pub mod spin;
 pub mod stokes;
 pub mod transport;

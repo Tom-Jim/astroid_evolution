@@ -3,10 +3,12 @@ using namespace metal;
 using namespace metal::raytracing;
 
 // Fused RTFP field. One threadgroup owns one sample point; each thread owns a
-// strided set of Lebedev rays. Crossings stay in a private array, chords are
-// paired by occupancy parity, and every density kernel is integrated on the
-// spot: the α = 1 antiderivative, or a fixed Gauss–Legendre rule otherwise.
-// The threadgroup then tree-reduces the ten field components. No atomics.
+// strided set of Lebedev rays. Hardware hit distances stay f32 because the
+// acceleration structure is f32. Chord sums stay double-single. Crossings stay
+// in a private array, chords are paired by occupancy parity, and every density
+// kernel is integrated on the spot. The threadgroup then tree-reduces the ten
+// field components. No atomics. TG stays a power of two: a wider group moved
+// the Werner residual over the accepted tolerance.
 
 #define TG 256u
 #define MAX_MERGED 128u
@@ -19,11 +21,6 @@ struct GpuPoint {
 
 struct GpuRay {
     float dx, dy, dz, weight;
-};
-
-struct GpuRange {
-    uint begin;
-    uint count;
 };
 
 struct GpuKernel {
@@ -39,6 +36,8 @@ struct GpuNode {
 struct FieldParams {
     uint kernel_count;
     uint node_count;
+    uint node_hi;
+    uint ray_count;
     uint want_potential;
     uint want_hessian;
     float bulk;
@@ -183,6 +182,25 @@ inline void add_alpha_one(
     acc.h = ds_add(acc.h, ds_mul(c, ih));
 }
 
+inline float log1p_f(float x) {
+    if (fabs(x) < 1.0e-4f) {
+        return x - 0.5f * x * x;
+    }
+    return log(1.0f + x);
+}
+
+inline float expm1_f(float x) {
+    if (fabs(x) < 1.0e-4f) {
+        return x + 0.5f * x * x;
+    }
+    return exp(x) - 1.0f;
+}
+
+// One Gauss–Legendre panel in R (§3.3). Sixteen nodes resolve a scale of about
+// span/16; a chord longer than 8d is integrated again at 32 nodes. Node values
+// stay f32 because the hit distance and the coefficients already are. The
+// running sum is double-single. I_H keeps the finite part
+// a0^{-α} ln(R⁺/R⁻) + ∫ (D^{-α} − a0^{-α})/R dR.
 inline void add_general(
     thread Scalar& acc,
     float alpha,
@@ -194,65 +212,58 @@ inline void add_general(
     float r1,
     ds ln_ratio,
     uint node_count,
+    uint node_hi,
     device const GpuNode* nodes,
     uint want_u,
     uint want_h
 ) {
-    ds db = ds_from_float(b);
-    ds dd = ds_from_float(d);
-    ds da0 = ds_from_float(a0);
-    ds s0 = ds_asinh(ds_div(ds_sub(ds_from_float(r0), db), dd));
-    ds s1 = ds_asinh(ds_div(ds_sub(ds_from_float(r1), db), dd));
-    float span = (s1.hi + s1.lo) - (s0.hi + s0.lo);
-    uint panels = 1u;
-    if (isfinite(span) && span > 0.0f) {
-        float rounded = ceil(span);
-        panels = rounded > 128.0f ? 128u : max((uint)rounded, 1u);
+    if (!(a0 > 0.0f) || !isfinite(a0)) {
+        return;
     }
-    float h = (panels == 0u) ? 0.0f : span / float(panels);
-    ds amp = ds_pow(dd, 1.0f - 2.0f * alpha);
-    ds a0_pow = ds_pow(da0, -alpha);
+    float span = r1 - r0;
+    if (!(span > 0.0f) || node_count == 0u) {
+        return;
+    }
+    uint nnode = node_count;
+    uint base = 0u;
+    if (node_hi != 0u && span > 8.0f * d) {
+        nnode = node_hi;
+        base = node_count;
+    }
+    float half_span = 0.5f * span;
+    float mid = 0.5f * (r0 + r1);
+    float a0_pow = pow(a0, -alpha);
     float reg_scale = 1.0e-14f * (fabs(b) + d);
     ds iu = ds_zero();
     ds ig = ds_zero();
     ds ih = ds_zero();
-    float s_base = s0.hi + s0.lo;
-    for (uint p = 0u; p < panels; ++p) {
-        float lo = s_base + h * float(p);
-        for (uint n = 0u; n < node_count; ++n) {
-            float s = lo + 0.5f * h * (nodes[n].x + 1.0f);
-            float gw = 0.5f * h * nodes[n].w;
-            ds sd = ds_from_float(s);
-            ds ch = ds_cosh(sd);
-            ds radius = ds_add(db, ds_mul(dd, ds_sinh(sd)));
-            if (radius.hi < 0.0f) {
-                radius = ds_zero();
-            }
-            ds shape = ds_mul(amp, ds_pow(ch, 1.0f - 2.0f * alpha));
-            ds wd = ds_from_float(gw);
-            iu = ds_add(iu, ds_mul(ds_mul(wd, shape), radius));
-            ig = ds_add(ig, ds_mul(wd, shape));
-            if (want_h != 0u) {
-                float rf = radius.hi + radius.lo;
-                ds regular;
-                if (rf > reg_scale) {
-                    ds arg = ds_div(
-                        ds_mul(radius, ds_sub(radius, ds_mul(ds_from_float(2.0f), db))),
-                        da0);
-                    regular = ds_div(
-                        ds_mul(a0_pow, ds_expm1(ds_mul(ds_from_float(-alpha), ds_ln1p(arg)))),
-                        radius);
+    for (uint n = 0u; n < nnode; ++n) {
+        GpuNode node = nodes[base + n];
+        float radius = mid + half_span * node.x;
+        float gw = half_span * node.w;
+        float delta = radius - b;
+        float shape = pow(delta * delta + d * d, -alpha);
+        ds wd = ds_from_float(gw);
+        ds dens = ds_from_float(shape);
+        iu = ds_add(iu, ds_mul(ds_mul(wd, dens), ds_from_float(radius)));
+        ig = ds_add(ig, ds_mul(wd, dens));
+        if (want_h != 0u) {
+            float regular;
+            if (!(radius > reg_scale)) {
+                regular = (2.0f * alpha * b * a0_pow) / a0;
+            } else {
+                float arg = radius * (radius - 2.0f * b) / a0;
+                if (arg > -1.0f) {
+                    regular = a0_pow * expm1_f(-alpha * log1p_f(arg)) / radius;
                 } else {
-                    regular = ds_div(
-                        ds_mul(ds_from_float(2.0f * alpha * b), a0_pow),
-                        da0);
+                    regular = (shape - a0_pow) / radius;
                 }
-                ih = ds_add(ih, ds_mul(ds_mul(wd, regular), ds_mul(dd, ch)));
             }
+            ih = ds_add(ih, ds_mul(wd, ds_from_float(regular)));
         }
     }
     if (want_h != 0u) {
-        ih = ds_add(ih, ds_mul(a0_pow, ln_ratio));
+        ih = ds_add(ih, ds_mul(ds_from_float(a0_pow), ln_ratio));
     }
     ds c = ds_from_float(coeff);
     if (want_u != 0u || want_h != 0u) {
@@ -274,6 +285,7 @@ inline void integrate_chord(
     float bulk,
     uint kernel_count,
     uint node_count,
+    uint node_hi,
     uint want_u,
     uint want_h,
     device const GpuKernel* kernels,
@@ -312,8 +324,8 @@ inline void integrate_chord(
             add_alpha_one(acc, b, d, a0, src.coeff, r0, r1, ln_ratio, want_u, want_h);
         } else {
             add_general(
-                acc, src.alpha, b, d, a0, src.coeff, r0, r1, ln_ratio, node_count, nodes, want_u,
-                want_h);
+                acc, src.alpha, b, d, a0, src.coeff, r0, r1, ln_ratio, node_count, node_hi, nodes,
+                want_u, want_h);
         }
     }
 }
@@ -350,19 +362,17 @@ inline void reduce10(
 
 kernel void rtfp_field(
     device const GpuPoint* points [[buffer(0)]],
-    device const GpuRange* ranges [[buffer(1)]],
-    device const GpuRay* rays [[buffer(2)]],
-    device const GpuKernel* kernels [[buffer(3)]],
-    device const GpuNode* nodes [[buffer(4)]],
-    constant FieldParams& params [[buffer(5)]],
-    device float* out [[buffer(6)]],
-    device uint* flags [[buffer(7)]],
-    primitive_acceleration_structure accel [[buffer(8)]],
+    device const GpuRay* rays [[buffer(1)]],
+    device const GpuKernel* kernels [[buffer(2)]],
+    device const GpuNode* nodes [[buffer(3)]],
+    constant FieldParams& params [[buffer(4)]],
+    device float* out [[buffer(5)]],
+    device uint* flags [[buffer(6)]],
+    primitive_acceleration_structure accel [[buffer(7)]],
     uint tid [[thread_index_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]]
 ) {
     GpuPoint pt = points[tgid];
-    GpuRange range = ranges[tgid];
     float3 origin_u = float3(pt.ox, pt.oy, pt.oz);
     float3 world = float3(pt.wx, pt.wy, pt.wz);
     uint want_h = params.want_hessian;
@@ -375,8 +385,8 @@ kernel void rtfp_field(
     bool overflow = false;
     float merged[MAX_MERGED];
 
-    for (uint i = tid; i < range.count; i += TG) {
-        GpuRay ray = rays[range.begin + i];
+    for (uint i = tid; i < params.ray_count; i += TG) {
+        GpuRay ray = rays[i];
         if (!isfinite(ray.weight) || ray.weight == 0.0f) {
             continue;
         }
@@ -401,7 +411,7 @@ kernel void rtfp_field(
             if (open_r >= 0.0f) {
                 integrate_chord(
                     acc, open_r, t, world, -dir, params.ell, params.bulk, params.kernel_count,
-                    params.node_count, want_u, want_h, kernels, nodes);
+                    params.node_count, params.node_hi, want_u, want_h, kernels, nodes);
                 open_r = -1.0f;
             } else {
                 open_r = t;

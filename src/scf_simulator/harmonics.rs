@@ -150,20 +150,24 @@ impl SurfaceFit {
 
     /// Radius and analytic outward unit normal of the surface `r = R(ω̂)` at the direction `w`.
     pub fn normal(&self, w: DVec3) -> (f64, DVec3) {
-        let x = [
-            Jet::var(0, w.x, 1),
-            Jet::var(1, w.y, 1),
-            Jet::var(2, w.z, 1),
-        ];
-        let r2 = x[0].mul(&x[0]).add(&x[1].mul(&x[1])).add(&x[2].mul(&x[2]));
-        let inv = r2.sqrt().recip();
-        let u = [x[0].mul(&inv), x[1].mul(&inv), x[2].mul(&inv)];
-        let r = self.radius_jet(&sh_jets(self.l_max, &u));
-        // `∇F = e_r − R⁻¹ ∇_S R` for `F = r − R(ω̂)`; the jet gradient at |x| = 1 is `∇_S R`.
-        let g = r.grad();
-        let k = 1.0 / r.val();
-        let n = DVec3::new(w.x - g[0] * k, w.y - g[1] * k, w.z - g[2] * k);
-        (r.val(), n.try_normalize().unwrap_or(w))
+        self.normals(std::slice::from_ref(&w))
+            .into_iter()
+            .next()
+            .unwrap_or((0.0, w))
+    }
+
+    /// Radius and outward unit normal at every direction, one GPU launch.
+    pub fn normals(&self, dirs: &[DVec3]) -> Vec<(f64, DVec3)> {
+        #[cfg(target_os = "macos")]
+        {
+            return super::basis_gpu::normals(self, dirs)
+                .unwrap_or_else(|err| panic!("surface normal GPU: {err}"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = dirs;
+            panic!("surface normal requires Metal");
+        }
     }
 }
 

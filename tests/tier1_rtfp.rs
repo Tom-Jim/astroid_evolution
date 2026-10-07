@@ -270,6 +270,30 @@ fn contact_term_gives_the_poisson_trace() {
 }
 
 #[test]
+fn general_alpha_keeps_the_poisson_trace() {
+    // Wide kernels, so one 16-node panel resolves the chord. The trace identity
+    // is the finite-part check for α ≠ 1 (§3.3, §3.9).
+    for alpha in [1.2, 0.55, 2.4] {
+        let density = cauchy(&[([0.0, 0.0, 0.0], 2.0, 1.0, alpha)], 0.3);
+        let mesh = TriMesh::uv_sphere(20, 1.0);
+        let solver = solver(&mesh, density.clone());
+        let inside = DVec3::new(0.2, 0.1, -0.3);
+        let outside = DVec3::new(0.0, 0.0, 2.2);
+        let batch = eval(&solver, &[inside, outside], PointRole::Field);
+        let trace = |i: usize| batch.hessian[i][0] + batch.hessian[i][1] + batch.hessian[i][2];
+        let scale = 4.0 * PI * G * density.rho(inside);
+        assert!(
+            relative(trace(0), -scale, 1e-300) <= TOLERANCE,
+            "α = {alpha}: interior trace"
+        );
+        assert!(
+            trace(1).abs() <= TOLERANCE * scale,
+            "α = {alpha}: exterior trace"
+        );
+    }
+}
+
+#[test]
 fn polyhedron_volume_matches_the_divergence_formula() {
     let cube = uniform_integrals(&TriMesh::unit_cube(), 3.0);
     assert!((cube.volume - 8.0).abs() < 1e-12);

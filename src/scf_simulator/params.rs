@@ -16,7 +16,8 @@ use super::error::ScfError;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BodySpec {
-    /// Icosphere subdivision level; `20 * 4^level` faces, fixed for the whole run.
+    /// Icosphere subdivision for `shape = "ellipsoid"` only (`20 * 4^level` faces).
+    /// An imported mesh keeps every vertex and face; this field is not a resampling.
     pub level: usize,
     /// `"ellipsoid"` or `"mesh"`.
     pub shape: String,

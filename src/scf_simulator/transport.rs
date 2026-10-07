@@ -103,16 +103,164 @@ fn barycentric(a: DVec3, b: DVec3, c: DVec3, p: DVec3) -> Option<[f64; 3]> {
     Some([l[0] / s, l[1] / s, l[2] / s])
 }
 
-/// Barycentric interpolation of a vertex field at the direction `p` (nearest-vertex ring search).
-pub fn interp_vertex_field(topo: &Topology, field: &[f64], p: DVec3) -> f64 {
-    let nearest = (0..topo.n_vertices())
-        .max_by(|a, b| {
-            topo.dirs[*a]
-                .dot(p)
-                .partial_cmp(&topo.dirs[*b].dot(p))
-                .unwrap()
-        })
-        .unwrap();
+/// Cube bins of unit directions. Nearest neighbour is the maximum dot product.
+/// An exact tie keeps the later index, matching `Iterator::max_by`.
+pub struct DirIndex {
+    g: usize,
+    cell: f64,
+    start: Vec<u32>,
+    items: Vec<u32>,
+}
+
+impl DirIndex {
+    pub fn build(dirs: &[DVec3]) -> Self {
+        let g = {
+            let guess = (dirs.len() as f64).sqrt() * 0.5;
+            guess.round() as usize
+        }
+        .clamp(8, 48);
+        let ncell = g * g * g;
+        let mut counts = vec![0u32; ncell];
+        let mut cells = Vec::with_capacity(dirs.len());
+        for d in dirs {
+            let c = cell_of(*d, g);
+            counts[c] += 1;
+            cells.push(c);
+        }
+        let mut start = vec![0u32; ncell + 1];
+        for i in 0..ncell {
+            start[i + 1] = start[i] + counts[i];
+        }
+        let mut cursor = start.clone();
+        let mut items = vec![0u32; dirs.len()];
+        for (i, c) in cells.into_iter().enumerate() {
+            let slot = cursor[c] as usize;
+            items[slot] = i as u32;
+            cursor[c] += 1;
+        }
+        Self {
+            g,
+            cell: 2.0 / g as f64,
+            start,
+            items,
+        }
+    }
+
+    pub fn nearest(&self, dirs: &[DVec3], p: DVec3) -> usize {
+        if dirs.is_empty() {
+            return 0;
+        }
+        let g = self.g;
+        let (ix, iy, iz) = cell_xyz(p, g);
+        let mut best_i = 0usize;
+        let mut best_dot = f64::NEG_INFINITY;
+        for rad in 0..g {
+            let x0 = ix.saturating_sub(rad);
+            let x1 = (ix + rad).min(g - 1);
+            let y0 = iy.saturating_sub(rad);
+            let y1 = (iy + rad).min(g - 1);
+            let z0 = iz.saturating_sub(rad);
+            let z1 = (iz + rad).min(g - 1);
+            for x in x0..=x1 {
+                for y in y0..=y1 {
+                    for z in z0..=z1 {
+                        let shell = rad == 0
+                            || x == x0
+                            || x == x1
+                            || y == y0
+                            || y == y1
+                            || z == z0
+                            || z == z1;
+                        if !shell {
+                            continue;
+                        }
+                        let c = (x * g + y) * g + z;
+                        for &idx in &self.items[self.start[c] as usize..self.start[c + 1] as usize]
+                        {
+                            let i = idx as usize;
+                            let dot = dirs[i].dot(p);
+                            match dot.partial_cmp(&best_dot) {
+                                Some(std::cmp::Ordering::Greater) => {
+                                    best_dot = dot;
+                                    best_i = i;
+                                }
+                                Some(std::cmp::Ordering::Equal) if i > best_i => best_i = i,
+                                Some(_) => {}
+                                None => panic!("direction search hit a non-finite dot product"),
+                            }
+                        }
+                    }
+                }
+            }
+            if best_dot.is_finite() {
+                let lo = [
+                    edge(x0, self.cell),
+                    edge(y0, self.cell),
+                    edge(z0, self.cell),
+                ];
+                let hi = [
+                    edge(x1 + 1, self.cell),
+                    edge(y1 + 1, self.cell),
+                    edge(z1 + 1, self.cell),
+                ];
+                let chord2 = (2.0 - 2.0 * best_dot).max(0.0);
+                if chord2 < dist_out_sq(p, lo, hi) * (1.0 - 1e-12) {
+                    break;
+                }
+            }
+        }
+        best_i
+    }
+}
+
+fn edge(i: usize, cell: f64) -> f64 {
+    -1.0 + i as f64 * cell
+}
+
+fn cell_xyz(p: DVec3, g: usize) -> (usize, usize, usize) {
+    let axis = |t: f64| {
+        let i = ((t + 1.0) * 0.5 * g as f64).floor() as isize;
+        i.clamp(0, g as isize - 1) as usize
+    };
+    (axis(p.x), axis(p.y), axis(p.z))
+}
+
+fn cell_of(p: DVec3, g: usize) -> usize {
+    let (x, y, z) = cell_xyz(p, g);
+    (x * g + y) * g + z
+}
+
+/// Distance squared from `p` to the nearest point of the domain cube that lies outside `lo..hi`.
+fn dist_out_sq(p: DVec3, lo: [f64; 3], hi: [f64; 3]) -> f64 {
+    const LIM: f64 = 1.0 - 1e-15;
+    if lo[0] <= -LIM
+        && hi[0] >= LIM
+        && lo[1] <= -LIM
+        && hi[1] >= LIM
+        && lo[2] <= -LIM
+        && hi[2] >= LIM
+    {
+        return f64::INFINITY;
+    }
+    let px = [p.x, p.y, p.z];
+    let mut gap = f64::INFINITY;
+    for a in 0..3 {
+        if lo[a] > -1.0 {
+            gap = gap.min(px[a] - lo[a]);
+        }
+        if hi[a] < 1.0 {
+            gap = gap.min(hi[a] - px[a]);
+        }
+    }
+    if gap <= 0.0 { 0.0 } else { gap * gap }
+}
+
+/// Barycentric interpolation of a vertex field at the direction `p`.
+///
+/// `index` is built once for `topo.dirs`. The face ring around the nearest vertex
+/// is unchanged: the triangle that contains `p`, then its neighbours.
+pub fn interp_vertex_field(topo: &Topology, index: &DirIndex, field: &[f64], p: DVec3) -> f64 {
+    let nearest = index.nearest(&topo.dirs, p);
     let mut seen: Vec<usize> = topo.vertex_faces[nearest].clone();
     let first = seen.clone();
     for f in first {
@@ -350,5 +498,52 @@ mod tests {
             .map(|i| out[i] * topo.dirs[i].y * topo.vertex_solid[i])
             .sum();
         assert!(cy_after > cy_before + 1e-3, "{cy_before} -> {cy_after}");
+    }
+
+    fn brute_nearest(dirs: &[DVec3], p: DVec3) -> usize {
+        (0..dirs.len())
+            .max_by(|a, b| dirs[*a].dot(p).partial_cmp(&dirs[*b].dot(p)).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn direction_grid_matches_the_linear_scan() {
+        let topo = Topology::icosphere(4);
+        let index = DirIndex::build(&topo.dirs);
+        for d in &topo.dirs {
+            assert_eq!(index.nearest(&topo.dirs, *d), brute_nearest(&topo.dirs, *d));
+        }
+        let golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+        for i in 0..40 {
+            let z = 1.0 - 2.0 * (i as f64 + 0.5) / 40.0;
+            let r = (1.0 - z * z).sqrt();
+            let p = DVec3::new(
+                r * (golden * i as f64).cos(),
+                r * (golden * i as f64).sin(),
+                z,
+            );
+            assert_eq!(index.nearest(&topo.dirs, p), brute_nearest(&topo.dirs, p));
+        }
+        let mut dirs = topo.dirs.clone();
+        dirs.push(dirs[3]);
+        let tied = DirIndex::build(&dirs);
+        assert_eq!(tied.nearest(&dirs, dirs[3]), brute_nearest(&dirs, dirs[3]));
+        assert_eq!(brute_nearest(&dirs, dirs[3]), dirs.len() - 1);
+        let field: Vec<f64> = (0..topo.n_vertices())
+            .map(|i| (i as f64 * 0.17).sin())
+            .collect();
+        let face = topo.faces[10];
+        let mid = (topo.dirs[face[0] as usize]
+            + topo.dirs[face[1] as usize]
+            + topo.dirs[face[2] as usize])
+            .try_normalize()
+            .unwrap();
+        let nearest = index.nearest(&topo.dirs, mid);
+        assert_eq!(nearest, brute_nearest(&topo.dirs, mid));
+        let value = interp_vertex_field(&topo, &index, &field, mid);
+        let [i, j, k] = face.map(|v| v as usize);
+        let span = [field[i], field[j], field[k], field[nearest]];
+        assert!(value >= span.into_iter().fold(f64::INFINITY, f64::min) - 1e-12);
+        assert!(value <= span.into_iter().fold(f64::NEG_INFINITY, f64::max) + 1e-12);
     }
 }

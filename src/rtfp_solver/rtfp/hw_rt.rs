@@ -141,7 +141,10 @@ mod metal_rt {
         "\n",
         include_str!("field_kernel.metal"),
     );
+    /// Power-of-two group. The butterfly reduction is wrong for any other width,
+    /// and a 320-wide field group pushed the Werner residual over `1e-2`.
     const FIELD_THREADS: usize = 256;
+    const MOMENT_THREADS: usize = 256;
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {}
@@ -197,11 +200,14 @@ mod metal_rt {
         let trace = pipeline(&device, &library, "trace")?;
         let field = pipeline(&device, &library, "rtfp_field")?;
         let moments = pipeline(&device, &library, "rtfp_moments")?;
-        for (name, state) in [("rtfp_field", &field), ("rtfp_moments", &moments)] {
+        for (name, state, need) in [
+            ("rtfp_field", &field, FIELD_THREADS),
+            ("rtfp_moments", &moments, MOMENT_THREADS),
+        ] {
             let width = state.maxTotalThreadsPerThreadgroup();
-            if width < FIELD_THREADS {
+            if width < need {
                 return Err(format!(
-                    "{name} supports {width} threads per group; RTFP uses {FIELD_THREADS}"
+                    "{name} supports {width} threads per group; RTFP uses {need}"
                 ));
             }
         }
@@ -398,12 +404,6 @@ mod metal_rt {
     }
 
     #[repr(C)]
-    struct GpuRange {
-        begin: u32,
-        count: u32,
-    }
-
-    #[repr(C)]
     struct GpuKernel {
         cx: f32,
         cy: f32,
@@ -417,6 +417,8 @@ mod metal_rt {
     struct FieldParams {
         kernel_count: u32,
         node_count: u32,
+        node_hi: u32,
+        ray_count: u32,
         want_potential: u32,
         want_hessian: u32,
         bulk: f32,
@@ -482,12 +484,12 @@ mod metal_rt {
         points: &[DVec3],
         thetas: &[f64],
         rhos: &[f64],
-        ranges: &[[u32; 2]],
         dirs: &[DVec3],
         weights: &[f64],
         bulk: f64,
         kernels: &[DeviceKernel],
         nodes: &[[f32; 2]],
+        node_base: u32,
         g: f64,
         want_potential: bool,
         want_hessian: bool,
@@ -517,13 +519,6 @@ mod metal_rt {
                 }
             })
             .collect();
-        let gpu_ranges: Vec<GpuRange> = ranges
-            .iter()
-            .map(|r| GpuRange {
-                begin: r[0],
-                count: r[1],
-            })
-            .collect();
         let gpu_rays: Vec<GpuRay> = dirs
             .iter()
             .zip(weights)
@@ -535,9 +530,14 @@ mod metal_rt {
             })
             .collect();
         let gpu_kernels = pack_kernels(kernels);
+        if node_base as usize > nodes.len() {
+            return Err("Gauss node table is shorter than the base rule".into());
+        }
         let params = FieldParams {
             kernel_count: gpu_kernels.len() as u32,
-            node_count: nodes.len() as u32,
+            node_count: node_base,
+            node_hi: nodes.len() as u32 - node_base,
+            ray_count: gpu_rays.len() as u32,
             want_potential: u32::from(want_potential),
             want_hessian: u32::from(want_hessian),
             bulk: bulk as f32,
@@ -551,7 +551,6 @@ mod metal_rt {
         };
         let options = MTLResourceOptions::StorageModeShared;
         let point_buffer = buffer_with(&core.device, &gpu_points)?;
-        let range_buffer = buffer_with(&core.device, &gpu_ranges)?;
         let ray_buffer = buffer_with(&core.device, &gpu_rays)?;
         let kernel_buffer = buffer_with(&core.device, &gpu_kernels)?;
         let node_buffer = buffer_with(&core.device, nodes)?;
@@ -575,18 +574,17 @@ mod metal_rt {
         encoder.setComputePipelineState(&core.field);
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(point_buffer.as_ref()), 0, 0);
-            encoder.setBuffer_offset_atIndex(Some(range_buffer.as_ref()), 0, 1);
-            encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 2);
-            encoder.setBuffer_offset_atIndex(Some(kernel_buffer.as_ref()), 0, 3);
-            encoder.setBuffer_offset_atIndex(Some(node_buffer.as_ref()), 0, 4);
+            encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(kernel_buffer.as_ref()), 0, 2);
+            encoder.setBuffer_offset_atIndex(Some(node_buffer.as_ref()), 0, 3);
             encoder.setBytes_length_atIndex(
                 NonNull::from(&params).cast::<c_void>(),
                 std::mem::size_of::<FieldParams>(),
-                5,
+                4,
             );
-            encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 6);
-            encoder.setBuffer_offset_atIndex(Some(flags.as_ref()), 0, 7);
-            encoder.setAccelerationStructure_atBufferIndex(Some(built.accel.as_ref()), 8);
+            encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 5);
+            encoder.setBuffer_offset_atIndex(Some(flags.as_ref()), 0, 6);
+            encoder.setAccelerationStructure_atBufferIndex(Some(built.accel.as_ref()), 7);
         }
         encoder.dispatchThreadgroups_threadsPerThreadgroup(
             MTLSize {
@@ -714,7 +712,7 @@ mod metal_rt {
                 depth: 1,
             },
             MTLSize {
-                width: FIELD_THREADS,
+                width: MOMENT_THREADS,
                 height: 1,
                 depth: 1,
             },
@@ -735,7 +733,6 @@ mod metal_rt {
         }
         Ok(col)
     }
-
 }
 
 #[cfg(target_os = "macos")]
@@ -757,12 +754,13 @@ pub(crate) struct FieldJob<'a> {
     pub points: &'a [DVec3],
     pub thetas: &'a [f64],
     pub rhos: &'a [f64],
-    pub ranges: &'a [[u32; 2]],
     pub dirs: &'a [DVec3],
     pub weights: &'a [f64],
     pub bulk: f64,
     pub kernels: &'a [DeviceKernel],
     pub nodes: &'a [[f32; 2]],
+    /// Length of the base rule at the front of `nodes`. The 32-node rule follows it.
+    pub node_base: u32,
     pub g: f64,
     pub want_potential: bool,
     pub want_hessian: bool,
@@ -853,12 +851,12 @@ impl HardwareMesh {
                 job.points,
                 job.thetas,
                 job.rhos,
-                job.ranges,
                 job.dirs,
                 job.weights,
                 job.bulk,
                 job.kernels,
                 job.nodes,
+                job.node_base,
                 job.g,
                 job.want_potential,
                 job.want_hessian,

@@ -43,17 +43,20 @@ impl Default for RtfpOptions {
     }
 }
 
-/// Rays kept in one GPU launch.
-const GROUP_RAYS: usize = 1_500_000;
-const MAX_GROUP: usize = 256;
+/// Complete field points in one command buffer. Every point still integrates the
+/// full Lebedev rule; the split is only between points, so a partial launch is
+/// the same sum. `output/out.obj` has 196608 faces and fits in one launch.
+const POINTS_PER_LAUNCH: usize = 262_144;
 
 pub struct RtfpSolver {
     options: RtfpOptions,
     mesh: TriMesh,
     density: CauchyDensity,
     medium: Medium,
-    /// Gauss–Legendre nodes for kernels whose `α` is not 1, and for mass moments.
+    /// Base Gauss–Legendre rule, then the 32-node rule used on long chords.
+    /// Mass moments read only the base prefix.
     quad: Vec<[f32; 2]>,
+    quad_base: usize,
     hw: HardwareMesh,
 }
 
@@ -76,9 +79,13 @@ impl RtfpSolver {
         }
         mesh.validate_solid()?;
         let hw = HardwareMesh::build(&mesh)?;
+        let mut quad = legendre_nodes(options.radial_nodes.max(16));
+        let quad_base = quad.len();
+        quad.extend(legendre_nodes(32));
         Ok(Self {
             medium: Medium::new(&density),
-            quad: legendre_nodes(options.radial_nodes.max(16)),
+            quad,
+            quad_base,
             options,
             mesh,
             density,
@@ -127,7 +134,7 @@ impl RtfpSolver {
             theta: vec![0.0; n],
             solid_angle: vec![0.0; n],
         };
-        let group = (GROUP_RAYS / lebedev::COUNT).clamp(1, MAX_GROUP);
+        let group = POINTS_PER_LAUNCH;
         let mut start = 0;
         while start < n {
             let end = (start + group).min(n);
@@ -171,8 +178,6 @@ impl RtfpSolver {
             out.theta[i] = theta;
             out.solid_angle[i] = solid;
         }
-        let count = sphere.dirs.len() as u32;
-        let ranges = vec![[0u32, count]; xs.len()];
         let kernels: Vec<DeviceKernel> = self
             .medium
             .kernels()
@@ -188,12 +193,12 @@ impl RtfpSolver {
             points: xs,
             thetas: &thetas,
             rhos: &rhos,
-            ranges: &ranges,
             dirs: &sphere.dirs,
             weights: &sphere.weights,
             bulk: self.medium.bulk(),
             kernels: &kernels,
             nodes: &self.quad,
+            node_base: self.quad_base as u32,
             g: self.options.g,
             want_potential: want.potential,
             want_hessian: want.hessian,

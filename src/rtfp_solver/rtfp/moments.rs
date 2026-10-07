@@ -50,7 +50,7 @@ impl RtfpSolver {
             &sphere.weights,
             self.medium.bulk(),
             &kernels,
-            &self.quad,
+            &self.quad[..self.quad_base],
             finest,
             MAX_PANELS,
         )?;

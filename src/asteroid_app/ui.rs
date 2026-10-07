@@ -44,7 +44,7 @@ pub fn spawn_scene(
     commands.spawn((
         DirectionalLight {
             illuminance: 3000.0,
-            shadows_enabled: false,
+            shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, 0.6, 2.8, 0.0)),
@@ -53,7 +53,7 @@ pub fn spawn_scene(
         Hud,
         Text::new(""),
         TextFont {
-            font_size: 16.0,
+            font_size: FontSize::Px(16.0),
             ..default()
         },
         TextColor(Color::srgb(0.92, 0.94, 0.96)),

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::common::density::CauchyKernel;
-use crate::common::geometry::TriMesh;
 use crate::common::math::DVec3;
 use crate::rtfp_solver::io::{ImportRequest, load_mesh_file};
 
@@ -14,7 +13,7 @@ use super::body::{Body, Topology};
 use super::error::ScfError;
 use super::params::Project;
 
-const FORMAT: &str = "scf-snapshot-v2";
+const FORMAT: &str = "scf-snapshot-v3";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KernelRecord {
@@ -27,7 +26,13 @@ pub struct KernelRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub format: String,
+    /// Ellipsoid subdivision. An imported mesh stores its own directions and faces;
+    /// this value is not used to rebuild that mesh.
     pub level: usize,
+    /// Unit directions of the star nodes, one per vertex.
+    pub dirs: Vec<[f64; 3]>,
+    /// Imported or ellipsoid triangles. Vertex order matches `dirs` and `radius`.
+    pub faces: Vec<[u32; 3]>,
     pub bulk: f64,
     pub kernels: Vec<KernelRecord>,
     pub radius: Vec<f64>,
@@ -56,6 +61,8 @@ impl Snapshot {
         Self {
             format: FORMAT.into(),
             level,
+            dirs: body.topo.dirs.iter().map(|d| d.to_array()).collect(),
+            faces: body.topo.faces.clone(),
             bulk: body.bulk,
             kernels: body
                 .kernels
@@ -79,7 +86,15 @@ impl Snapshot {
     }
 
     pub fn to_body(&self) -> Result<Body, ScfError> {
-        let topo = Arc::new(Topology::icosphere(self.level));
+        if self.dirs.len() != self.radius.len() || self.dirs.len() != self.rho_s.len() {
+            return Err(ScfError::io(
+                "snapshot directions, radii and ρ_s differ in length",
+            ));
+        }
+        let topo = Arc::new(Topology::new(
+            self.dirs.iter().copied().map(DVec3::from_array).collect(),
+            self.faces.clone(),
+        ));
         let kernels = self
             .kernels
             .iter()
@@ -131,10 +146,12 @@ fn ensure_parent(path: &Path) -> Result<(), ScfError> {
 
 /// `ρ_s⁰ = ρ_bulk h_s` and the initial star-shaped polyhedron of the project.
 pub fn initial_body(project: &Project) -> Result<Body, ScfError> {
-    let topo = Arc::new(Topology::icosphere(project.body.level));
-    let nv = topo.n_vertices();
-    let radius = match project.body.shape.as_str() {
-        "ellipsoid" => Body::ellipsoid(topo.clone(), project.body.semi_axes.expect("validated")),
+    match project.body.shape.as_str() {
+        "ellipsoid" => {
+            let topo = Arc::new(Topology::icosphere(project.body.level));
+            let radius = Body::ellipsoid(topo.clone(), project.body.semi_axes.expect("validated"));
+            assemble(project, topo, radius, project.kernels())
+        }
         _ => {
             let path = project.resolve(project.body.mesh.as_deref().expect("validated"));
             let doc = load_mesh_file(ImportRequest {
@@ -142,20 +159,45 @@ pub fn initial_body(project: &Project) -> Result<Body, ScfError> {
                 length_unit: project.body.mesh_unit.as_deref(),
                 reconstruct: None,
             })?;
-            let n = doc.mesh.vertices.len() as f64;
-            let mut origin = DVec3::ZERO;
-            for v in &doc.mesh.vertices {
-                origin = origin + *v;
-            }
-            let origin = origin * (1.0 / n);
-            let shifted: Vec<DVec3> = doc.mesh.vertices.iter().map(|v| *v - origin).collect();
-            let mesh = TriMesh::try_new(shifted, doc.mesh.faces.clone())?;
-            Body::radii_from_mesh(&mesh, DVec3::ZERO, &topo.dirs)?
+            mesh_body(project, &doc.mesh.vertices, doc.mesh.faces.clone()).map(|(body, _)| body)
         }
-    };
+    }
+}
+
+/// Star body of an imported triangle mesh.
+///
+/// Vertices and faces are the mesh itself, centred on the vertex mean. Radial cones
+/// that overlap are separated tangentially at constant radius. Cauchy centres
+/// move by the same translation, so the density stays attached to the polyhedron.
+/// The returned origin is that vertex mean in the input frame (§10.4.4 step 8b maps
+/// the evolved body back by this shift). Updating `radius[i]` later moves vertex `i`.
+pub fn mesh_body(
+    project: &Project,
+    vertices: &[DVec3],
+    faces: Vec<[u32; 3]>,
+) -> Result<(Body, DVec3), ScfError> {
+    let (topo, radius, origin) = Topology::star_from_mesh(vertices, faces)?;
+    let kernels = project
+        .kernels()
+        .into_iter()
+        .map(|k| {
+            CauchyKernel::try_new(k.center - origin, k.weight, k.sigma, k.alpha)
+                .map_err(ScfError::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let body = assemble(project, Arc::new(topo), radius, kernels)?;
+    Ok((body, origin))
+}
+
+fn assemble(
+    project: &Project,
+    topo: Arc<Topology>,
+    radius: Vec<f64>,
+    kernels: Vec<CauchyKernel>,
+) -> Result<Body, ScfError> {
     let rho_bulk = project.material.spec.rho_p * project.material.spec.nu0;
-    let rho_s = vec![rho_bulk * project.material.spec.h_s; nv];
-    Body::new(topo, radius, project.density.bulk, project.kernels(), rho_s)
+    let rho_s = vec![rho_bulk * project.material.spec.h_s; topo.n_vertices()];
+    Body::new(topo, radius, project.density.bulk, kernels, rho_s)
 }
 
 pub fn write_obj(path: &Path, body: &Body) -> Result<(), ScfError> {

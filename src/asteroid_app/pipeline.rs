@@ -20,15 +20,15 @@ use std::time::Duration;
 
 use nalgebra::{Matrix3, Vector3};
 
-use crate::common::geometry::tri_mesh::TriMesh;
 use crate::common::math::DVec3;
 use crate::rheo_friction::RheoGpu;
-use crate::rtfp_solver::io::mesh::{ImportRequest, load_mesh_file};
-use crate::scf_simulator::body::{Body, Topology};
+use crate::rtfp_solver::io::{ImportRequest, load_mesh_file};
+use crate::scf_simulator::body::Body;
 use crate::scf_simulator::error::ScfError;
 use crate::scf_simulator::evolve::{self, RunOptions, State, compose_frame};
 use crate::scf_simulator::forward::Forward;
 use crate::scf_simulator::frame::realign;
+use crate::scf_simulator::io::mesh_body;
 use crate::scf_simulator::params::Project;
 use crate::scf_simulator::relax::relax;
 use crate::scf_simulator::spin::SpinSchedule;
@@ -92,28 +92,17 @@ pub fn load_original(project: &Project) -> Result<Mesh, String> {
     })
 }
 
-/// Tier-2 body resampled from the smoothed mesh, as `initial_body` does for a file.
+/// Tier-2 body on the smoothed mesh's own vertices, as `initial_body` does for a file.
+///
 /// Returns the body and the vertex mean that was subtracted (tier-2 origin in the mesh frame).
+/// SCF moves these vertices; they are not resampled onto an icosphere.
 fn body_from_mesh(project: &Project, mesh: &Mesh) -> Result<(Body, DVec3), String> {
-    let n = mesh.vertices.len() as f64;
-    let origin = mesh
+    let vertices: Vec<DVec3> = mesh
         .vertices
         .iter()
-        .fold(DVec3::ZERO, |acc, v| acc + DVec3::new(v[0], v[1], v[2]))
-        * (1.0 / n);
-    let shifted: Vec<DVec3> = mesh
-        .vertices
-        .iter()
-        .map(|v| DVec3::new(v[0], v[1], v[2]) - origin)
+        .map(|v| DVec3::new(v[0], v[1], v[2]))
         .collect();
-    let tri = TriMesh::try_new(shifted, mesh.faces.clone()).map_err(|e| e.to_string())?;
-    let topo = Arc::new(Topology::icosphere(project.body.level));
-    let radius = Body::radii_from_mesh(&tri, DVec3::ZERO, &topo.dirs).map_err(|e| e.to_string())?;
-    let spec = &project.material.spec;
-    let rho_s = vec![spec.rho_p * spec.nu0 * spec.h_s; topo.n_vertices()];
-    let body = Body::new(topo, radius, project.density.bulk, project.kernels(), rho_s)
-        .map_err(|e| e.to_string())?;
-    Ok((body, origin))
+    mesh_body(project, &vertices, mesh.faces.clone()).map_err(|e| e.to_string())
 }
 
 /// Map tier-2 vertices back to the frame of the original mesh.
@@ -208,7 +197,7 @@ impl Evolver {
             smooth(&high, &SmoothOptions::ancient_ryugu(), &sh_gpu).map_err(|e| e.to_string())?;
         let (body, origin) = body_from_mesh(&project, &smoothed.mesh)?;
 
-        let (mut state, mut forward) = evolve::start(&project, body).map_err(|e| e.to_string())?;
+        let (mut state, _) = evolve::start(&project, body).map_err(|e| e.to_string())?;
         let gpu = RheoGpu::new().map_err(|e| e.to_string())?;
         let omega0 = schedule.sample(0.0).omega;
         let (relaxed, _) = relax(&project, &gpu, &state.body, omega0).map_err(|e| e.to_string())?;
@@ -220,7 +209,7 @@ impl Evolver {
         state.omega = omega0;
         state.frame_rotation = rotation;
         state.frame_translation = translation;
-        forward = fwd;
+        let forward = fwd;
         Ok(Self {
             project,
             high,
