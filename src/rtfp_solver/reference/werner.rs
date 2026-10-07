@@ -109,46 +109,6 @@ pub fn face_containing(mesh: &TriMesh, x: DVec3) -> Option<usize> {
     None
 }
 
-/// Distance from `x` to the nearest point of the triangle surface.
-pub fn distance_to_surface(mesh: &TriMesh, x: DVec3) -> f64 {
-    (0..mesh.faces.len())
-        .map(|f| distance_to_triangle(x, mesh.triangle(f)))
-        .fold(f64::INFINITY, f64::min)
-}
-
-fn distance_to_triangle(p: DVec3, [a, b, c]: [DVec3; 3]) -> f64 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return ap.length();
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return bp.length();
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        return (a + ab * (d1 / (d1 - d3)) - p).length();
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return cp.length();
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        return (a + ac * (d2 / (d2 - d6)) - p).length();
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
-        return (b + (c - b) * w - p).length();
-    }
-    let denom = 1.0 / (va + vb + vc);
-    (a + ab * (vb * denom) + ac * (vc * denom) - p).length()
-}
-
 fn werner_edge_factor(r1: DVec3, r2: DVec3) -> f64 {
     let a = r1.length();
     let b = r2.length();

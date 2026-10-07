@@ -91,10 +91,18 @@ struct Core {
     vel_o2: Retained<Pipeline>,
     vel_o3: Retained<Pipeline>,
     vel_o4: Retained<Pipeline>,
+    vel_o3_l2_dot: Retained<Pipeline>,
+    vel_o3_l4_dot: Retained<Pipeline>,
+    vel_o2_dot: Retained<Pipeline>,
+    vel_o3_dot: Retained<Pipeline>,
+    vel_o4_dot: Retained<Pipeline>,
     pres0_l4: Retained<Pipeline>,
     pres0_l24: Retained<Pipeline>,
+    pres0_l4_dot: Retained<Pipeline>,
+    pres0_l24_dot: Retained<Pipeline>,
     pres1: Retained<Pipeline>,
     normal: Retained<Pipeline>,
+    gemv: Retained<Pipeline>,
     submit: Mutex<()>,
 }
 
@@ -141,10 +149,18 @@ fn init() -> Result<Core, String> {
         vel_o2: pipeline(&device, &library, "basis_vel_o2")?,
         vel_o3: pipeline(&device, &library, "basis_vel_o3")?,
         vel_o4: pipeline(&device, &library, "basis_vel_o4")?,
+        vel_o3_l2_dot: pipeline(&device, &library, "basis_vel_o3_l2_dot")?,
+        vel_o3_l4_dot: pipeline(&device, &library, "basis_vel_o3_l4_dot")?,
+        vel_o2_dot: pipeline(&device, &library, "basis_vel_o2_dot")?,
+        vel_o3_dot: pipeline(&device, &library, "basis_vel_o3_dot")?,
+        vel_o4_dot: pipeline(&device, &library, "basis_vel_o4_dot")?,
         pres0_l4: pipeline(&device, &library, "basis_pres0_l4")?,
         pres0_l24: pipeline(&device, &library, "basis_pres0_l24")?,
+        pres0_l4_dot: pipeline(&device, &library, "basis_pres0_l4_dot")?,
+        pres0_l24_dot: pipeline(&device, &library, "basis_pres0_l24_dot")?,
         pres1: pipeline(&device, &library, "basis_pres1")?,
         normal: pipeline(&device, &library, "basis_normal")?,
+        gemv: pipeline(&device, &library, "basis_gemv")?,
         submit: Mutex::new(()),
         device,
         queue,
@@ -294,6 +310,10 @@ enum Bind {
     NoTables,
     /// Normal kernel: no polynomials.
     NoPolys,
+    /// Velocity contraction: mode coefficients at buffer 6, output at 5.
+    FullDot,
+    /// Pressure contraction: mode coefficients at buffer 4, output at 5.
+    PresDot,
 }
 
 fn launch(
@@ -306,9 +326,29 @@ fn launch(
     bind: Bind,
     n_f32: usize,
     threads: usize,
+    coef: Option<&Buffer>,
 ) -> Result<Vec<f32>, String> {
+    let out = launch_buffer(
+        core, pipe, points, params, coeff, polys, bind, n_f32, threads, coef,
+    )?;
+    let words = unsafe { std::slice::from_raw_parts(out.contents().as_ptr() as *const f32, n_f32) };
+    Ok(words.to_vec())
+}
+
+fn launch_buffer(
+    core: &Core,
+    pipe: &Pipeline,
+    points: &[f32],
+    params: &BasisParams,
+    coeff: &Buffer,
+    polys: &Buffer,
+    bind: Bind,
+    n_f32: usize,
+    threads: usize,
+    coef: Option<&Buffer>,
+) -> Result<Retained<Buffer>, String> {
     if threads == 0 || n_f32 == 0 {
-        return Ok(Vec::new());
+        return buffer_with(&core.device, &[] as &[f32]);
     }
     let point_buffer = buffer_with(&core.device, points)?;
     let out = core
@@ -349,6 +389,19 @@ fn launch(
                 encoder.setBuffer_offset_atIndex(Some(core.tables.as_ref()), 0, 3);
                 encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 4);
             }
+            Bind::FullDot => {
+                let coef = coef.ok_or("velocity contraction is missing its coefficient buffer")?;
+                encoder.setBuffer_offset_atIndex(Some(polys.as_ref()), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(core.tables.as_ref()), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 5);
+                encoder.setBuffer_offset_atIndex(Some(coef.as_ref()), 0, 6);
+            }
+            Bind::PresDot => {
+                let coef = coef.ok_or("pressure contraction is missing its coefficient buffer")?;
+                encoder.setBuffer_offset_atIndex(Some(polys.as_ref()), 0, 3);
+                encoder.setBuffer_offset_atIndex(Some(coef.as_ref()), 0, 4);
+                encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 5);
+            }
         }
     }
     encoder.dispatchThreadgroups_threadsPerThreadgroup(
@@ -369,8 +422,7 @@ fn launch(
     if command.status() != MTLCommandBufferStatus::Completed {
         return Err(format!("Metal command failed: {:?}", command.error()));
     }
-    let words = unsafe { std::slice::from_raw_parts(out.contents().as_ptr() as *const f32, n_f32) };
-    Ok(words.to_vec())
+    Ok(out)
 }
 
 fn component_count(want: Want) -> usize {
@@ -392,6 +444,7 @@ fn component_count(want: Want) -> usize {
 
 struct VelKernel {
     pipe: fn(&Core) -> &Pipeline,
+    dot: fn(&Core) -> &Pipeline,
     grouped: bool,
     name_limit: u32,
 }
@@ -403,30 +456,35 @@ fn velocity_kernel(ord: usize, l_max: usize) -> Result<VelKernel, String> {
     if ord == 3 && l_max <= 2 {
         Ok(VelKernel {
             pipe: |c| &c.vel_o3_l2,
+            dot: |c| &c.vel_o3_l2_dot,
             grouped: true,
             name_limit: 6,
         })
     } else if ord == 3 && l_max <= 4 {
         Ok(VelKernel {
             pipe: |c| &c.vel_o3_l4,
+            dot: |c| &c.vel_o3_l4_dot,
             grouped: true,
             name_limit: 8,
         })
     } else if ord <= 2 {
         Ok(VelKernel {
             pipe: |c| &c.vel_o2,
+            dot: |c| &c.vel_o2_dot,
             grouped: false,
             name_limit: 12,
         })
     } else if ord == 3 {
         Ok(VelKernel {
             pipe: |c| &c.vel_o3,
+            dot: |c| &c.vel_o3_dot,
             grouped: false,
             name_limit: 12,
         })
     } else if ord == 4 {
         Ok(VelKernel {
             pipe: |c| &c.vel_o4,
+            dot: |c| &c.vel_o4_dot,
             grouped: false,
             name_limit: 12,
         })
@@ -522,6 +580,7 @@ pub(crate) fn velocity(
             Bind::Full,
             batch_points * n_u * n_comp * 2,
             if grouped { batch_rays } else { batch_points },
+            None,
         )?;
         scatter_velocity(&mut rows, &words, want, n_comp, n_u, point0, batch_points);
         ray0 += batch_rays;
@@ -672,6 +731,7 @@ pub(crate) fn pressure(
             bind,
             batch * channels * 2,
             batch,
+            None,
         )?;
         if gradients {
             scatter_pressure_grad(&mut rows, &words, n, nl, point0, batch);
@@ -774,6 +834,7 @@ pub(crate) fn normals(surf: &SurfaceFit, dirs: &[DVec3]) -> Result<Vec<(f64, DVe
             Bind::NoPolys,
             batch * 4 * 2,
             batch,
+            None,
         )?;
         for p in 0..batch {
             let r = ds_at(&words, 0, batch, p);
@@ -796,4 +857,357 @@ pub(crate) fn normals(surf: &SurfaceFit, dirs: &[DVec3]) -> Result<Vec<(f64, DVe
         point0 += batch;
     }
     Ok(out)
+}
+
+fn pack_modes(coeff: &[f64]) -> Vec<f32> {
+    let mut words = Vec::with_capacity(coeff.len() * 2);
+    for c in coeff {
+        words.extend_from_slice(&ds_pair(*c));
+    }
+    words
+}
+
+fn unpack_pairs(words: &[f32]) -> Vec<f64> {
+    words
+        .chunks_exact(2)
+        .map(|p| f64::from(p[0]) + f64::from(p[1]))
+        .collect()
+}
+
+pub(crate) struct ContractedVelocity {
+    pub v: Vec<f64>,
+    pub d: Vec<f64>,
+}
+
+/// `B u` for velocity and strain, accumulated in the kernel.
+///
+/// The basis matrix is not stored and is not copied back. `want` may ask for
+/// `v` and `d` only; Laplacian rows stay on the matrix path used by the Stokes
+/// operator.
+pub(crate) fn contract_velocity(
+    surf: &SurfaceFit,
+    lay: &VelLayout,
+    pts: &[DVec3],
+    n_per: usize,
+    want: Want,
+    u: &[f64],
+) -> Result<ContractedVelocity, String> {
+    if want.lap || want.gd {
+        return Err(
+            "velocity contraction covers v and D; Laplacian rows stay on the operator matrix"
+                .into(),
+        );
+    }
+    check_surface(surf)?;
+    let np = pts.len();
+    let n_comp = component_count(want);
+    let empty = ContractedVelocity {
+        v: vec![0.0; if want.v { np * 3 } else { 0 }],
+        d: vec![0.0; if want.d { np * 6 } else { 0 }],
+    };
+    if np == 0 || lay.n_u == 0 || n_comp == 0 {
+        return Ok(empty);
+    }
+    if u.len() != lay.n_u {
+        return Err(format!(
+            "velocity contraction has {} coefficients, expected {}",
+            u.len(),
+            lay.n_u
+        ));
+    }
+    if n_comp > 9 {
+        return Err(format!(
+            "velocity contraction has {n_comp} components; the kernel holds 9"
+        ));
+    }
+    if n_per == 0 || np % n_per != 0 {
+        return Err(format!(
+            "velocity ray width {n_per} does not divide {np} sample points"
+        ));
+    }
+    let kernel = velocity_kernel(want.order(), lay.l_max)?;
+    let grouped = kernel.grouped;
+    let n_per = if grouped { n_per } else { 1 };
+    let n_rays = np / n_per;
+    let (polys, stride) = pack_polys(lay.l_max, K)?;
+    let top = lay.l_max + K - 1;
+    if top > kernel.name_limit as usize {
+        return Err(format!(
+            "velocity power index {top} exceeds the {} kernel",
+            if grouped { "cached" } else { "point" }
+        ));
+    }
+    let core = core()?;
+    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let poly_buffer = buffer_with(&core.device, &polys)?;
+    let coef = buffer_with(&core.device, &pack_modes(u))?;
+    let packed = pack_points(pts);
+    let mut params = blank_params();
+    params.n_per = as_u32(n_per, "samples per ray")?;
+    params.n_rays = as_u32(if grouped { n_rays } else { np }, "rays")?;
+    params.n_points = as_u32(np, "points")?;
+    params.l_mode = as_u32(lay.l_max, "velocity degree")?;
+    params.l_surf = as_u32(surf.l_max, "surface degree")?;
+    params.k_count = K as u32;
+    params.n_comp = as_u32(n_comp, "velocity components")?;
+    params.poly_stride = stride;
+    params.top_pow = as_u32(top, "power index")?;
+    params.want_v = u32::from(want.v);
+    params.want_d = u32::from(want.d);
+    if !grouped {
+        params.n_per = 1;
+    }
+    let words = launch(
+        core,
+        (kernel.dot)(core),
+        &packed,
+        &params,
+        &coeff,
+        &poly_buffer,
+        Bind::FullDot,
+        np * n_comp * 2,
+        if grouped { n_rays } else { np },
+        Some(&coef),
+    )?;
+    let flat = unpack_pairs(&words);
+    let mut v = vec![0.0; if want.v { np * 3 } else { 0 }];
+    let mut d = vec![0.0; if want.d { np * 6 } else { 0 }];
+    let nv = usize::from(want.v) * 3;
+    for p in 0..np {
+        let base = p * n_comp;
+        if want.v {
+            v[3 * p..3 * p + 3].copy_from_slice(&flat[base..base + 3]);
+        }
+        if want.d {
+            d[6 * p..6 * p + 6].copy_from_slice(&flat[base + nv..base + nv + 6]);
+        }
+    }
+    Ok(ContractedVelocity { v, d })
+}
+
+/// Face-centre strain basis kept in the kernel's buffer.
+///
+/// Picard changes `u` every sweep, so the basis has to stay, but it stays on
+/// the device. `contract` is one GEMV kernel and returns `6 * n_points` values.
+pub(crate) struct GpuStrain {
+    basis: Retained<Buffer>,
+    n_points: usize,
+    n_u: usize,
+    n_comp: usize,
+}
+
+pub(crate) fn strain_basis(
+    surf: &SurfaceFit,
+    lay: &VelLayout,
+    pts: &[DVec3],
+) -> Result<GpuStrain, String> {
+    let want = Want {
+        v: false,
+        d: true,
+        lap: false,
+        gd: false,
+    };
+    check_surface(surf)?;
+    let np = pts.len();
+    let n_comp = 6;
+    if np == 0 || lay.n_u == 0 {
+        let core = core()?;
+        return Ok(GpuStrain {
+            basis: buffer_with(&core.device, &[] as &[f32])?,
+            n_points: np,
+            n_u: lay.n_u,
+            n_comp,
+        });
+    }
+    let kernel = velocity_kernel(want.order(), lay.l_max)?;
+    let (polys, stride) = pack_polys(lay.l_max, K)?;
+    let top = lay.l_max + K - 1;
+    if top > kernel.name_limit as usize {
+        return Err(format!(
+            "velocity power index {top} exceeds the strain kernel"
+        ));
+    }
+    let core = core()?;
+    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let poly_buffer = buffer_with(&core.device, &polys)?;
+    let packed = pack_points(pts);
+    let mut params = blank_params();
+    params.n_per = 1;
+    params.n_rays = as_u32(np, "rays")?;
+    params.n_points = params.n_rays;
+    params.l_mode = as_u32(lay.l_max, "velocity degree")?;
+    params.l_surf = as_u32(surf.l_max, "surface degree")?;
+    params.k_count = K as u32;
+    params.n_comp = n_comp as u32;
+    params.poly_stride = stride;
+    params.top_pow = as_u32(top, "power index")?;
+    params.want_d = 1;
+    let basis = launch_buffer(
+        core,
+        (kernel.pipe)(core),
+        &packed,
+        &params,
+        &coeff,
+        &poly_buffer,
+        Bind::Full,
+        np * lay.n_u * n_comp * 2,
+        np,
+        None,
+    )?;
+    Ok(GpuStrain {
+        basis,
+        n_points: np,
+        n_u: lay.n_u,
+        n_comp,
+    })
+}
+
+#[repr(C)]
+struct GemvParams {
+    n_points: u32,
+    n_modes: u32,
+    n_comp: u32,
+    pad: u32,
+}
+
+impl GpuStrain {
+    pub(crate) fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
+        if self.n_points == 0 || self.n_u == 0 {
+            return Ok(vec![0.0; self.n_points * self.n_comp]);
+        }
+        if u.len() != self.n_u {
+            return Err(format!(
+                "strain contraction has {} coefficients, expected {}",
+                u.len(),
+                self.n_u
+            ));
+        }
+        let core = core()?;
+        let coef = buffer_with(&core.device, &pack_modes(u))?;
+        let n_f32 = self.n_points * self.n_comp * 2;
+        let out = core
+            .device
+            .newBufferWithLength_options(n_f32 * 4, MTLResourceOptions::StorageModeShared)
+            .ok_or("Metal strain output allocation failed")?;
+        let params = GemvParams {
+            n_points: as_u32(self.n_points, "strain points")?,
+            n_modes: as_u32(self.n_u, "strain modes")?,
+            n_comp: as_u32(self.n_comp, "strain components")?,
+            pad: 0,
+        };
+        let pipe = &core.gemv;
+        let width = pipe.threadExecutionWidth();
+        let group = (pipe.maxTotalThreadsPerThreadgroup().min(width * 4) / width).max(1) * width;
+        let groups = self.n_points.div_ceil(group);
+        let _guard = core.submit.lock().unwrap_or_else(|err| err.into_inner());
+        let command = core
+            .queue
+            .commandBuffer()
+            .ok_or("Metal command buffer unavailable")?;
+        let encoder = command
+            .computeCommandEncoder()
+            .ok_or("Metal compute encoder unavailable")?;
+        encoder.setComputePipelineState(pipe);
+        unsafe {
+            encoder.setBuffer_offset_atIndex(Some(self.basis.as_ref()), 0, 0);
+            encoder.setBuffer_offset_atIndex(Some(coef.as_ref()), 0, 1);
+            encoder.setBuffer_offset_atIndex(Some(out.as_ref()), 0, 2);
+            encoder.setBytes_length_atIndex(
+                NonNull::from(&params).cast::<c_void>(),
+                std::mem::size_of::<GemvParams>(),
+                3,
+            );
+        }
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(
+            MTLSize {
+                width: groups,
+                height: 1,
+                depth: 1,
+            },
+            MTLSize {
+                width: group,
+                height: 1,
+                depth: 1,
+            },
+        );
+        encoder.endEncoding();
+        command.commit();
+        command.waitUntilCompleted();
+        if command.status() != MTLCommandBufferStatus::Completed {
+            return Err(format!(
+                "Metal strain product failed: {:?}",
+                command.error()
+            ));
+        }
+        let words =
+            unsafe { std::slice::from_raw_parts(out.contents().as_ptr() as *const f32, n_f32) };
+        Ok(unpack_pairs(words))
+    }
+}
+
+pub(crate) fn contract_pressure(
+    surf: &SurfaceFit,
+    lay: &PresLayout,
+    pts: &[DVec3],
+    pres_c: &[f64],
+    lift: &[f64],
+) -> Result<Vec<f64>, String> {
+    check_surface(surf)?;
+    let np = pts.len();
+    if np == 0 || lay.k_max == 0 {
+        return Ok(vec![0.0; np]);
+    }
+    if lay.l_max > 24 {
+        return Err(format!(
+            "pressure degree {} exceeds the GPU limit 24",
+            lay.l_max
+        ));
+    }
+    let n = lay.n_p();
+    let nl = lay.n_lift();
+    if pres_c.len() != n || lift.len() != nl {
+        return Err(format!(
+            "pressure contraction expected {n} modes and {nl} lift coefficients, got {} and {}",
+            pres_c.len(),
+            lift.len()
+        ));
+    }
+    let (polys, stride) = pack_polys(lay.l_max, lay.k_max)?;
+    let top = lay.l_max + lay.k_max - 1;
+    let core = core()?;
+    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let poly_buffer = buffer_with(&core.device, &polys)?;
+    let mut modes = pack_modes(pres_c);
+    modes.extend_from_slice(&pack_modes(lift));
+    let coef = buffer_with(&core.device, &modes)?;
+    let packed = pack_points(pts);
+    let pipe = if lay.l_max <= 4 {
+        &core.pres0_l4_dot
+    } else {
+        &core.pres0_l24_dot
+    };
+    let mut params = blank_params();
+    params.n_per = 1;
+    params.n_rays = as_u32(np, "points")?;
+    params.n_points = params.n_rays;
+    params.l_mode = as_u32(lay.l_max, "pressure degree")?;
+    params.l_surf = as_u32(surf.l_max, "surface degree")?;
+    params.k_count = as_u32(lay.k_max, "pressure radial count")?;
+    params.n_out = as_u32(n, "pressure modes")?;
+    params.n_lift = as_u32(nl, "lift modes")?;
+    params.poly_stride = stride;
+    params.top_pow = as_u32(top, "power index")?;
+    let words = launch(
+        core,
+        pipe,
+        &packed,
+        &params,
+        &coeff,
+        &poly_buffer,
+        Bind::PresDot,
+        np * 2,
+        np,
+        Some(&coef),
+    )?;
+    Ok(unpack_pairs(&words))
 }

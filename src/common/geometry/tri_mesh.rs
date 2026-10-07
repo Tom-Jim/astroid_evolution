@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use crate::common::error::CommonError;
 use crate::common::math::DVec3;
 
@@ -64,11 +66,6 @@ impl TriMesh {
             self.vertices[j as usize],
             self.vertices[k as usize],
         ]
-    }
-
-    pub fn face_normal(&self, face: usize) -> Option<DVec3> {
-        let [a, b, c] = self.triangle(face);
-        (b - a).cross(c - a).try_normalize()
     }
 
     /// `V = (1/6) Σ_f det(v0, v1, v2)` for outward faces.
@@ -212,7 +209,6 @@ fn validate_edges(faces: &[[u32; 3]]) -> Result<(), CommonError> {
 }
 
 fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
-    use std::collections::{HashMap, HashSet};
     let eps = 1e-10 * scale;
     let mut min = mesh.vertices[0];
     let mut max = mesh.vertices[0];
@@ -229,10 +225,18 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), Commo
         .max(max.z - min.z)
         .max(scale)
         .max(1e-12);
-    let cells = (mesh.faces.len() as f64).cbrt().ceil().clamp(4.0, 48.0);
-    let cell = extent / cells;
-    let index_of = |value: f64, origin: f64| -> i32 { ((value - origin) / cell).floor() as i32 };
-    let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+    let cells_f = (mesh.faces.len() as f64).cbrt().ceil().clamp(4.0, 128.0);
+    let cells = cells_f as i32;
+    let cell = extent / cells_f;
+    let origins = [min.x, min.y, min.z];
+    let index_of = |value: f64, axis: usize| -> i32 {
+        let i = ((value - origins[axis]) / cell).floor();
+        if !i.is_finite() {
+            return 0;
+        }
+        (i as i64).clamp(0, cells as i64) as i32
+    };
+    let mut boxes = Vec::with_capacity(mesh.faces.len());
     for i in 0..mesh.faces.len() {
         let [a, b, c] = mesh.triangle(i);
         let lo = [
@@ -245,66 +249,78 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), Commo
             a.y.max(b.y).max(c.y),
             a.z.max(b.z).max(c.z),
         ];
-        let i0 = [
-            index_of(lo[0], min.x),
-            index_of(lo[1], min.y),
-            index_of(lo[2], min.z),
-        ];
-        let i1 = [
-            index_of(hi[0], min.x),
-            index_of(hi[1], min.y),
-            index_of(hi[2], min.z),
-        ];
-        let span =
-            (i1[0] - i0[0] + 1) as i64 * (i1[1] - i0[1] + 1) as i64 * (i1[2] - i0[2] + 1) as i64;
-        if span > 64 {
-            grid.entry((i32::MIN, i32::MIN, i32::MIN))
-                .or_default()
-                .push(i);
-            continue;
-        }
-        for ix in i0[0]..=i1[0] {
-            for iy in i0[1]..=i1[1] {
-                for iz in i0[2]..=i1[2] {
-                    grid.entry((ix, iy, iz)).or_default().push(i);
+        boxes.push((
+            [index_of(lo[0], 0), index_of(lo[1], 1), index_of(lo[2], 2)],
+            [index_of(hi[0], 0), index_of(hi[1], 1), index_of(hi[2], 2)],
+        ));
+    }
+    let side = (cells + 1) as usize;
+    let mut grid = vec![Vec::<usize>::new(); side * side * side];
+    for (i, (lo, hi)) in boxes.iter().enumerate() {
+        for ix in lo[0]..=hi[0] {
+            for iy in lo[1]..=hi[1] {
+                for iz in lo[2]..=hi[2] {
+                    let slot = ((ix as usize * side + iy as usize) * side) + iz as usize;
+                    grid[slot].push(i);
                 }
             }
         }
     }
-    let mut seen = HashSet::new();
-    let mut check = |i: usize, j: usize| -> Result<(), CommonError> {
-        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
-        if lo == hi || !seen.insert((lo, hi)) {
-            return Ok(());
-        }
-        if share_edge(mesh.faces[lo], mesh.faces[hi]) {
-            return Ok(());
-        }
-        if let Some(hit) = intersection_gap(mesh.triangle(lo), mesh.triangle(hi), eps) {
-            return Err(CommonError::model_not_closed(format!(
-                "triangles {lo} and {hi} intersect (gap {:.4} m)",
-                hit.gap
-            )));
-        }
-        Ok(())
-    };
-    let oversized = grid
-        .get(&(i32::MIN, i32::MIN, i32::MIN))
-        .cloned()
-        .unwrap_or_default();
-    for face in 0..mesh.faces.len() {
-        for &other in &oversized {
-            check(face, other)?;
-        }
-    }
-    for bucket in grid.values() {
-        for a in 0..bucket.len() {
-            for b in (a + 1)..bucket.len() {
-                check(bucket[a], bucket[b])?;
+    let threads = rayon::current_num_threads().max(1);
+    let span = grid.len().div_ceil(threads);
+    let hit = (0..threads)
+        .into_par_iter()
+        .filter_map(|worker| {
+            let begin = worker * span;
+            let end = (begin + span).min(grid.len());
+            let mut best: Option<(usize, usize, f64)> = None;
+            for slot in begin..end {
+                let bucket = &grid[slot];
+                if bucket.len() < 2 {
+                    continue;
+                }
+                let ix = (slot / (side * side)) as i32;
+                let rem = slot % (side * side);
+                let iy = (rem / side) as i32;
+                let iz = (rem % side) as i32;
+                let here = [ix, iy, iz];
+                for a in 0..bucket.len() {
+                    for b in (a + 1)..bucket.len() {
+                        let i = bucket[a];
+                        let j = bucket[b];
+                        let (lo, hi) = if i < j { (i, j) } else { (j, i) };
+                        if lo == hi || !pair_owned_by(here, boxes[lo].0, boxes[hi].0) {
+                            continue;
+                        }
+                        if share_edge(mesh.faces[lo], mesh.faces[hi]) {
+                            continue;
+                        }
+                        if let Some(found) =
+                            intersection_gap(mesh.triangle(lo), mesh.triangle(hi), eps)
+                        {
+                            let cand = (lo, hi, found.gap);
+                            if best.is_none_or(|kept| (cand.0, cand.1) < (kept.0, kept.1)) {
+                                best = Some(cand);
+                            }
+                        }
+                    }
+                }
             }
-        }
+            best
+        })
+        .reduce_with(|a, b| if (a.0, a.1) <= (b.0, b.1) { a } else { b });
+    if let Some((lo, hi, gap)) = hit {
+        return Err(CommonError::model_not_closed(format!(
+            "triangles {lo} and {hi} intersect (gap {:.4} m)",
+            gap
+        )));
     }
     Ok(())
+}
+
+/// A pair is tested in the lowest cell both boxes occupy, and nowhere else.
+fn pair_owned_by(cell: [i32; 3], a: [i32; 3], b: [i32; 3]) -> bool {
+    cell[0] == a[0].max(b[0]) && cell[1] == a[1].max(b[1]) && cell[2] == a[2].max(b[2])
 }
 
 fn share_edge(a: [u32; 3], b: [u32; 3]) -> bool {

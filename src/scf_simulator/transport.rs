@@ -6,6 +6,7 @@
 //! relative to the rigid core, restricted to the active set (`χ_A`).
 
 use nalgebra::{Matrix3, Vector3};
+use rayon::prelude::*;
 
 use crate::common::math::DVec3;
 
@@ -211,6 +212,47 @@ impl DirIndex {
         }
         best_i
     }
+
+    /// Vertices that can lie inside the spherical cap of angular radius `alpha`
+    /// about `origin`. The set is a superset: every unit direction with angle
+    /// strictly below `alpha` is present, and some directions outside it may be too.
+    fn collect_within(&self, origin: DVec3, alpha: f64, out: &mut Vec<usize>) {
+        out.clear();
+        if !alpha.is_finite() || alpha <= 0.0 {
+            return;
+        }
+        if alpha >= std::f64::consts::PI {
+            out.extend(self.items.iter().map(|i| *i as usize));
+            return;
+        }
+        // One cell of slack covers the rounding gap between `acos` and the
+        // Cartesian bounds of the cap, so a point the angle test would keep
+        // cannot fall outside the visited bins.
+        let slop = (alpha + 1.0e-6).min(std::f64::consts::PI);
+        let comps = [origin.x, origin.y, origin.z];
+        let mut lo = [0usize; 3];
+        let mut hi = [0usize; 3];
+        for axis in 0..3 {
+            let bearing = comps[axis].clamp(-1.0, 1.0).acos();
+            let c_lo = (bearing + slop).min(std::f64::consts::PI).cos() - 1.0e-7;
+            let c_hi = (bearing - slop).max(0.0).cos() + 1.0e-7;
+            let i_lo = cell_axis(c_lo.clamp(-1.0, 1.0), self.g);
+            let i_hi = cell_axis(c_hi.clamp(-1.0, 1.0), self.g);
+            lo[axis] = i_lo.saturating_sub(1);
+            hi[axis] = (i_hi + 1).min(self.g - 1);
+        }
+        let g = self.g;
+        for x in lo[0]..=hi[0] {
+            for y in lo[1]..=hi[1] {
+                for z in lo[2]..=hi[2] {
+                    let c = (x * g + y) * g + z;
+                    for &idx in &self.items[self.start[c] as usize..self.start[c + 1] as usize] {
+                        out.push(idx as usize);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn edge(i: usize, cell: f64) -> f64 {
@@ -218,11 +260,12 @@ fn edge(i: usize, cell: f64) -> f64 {
 }
 
 fn cell_xyz(p: DVec3, g: usize) -> (usize, usize, usize) {
-    let axis = |t: f64| {
-        let i = ((t + 1.0) * 0.5 * g as f64).floor() as isize;
-        i.clamp(0, g as isize - 1) as usize
-    };
-    (axis(p.x), axis(p.y), axis(p.z))
+    (cell_axis(p.x, g), cell_axis(p.y, g), cell_axis(p.z, g))
+}
+
+fn cell_axis(t: f64, g: usize) -> usize {
+    let i = ((t + 1.0) * 0.5 * g as f64).floor() as isize;
+    i.clamp(0, g as isize - 1) as usize
 }
 
 fn cell_of(p: DVec3, g: usize) -> usize {
@@ -407,29 +450,35 @@ pub fn mode_c(
     }
     let mut j_dep = vec![0.0; nv];
     let w = prm.kernel_width;
+    let cutoff = 4.0 * w;
+    // `acos` is strictly decreasing, so `θ < 4w` fails once the cosine is safely
+    // below `cos(4w)`. The margin keeps the reject off the rounding boundary;
+    // every point that can pass still takes the original `acos` test.
+    let cos_reject = if cutoff < std::f64::consts::PI {
+        cutoff.cos() - 1.0e-8
+    } else {
+        f64::NEG_INFINITY
+    };
+    let bins = DirIndex::build(&topo.dirs);
     let mut eroded = 0.0;
-    let mut g = vec![0.0; nv];
+    let mut sources = Vec::new();
     for src in 0..nv {
         if j_ero[src] <= 0.0 {
             continue;
         }
-        let mass_rate = j_ero[src] * area[src];
-        eroded += mass_rate;
-        let mut norm = 0.0;
-        for t in 0..nv {
-            let cos = topo.dirs[src].dot(topo.dirs[t]).clamp(-1.0, 1.0);
-            let ang = cos.acos();
-            g[t] = if ang < 4.0 * w {
-                (-0.5 * (ang / w).powi(2)).exp()
-            } else {
-                0.0
-            };
-            norm += g[t] * area[t];
-        }
-        // The source itself always lies inside the kernel, so `norm > 0`.
-        for t in 0..nv {
-            if g[t] > 0.0 {
-                j_dep[t] += mass_rate * g[t] / norm;
+        eroded += j_ero[src] * area[src];
+        sources.push(src);
+    }
+    let batch = rayon::current_num_threads().max(1);
+    for chunk in sources.chunks(batch) {
+        let parts: Vec<(f64, Vec<(u32, f64)>)> = chunk
+            .par_iter()
+            .map(|&src| kernel_terms(&topo.dirs, &bins, src, area, w, cutoff, cos_reject))
+            .collect();
+        for (&src, (norm, terms)) in chunk.iter().zip(parts) {
+            let mass_rate = j_ero[src] * area[src];
+            for (t, weight) in terms {
+                j_dep[t as usize] += mass_rate * weight / norm;
             }
         }
     }
@@ -439,6 +488,46 @@ pub fn mode_c(
         max_excess,
         eroded_rate: eroded,
     }
+}
+
+/// Positive Gaussian weights of one source, in increasing target index.
+///
+/// Targets are the direction-bin superset of the cap `θ < cutoff`. A weight is
+/// the same value the dense loop would store: clamp the dot, reject only when
+/// the cosine is safely outside, otherwise `exp(-½(acos(c)/w)²)` when
+/// `acos(c) < cutoff`.
+fn kernel_terms(
+    dirs: &[DVec3],
+    bins: &DirIndex,
+    src: usize,
+    area: &[f64],
+    w: f64,
+    cutoff: f64,
+    cos_reject: f64,
+) -> (f64, Vec<(u32, f64)>) {
+    let mut targets = Vec::new();
+    bins.collect_within(dirs[src], cutoff, &mut targets);
+    targets.sort_unstable();
+    targets.dedup();
+    let mut norm = 0.0;
+    let mut terms = Vec::new();
+    let origin = dirs[src];
+    for t in targets {
+        let cos_raw = origin.dot(dirs[t]);
+        if cos_raw < cos_reject {
+            continue;
+        }
+        let cos = cos_raw.clamp(-1.0, 1.0);
+        let ang = cos.acos();
+        if ang < cutoff {
+            let weight = (-0.5 * (ang / w).powi(2)).exp();
+            if weight > 0.0 {
+                norm += weight * area[t];
+                terms.push((t as u32, weight));
+            }
+        }
+    }
+    (norm, terms)
 }
 
 #[cfg(test)]
@@ -463,6 +552,115 @@ mod tests {
         let dep: f64 = (0..nv).map(|i| m.j_dep[i] * area[i]).sum();
         assert!(ero > 0.0);
         assert!((ero - dep).abs() < 1e-12 * ero);
+    }
+
+    #[test]
+    fn deposition_matches_the_direct_angular_kernel() {
+        let topo = Topology::icosphere(3);
+        let nv = topo.n_vertices();
+        let area: Vec<f64> = (0..nv)
+            .map(|i| topo.vertex_solid[i] * (1.0 + 0.01 * (i % 7) as f64))
+            .collect();
+        let rho_s: Vec<f64> = (0..nv)
+            .map(|i| {
+                if i % 3 == 0 {
+                    0.0
+                } else {
+                    1.0 + (i % 5) as f64
+                }
+            })
+            .collect();
+        let movable: Vec<bool> = (0..nv).map(|i| i % 4 != 1).collect();
+        let f: Vec<f64> = (0..nv).map(|i| topo.dirs[i].z * 2.0 - 0.2).collect();
+        for kernel_width in [1.0e-4, 0.2, 0.3, 1.0] {
+            let prm = ModeCParams {
+                k_e: 0.1,
+                sigma_0: 10.0,
+                kernel_width,
+            };
+            let got = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+            let want = direct_mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+            assert_eq!(got.j_ero, want.j_ero);
+            assert_eq!(got.max_excess, want.max_excess);
+            assert_eq!(got.eroded_rate, want.eroded_rate);
+            assert_eq!(got.j_dep, want.j_dep, "kernel_width {kernel_width}");
+        }
+    }
+
+    #[test]
+    fn cap_query_contains_every_vertex_inside_the_angle() {
+        let topo = Topology::icosphere(4);
+        let bins = DirIndex::build(&topo.dirs);
+        let mut got = Vec::new();
+        for alpha in [1.0e-4, 0.2, 0.8, 1.2, 3.2] {
+            for src in (0..topo.n_vertices()).step_by(19) {
+                bins.collect_within(topo.dirs[src], alpha, &mut got);
+                got.sort_unstable();
+                for (t, dir) in topo.dirs.iter().enumerate() {
+                    let ang = topo.dirs[src].dot(*dir).clamp(-1.0, 1.0).acos();
+                    if ang < alpha {
+                        assert!(
+                            got.binary_search(&t).is_ok(),
+                            "missed vertex {t} from {src} at angle {ang} (cap {alpha})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The dense loop this kernel replaces. Kept so a faster path cannot drift.
+    fn direct_mode_c(
+        topo: &Topology,
+        area: &[f64],
+        rho_s: &[f64],
+        movable: &[bool],
+        f_delta: &[f64],
+        prm: &ModeCParams,
+    ) -> ModeC {
+        let nv = topo.n_vertices();
+        let mut j_ero = vec![0.0; nv];
+        let mut max_excess = 0.0_f64;
+        for i in 0..nv {
+            if movable[i] && rho_s[i] > 0.0 {
+                let ex = f_delta[i].max(0.0);
+                max_excess = max_excess.max(ex);
+                j_ero[i] = prm.k_e * rho_s[i] * ex / prm.sigma_0;
+            }
+        }
+        let mut j_dep = vec![0.0; nv];
+        let w = prm.kernel_width;
+        let mut eroded = 0.0;
+        let mut g = vec![0.0; nv];
+        for src in 0..nv {
+            if j_ero[src] <= 0.0 {
+                continue;
+            }
+            let mass_rate = j_ero[src] * area[src];
+            eroded += mass_rate;
+            let mut norm = 0.0;
+            for t in 0..nv {
+                let cos = topo.dirs[src].dot(topo.dirs[t]).clamp(-1.0, 1.0);
+                let ang = cos.acos();
+                g[t] = if ang < 4.0 * w {
+                    (-0.5 * (ang / w).powi(2)).exp()
+                } else {
+                    0.0
+                };
+                norm += g[t] * area[t];
+            }
+            for t in 0..nv {
+                if g[t] > 0.0 {
+                    j_dep[t] += mass_rate * g[t] / norm;
+                }
+            }
+        }
+        ModeC {
+            j_ero,
+            j_dep,
+            max_excess,
+            eroded_rate: eroded,
+        }
     }
 
     #[test]

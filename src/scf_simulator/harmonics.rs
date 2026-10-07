@@ -123,15 +123,6 @@ impl SurfaceFit {
         self.coeff.iter().zip(&y).map(|(c, y)| c * y).sum()
     }
 
-    /// `R` as a jet, from harmonic jets of at least degree `l_max`.
-    pub fn radius_jet(&self, y: &[Jet]) -> Jet {
-        let mut r = Jet::constant(0.0, y[0].ord);
-        for (c, yj) in self.coeff.iter().zip(y) {
-            r.axpy(*c, yj);
-        }
-        r
-    }
-
     /// The `StarSurface` consumed by `rheo_friction`.
     pub fn to_rheo(&self) -> crate::rheo_friction::StarSurface {
         crate::rheo_friction::StarSurface {

@@ -227,12 +227,6 @@ impl Jet {
         r
     }
 
-    pub fn add_scalar(&self, s: f64) -> Self {
-        let mut r = *self;
-        r.c[0] += s;
-        r
-    }
-
     /// `self += s * o` (orders must agree or `self` is truncated to the lower one).
     pub fn axpy(&mut self, s: f64, o: &Self) {
         self.ord = self.ord.min(o.ord);

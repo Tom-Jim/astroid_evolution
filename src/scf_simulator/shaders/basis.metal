@@ -279,6 +279,14 @@ inline void store_ds(device float2* out, uint channel, uint n_points, uint point
     out[channel * n_points + point] = float2(v.hi, v.lo);
 }
 
+// Point-major contraction of one sample. `n_comp` is at most 9 (velocity and strain).
+inline void store_contract(device float2* out, uint point, uint n_comp, thread dsacc* acc) {
+    for (uint c = 0; c < n_comp; ++c) {
+        ds r = acc_done(acc[c]);
+        out[point * n_comp + c] = float2(r.hi, r.lo);
+    }
+}
+
 template <int ORD>
 inline void cmul_u(thread Jt<ORD>& cre, thread Jt<ORD>& cim, thread const Jt<ORD> u[3], constant uint* tables,
                    constant BasisParams& p) {
@@ -420,6 +428,33 @@ inline void toroidal(thread Jt<ORD - 2> out[3], thread const Jt<ORD>& psi, threa
 }
 
 template <int FORD>
+inline void pack_d(thread const Jt<FORD> f[3], thread ds d[6], ds sqrt2) {
+    ds g00 = f[0].c[1], g01 = f[0].c[2], g02 = f[0].c[3];
+    ds g10 = f[1].c[1], g11 = f[1].c[2], g12 = f[1].c[3];
+    ds g20 = f[2].c[1], g21 = f[2].c[2], g22 = f[2].c[3];
+    d[0] = ds_scale(ds_addp(g00, g00), 0.5f);
+    d[1] = ds_scale(ds_addp(g11, g11), 0.5f);
+    d[2] = ds_scale(ds_addp(g22, g22), 0.5f);
+    d[3] = ds_mul(sqrt2, ds_scale(ds_addp(g01, g10), 0.5f));
+    d[4] = ds_mul(sqrt2, ds_scale(ds_addp(g02, g20), 0.5f));
+    d[5] = ds_mul(sqrt2, ds_scale(ds_addp(g12, g21), 0.5f));
+}
+
+template <int FORD>
+inline void accumulate_vd(thread const Jt<FORD> f[3], thread dsacc* acc, constant BasisParams& p, ds weight, ds sqrt2) {
+    uint local = 0;
+    if (p.want_v) {
+        for (int a = 0; a < 3; ++a) acc_fma(acc[local + uint(a)], weight, f[a].c[0]);
+        local += 3u;
+    }
+    if (p.want_d) {
+        ds d[6];
+        pack_d<FORD>(f, d, sqrt2);
+        for (uint a = 0; a < 6u; ++a) acc_fma(acc[local + a], weight, d[a]);
+    }
+}
+
+template <int FORD>
 inline void store_vd(thread const Jt<FORD> f[3], uint mode, uint point, device float2* out, constant BasisParams& p,
                      ds sqrt2) {
     uint n = p.n_points;
@@ -429,16 +464,8 @@ inline void store_vd(thread const Jt<FORD> f[3], uint mode, uint point, device f
         local += 3u;
     }
     if (p.want_d) {
-        ds g00 = f[0].c[1], g01 = f[0].c[2], g02 = f[0].c[3];
-        ds g10 = f[1].c[1], g11 = f[1].c[2], g12 = f[1].c[3];
-        ds g20 = f[2].c[1], g21 = f[2].c[2], g22 = f[2].c[3];
-        ds d0 = ds_scale(ds_addp(g00, g00), 0.5f);
-        ds d1 = ds_scale(ds_addp(g11, g11), 0.5f);
-        ds d2 = ds_scale(ds_addp(g22, g22), 0.5f);
-        ds d3 = ds_mul(sqrt2, ds_scale(ds_addp(g01, g10), 0.5f));
-        ds d4 = ds_mul(sqrt2, ds_scale(ds_addp(g02, g20), 0.5f));
-        ds d5 = ds_mul(sqrt2, ds_scale(ds_addp(g12, g21), 0.5f));
-        ds d[6] = {d0, d1, d2, d3, d4, d5};
+        ds d[6];
+        pack_d<FORD>(f, d, sqrt2);
         for (uint a = 0; a < 6u; ++a) store_ds(out, mode * p.n_comp + local + a, n, point, d[a]);
     }
 }
@@ -492,7 +519,8 @@ struct HighStore<true, FORD> {
 
 template <int ORD>
 inline void emit_mode(thread const Jt<ORD>& radial, thread const Jt<ORD>& ylm, uint tor, thread ds x0[3], int l, int m,
-                      uint k, uint point, device float2* out, constant uint* tables, constant BasisParams& p, ds sqrt2) {
+                      uint k, uint point, device float2* out, constant uint* tables, constant BasisParams& p, ds sqrt2,
+                      thread dsacc* acc, device const float2* coef) {
     Jt<ORD> phi;
     j_mul<ORD>(phi, radial, ylm, tables, p);
     Jt<ORD - 2> field[3];
@@ -502,13 +530,19 @@ inline void emit_mode(thread const Jt<ORD>& radial, thread const Jt<ORD>& ylm, u
         poloidal<ORD>(field, phi, x0, tables, p);
     }
     uint mode = vel_dof(l, m, tor, k, p.k_count);
+    if (acc != nullptr) {
+        float2 w = coef[mode];
+        accumulate_vd<ORD - 2>(field, acc, p, ds_mk(w.x, w.y), sqrt2);
+        return;
+    }
     store_vd<ORD - 2>(field, mode, point, out, p, sqrt2);
     HighStore<(ORD >= 4), ORD - 2>::apply(field, mode, point, out, p, tables, sqrt2);
 }
 
 template <int ORD, int LMAX>
 void eval_cached(uint ray, device const float2* points, constant BasisParams& prm, device const float2* coeff,
-                 device const float2* polys, constant uint* tables, device float2* out) {
+                 device const float2* polys, constant uint* tables, device float2* out,
+                 device const float2* coef) {
     if (ray >= prm.n_rays) return;
     ds sqrt2 = ds_mk(prm.sqrt2_hi, prm.sqrt2_lo);
     ds pmm0 = ds_mk(prm.pmm_hi, prm.pmm_lo);
@@ -562,6 +596,11 @@ void eval_cached(uint ray, device const float2* points, constant BasisParams& pr
             }
         }
         uint point = p0 + s;
+        dsacc acc[9];
+        if (coef != nullptr) {
+            for (int c = 0; c < 9; ++c) acc[c] = acc_zero();
+        }
+        thread dsacc* acc_ptr = coef != nullptr ? acc : nullptr;
         for (int l = 1; l <= l_mode; ++l) {
             for (int m = -l; m <= l; ++m) {
                 Jt<ORD> ylm;
@@ -574,20 +613,26 @@ void eval_cached(uint ray, device const float2* points, constant BasisParams& pr
                 }
                 for (uint k = 0; k < prm.k_count; ++k) {
                     uint slot = uint(l - 1) * prm.k_count + k;
-                    emit_mode<ORD>(alk[slot], ylm, 0u, xyz, l, m, k, point, out, tables, prm, sqrt2);
-                    emit_mode<ORD>(blk[slot], ylm, 1u, xyz, l, m, k, point, out, tables, prm, sqrt2);
+                    emit_mode<ORD>(alk[slot], ylm, 0u, xyz, l, m, k, point, out, tables, prm, sqrt2, acc_ptr, coef);
+                    emit_mode<ORD>(blk[slot], ylm, 1u, xyz, l, m, k, point, out, tables, prm, sqrt2, acc_ptr, coef);
                 }
             }
         }
+        if (coef != nullptr) store_contract(out, point, prm.n_comp, acc);
     }
 }
 
 template <int ORD>
 void eval_point(uint gid, device const float2* points, constant BasisParams& prm, device const float2* coeff,
-                device const float2* polys, constant uint* tables, device float2* out) {
+                device const float2* polys, constant uint* tables, device float2* out, device const float2* coef) {
     if (gid >= prm.n_points) return;
     ds sqrt2 = ds_mk(prm.sqrt2_hi, prm.sqrt2_lo);
     ds pmm0 = ds_mk(prm.pmm_hi, prm.pmm_lo);
+    dsacc acc[9];
+    if (coef != nullptr) {
+        for (int c = 0; c < 9; ++c) acc[c] = acc_zero();
+    }
+    thread dsacc* acc_ptr = coef != nullptr ? acc : nullptr;
     ds px, py, pz;
     load_point(points, gid, px, py, pz);
     ds xyz[3] = {px, py, pz};
@@ -635,11 +680,11 @@ void eval_point(uint gid, device const float2* points, constant BasisParams& prm
                     j_psi<ORD>(psi, poly, uint(l) + k + 1u, pows);
                     j_mul<ORD>(a, r2, psi, tables, prm);
                     j_mul<ORD>(b, rr, psi, tables, prm);
-                    emit_mode<ORD>(a, yp, 0u, xyz, l, m, k, gid, out, tables, prm, sqrt2);
-                    emit_mode<ORD>(b, yp, 1u, xyz, l, m, k, gid, out, tables, prm, sqrt2);
+                    emit_mode<ORD>(a, yp, 0u, xyz, l, m, k, gid, out, tables, prm, sqrt2, acc_ptr, coef);
+                    emit_mode<ORD>(b, yp, 1u, xyz, l, m, k, gid, out, tables, prm, sqrt2, acc_ptr, coef);
                     if (m > 0) {
-                        emit_mode<ORD>(a, ym, 0u, xyz, l, -m, k, gid, out, tables, prm, sqrt2);
-                        emit_mode<ORD>(b, ym, 1u, xyz, l, -m, k, gid, out, tables, prm, sqrt2);
+                        emit_mode<ORD>(a, ym, 0u, xyz, l, -m, k, gid, out, tables, prm, sqrt2, acc_ptr, coef);
+                        emit_mode<ORD>(b, ym, 1u, xyz, l, -m, k, gid, out, tables, prm, sqrt2, acc_ptr, coef);
                     }
                 }
             }
@@ -647,11 +692,12 @@ void eval_point(uint gid, device const float2* points, constant BasisParams& prm
             p1 = p;
         }
     }
+    if (coef != nullptr) store_contract(out, gid, prm.n_comp, acc);
 }
 
 template <int LMAX>
 void eval_pres0(uint gid, device const float2* points, constant BasisParams& prm, device const float2* coeff,
-                device const float2* polys, device float2* out) {
+                device const float2* polys, device float2* out, device const float2* coef) {
     if (gid >= prm.n_points) return;
     ds sqrt2 = ds_mk(prm.sqrt2_hi, prm.sqrt2_lo);
     ds pmm = ds_mk(prm.pmm_hi, prm.pmm_lo);
@@ -714,11 +760,18 @@ void eval_pres0(uint gid, device const float2* points, constant BasisParams& prm
     for (uint n = 1; n <= prm.top_pow && n < 33u; ++n) zp[n] = ds_mul(zp[n - 1], zeta);
     uint n = prm.n_points;
     uint np = prm.n_out;
+    dsacc acc = acc_zero();
     for (int l = 0; l <= l_mode; ++l) {
         for (int m = -l; m <= l; ++m) {
             uint lm = lm_of(l, m);
             ds ylm = saved[lm];
-            store_ds(out, np + lm, n, gid, ds_mul(zp[uint(l)], ylm));
+            ds lift = ds_mul(zp[uint(l)], ylm);
+            if (coef != nullptr) {
+                float2 w = coef[np + lm];
+                acc_fma(acc, ds_mk(w.x, w.y), lift);
+            } else {
+                store_ds(out, np + lm, n, gid, lift);
+            }
             for (uint k = 0; k < prm.k_count; ++k) {
                 device const float2* poly = polys + (uint(l) * prm.k_count + k) * prm.poly_stride;
                 ds psi = ds_zero();
@@ -728,9 +781,18 @@ void eval_pres0(uint gid, device const float2* points, constant BasisParams& prm
                     if (a.hi != 0.0f || a.lo != 0.0f) psi = ds_addp(psi, ds_mul(a, zp[j]));
                 }
                 ds phi = ds_mul(ds_mul(one, psi), ylm);
-                store_ds(out, lm * prm.k_count + k, n, gid, phi);
+                if (coef != nullptr) {
+                    float2 w = coef[lm * prm.k_count + k];
+                    acc_fma(acc, ds_mk(w.x, w.y), phi);
+                } else {
+                    store_ds(out, lm * prm.k_count + k, n, gid, phi);
+                }
             }
         }
+    }
+    if (coef != nullptr) {
+        ds r = acc_done(acc);
+        out[gid] = float2(r.hi, r.lo);
     }
 }
 
@@ -830,47 +892,47 @@ kernel void basis_vel_o3_l2(uint gid [[thread_position_in_grid]], device const f
                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                             device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
                             device float2* out [[buffer(5)]]) {
-    eval_cached<3, 2>(gid, points, params, coeff, polys, tables, out);
+    eval_cached<3, 2>(gid, points, params, coeff, polys, tables, out, nullptr);
 }
 
 kernel void basis_vel_o3_l4(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                             device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
                             device float2* out [[buffer(5)]]) {
-    eval_cached<3, 4>(gid, points, params, coeff, polys, tables, out);
+    eval_cached<3, 4>(gid, points, params, coeff, polys, tables, out, nullptr);
 }
 
 kernel void basis_vel_o2(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                          constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                          device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
                          device float2* out [[buffer(5)]]) {
-    eval_point<2>(gid, points, params, coeff, polys, tables, out);
+    eval_point<2>(gid, points, params, coeff, polys, tables, out, nullptr);
 }
 
 kernel void basis_vel_o3(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                          constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                          device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
                          device float2* out [[buffer(5)]]) {
-    eval_point<3>(gid, points, params, coeff, polys, tables, out);
+    eval_point<3>(gid, points, params, coeff, polys, tables, out, nullptr);
 }
 
 kernel void basis_vel_o4(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                          constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                          device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
                          device float2* out [[buffer(5)]]) {
-    eval_point<4>(gid, points, params, coeff, polys, tables, out);
+    eval_point<4>(gid, points, params, coeff, polys, tables, out, nullptr);
 }
 
 kernel void basis_pres0_l4(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                            constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                            device const float2* polys [[buffer(3)]], device float2* out [[buffer(4)]]) {
-    eval_pres0<4>(gid, points, params, coeff, polys, out);
+    eval_pres0<4>(gid, points, params, coeff, polys, out, nullptr);
 }
 
 kernel void basis_pres0_l24(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                             device const float2* polys [[buffer(3)]], device float2* out [[buffer(4)]]) {
-    eval_pres0<24>(gid, points, params, coeff, polys, out);
+    eval_pres0<24>(gid, points, params, coeff, polys, out, nullptr);
 }
 
 kernel void basis_pres1(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
@@ -884,4 +946,80 @@ kernel void basis_normal(uint gid [[thread_position_in_grid]], device const floa
                          constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
                          constant uint* tables [[buffer(3)]], device float2* out [[buffer(4)]]) {
     eval_normal(gid, points, params, coeff, tables, out);
+}
+
+// One dispatch: each thread contracts every mode into velocity and strain.
+// The basis matrix is never written.
+kernel void basis_vel_o3_l2_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                                constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                                device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
+                                device float2* out [[buffer(5)]], device const float2* coef [[buffer(6)]]) {
+    eval_cached<3, 2>(gid, points, params, coeff, polys, tables, out, coef);
+}
+
+kernel void basis_vel_o3_l4_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                                constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                                device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
+                                device float2* out [[buffer(5)]], device const float2* coef [[buffer(6)]]) {
+    eval_cached<3, 4>(gid, points, params, coeff, polys, tables, out, coef);
+}
+
+kernel void basis_vel_o2_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                             device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
+                             device float2* out [[buffer(5)]], device const float2* coef [[buffer(6)]]) {
+    eval_point<2>(gid, points, params, coeff, polys, tables, out, coef);
+}
+
+kernel void basis_vel_o3_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                             device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
+                             device float2* out [[buffer(5)]], device const float2* coef [[buffer(6)]]) {
+    eval_point<3>(gid, points, params, coeff, polys, tables, out, coef);
+}
+
+kernel void basis_vel_o4_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                             constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                             device const float2* polys [[buffer(3)]], constant uint* tables [[buffer(4)]],
+                             device float2* out [[buffer(5)]], device const float2* coef [[buffer(6)]]) {
+    eval_point<4>(gid, points, params, coeff, polys, tables, out, coef);
+}
+
+kernel void basis_pres0_l4_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                               constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                               device const float2* polys [[buffer(3)]], device const float2* coef [[buffer(4)]],
+                               device float2* out [[buffer(5)]]) {
+    eval_pres0<4>(gid, points, params, coeff, polys, out, coef);
+}
+
+kernel void basis_pres0_l24_dot(uint gid [[thread_position_in_grid]], device const float2* points [[buffer(0)]],
+                                constant BasisParams& params [[buffer(1)]], device const float2* coeff [[buffer(2)]],
+                                device const float2* polys [[buffer(3)]], device const float2* coef [[buffer(4)]],
+                                device float2* out [[buffer(5)]]) {
+    eval_pres0<24>(gid, points, params, coeff, polys, out, coef);
+}
+
+struct GemvParams {
+    uint n_points;
+    uint n_modes;
+    uint n_comp;
+    uint pad;
+};
+
+// One thread per point. `basis` stays in the kernel layout
+// `basis[(mode * n_comp + c) * n_points + point]`.
+kernel void basis_gemv(uint gid [[thread_position_in_grid]], device const float2* basis [[buffer(0)]],
+                       device const float2* coef [[buffer(1)]], device float2* out [[buffer(2)]],
+                       constant GemvParams& p [[buffer(3)]]) {
+    if (gid >= p.n_points) return;
+    for (uint c = 0; c < p.n_comp; ++c) {
+        dsacc acc = acc_zero();
+        for (uint j = 0; j < p.n_modes; ++j) {
+            float2 b = basis[(j * p.n_comp + c) * p.n_points + gid];
+            float2 w = coef[j];
+            acc_fma(acc, ds_mk(w.x, w.y), ds_mk(b.x, b.y));
+        }
+        ds r = acc_done(acc);
+        out[gid * p.n_comp + c] = float2(r.hi, r.lo);
+    }
 }

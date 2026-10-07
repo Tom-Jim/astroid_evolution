@@ -18,7 +18,8 @@ use crate::rheo_friction::basis::sh_all;
 use crate::rheo_friction::closure::dynamic_friction;
 
 use super::basis::{
-    PresLayout, PresRows, VelLayout, VelRows, Want, eval_pressure, eval_velocity_rays,
+    PresLayout, PresRows, SurfaceStrain, VelLayout, VelRows, Want, eval_pressure,
+    eval_velocity_rays, surface_strain,
 };
 use super::error::ScfError;
 use super::harmonics::SurfaceFit;
@@ -100,7 +101,7 @@ pub struct Operators {
     pub surface: SurfaceSet,
     pub rows: VelRows,
     pub pres: PresRows,
-    pub surf_d: DMatrix<f64>,
+    pub surf_d: SurfaceStrain,
     pub rigid: DMatrix<f64>,
     /// Smallest singular value of the row-normalised rigid-body constraint matrix.
     pub rigid_sigma_min: f64,
@@ -124,18 +125,7 @@ impl Operators {
         let vol = VolumeSet::build(surf, density, prm.n_theta, prm.n_phi, prm.n_radial);
         let rows = eval_velocity_rays(surf, &lay, &vol.pts, prm.n_radial, Want::ALL);
         let pres = eval_pressure(surf, &play, &vol.pts, true);
-        let surf_rows = eval_velocity_rays(
-            surf,
-            &lay,
-            &surface.pts,
-            1,
-            Want {
-                v: false,
-                d: true,
-                lap: false,
-                gd: false,
-            },
-        );
+        let surf_d = surface_strain(surf, &lay, &surface.pts).map_err(ScfError::gpu)?;
         let rigid = rigid_matrix(&vol, &rows, lay.n_u);
         // Row-normalised singular values.
         let mut norm = rigid.clone();
@@ -200,7 +190,7 @@ impl Operators {
             surface,
             rows,
             pres,
-            surf_d: surf_rows.d,
+            surf_d,
             rigid,
             rigid_sigma_min: smin,
             a_chol,
@@ -467,8 +457,23 @@ pub fn solve(
     let mut eps_used = m.spec.gamma_eps;
     let mut theta = prm.theta_eta;
     let mut theta_retries = 0u32;
+    let u_guess = u.clone();
+    let ptil_guess = ptil.clone();
+    let gradp_guess = gradp.clone();
+    let surf_guess = p_surf_til.clone();
+    let gamma_guess = p_gamma.clone();
+    let prev_guess = p_prev.clone();
+    let vals_guess = p_vals.clone();
+    let theta_guess = theta;
+    // §10.4.2: solve the target γ̇_ε first. The coarse-to-fine ladder runs only
+    // when that attempt does not converge, and it restarts from the incoming guess.
+    let mut plan = vec![(0usize, prm.continuation == 0)];
+    let mut plan_at = 0usize;
+    let mut homotopy_armed = prm.continuation > 0;
 
-    for level in (0..=prm.continuation).rev() {
+    while plan_at < plan.len() {
+        let (level, retry_theta) = plan[plan_at];
+        plan_at += 1;
         let eps = m.spec.gamma_eps * 10f64.powi(level as i32);
         eps_used = eps;
         loop {
@@ -507,7 +512,7 @@ pub fn solve(
                     rhs_f[3 * p + 2] = f.z;
                 }
                 // Dirichlet data p_Γ at the surface nodes.
-                let ds = &ops.surf_d * &u;
+                let ds = ops.surf_d.contract(u.as_slice()).map_err(ScfError::gpu)?;
                 let mut weighted = DVector::zeros(ns);
                 for s in 0..ns {
                     let d6 = &ds.as_slice()[6 * s..6 * s + 6];
@@ -587,13 +592,31 @@ pub fn solve(
                 break;
             }
             // §10.4.2: on the finest γ̇_ε, decrease θ_η and retry this level only.
-            // Restarting the whole continuation would repeat work that already ran.
-            if level == 0 && theta > 0.25 + 1e-12 && theta_retries < 3 {
+            if retry_theta && theta > 0.25 + 1e-12 && theta_retries < 3 {
                 theta = (0.5 * theta).max(0.25);
                 theta_retries += 1;
                 continue;
             }
             break;
+        }
+        if converged && level == 0 {
+            break;
+        }
+        if !converged && level == 0 && homotopy_armed {
+            u = u_guess.clone();
+            ptil.clone_from(&ptil_guess);
+            gradp.clone_from(&gradp_guess);
+            p_surf_til.clone_from(&surf_guess);
+            p_gamma.clone_from(&gamma_guess);
+            p_prev.clone_from(&prev_guess);
+            p_vals.clone_from(&vals_guess);
+            eta_prev.clear();
+            theta = theta_guess;
+            theta_retries = 0;
+            homotopy_armed = false;
+            plan.extend((1..=prm.continuation).rev().map(|lv| (lv, false)));
+            plan.push((0, true));
+            continue;
         }
         if !converged && level == 0 {
             return Err(ScfError::rheology_not_converged(format!(

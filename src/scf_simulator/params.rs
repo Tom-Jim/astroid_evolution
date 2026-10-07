@@ -110,7 +110,8 @@ pub struct StepParams {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeometryParams {
-    /// Star-shape floor `c₀` on `n·e_r`.
+    /// Retained so existing project files still parse. Face transversality is
+    /// reported on the step record; this value is not an acceptance threshold.
     pub c0: f64,
     /// Overhang margin `ε_n` of the SOCP row `g·n̂ ≤ −ε_n |g|`.
     pub eps_n: f64,

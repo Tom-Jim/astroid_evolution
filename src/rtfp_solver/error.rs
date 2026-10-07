@@ -27,13 +27,6 @@ impl RtfpError {
             detail: detail.into(),
         }
     }
-
-    pub fn unsupported(detail: impl Into<String>) -> Self {
-        Self {
-            kind: "Unsupported",
-            detail: detail.into(),
-        }
-    }
 }
 
 impl RtfpError {

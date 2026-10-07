@@ -282,10 +282,22 @@ impl Body {
             .collect()
     }
 
-    /// Mean spacing of the surface, `√(mean face area)`.
-    pub fn mean_edge(&self) -> f64 {
-        let g = self.face_geometry();
-        (g.iter().map(|x| x.2).sum::<f64>() / g.len() as f64).sqrt()
+    /// Smallest `n·ê` on the radial graph, and the face that carries it.
+    ///
+    /// A grazing or overhanging face keeps its radius. Callers report this pair;
+    /// it does not reject the body.
+    pub fn min_radial(&self) -> (f64, usize) {
+        let geo = self.face_geometry();
+        let mut worst = f64::INFINITY;
+        let mut face = 0usize;
+        for (fi, (_, n, _)) in geo.iter().enumerate() {
+            let c = n.dot(self.topo.face_dirs[fi]);
+            if c < worst {
+                worst = c;
+                face = fi;
+            }
+        }
+        (worst, face)
     }
 
     /// Smallest nearest-vertex spacing, `h_{Γ,min}` of the CFL bound (§10.4.1).
@@ -366,6 +378,24 @@ mod tests {
         assert!(mesh.signed_volume() > 0.0);
         let v = 4.0 / 3.0 * PI * 1000.0;
         assert!((mesh.signed_volume() / v - 1.0).abs() < 0.05);
+        let (mu, face) = body.min_radial();
+        assert!(mu > 0.95, "sphere min radial {mu} at face {face}");
+        let mut pulled = body.radius.clone();
+        pulled[0] = 4.0;
+        let tilted = Body::new(
+            body.topo.clone(),
+            pulled,
+            1.0,
+            vec![],
+            vec![0.0; body.topo.n_vertices()],
+        )
+        .unwrap();
+        let (mu, face) = tilted.min_radial();
+        assert!(
+            mu.is_finite() && mu < 0.95,
+            "tilted min radial {mu} at face {face}"
+        );
+        assert!(face < tilted.topo.n_faces());
     }
 
     #[test]

@@ -41,57 +41,6 @@ pub fn dynamic_friction(m: &Material, shear: f64, p_star: f64) -> (f64, f64) {
     }
 }
 
-/// Frozen-viscosity law `eta = (c + mu_d p) / sqrt(gd^2 + gd_eps^2)` of §10.4.2 (P2); `p` is clamped at zero.
-pub fn flow_viscosity(cohesion: f64, mu_d: f64, pressure: f64, shear: f64, gamma_eps: f64) -> f64 {
-    let denom = (shear * shear + gamma_eps * gamma_eps).sqrt();
-    if denom <= 1e-18 {
-        0.0
-    } else {
-        (cohesion + mu_d * pressure.max(0.0)) / denom
-    }
-}
-
-/// `tau_flow = 2 eta D'` (§4.6).
-pub fn flow_stress(eta: f64, d_prime: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut out = [[0.0; 3]; 3];
-    for r in 0..3 {
-        for c in 0..3 {
-            out[r][c] = 2.0 * eta * d_prime[r][c];
-        }
-    }
-    out
-}
-
-/// `sqrt(tau:tau / 2)`.
-pub fn equivalent_flow_stress(tau: &[[f64; 3]; 3]) -> f64 {
-    let mut sum = 0.0;
-    for row in tau {
-        for v in row {
-            sum += v * v;
-        }
-    }
-    (0.5 * sum).sqrt()
-}
-
-/// `T_tide = C_T rho_p nu d^2 dev H_W` (§4.6).
-pub fn tidal_backstress(
-    c_t: f64,
-    rho_p: f64,
-    nu: f64,
-    grain_diameter: f64,
-    hessian_w: &[[f64; 3]; 3],
-) -> [[f64; 3]; 3] {
-    let third = (hessian_w[0][0] + hessian_w[1][1] + hessian_w[2][2]) / 3.0;
-    let coeff = c_t * rho_p * nu * grain_diameter * grain_diameter;
-    let mut out = [[0.0; 3]; 3];
-    for r in 0..3 {
-        for c in 0..3 {
-            out[r][c] = coeff * (hessian_w[r][c] - if r == c { third } else { 0.0 });
-        }
-    }
-    out
-}
-
 /// Inputs of the scalar closure at one surface node.
 #[derive(Clone, Copy, Debug)]
 pub struct ClosureInput {

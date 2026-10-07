@@ -91,6 +91,9 @@ pub struct StepRecord {
     pub rheo_seconds: f64,
     pub mass: f64,
     pub centroid_offset: f64,
+    /// Smallest `n·ê` on the body kept by this step, and the face that carries it.
+    pub min_radial: f64,
+    pub min_radial_face: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -298,6 +301,8 @@ pub fn run(
             rheo_seconds: mech.rheo_stats.seconds,
             mass: fwd.moments.mass,
             centroid_offset: fwd.moments.centroid.length(),
+            min_radial: 0.0,
+            min_radial_face: 0,
         };
         guess = Some(mech.sol.u.clone());
         state.velocity = mech.sol.u.clone();
@@ -331,6 +336,7 @@ pub fn run(
             advance_time(&mut state, dt, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
+            stamp_radial(&mut rec, &state.body);
             observer(&rec, &state)?;
             records.push(rec);
             continue;
@@ -360,6 +366,7 @@ pub fn run(
             advance_time(&mut state, rec.advance, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
+            stamp_radial(&mut rec, &state.body);
             observer(&rec, &state)?;
             records.push(rec);
             continue;
@@ -370,8 +377,11 @@ pub fn run(
         for i in 0..nv {
             if yielded[i] {
                 let n = cl.normal[i];
-                let s = cl.v_sl[i].dot(n).abs() / n.dot(topo.dirs[i]);
-                max_normal_speed = max_normal_speed.max(s);
+                let mu = n.dot(topo.dirs[i]);
+                if mu.abs() >= MU_MIN {
+                    let s = cl.v_sl[i].dot(n).abs() / mu;
+                    max_normal_speed = max_normal_speed.max(s);
+                }
             }
         }
         let flow = surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius);
@@ -425,7 +435,7 @@ pub fn run(
         let pos = state.body.positions();
         for i in 0..nv {
             let n = cl.normal[i];
-            let cos = n.dot(topo.dirs[i]);
+            let mu = n.dot(topo.dirs[i]);
             let dh_star = dt * (mc.j_dep[i] - mc.j_ero[i]) / density.rho(pos[i]).max(1e-300);
             if movable[i] {
                 // Slope-promoted nodes are still in the rigid core. Use the relax predictor
@@ -436,21 +446,27 @@ pub fn run(
                 } else {
                     dt * cl.v_sl[i].dot(n)
                 };
-                d_pred[i] = (slide + dh_star) / cos;
+                d_pred[i] = radial_increment(slide + dh_star, mu);
                 kind[i] = Kind::Mobile;
             } else if dh_star != 0.0 {
-                d_pred[i] = dh_star / cos;
+                d_pred[i] = radial_increment(dh_star, mu);
                 kind[i] = Kind::Deposit;
             }
         }
         rec.n_deposit = kind.iter().filter(|k| **k == Kind::Deposit).count();
         rec.n_locked = kind.iter().filter(|k| **k == Kind::Locked).count();
-        let slope_row: Vec<bool> = topo
-            .faces
+        // S_slope is the supercritical loose sheet only. Subcritical faces stay
+        // in static friction: their yielded vertices may still follow d_pred,
+        // but they do not enter the slope cone.
+        let slope_row: Vec<bool> = mech
+            .rheo
             .iter()
-            .map(|t| {
-                let v = t.map(|x| x as usize);
-                v.iter().all(|i| kind[*i] == Kind::Mobile)
+            .enumerate()
+            .map(|(f, node)| {
+                let v = topo.faces[f].map(|x| x as usize);
+                node.slack > project.relief.tol_slack
+                    && node.sin_phi.is_finite()
+                    && v.iter().all(|i| kind[*i] == Kind::Mobile)
                     && v.iter().map(|i| state.body.rho_s[*i]).sum::<f64>() > 0.0
             })
             .collect();
@@ -473,7 +489,6 @@ pub fn run(
                 mass_residual: mass_target - fwd.moments.mass,
                 mass: mass_target,
                 trust,
-                c0: g.c0,
                 eps_n: g.eps_n,
                 varrho: g.varrho,
             };
@@ -493,7 +508,7 @@ pub fn run(
             );
             let (b, f) = match body_result {
                 Err(e) => {
-                    // Topology / star-shape failure from Body::new — geometry failure → shrink Δ.
+                    // A non-positive radius or a topology failure shrinks Δ.
                     trust *= g.trust_shrink;
                     retries += 1;
                     if trust < g.trust_min * r_mean {
@@ -522,13 +537,13 @@ pub fn run(
             // Outer acceptance: geometry failures shrink Δ; mass failures are recorded but
             // accepted here (§2.13 §10.4.3 unified trust strategy; §2.14 conservative correction
             // is a follow-up step that can be added later).
-            match accept(&b, &f, mass_target, g.c0, g.eps_mass) {
+            match accept(&f, mass_target, g.eps_mass) {
                 Ok(r) => {
                     let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs())) * st.lambda;
                     break (b, f, r, out, dmax);
                 }
                 Err(AcceptError::Geometry(why)) => {
-                    // Star-shape or volume failure: shrink Δ and re-solve (§2.13).
+                    // Positive-volume failure: shrink Δ and re-solve (§2.13).
                     trust *= g.trust_shrink;
                     retries += 1;
                     if trust < g.trust_min * r_mean {
@@ -561,7 +576,7 @@ pub fn run(
                             Body::new(topo.clone(), rr, b.bulk, b.kernels.clone(), b.rho_s.clone())
                         {
                             if let Ok(cf) = Forward::bind(&cb, project.g) {
-                                if let Ok(cr) = accept(&cb, &cf, mass_target, g.c0, g.eps_mass) {
+                                if let Ok(cr) = accept(&cf, mass_target, g.eps_mass) {
                                     let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
                                         * st.lambda;
                                     break (cb, cf, cr, out, dmax);
@@ -629,6 +644,7 @@ pub fn run(
         advance_time(&mut state, adv, t_next, snap_tol);
         state.step += 1;
         steps_done += 1;
+        stamp_radial(&mut rec, &state.body);
         observer(&rec, &state)?;
         records.push(rec);
     }
@@ -644,5 +660,37 @@ fn advance_time(state: &mut State, dt: f64, t_next: f64, tol: f64) {
     state.t += dt;
     if (state.t - t_next).abs() < tol {
         state.t = t_next;
+    }
+}
+
+/// `|n·ê|` below this is left unconverted. The vertex takes no radial step from
+/// that normal displacement, and it does not enter the CFL speed.
+const MU_MIN: f64 = 0.05;
+
+fn radial_increment(normal_disp: f64, mu: f64) -> f64 {
+    if mu.abs() >= MU_MIN {
+        normal_disp / mu
+    } else {
+        0.0
+    }
+}
+
+fn stamp_radial(rec: &mut StepRecord, body: &Body) {
+    let (mu, face) = body.min_radial();
+    rec.min_radial = mu;
+    rec.min_radial_face = face;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::radial_increment;
+
+    #[test]
+    fn radial_increment_keeps_a_transverse_face_and_drops_a_grazing_one() {
+        assert!((radial_increment(0.1, 0.2) - 0.5).abs() < 1e-12);
+        assert!((radial_increment(0.1, -0.2) + 0.5).abs() < 1e-12);
+        assert_eq!(radial_increment(10.0, 0.01), 0.0);
+        assert_eq!(radial_increment(10.0, -0.01), 0.0);
+        assert_eq!(radial_increment(10.0, 0.0), 0.0);
     }
 }

@@ -11,7 +11,7 @@ use nalgebra::{DMatrix, DVector};
 use crate::common::math::DVec3;
 use crate::rheo_friction::Material;
 
-use super::basis::{Want, eval_pressure, eval_velocity_rays};
+use super::basis::{Want, contract_pressure, contract_velocity_rays};
 use super::body::Topology;
 use super::harmonics::SurfaceFit;
 use super::quad::gauss_jacobi_zeta2;
@@ -75,19 +75,16 @@ pub fn classify(
             });
         }
     }
-    let u = DVector::from_column_slice(&sol.u);
-    let rows = eval_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD);
-    let v = &rows.v * &u;
-    let d = &rows.d * &u;
-    let pres = eval_pressure(surf, &ops.play, &pts, false);
-    let pvals = &pres.val * DVector::from_column_slice(&sol.pres_c)
-        + &pres.lift_val * DVector::from_column_slice(&sol.lift);
+    let field = contract_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD, &sol.u);
+    let v = field.v;
+    let d = field.d;
+    let pvals = contract_pressure(surf, &ops.play, &pts, &sol.pres_c, &sol.lift);
     let np = pts.len();
     let mut fdelta = vec![0.0; np];
     let mut shear = vec![0.0; np];
     let mut eta = vec![0.0; np];
     for p in 0..np {
-        let d6 = &d.as_slice()[6 * p..6 * p + 6];
+        let d6 = &d[6 * p..6 * p + 6];
         let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
         let ptil = pvals[p].max(p_min);
         let ev = eta_eval(material, sh, ptil, sol.gamma_eps);

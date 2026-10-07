@@ -10,14 +10,17 @@
 //! s.t. Σ J_i d_i + s⁺ − s⁻ = M − ℳ(R)                         (linearised mass)
 //!      ‖g_f × n̂_f(d)‖ / |g_f| ≤ sin φ_f + t_f,  t_f ≥ 0          (slope SOC, face based)
 //!      g_f · n̂_f(d) ≤ −ε_n |g_f|                                  (no overhang)
-//!      n̂_f(d) · ê_f ≥ c₀                                          (linearised star-shape)
+//!      n̂_f(d) · ê_f ≥ −1/4                                        (linearisation floor)
 //!      |d_i| ≤ Δ  (mobile only)                                   (trust region)
 //! ```
 //!
 //! `n̂_f(d)` is the first-order expansion of the face normal. Those frames are the
 //! double-single Metal kernel; a device or kernel failure is returned, not replaced
-//! by a CPU evaluation. The nonlinear acceptance test (valid mesh, mass residual)
-//! belongs to the caller, which also shrinks `Δ` on a geometry failure.
+//! by a CPU evaluation. The floor −1/4 only keeps that expansion from leaving the
+//! unit sphere; a face already below it is left unconstrained, so a grazing or
+//! mildly overhanging face stays representable. The nonlinear acceptance test
+//! (valid mesh, mass residual) belongs to the caller, which also shrinks `Δ` on a
+//! geometry failure.
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
@@ -64,7 +67,6 @@ pub struct SocpInput<'a> {
     pub mass: f64,
     /// Trust radius `Δ` (metres).
     pub trust: f64,
-    pub c0: f64,
     pub eps_n: f64,
     pub varrho: f64,
 }
@@ -126,8 +128,16 @@ pub fn mass_jacobian(body: &Body, density: &CauchyDensity) -> Vec<f64> {
         .unwrap_or_else(|| vec![0.0; nv])
 }
 
-fn require_frame(frames: &[FaceFrame], f: usize) -> Result<(), ScfError> {
-    let frame = &frames[f];
+/// Lowest `n̂·ê` imposed on a face that is still above it.
+///
+/// A face already below this value does not get the row, so the step does not
+/// try to rebuild a star-shaped graph. The value is not the project parameter `c0`.
+const NORMAL_RADIAL_FLOOR: f64 = -0.25;
+
+fn require_frame(frames: &[Option<FaceFrame>], f: usize) -> Result<&FaceFrame, ScfError> {
+    let frame = frames[f]
+        .as_ref()
+        .ok_or_else(|| ScfError::gpu(format!("face {f}: slope frame was not evaluated")))?;
     if !frame.n.is_finite() || (frame.n.length() - 1.0).abs() > 1.0e-4 {
         return Err(ScfError::gpu(format!(
             "face {f}: double-single normal is not a finite unit vector (|n| = {})",
@@ -141,7 +151,7 @@ fn require_frame(frames: &[FaceFrame], f: usize) -> Result<(), ScfError> {
             )));
         }
     }
-    Ok(())
+    Ok(frame)
 }
 
 #[derive(Default)]
@@ -181,17 +191,28 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     }
     let p = body.positions();
     let ps: Vec<DVec3> = p.iter().map(|x| *x * (1.0 / r0)).collect();
-    let frames = face_frames(&ps, &topo.dirs, &topo.faces).map_err(ScfError::gpu)?;
-    if frames.len() != nf {
+    // Slope cones are the only rows that use n̂ and ∂n̂/∂R.
+    let active: Vec<usize> = (0..nf).filter(|&f| inp.slope_row[f]).collect();
+    let active_faces: Vec<[u32; 3]> = active.iter().map(|&f| topo.faces[f]).collect();
+    let computed = face_frames(&ps, &topo.dirs, &active_faces).map_err(ScfError::gpu)?;
+    if computed.len() != active.len() {
         return Err(ScfError::gpu(format!(
-            "face-frame kernel returned {} frames for {nf} faces",
-            frames.len()
+            "face-frame kernel returned {} frames for {} slope faces",
+            computed.len(),
+            active.len()
         )));
     }
-    // Known (scaled) displacement of non-mobile vertices.
+    let mut frames = vec![None; nf];
+    for (slot, &f) in active.iter().enumerate() {
+        frames[f] = Some(computed[slot]);
+    }
+    // Known displacement of non-mobile vertices, projected onto the trust box.
+    // A pure-deposition predictor outside Δ is not a valid point of the
+    // unit-normal expansion, so this step applies only the in-box part.
+    let delta = inp.trust / r0;
     let known: Vec<f64> = (0..nv)
         .map(|i| match inp.kind[i] {
-            Kind::Deposit => inp.d_pred[i] / r0,
+            Kind::Deposit => (inp.d_pred[i] / r0).clamp(-delta, delta),
             _ => 0.0,
         })
         .collect();
@@ -201,10 +222,10 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         if !inp.slope_row[f] {
             continue;
         }
-        require_frame(&frames, f)?;
+        let frame = require_frame(&frames, f)?;
         let gnorm = inp.gravity[f].length();
         let overhang_ok =
-            gnorm > 1e-14 && frames[f].n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n;
+            gnorm > 1e-14 && frame.n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n;
         if overhang_ok
             && topo.faces[f]
                 .iter()
@@ -218,7 +239,9 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let sm = sp + 1;
     let nx = sm + 1;
 
-    // Objective.
+    // Objective. The trust box already enforces |d_i| ≤ Δ. A predictor outside
+    // that box is replaced by its projection so the quadratic gradient stays on
+    // the same scale as the slope penalty.
     let mut p_diag = vec![0.0; nx];
     let mut q = vec![0.0; nx];
     let wsum: f64 = (0..nv)
@@ -228,8 +251,9 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     for i in 0..nv {
         if col_of[i] != usize::MAX {
             let w = inp.weight[i] / wsum.max(1e-300);
+            let target = (inp.d_pred[i] / r0).clamp(-delta, delta);
             p_diag[col_of[i]] = w;
-            q[col_of[i]] = -w * inp.d_pred[i] / r0;
+            q[col_of[i]] = -w * target;
         }
     }
     for f in 0..nf {
@@ -267,7 +291,6 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         nn.put(r, c, -1.0);
     }
     // Trust region (box on the mobile displacements).
-    let delta = inp.trust / r0;
     for i in 0..nv {
         if col_of[i] != usize::MAX {
             let r1 = nn.row(delta);
@@ -280,11 +303,11 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let mut dropped = 0usize;
     for f in 0..nf {
         let tri = topo.faces[f].map(|x| x as usize);
-        if !tri.iter().any(|v| col_of[*v] != usize::MAX) {
+        if !tri.iter().any(|v| col_of[*v] != usize::MAX) || !inp.slope_row[f] {
             continue;
         }
-        require_frame(&frames, f)?;
-        let (n, nj) = (frames[f].n, frames[f].nj);
+        let frame = require_frame(&frames, f)?;
+        let (n, nj) = (frame.n, frame.nj);
         // Constant part of n̂(d) from the known displacements.
         let mut n0 = n;
         for k in 0..3 {
@@ -300,11 +323,13 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
             continue;
         }
         let ghat = g * (1.0 / gn);
+        // Keep the unit-normal expansion from crossing below −1/4. The row is
+        // the same shape as a star cut, but the floor is low enough that a
+        // grazing face (n·ê near 0) stays feasible and may become overhanging.
         let e_f = topo.face_dirs[f];
-
-        // Star-shape: n̂·ê ≥ c0  ->  −Σ (N_j·ê) d_j ≤ n0·ê − c0.
-        {
-            let r = nn.row(n0.dot(e_f) - inp.c0);
+        let rhs = n0.dot(e_f) - NORMAL_RADIAL_FLOOR;
+        if rhs > 0.0 {
+            let r = nn.row(rhs);
             for k in 0..3 {
                 if col_of[tri[k]] != usize::MAX {
                     nn.put(r, col_of[tri[k]], -nj[k].dot(e_f));
@@ -378,6 +403,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     let settings = DefaultSettingsBuilder::default()
         .verbose(false)
         .max_iter(200)
+        .direct_solve_method("faer".to_owned())
         .build()
         .map_err(|e| ScfError::solver(format!("Clarabel settings: {e}")))?;
     let mut solver = DefaultSolver::new(&p_mat, &q, &a_mat, &b, &cones, settings)
@@ -390,7 +416,8 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         SolverStatus::Solved | SolverStatus::AlmostSolved
     ) {
         return Err(ScfError::solver(format!(
-            "step SOCP ended with status {status}"
+            "step SOCP ended with status {status} after {} iterations (primal {:.3e}, dual {:.3e}, mobile {na}, slope cones {nt})",
+            sol.iterations, sol.r_prim, sol.r_dual
         )));
     }
     let mut d = vec![0.0; nv];
@@ -458,7 +485,6 @@ mod tests {
             mass_residual: 0.0,
             mass: 4.0e3,
             trust: 0.1,
-            c0: 0.3,
             eps_n: 0.01,
             varrho: 1e3,
         };
@@ -587,7 +613,6 @@ mod tests {
             mass_residual: 0.0,
             mass: 4.0e3,
             trust: 0.05,
-            c0: 0.2,
             eps_n: 0.01,
             varrho: 1e3,
         };

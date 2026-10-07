@@ -163,7 +163,7 @@ pub fn protection(project: &Project, body: &Body) -> Result<Protection, ScfError
 /// Failure kind returned by [`accept`].
 #[derive(Clone, Debug)]
 pub enum AcceptError {
-    /// Positive volume, star-shape (`n·e_r ≥ c0`) or topology failure.
+    /// Positive volume or topology failure.
     /// The caller must shrink `Δ` and re-solve the SOCP (§2.13, §10.4.3).
     Geometry(String),
     /// Mass residual `|ℳ − M| > ε_M`.  The caller must apply a conservative
@@ -180,29 +180,16 @@ impl std::fmt::Display for AcceptError {
     }
 }
 
-/// Outer geometric acceptance (§10.4.4 step 8a): star-shape, positive volume, mass.
+/// Outer geometric acceptance: positive volume and mass.
 ///
+/// Grazing faces stay in the radial graph. Callers report `n·ê` from
+/// [`Body::min_radial`](super::body::Body::min_radial).
 /// Returns `Ok(relative_mass_residual)` on pass.
-/// Returns `Err(AcceptError::Geometry(_))` for mesh/topology failures that require trust shrink.
+/// Returns `Err(AcceptError::Geometry(_))` for a non-positive volume.
 /// Returns `Err(AcceptError::Mass(resid))` for mass failures that require conservative correction.
-pub fn accept(
-    body: &Body,
-    fwd: &Forward,
-    mass_target: f64,
-    c0: f64,
-    eps_mass: f64,
-) -> Result<f64, AcceptError> {
+pub fn accept(fwd: &Forward, mass_target: f64, eps_mass: f64) -> Result<f64, AcceptError> {
     if !(fwd.moments.volume > 0.0) {
         return Err(AcceptError::Geometry("non-positive volume".into()));
-    }
-    let geo = body.face_geometry();
-    for (f, (_, n, _)) in geo.iter().enumerate() {
-        let c = n.dot(body.topo.face_dirs[f]);
-        if !(c >= c0) {
-            return Err(AcceptError::Geometry(format!(
-                "face {f}: n·e_r = {c:.4} < c0 = {c0}"
-            )));
-        }
     }
     let resid = (fwd.moments.mass - mass_target).abs() / mass_target;
     if resid > eps_mass {
@@ -226,6 +213,9 @@ pub struct SweepRecord {
     pub dropped_overhang: usize,
     pub mass_residual: f64,
     pub max_displacement: f64,
+    /// Smallest `n·ê` on the accepted body, and the face that carries it.
+    pub min_radial: f64,
+    pub min_radial_face: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -456,7 +446,6 @@ pub fn relax(
                 mass_residual: mass_target - fwd.moments.mass,
                 mass: mass_target,
                 trust,
-                c0: g.c0,
                 eps_n: g.eps_n,
                 varrho: g.varrho,
             };
@@ -487,7 +476,7 @@ pub fn relax(
                     continue;
                 }
             };
-            match accept(&built, &bound, mass_target, g.c0, g.eps_mass) {
+            match accept(&bound, mass_target, g.eps_mass) {
                 Ok(resid) => {
                     let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
                     break (built, bound, resid, out, dmax);
@@ -528,7 +517,7 @@ pub fn relax(
                     )
                     .and_then(|cb| Forward::bind(&cb, project.g).map(|cf| (cb, cf)));
                     match corrected {
-                        Ok((cb, cf)) => match accept(&cb, &cf, mass_target, g.c0, g.eps_mass) {
+                        Ok((cb, cf)) => match accept(&cf, mass_target, g.eps_mass) {
                             Ok(cr) => {
                                 let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
                                 break (cb, cf, cr, out, dmax);
@@ -554,6 +543,7 @@ pub fn relax(
         current = b;
         fwd = f;
         state = slope_state(project, gpu, &current, &mut fwd, omega)?;
+        let (min_radial, min_radial_face) = current.min_radial();
         sweeps.push(SweepRecord {
             sweep,
             max_slack,
@@ -566,6 +556,8 @@ pub fn relax(
             dropped_overhang: out.dropped_overhang,
             mass_residual: resid,
             max_displacement: dmax,
+            min_radial,
+            min_radial_face,
         });
         let (new_slack, _, _) = measure(&state);
         if new_slack > 0.99 * last_slack {

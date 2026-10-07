@@ -186,6 +186,98 @@ pub struct PresRows {
     pub lift_grad: DMatrix<f64>,
 }
 
+/// Velocity and strain of one coefficient vector, contracted on the device.
+///
+/// `v` has length `3 * pts.len()` and `d` has length `6 * pts.len()`, both
+/// point-major. This is the same product as `eval_velocity_rays` followed by
+/// a matrix-vector multiply, without assembling either matrix.
+pub struct ContractedVelocity {
+    pub v: Vec<f64>,
+    pub d: Vec<f64>,
+}
+
+pub fn contract_velocity_rays(
+    surf: &SurfaceFit,
+    lay: &VelLayout,
+    pts: &[DVec3],
+    n_per: usize,
+    want: Want,
+    u: &[f64],
+) -> ContractedVelocity {
+    #[cfg(target_os = "macos")]
+    {
+        let got = super::basis_gpu::contract_velocity(surf, lay, pts, n_per, want, u)
+            .unwrap_or_else(|err| panic!("velocity contraction GPU: {err}"));
+        return ContractedVelocity { v: got.v, d: got.d };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (surf, lay, pts, n_per, want, u);
+        panic!("velocity contraction requires Metal");
+    }
+}
+
+/// Strain basis at face centres, resident in one Metal buffer.
+pub struct SurfaceStrain {
+    #[cfg(target_os = "macos")]
+    inner: super::basis_gpu::GpuStrain,
+    #[cfg(not(target_os = "macos"))]
+    _private: (),
+}
+
+impl SurfaceStrain {
+    /// `D(Bu)` at each stored point, six scaled components, point-major.
+    pub fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
+        #[cfg(target_os = "macos")]
+        {
+            self.inner.contract(u)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = u;
+            Err("strain contraction requires Metal".into())
+        }
+    }
+}
+
+pub fn surface_strain(
+    surf: &SurfaceFit,
+    lay: &VelLayout,
+    pts: &[DVec3],
+) -> Result<SurfaceStrain, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(SurfaceStrain {
+            inner: super::basis_gpu::strain_basis(surf, lay, pts)?,
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (surf, lay, pts);
+        Err("strain basis requires Metal".into())
+    }
+}
+
+/// Scalar pressure `P c + lift`, contracted on the device. One value per point.
+pub fn contract_pressure(
+    surf: &SurfaceFit,
+    lay: &PresLayout,
+    pts: &[DVec3],
+    pres_c: &[f64],
+    lift: &[f64],
+) -> Vec<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        return super::basis_gpu::contract_pressure(surf, lay, pts, pres_c, lift)
+            .unwrap_or_else(|err| panic!("pressure contraction GPU: {err}"));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (surf, lay, pts, pres_c, lift);
+        panic!("pressure contraction requires Metal");
+    }
+}
+
 pub fn eval_pressure(
     surf: &SurfaceFit,
     lay: &PresLayout,
@@ -310,5 +402,75 @@ mod tests {
                 assert!((rows.lift_val[(0, lm_index(l, m))] - y[lm_index(l, m)]).abs() < 1e-10);
             }
         }
+    }
+
+    #[test]
+    fn contraction_matches_the_dense_product() {
+        let surf = bumpy_surface();
+        let lay = VelLayout::new(3);
+        let pts = [
+            DVec3::new(40.0, 10.0, 20.0),
+            DVec3::new(-15.0, 30.0, 25.0),
+            DVec3::new(8.0, -12.0, 50.0),
+            DVec3::new(22.0, 18.0, -9.0),
+        ];
+        let rows = eval_velocity(&surf, &lay, &pts, Want::VD);
+        let u: Vec<f64> = (0..lay.n_u)
+            .map(|j| 0.01 * ((j * 17) % 11) as f64 - 0.05)
+            .collect();
+        let coeff = nalgebra::DVector::from_column_slice(&u);
+        let expect_v = &rows.v * &coeff;
+        let expect_d = &rows.d * &coeff;
+        let got = contract_velocity_rays(&surf, &lay, &pts, 1, Want::VD, &u);
+        let worst = |got: &[f64], expect: &nalgebra::DVector<f64>| {
+            got.iter()
+                .zip(expect.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max)
+        };
+        let scale = expect_v.amax() + expect_d.amax() + 1e-30;
+        let miss = worst(&got.v, &expect_v).max(worst(&got.d, &expect_d));
+        assert!(
+            miss < 1e-8 * scale,
+            "velocity contraction left the dense product by {miss:.3e}"
+        );
+        let strain = surface_strain(&surf, &lay, &pts).expect("strain basis");
+        let got_d = strain.contract(&u).expect("strain product");
+        let miss_d = worst(&got_d, &expect_d);
+        assert!(
+            miss_d < 1e-8 * scale,
+            "strain product left the dense product by {miss_d:.3e}"
+        );
+        let play = PresLayout { l_max: 4, k_max: 3 };
+        let pres = eval_pressure(&surf, &play, &pts, false);
+        let pc: Vec<f64> = (0..play.n_p()).map(|j| 0.02 * (j as f64) - 0.4).collect();
+        let lift: Vec<f64> = (0..play.n_lift()).map(|j| 0.01 * (j as f64)).collect();
+        let expect_p = &pres.val * nalgebra::DVector::from_column_slice(&pc)
+            + &pres.lift_val * nalgebra::DVector::from_column_slice(&lift);
+        let got_p = contract_pressure(&surf, &play, &pts, &pc, &lift);
+        let miss_p = worst(&got_p, &expect_p);
+        assert!(
+            miss_p < 1e-8 * (expect_p.amax() + 1e-30),
+            "pressure contraction left the dense product by {miss_p:.3e}"
+        );
+        // Classification packs several radii on each fixed direction.
+        let axis = DVec3::new(0.2, -0.5, 0.8).try_normalize().unwrap();
+        let other = DVec3::new(-0.7, 0.1, 0.4).try_normalize().unwrap();
+        let mut ray_pts = Vec::new();
+        for dir in [axis, other] {
+            for s in 1..=6 {
+                ray_pts.push(dir * (30.0 + 10.0 * s as f64));
+            }
+        }
+        let ray_rows = eval_velocity_rays(&surf, &lay, &ray_pts, 6, Want::VD);
+        let ray_v = &ray_rows.v * &coeff;
+        let ray_d = &ray_rows.d * &coeff;
+        let ray_got = contract_velocity_rays(&surf, &lay, &ray_pts, 6, Want::VD, &u);
+        let ray_scale = ray_v.amax() + ray_d.amax() + 1e-30;
+        let ray_miss = worst(&ray_got.v, &ray_v).max(worst(&ray_got.d, &ray_d));
+        assert!(
+            ray_miss < 1e-8 * ray_scale,
+            "ray contraction left the dense product by {ray_miss:.3e}"
+        );
     }
 }

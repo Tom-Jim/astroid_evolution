@@ -146,22 +146,15 @@ fn mean_radius(b: &Body) -> f64 {
     b.radius.iter().sum::<f64>() / b.radius.len() as f64
 }
 
-/// Apply `x' = Q (x − c)` to the model and re-sample the star-shaped surface.
-fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>, c0: f64) -> Result<Body, ScfError> {
+/// Apply `x' = Q (x − c)` and re-sample radii along the fixed directions.
+///
+/// The outermost ray crossing is kept. A missed ray or a non-positive radius is an error.
+fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, ScfError> {
     let p = body.positions();
     let moved: Vec<DVec3> = p.iter().map(|x| d3(q * (v3(*x) - v3(c)))).collect();
     let mesh = crate::common::geometry::TriMesh::try_new(moved, body.topo.faces.clone())
         .map_err(ScfError::from)?;
-    let mut radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
-    // Steep faces are pulled toward a common radius. The blend stops at the
-    // last count that still fell; §10.4.4 step 8b (v) rejects whatever remains.
-    lift_star_slope(
-        &mut radius,
-        &body.topo.dirs,
-        &body.topo.faces,
-        &body.topo.face_dirs,
-        c0,
-    )?;
+    let radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
     let topo = body.topo.clone();
     let kernels: Vec<CauchyKernel> = body
         .kernels
@@ -185,129 +178,6 @@ fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>, c0: f64) -> Result<Body, 
     }
     let next = Body::new(topo, radius, body.bulk, kernels, rho_s)?;
     Ok(next)
-}
-
-fn face_radial_slope(radius: &[f64], dirs: &[DVec3], face: [u32; 3], face_dir: DVec3) -> f64 {
-    let p = face.map(|i| dirs[i as usize] * radius[i as usize]);
-    let Some(normal) = (p[1] - p[0]).cross(p[2] - p[0]).try_normalize() else {
-        return -1.0;
-    };
-    normal.dot(face_dir)
-}
-
-fn steep_stats(
-    radius: &[f64],
-    dirs: &[DVec3],
-    faces: &[[u32; 3]],
-    face_dirs: &[DVec3],
-    c0: f64,
-) -> (usize, f64) {
-    let mut bad = 0usize;
-    let mut worst = f64::INFINITY;
-    for (fi, face) in faces.iter().enumerate() {
-        let slope = face_radial_slope(radius, dirs, *face, face_dirs[fi]);
-        if slope < c0 {
-            bad += 1;
-            worst = worst.min(slope);
-        }
-    }
-    (bad, worst)
-}
-
-fn blend_steep(
-    radius: &mut [f64],
-    dirs: &[DVec3],
-    faces: &[[u32; 3]],
-    face_dirs: &[DVec3],
-    c0: f64,
-    gain: f64,
-) -> Result<(), ScfError> {
-    let n = radius.len();
-    let mut pull = vec![0.0; n];
-    let mut count = vec![0u32; n];
-    for (fi, face) in faces.iter().enumerate() {
-        if face_radial_slope(radius, dirs, *face, face_dirs[fi]) >= c0 {
-            continue;
-        }
-        let mean = face.iter().map(|i| radius[*i as usize]).sum::<f64>() / 3.0;
-        for vertex in *face {
-            pull[vertex as usize] += mean;
-            count[vertex as usize] += 1;
-        }
-    }
-    for i in 0..n {
-        if count[i] == 0 {
-            continue;
-        }
-        let target = pull[i] / f64::from(count[i]);
-        radius[i] += gain * (target - radius[i]);
-        if !(radius[i].is_finite() && radius[i] > 0.0) {
-            return Err(ScfError::geometry(format!(
-                "star-slope repair collapsed vertex {i}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn slope_improved(bad: usize, worst: f64, best_bad: usize, best_worst: f64) -> bool {
-    bad < best_bad || (bad == best_bad && worst > best_worst + 1.0e-4)
-}
-
-/// Pull radii on faces with `n·e_r < c0` toward that face's mean radius.
-///
-/// A gain of 0.65 is used while the steep-face count falls. When that step
-/// stops helping, shorter gains are tried so the last face can cross `c0`
-/// without dragging a neighbour under it.
-fn lift_star_slope(
-    radius: &mut [f64],
-    dirs: &[DVec3],
-    faces: &[[u32; 3]],
-    face_dirs: &[DVec3],
-    c0: f64,
-) -> Result<(), ScfError> {
-    let (mut best_bad, mut best_worst) = steep_stats(radius, dirs, faces, face_dirs, c0);
-    if best_bad == 0 {
-        return Ok(());
-    }
-    let mut best = radius.to_vec();
-    for _ in 0..48 {
-        let before = radius.to_vec();
-        blend_steep(radius, dirs, faces, face_dirs, c0, 0.65)?;
-        let (bad, worst) = steep_stats(radius, dirs, faces, face_dirs, c0);
-        if bad == 0 {
-            return Ok(());
-        }
-        if slope_improved(bad, worst, best_bad, best_worst) {
-            best_bad = bad;
-            best_worst = worst;
-            best.copy_from_slice(radius);
-            continue;
-        }
-        radius.copy_from_slice(&before);
-        let mut took = false;
-        for gain in [0.3, 0.15, 0.08, 0.04] {
-            blend_steep(radius, dirs, faces, face_dirs, c0, gain)?;
-            let (bad, worst) = steep_stats(radius, dirs, faces, face_dirs, c0);
-            if bad == 0 {
-                return Ok(());
-            }
-            if slope_improved(bad, worst, best_bad, best_worst) {
-                best_bad = bad;
-                best_worst = worst;
-                best.copy_from_slice(radius);
-                took = true;
-                break;
-            }
-            radius.copy_from_slice(&before);
-        }
-        if !took {
-            radius.copy_from_slice(&best);
-            return Ok(());
-        }
-    }
-    radius.copy_from_slice(&best);
-    Ok(())
 }
 
 /// Dual area of every vertex (`Σ_f A_f / 3`).
@@ -354,7 +224,7 @@ pub fn realign(
         let c = fwd.moments.centroid;
         let ic = inertia_about_centroid(&fwd.moments);
         let q = principal_rotation(&ic, prm.eps_deg);
-        current = apply_once(&current, c, &q, prm.c0)?;
+        current = apply_once(&current, c, &q)?;
         // x_orig = q_accᵀ x_cur + t_acc  ⇒  compose.
         t_acc += q_acc.transpose() * v3(c);
         q_acc = q * q_acc;
@@ -362,27 +232,6 @@ pub fn realign(
         passes += 1;
     }
     let after = departure(&fwd.moments, r_ref, prm.eps_deg);
-    // Ray resampling must preserve the star-shaped acceptance condition.
-    let geo = current.face_geometry();
-    let mut low = 0usize;
-    let mut worst = f64::INFINITY;
-    let mut worst_face = 0usize;
-    for (fi, (_, n, _)) in geo.iter().enumerate() {
-        let c = n.dot(current.topo.face_dirs[fi]);
-        if c < prm.c0 {
-            low += 1;
-            if c < worst {
-                worst = c;
-                worst_face = fi;
-            }
-        }
-    }
-    if low > 0 {
-        return Err(ScfError::geometry(format!(
-            "frame resampling: {low} faces have n·e_r < c0={:.4}, worst face {worst_face} = {worst:.4}",
-            prm.c0
-        )));
-    }
     // §10.4.4 step 8b (vii): re-verify after at most three passes.
     // If the frame is still out of tolerance, the rigid-body condition is incompatible.
     if passes > 0 && (after.centroid > prm.eps_frame || after.off_diagonal > prm.eps_frame) {
