@@ -167,6 +167,7 @@ mod metal_rt {
         queue: Retained<Queue>,
         trace: Retained<Pipeline>,
         field: Retained<Pipeline>,
+        field_strided: Retained<Pipeline>,
         moments: Retained<Pipeline>,
         submit: std::sync::Mutex<()>,
     }
@@ -199,9 +200,10 @@ mod metal_rt {
             .map_err(|err| format!("Metal shader: {err:?}"))?;
         let trace = pipeline(&device, &library, "trace")?;
         let field = pipeline(&device, &library, "rtfp_field")?;
+        let field_strided = pipeline(&device, &library, "rtfp_field_strided")?;
         let moments = pipeline(&device, &library, "rtfp_moments")?;
         for (name, state, need) in [
-            ("rtfp_field", &field, FIELD_THREADS),
+            ("rtfp_field_strided", &field_strided, FIELD_THREADS),
             ("rtfp_moments", &moments, MOMENT_THREADS),
         ] {
             let width = state.maxTotalThreadsPerThreadgroup();
@@ -216,6 +218,7 @@ mod metal_rt {
             queue,
             trace,
             field,
+            field_strided,
             moments,
             submit: std::sync::Mutex::new(()),
         })
@@ -429,6 +432,7 @@ mod metal_rt {
         merge_abs: f32,
         origin_abs: f32,
         launch_offset: f32,
+        point_count: u32,
     }
 
     #[repr(C)]
@@ -493,6 +497,7 @@ mod metal_rt {
         g: f64,
         want_potential: bool,
         want_hessian: bool,
+        packet: bool,
     ) -> Result<Vec<[f64; 10]>, String> {
         if !(scale.is_finite() && scale > 0.0) {
             return Err("mesh scale is not a positive finite length".into());
@@ -548,6 +553,8 @@ mod metal_rt {
             merge_abs: (MERGE_ABS * scale) as f32,
             origin_abs: (ORIGIN_ABS * scale) as f32,
             launch_offset: LAUNCH_OFFSET,
+            point_count: u32::try_from(gpu_points.len())
+                .map_err(|_| "too many field points for one launch".to_string())?,
         };
         let options = MTLResourceOptions::StorageModeShared;
         let point_buffer = buffer_with(&core.device, &gpu_points)?;
@@ -571,7 +578,11 @@ mod metal_rt {
         let encoder = command
             .computeCommandEncoder()
             .ok_or("Metal compute encoder unavailable")?;
-        encoder.setComputePipelineState(&core.field);
+        encoder.setComputePipelineState(if packet {
+            &core.field
+        } else {
+            &core.field_strided
+        });
         unsafe {
             encoder.setBuffer_offset_atIndex(Some(point_buffer.as_ref()), 0, 0);
             encoder.setBuffer_offset_atIndex(Some(ray_buffer.as_ref()), 0, 1);
@@ -586,18 +597,35 @@ mod metal_rt {
             encoder.setBuffer_offset_atIndex(Some(flags.as_ref()), 0, 6);
             encoder.setAccelerationStructure_atBufferIndex(Some(built.accel.as_ref()), 7);
         }
-        encoder.dispatchThreadgroups_threadsPerThreadgroup(
-            MTLSize {
-                width: gpu_points.len(),
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: FIELD_THREADS,
-                height: 1,
-                depth: 1,
-            },
-        );
+        if packet {
+            // Consecutive threads share a ray index, so one SIMD group traces
+            // one Lebedev direction from several sample points.
+            encoder.dispatchThreads_threadsPerThreadgroup(
+                MTLSize {
+                    width: gpu_points.len(),
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: 64,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        } else {
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                MTLSize {
+                    width: gpu_points.len(),
+                    height: 1,
+                    depth: 1,
+                },
+                MTLSize {
+                    width: FIELD_THREADS,
+                    height: 1,
+                    depth: 1,
+                },
+            );
+        }
         encoder.endEncoding();
         finish(&command)?;
         let flag_ptr = flags.contents().as_ptr() as *const u32;
@@ -860,6 +888,7 @@ impl HardwareMesh {
                 job.g,
                 job.want_potential,
                 job.want_hessian,
+                true,
             )
             .map_err(RtfpError::gpu_unavailable)
         }
@@ -870,6 +899,34 @@ impl HardwareMesh {
                 "hardware ray tracing requires Metal",
             ))
         }
+    }
+
+    /// The 256-lane butterfly field, used to check the packet sum.
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn eval_field_strided(
+        &self,
+        job: &FieldJob<'_>,
+    ) -> Result<Vec<[f64; 10]>, RtfpError> {
+        metal_rt::launch_field(
+            &self.core,
+            &self.built,
+            self.frame.center,
+            self.frame.scale,
+            job.points,
+            job.thetas,
+            job.rhos,
+            job.dirs,
+            job.weights,
+            job.bulk,
+            job.kernels,
+            job.nodes,
+            job.node_base,
+            job.g,
+            job.want_potential,
+            job.want_hessian,
+            false,
+        )
+        .map_err(RtfpError::gpu_unavailable)
     }
 
     /// Mass, first moments and second moments `(xx, yy, zz, xy, xz, yz)` of one origin's rays.

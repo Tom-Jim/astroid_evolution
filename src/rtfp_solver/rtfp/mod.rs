@@ -116,6 +116,27 @@ impl RtfpSolver {
         role: PointRole,
         want: FieldMask,
     ) -> Result<FieldBatch, RtfpError> {
+        self.eval_mode(points, role, want, true)
+    }
+
+    /// The previous 256-lane reduction, for the packet comparison.
+    #[cfg(all(test, target_os = "macos"))]
+    fn eval_strided(
+        &self,
+        points: &PointSet,
+        role: PointRole,
+        want: FieldMask,
+    ) -> Result<FieldBatch, RtfpError> {
+        self.eval_mode(points, role, want, false)
+    }
+
+    fn eval_mode(
+        &self,
+        points: &PointSet,
+        role: PointRole,
+        want: FieldMask,
+        packet: bool,
+    ) -> Result<FieldBatch, RtfpError> {
         if role == PointRole::SurfaceVertex && want.hessian {
             return Err(RtfpError::model_not_closed(
                 "MS §10.3: a vertex or edge Hessian must not be sampled; use SurfaceFace",
@@ -142,7 +163,7 @@ impl RtfpSolver {
             if xs.iter().any(|x| !x.is_finite()) {
                 return Err(RtfpError::geometry("evaluation point must be finite"));
             }
-            self.eval_group(&xs, role, want, &mut batch, start)?;
+            self.eval_group(&xs, role, want, &mut batch, start, packet)?;
             start = end;
         }
         Ok(batch)
@@ -155,6 +176,7 @@ impl RtfpSolver {
         want: FieldMask,
         out: &mut FieldBatch,
         offset: usize,
+        packet: bool,
     ) -> Result<(), RtfpError> {
         let sphere = lebedev::rule();
         let inside = match role {
@@ -189,7 +211,7 @@ impl RtfpSolver {
                 alpha: k.alpha,
             })
             .collect();
-        let columns = self.hw.eval_field(&FieldJob {
+        let job = FieldJob {
             points: xs,
             thetas: &thetas,
             rhos: &rhos,
@@ -202,7 +224,22 @@ impl RtfpSolver {
             g: self.options.g,
             want_potential: want.potential,
             want_hessian: want.hessian,
-        })?;
+        };
+        let columns = if packet {
+            self.hw.eval_field(&job)?
+        } else {
+            #[cfg(all(test, target_os = "macos"))]
+            {
+                self.hw.eval_field_strided(&job)?
+            }
+            #[cfg(not(all(test, target_os = "macos")))]
+            {
+                let _ = packet;
+                return Err(RtfpError::gpu_unavailable(
+                    "the strided field kernel is a macOS test oracle",
+                ));
+            }
+        };
         for (p, col) in columns.iter().enumerate() {
             let i = offset + p;
             out.potential[i] = col[0];
@@ -212,6 +249,83 @@ impl RtfpSolver {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn packet_field_matches_the_strided_reduction() {
+    let mesh = TriMesh::unit_cube();
+    let tri = mesh.triangle(0);
+    let centre = DVec3::new(
+        (tri[0].x + tri[1].x + tri[2].x) / 3.0,
+        (tri[0].y + tri[1].y + tri[2].y) / 3.0,
+        (tri[0].z + tri[1].z + tri[2].z) / 3.0,
+    );
+    let points = PointSet::from_points(&[DVec3::new(0.2, -0.1, 0.3), centre]);
+    let solver = RtfpSolver::bind(
+        RtfpOptions::default(),
+        mesh,
+        CauchyDensity::uniform(1.0).expect("uniform density"),
+    )
+    .expect("hardware ray tracing");
+    let want = FieldMask::ALL;
+    let packet = solver
+        .eval(&points, PointRole::Field, want)
+        .expect("packet field");
+    let interior = solver
+        .eval_strided(&points, PointRole::Field, want)
+        .expect("strided field");
+    let face = solver
+        .eval(
+            &PointSet::from_points(&[centre]),
+            PointRole::SurfaceFace,
+            want,
+        )
+        .expect("packet face");
+    let face_ref = solver
+        .eval_strided(
+            &PointSet::from_points(&[centre]),
+            PointRole::SurfaceFace,
+            want,
+        )
+        .expect("strided face");
+    for (got, want_batch) in [(&packet, &interior), (&face, &face_ref)] {
+        let n = got.gradient.len();
+        for i in 0..n {
+            let comps = [
+                got.potential[i],
+                got.gradient[i].x,
+                got.gradient[i].y,
+                got.gradient[i].z,
+                got.hessian[i][0],
+                got.hessian[i][1],
+                got.hessian[i][2],
+                got.hessian[i][3],
+                got.hessian[i][4],
+                got.hessian[i][5],
+            ];
+            let refs = [
+                want_batch.potential[i],
+                want_batch.gradient[i].x,
+                want_batch.gradient[i].y,
+                want_batch.gradient[i].z,
+                want_batch.hessian[i][0],
+                want_batch.hessian[i][1],
+                want_batch.hessian[i][2],
+                want_batch.hessian[i][3],
+                want_batch.hessian[i][4],
+                want_batch.hessian[i][5],
+            ];
+            for (a, b) in comps.iter().zip(refs.iter()) {
+                let scale = b.abs().max(1e-12);
+                let rel = (a - b).abs() / scale;
+                assert!(
+                    rel < 1e-6,
+                    "packet {a} and strided {b} differ by relative {rel}"
+                );
+            }
+        }
     }
 }
 

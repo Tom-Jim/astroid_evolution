@@ -2,13 +2,14 @@
 using namespace metal;
 using namespace metal::raytracing;
 
-// Fused RTFP field. One threadgroup owns one sample point; each thread owns a
-// strided set of Lebedev rays. Hardware hit distances stay f32 because the
-// acceleration structure is f32. Chord sums stay double-single. Crossings stay
-// in a private array, chords are paired by occupancy parity, and every density
-// kernel is integrated on the spot. The threadgroup then tree-reduces the ten
-// field components. No atomics. TG stays a power of two: a wider group moved
-// the Werner residual over the accepted tolerance.
+// Fused RTFP field. One thread owns one sample and walks Lebedev rays in index
+// order, so a SIMD group traces one direction from several origins. Hardware
+// hit distances stay f32 because the acceleration structure is f32. Chord sums
+// stay double-single, in ray order. Crossings stay in a private array, chords
+// are paired by occupancy parity, and every density kernel is integrated on
+// the spot. `rtfp_field_strided` is the previous 256-lane butterfly, kept so
+// the packet sum can be checked against that association. TG stays a power of
+// two: a wider butterfly moved the Werner residual over the accepted tolerance.
 
 #define TG 256u
 #define MAX_MERGED 128u
@@ -48,6 +49,7 @@ struct FieldParams {
     float merge_abs;
     float origin_abs;
     float launch_offset;
+    uint point_count;
 };
 
 struct MomentParams {
@@ -361,6 +363,112 @@ inline void reduce10(
 }
 
 kernel void rtfp_field(
+    device const GpuPoint* points [[buffer(0)]],
+    device const GpuRay* rays [[buffer(1)]],
+    device const GpuKernel* kernels [[buffer(2)]],
+    device const GpuNode* nodes [[buffer(3)]],
+    constant FieldParams& params [[buffer(4)]],
+    device float* out [[buffer(5)]],
+    device uint* flags [[buffer(6)]],
+    primitive_acceleration_structure accel [[buffer(7)]],
+    uint3 gid [[thread_position_in_grid]]
+) {
+    uint pid = gid.x;
+    if (pid >= params.point_count) {
+        return;
+    }
+    GpuPoint pt = points[pid];
+    float3 origin_u = float3(pt.ox, pt.oy, pt.oz);
+    float3 world = float3(pt.wx, pt.wy, pt.wz);
+    uint want_h = params.want_hessian;
+    uint want_u = (params.want_potential != 0u || want_h != 0u) ? 1u : 0u;
+
+    ds priv[10];
+    for (uint m = 0u; m < 10u; ++m) {
+        priv[m] = ds_zero();
+    }
+    bool overflow = false;
+    float merged[MAX_MERGED];
+
+    for (uint i = 0u; i < params.ray_count; ++i) {
+        GpuRay ray = rays[i];
+        if (!isfinite(ray.weight) || ray.weight == 0.0f) {
+            continue;
+        }
+        float3 dir = float3(ray.dx, ray.dy, ray.dz);
+        float len2 = dot(dir, dir);
+        if (!(len2 > 0.0f) || !isfinite(len2)) {
+            continue;
+        }
+        dir *= rsqrt(len2);
+        bool ray_overflow = false;
+        uint n = collect_hits(
+            origin_u, dir, accel, params.body_scale, params.launch_offset, params.origin_abs,
+            params.merge_abs, params.merge_rel, merged, ray_overflow);
+        if (ray_overflow) {
+            overflow = true;
+            continue;
+        }
+        Scalar acc = scalar_zero();
+        float open_r = (n & 1u) != 0u ? 0.0f : -1.0f;
+        for (uint h = 0u; h < n; ++h) {
+            float t = merged[h];
+            if (open_r >= 0.0f) {
+                integrate_chord(
+                    acc, open_r, t, world, -dir, params.ell, params.bulk, params.kernel_count,
+                    params.node_count, params.node_hi, want_u, want_h, kernels, nodes);
+                open_r = -1.0f;
+            } else {
+                open_r = t;
+            }
+        }
+        ds weight = ds_from_float(ray.weight);
+        ds wu = ds_mul(weight, acc.u);
+        ds wg = ds_mul(weight, acc.g);
+        priv[0] = ds_add(priv[0], wu);
+        priv[1] = ds_add(priv[1], ds_mul(ds_from_float(dir.x), wg));
+        priv[2] = ds_add(priv[2], ds_mul(ds_from_float(dir.y), wg));
+        priv[3] = ds_add(priv[3], ds_mul(ds_from_float(dir.z), wg));
+        if (want_h != 0u) {
+            ds wh = ds_mul(weight, acc.h);
+            float txx = fma(3.0f * dir.x, dir.x, -1.0f);
+            float tyy = fma(3.0f * dir.y, dir.y, -1.0f);
+            float tzz = fma(3.0f * dir.z, dir.z, -1.0f);
+            priv[4] = ds_add(priv[4], ds_mul(ds_from_float(txx), wh));
+            priv[5] = ds_add(priv[5], ds_mul(ds_from_float(tyy), wh));
+            priv[6] = ds_add(priv[6], ds_mul(ds_from_float(tzz), wh));
+            priv[7] = ds_add(priv[7], ds_mul(ds_from_float(3.0f * dir.x * dir.y), wh));
+            priv[8] = ds_add(priv[8], ds_mul(ds_from_float(3.0f * dir.x * dir.z), wh));
+            priv[9] = ds_add(priv[9], ds_mul(ds_from_float(3.0f * dir.y * dir.z), wh));
+        }
+    }
+
+    if (overflow) {
+        for (uint m = 0u; m < 10u; ++m) {
+            priv[m] = ds_zero();
+        }
+    }
+    ds gscale = ds_from_float(params.g);
+    for (uint m = 0u; m < 10u; ++m) {
+        priv[m] = ds_mul(priv[m], gscale);
+    }
+    if (want_h != 0u && !overflow) {
+        ds contact = ds_mul(
+            ds_mul(ds_from_float(-4.0f / 3.0f), ds_pi()),
+            ds_mul(gscale, ds_mul(ds_from_float(pt.theta), ds_from_float(pt.rho))));
+        for (uint m = 4u; m < 7u; ++m) {
+            priv[m] = ds_add(priv[m], contact);
+        }
+    }
+    uint base = pid * 20u;
+    for (uint m = 0u; m < 10u; ++m) {
+        out[base + 2u * m] = priv[m].hi;
+        out[base + 2u * m + 1u] = priv[m].lo;
+    }
+    flags[pid] = overflow ? 1u : 0u;
+}
+
+kernel void rtfp_field_strided(
     device const GpuPoint* points [[buffer(0)]],
     device const GpuRay* rays [[buffer(1)]],
     device const GpuKernel* kernels [[buffer(2)]],

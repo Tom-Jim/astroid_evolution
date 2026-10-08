@@ -105,6 +105,10 @@ pub struct Operators {
     pub rigid: DMatrix<f64>,
     /// Smallest singular value of the row-normalised rigid-body constraint matrix.
     pub rigid_sigma_min: f64,
+    /// Upper triangle of \(S_q^\top S_q\) at each volume point, point-major.
+    /// \(S_q\) is the six strain rows of the velocity basis. Picard only changes
+    /// the weight \(2\eta_q w_q\).
+    strain_gram: Vec<f64>,
     a_chol: Cholesky<f64, Dyn>,
     lift_chol: Cholesky<f64, Dyn>,
     lift_y: DMatrix<f64>,
@@ -183,6 +187,7 @@ impl Operators {
         }
         let lift_chol = Cholesky::new(gl)
             .ok_or_else(|| ScfError::solver("boundary-lift normal equations are singular"))?;
+        let strain_gram = strain_grams(&rows.d);
         Ok(Self {
             lay,
             play,
@@ -193,11 +198,68 @@ impl Operators {
             surf_d,
             rigid,
             rigid_sigma_min: smin,
+            strain_gram,
             a_chol,
             lift_chol,
             lift_y: y,
         })
     }
+}
+
+/// Packed upper triangle \(G_{ij}=\sum_{c=1}^{6} D_{qc,i} D_{qc,j}\) for \(i\le j\).
+fn strain_grams(d: &DMatrix<f64>) -> Vec<f64> {
+    let nu = d.ncols();
+    let np = d.nrows() / 6;
+    let tri = nu * (nu + 1) / 2;
+    let mut out = vec![0.0; np * tri];
+    let mut rowv = vec![0.0; nu];
+    for p in 0..np {
+        let base = p * tri;
+        for c in 0..6 {
+            let row = 6 * p + c;
+            for j in 0..nu {
+                rowv[j] = d[(row, j)];
+            }
+            for j in 0..nu {
+                let dj = rowv[j];
+                let mut t = j * (j + 1) / 2;
+                for i in 0..=j {
+                    out[base + t] += rowv[i] * dj;
+                    t += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// \(K=\sum_q 2\eta_q w_q\, G_q\). In exact arithmetic this is \((SD)^\top(SD)\)
+/// with row scale \(\sqrt{2\eta_q w_q}\).
+fn stiffness_from_grams(grams: &[f64], eta: &[f64], weight: &[f64], nu: usize) -> DMatrix<f64> {
+    let tri = nu * (nu + 1) / 2;
+    let mut k = DMatrix::zeros(nu, nu);
+    for p in 0..eta.len() {
+        let sigma = 2.0 * eta[p] * weight[p];
+        if sigma == 0.0 {
+            continue;
+        }
+        if !(sigma.is_finite() && sigma > 0.0) {
+            return DMatrix::from_element(nu, nu, f64::NAN);
+        }
+        let g = &grams[p * tri..(p + 1) * tri];
+        let mut t = 0;
+        for j in 0..nu {
+            for i in 0..=j {
+                let v = sigma * g[t];
+                k[(i, j)] += v;
+                if i != j {
+                    k[(j, i)] += v;
+                }
+                t += 1;
+            }
+        }
+    }
+    k
 }
 
 /// `B_rb` of §8.5: rows `∫ρ B·e_a`, `∫ρ (x × B)·e_a`.
@@ -332,15 +394,7 @@ fn strain_fields(ops: &Operators, u: &DVector<f64>) -> Fields {
 }
 
 fn assemble_k(ops: &Operators, eta: &[f64]) -> DMatrix<f64> {
-    let np = ops.vol.pts.len();
-    let mut ds = ops.rows.d.clone();
-    for p in 0..np {
-        let s = (2.0 * eta[p] * ops.vol.w[p]).sqrt();
-        for c in 0..6 {
-            ds.row_mut(6 * p + c).scale_mut(s);
-        }
-    }
-    ds.tr_mul(&ds)
+    stiffness_from_grams(&ops.strain_gram, eta, &ops.vol.w, ops.lay.n_u)
 }
 
 fn assemble_f(ops: &Operators, ld: &Loads) -> DVector<f64> {
@@ -797,5 +851,38 @@ pub(crate) mod tests {
             );
         }
         assert!(sol.eps_rot < 1e-2, "rot {}", sol.eps_rot);
+    }
+
+    #[test]
+    fn strain_gram_matches_the_scaled_product() {
+        let nu = 7;
+        let np = 5;
+        let mut d = DMatrix::zeros(6 * np, nu);
+        for row in 0..d.nrows() {
+            for col in 0..nu {
+                d[(row, col)] = ((row * 3 + col * 5) % 17) as f64 * 0.01 - 0.05;
+            }
+        }
+        let eta = [1.0, 2.5, 0.0, 4.0, 0.3];
+        let weight = [0.2, 0.1, 0.4, 0.05, 0.8];
+        let grams = strain_grams(&d);
+        let got = stiffness_from_grams(&grams, &eta, &weight, nu);
+        let mut scaled = d.clone();
+        for p in 0..np {
+            let s = (2.0 * eta[p] * weight[p]).sqrt();
+            for c in 0..6 {
+                scaled.row_mut(6 * p + c).scale_mut(s);
+            }
+        }
+        let want = scaled.tr_mul(&scaled);
+        let scale = want.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+        let diff = got
+            .iter()
+            .zip(want.iter())
+            .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(
+            diff <= 1e-12 * scale.max(1.0),
+            "gram stiffness differs by {diff} on a matrix of scale {scale}"
+        );
     }
 }
