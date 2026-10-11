@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use bevy::prelude::*;
 use clap::{Args, Parser, Subcommand};
 
 use astroid_evolution::asteroid_app::AsteroidPlugin;
-use astroid_evolution::asteroid_app::pipeline::{Evolver, FusedFrame, load_original};
+use astroid_evolution::asteroid_app::pipeline::{Evolver, SurfaceFrame, mesh_summary};
 use astroid_evolution::asteroid_app::resources::AppConfig;
 use astroid_evolution::scf_simulator::params::Project;
 use astroid_evolution::scf_simulator::spin::SpinSchedule;
@@ -14,7 +13,7 @@ use astroid_evolution::scf_simulator::spin::SpinSchedule;
 #[derive(Parser)]
 #[command(
     name = "asteroid-app",
-    about = "Tier 3: original model, live-fused with the Tier 2 evolution"
+    about = "Tier 3: show the Tier 2 body for a project mesh at constant spin"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,19 +39,19 @@ struct Common {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Window: shows the original model; Space runs Tier 2 and fuses every step live.
+    /// Window: loads the project mesh into Tier 2 and draws each new body.
     View(Common),
-    /// Headless: the same pipeline without a window; writes the fused OBJ files.
+    /// Headless: the same Tier 2 run, writing the body OBJ after each step.
     Run {
         #[command(flatten)]
         common: Common,
         #[arg(long)]
         out_dir: PathBuf,
-        /// Write every N-th fused step (the first and the last frame are always written).
+        /// Write every N-th step (the first body and the last body are always written).
         #[arg(long, default_value_t = 1)]
         every: usize,
     },
-    /// Load the project and the original model and report their sizes.
+    /// Load the project and report the mesh file that Tier 2 will read.
     Check {
         #[arg(long, default_value = "assets/projects/ryugu_cauchy.toml")]
         project: PathBuf,
@@ -63,6 +62,25 @@ struct Setup {
     text: String,
     dir: PathBuf,
     spin: String,
+    project_path: String,
+    mesh_path: String,
+    mesh_unit: String,
+}
+
+fn tidy(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn setup(common: &Common) -> Result<Setup, String> {
@@ -73,30 +91,44 @@ fn setup(common: &Common) -> Result<Setup, String> {
         .parent()
         .unwrap_or(Path::new("."))
         .to_path_buf();
-    Project::parse(&text, dir.clone()).map_err(|e| e.to_string())?;
-    let spin = common
-        .spin
-        .clone()
-        .unwrap_or_else(|| format!("const:{}@{}", common.omega, common.duration));
+    let project = Project::parse(&text, dir.clone()).map_err(|e| e.to_string())?;
+    let summary = mesh_summary(&project)?;
+    let spin = common.spin.clone().unwrap_or_else(|| {
+        format!("const:{:.6e}@{:.5e}", common.omega, common.duration)
+    });
     SpinSchedule::parse(&spin)
         .and_then(|s| s.validate().map(|_| s))
         .map_err(|e| e.to_string())?;
-    Ok(Setup { text, dir, spin })
+    Ok(Setup {
+        text,
+        dir,
+        spin,
+        project_path: tidy(&common.project).display().to_string(),
+        mesh_path: tidy(&summary.path).display().to_string(),
+        mesh_unit: summary.unit,
+    })
+}
+
+fn config_from(setup: &Setup, max_steps: Option<usize>) -> AppConfig {
+    AppConfig {
+        project_text: setup.text.clone(),
+        project_dir: setup.dir.clone(),
+        project_path: setup.project_path.clone(),
+        mesh_path: setup.mesh_path.clone(),
+        mesh_unit: setup.mesh_unit.clone(),
+        spin: setup.spin.clone(),
+        max_steps,
+    }
 }
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::View(common) => {
-            let s = setup(&common)?;
+            let setup = setup(&common)?;
             App::new()
                 .add_plugins(DefaultPlugins)
                 .add_plugins(AsteroidPlugin {
-                    config: AppConfig {
-                        project_text: s.text,
-                        project_dir: s.dir,
-                        spin: s.spin,
-                        max_steps: common.max_steps,
-                    },
+                    config: config_from(&setup, common.max_steps),
                     windowed: true,
                 })
                 .run();
@@ -107,30 +139,21 @@ fn run(cli: Cli) -> Result<(), String> {
             out_dir,
             every,
         } => {
-            let s = setup(&common)?;
-            let project = Project::parse(&s.text, s.dir.clone()).map_err(|e| e.to_string())?;
-            let original = Arc::new(load_original(&project)?);
+            let setup = setup(&common)?;
             std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-            let write = |name: String, frame: &FusedFrame| {
+            let write = |name: String, frame: &SurfaceFrame| {
                 frame
-                    .to_mesh(&original)
-                    .write_obj(
-                        &out_dir.join(name),
-                        &format!(
-                            "fused:step={}:dR=[{:.3e},{:.3e}]",
-                            frame.step, frame.delta_min, frame.delta_max
-                        ),
-                    )
+                    .write_obj(&out_dir.join(name))
                     .map_err(|e| e.to_string())
             };
-            let evolver = Evolver::new(&s.text, &s.dir, original.clone(), &s.spin)?;
-            let first = evolver.frame()?;
-            write(format!("fused_{:06}.obj", first.step), &first)?;
+            let evolver = Evolver::new(&setup.text, &setup.dir, &setup.spin)?;
+            let first = evolver.frame();
+            write(format!("tier2_{:06}.obj", first.step), &first)?;
             println!(
-                "start: {} vertices, dR [{:.3e}, {:.3e}] m",
+                "start: {} vertices, radius [{:.3e}, {:.3e}] m",
                 first.vertices.len(),
-                first.delta_min,
-                first.delta_max
+                first.radius_min,
+                first.radius_max
             );
             let mut last = None;
             let mut count = 0usize;
@@ -140,11 +163,11 @@ fn run(cli: Cli) -> Result<(), String> {
                 |frame| {
                     count += 1;
                     println!(
-                        "step {} t={:.6e} omega={:.6e} dR [{:.3e}, {:.3e}]",
-                        frame.step, frame.time, frame.omega, frame.delta_min, frame.delta_max
+                        "step {} t={:.6e} omega={:.6e} radius [{:.3e}, {:.3e}]",
+                        frame.step, frame.time, frame.omega, frame.radius_min, frame.radius_max
                     );
                     if every > 0 && count % every == 0 {
-                        write(format!("fused_{:06}.obj", frame.step), &frame)?;
+                        write(format!("tier2_{:06}.obj", frame.step), &frame)?;
                     }
                     last = Some(frame);
                     Ok(())
@@ -164,12 +187,16 @@ fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| format!("{}: {e}", project.display()))?;
             let dir = project.parent().unwrap_or(Path::new(".")).to_path_buf();
             let parsed = Project::parse(&text, dir).map_err(|e| e.to_string())?;
-            let original = load_original(&parsed)?;
+            let summary = mesh_summary(&parsed)?;
+            println!("project {}", tidy(&project).display());
             println!(
-                "original {} vertices, {} faces, unit {}",
-                original.vertices.len(),
-                original.faces.len(),
-                original.length_unit
+                "mesh {} ({})",
+                tidy(&summary.path).display(),
+                summary.unit
+            );
+            println!(
+                "{} vertices, {} faces; tier 2 stores metres",
+                summary.vertices, summary.faces
             );
             Ok(())
         }
