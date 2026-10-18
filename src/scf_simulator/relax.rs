@@ -208,7 +208,7 @@ pub struct SweepRecord {
     pub socp_iterations: u32,
     /// Vertices free in this sweep (incident to a supercritical face, not crater-locked).
     pub n_active: usize,
-    /// Clarabel's own `solve_time`, in seconds.
+    /// Metal-PDHG solve time, in seconds.
     pub socp_seconds: f64,
     pub dropped_overhang: usize,
     pub mass_residual: f64,

@@ -146,6 +146,7 @@ fn ensure_parent(path: &Path) -> Result<(), ScfError> {
 
 /// `ρ_s⁰ = ρ_bulk h_s` and the initial star-shaped polyhedron of the project.
 pub fn initial_body(project: &Project) -> Result<Body, ScfError> {
+    let _span = super::timing::span("mesh_load");
     match project.body.shape.as_str() {
         "ellipsoid" => {
             let topo = Arc::new(Topology::icosphere(project.body.level));

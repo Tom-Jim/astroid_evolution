@@ -1,17 +1,24 @@
-//! Tier 3 window. It starts Tier 2 on the project mesh and draws each new body.
-//! Rendering does not smooth or fuse that body.
+//! Tier 3 window. Tier 2 stays off the frame loop. Each accepted step becomes a
+//! playback snapshot; the shader morphs radii and colours the surface fields.
 
+pub mod material;
+pub mod pan_orbit_input;
 pub mod pipeline;
+pub mod playback;
 pub mod render;
 pub mod resources;
+pub mod snapshot;
 pub mod ui;
 
+use bevy::camera_controller::pan_orbit_camera::prelude::*;
 use bevy::light::GlobalAmbientLight;
 use bevy::pbr::wireframe::WireframePlugin;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCameraPlugin;
 
-use crate::asteroid_app::pipeline::view_fit;
+use crate::asteroid_app::material::AsteroidMaterial;
+use crate::asteroid_app::pan_orbit_input::CustomInputPlugin;
+use crate::asteroid_app::pipeline::{EvolutionPool, view_fit};
+use crate::asteroid_app::playback::{Playback, VisMode};
 use crate::asteroid_app::resources::{AppConfig, Evolution, Scene};
 use crate::scf_simulator::params::Project;
 
@@ -27,21 +34,37 @@ impl Plugin for AsteroidPlugin {
             .init_resource::<Evolution>()
             .add_systems(Startup, load_scene);
         if self.windowed {
+            bevy::asset::embedded_asset!(app, "shaders/asteroid.wesl");
             app.insert_resource(ClearColor(Color::srgb(0.11, 0.12, 0.14)))
                 .insert_resource(GlobalAmbientLight {
                     color: Color::WHITE,
                     brightness: 180.0,
                     affects_lightmapped_meshes: true,
                 })
-                .add_plugins((PanOrbitCameraPlugin, WireframePlugin::default()))
-                .add_systems(
-                    Startup,
-                    (ui::spawn_scene, ui::begin_evolution).after(load_scene),
-                )
+                .insert_resource(EvolutionPool::new())
+                .init_resource::<Playback>()
+                .init_resource::<VisMode>()
+                .add_plugins((
+                    MeshPickingPlugin,
+                    DefaultPanOrbitCameraPlugins,
+                    CustomInputPlugin,
+                    MaterialPlugin::<AsteroidMaterial>::default(),
+                    WireframePlugin::default(),
+                ))
+                .add_systems(Startup, ui::spawn_scene.after(load_scene))
+                .add_systems(Startup, ui::begin_evolution.after(ui::spawn_scene))
                 .add_systems(
                     Update,
-                    (ui::control_keys, ui::poll_worker, ui::refresh_hud).chain(),
-                );
+                    (
+                        playback::poll_snapshot,
+                        playback::advance_playback,
+                        playback::sync_material,
+                        ui::control_keys,
+                        ui::refresh_hud,
+                    )
+                        .chain(),
+                )
+                .add_systems(Last, ui::stop_on_exit);
         }
     }
 }

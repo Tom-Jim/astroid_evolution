@@ -124,7 +124,7 @@ fn relaxation_and_stage_run_on_gpu() {
             max_steps: Some(5),
             until: None,
         },
-        &mut |_, _| {
+        &mut |_, _, _| {
             seen += 1;
             Ok(())
         },
@@ -199,7 +199,7 @@ fn cauchy_meshes_evolve_past_relax() {
                 max_steps: Some(2),
                 until: None,
             },
-            &mut |_, _| Ok(()),
+            &mut |_, _, _| Ok(()),
         )
         .unwrap_or_else(|e| panic!("{name} evolve: {e}"));
         let rec = res

@@ -90,32 +90,29 @@ pub fn evaluate(
     omega: f64,
     guess: Option<&[f64]>,
 ) -> Result<Mechanics, ScfError> {
-    let tm = std::time::Instant::now();
-    let lap = |what: &str| {
-        if std::env::var_os("SCF_TIMING").is_some() {
-            eprintln!("  [{:>8.3}s] {what}", tm.elapsed().as_secs_f64());
-        }
-    };
     let topo = body.topo.clone();
     let density = body.density()?;
     let material = &project.material;
-    let (surf, fit_error) = fit_surface(project, body)?;
+    let (surf, fit_error) = {
+        let _span = super::timing::span("surface_fit");
+        fit_surface(project, body)?
+    };
 
-    lap("fit");
     fwd.eval_faces(body)?;
-    lap("faces");
     let centres = fwd.face.points.clone();
     let dirs: Vec<DVec3> = centres
         .iter()
         .map(|c| c.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0)))
         .collect();
-    let surface = SurfaceSet::build(&surf, dirs.clone(), topo.face_solid.clone());
-    let ops = Operators::build(&surf, &density, surface, &project.stokes)?;
+    let ops = {
+        let _span = super::timing::span("stokes_operators");
+        let surface = SurfaceSet::build(&surf, dirs.clone(), topo.face_solid.clone());
+        Operators::build(&surf, &density, surface, &project.stokes)?
+    };
 
-    lap("operators");
     // Interior fields at the Stokes quadrature points.
     let field = fwd.eval_field(&ops.vol.pts, true)?;
-    lap("field");
+    let _loads = super::timing::span("effective_loads");
     let g_vol: Vec<DVec3> = ops
         .vol
         .pts
@@ -151,6 +148,7 @@ pub fn evaluate(
         .zip(&ops.surface.normals)
         .map(|(h, n)| material.tide_coef * quad_form(deviator(*h), *n))
         .collect();
+    drop(_loads);
 
     let ld = Loads {
         g_eff: &g_vol,
@@ -158,35 +156,41 @@ pub fn evaluate(
         tide_nn: &tide_nn,
         g_const: project.g,
     };
-    let sol = solve(&ops, &ld, &project.stokes, material, guess)?;
+    let sol = {
+        let _span = super::timing::span("stokes");
+        solve(&ops, &ld, &project.stokes, material, guess)?
+    };
 
-    lap("stokes");
-    let class = classify(
-        &ops,
-        &sol,
-        &surf,
-        &topo,
-        material,
-        project.yielding.delta_y,
-        project.stokes.n_radial,
-        &|x| density.rho(x),
-        omega,
-        material.spec.p_min,
-    );
+    let class = {
+        let _span = super::timing::span("classify");
+        classify(
+            &ops,
+            &sol,
+            &surf,
+            &topo,
+            material,
+            project.yielding.delta_y,
+            project.stokes.n_radial,
+            &|x| density.rho(x),
+            omega,
+            material.spec.p_min,
+        )
+    };
 
-    lap("classify");
     let velocity = ops.lay.to_rheo(&sol.u);
-    let (rheo, rheo_stats) = face_chain(
-        gpu,
-        project,
-        &surf,
-        &velocity,
-        &dirs,
-        &g_face,
-        hess_w,
-        sol.p_surface.clone(),
-    )?;
-    lap("rheo");
+    let (rheo, rheo_stats) = {
+        let _span = super::timing::span("rheology");
+        face_chain(
+            gpu,
+            project,
+            &surf,
+            &velocity,
+            &dirs,
+            &g_face,
+            hess_w,
+            sol.p_surface.clone(),
+        )?
+    };
     Ok(Mechanics {
         omega,
         surf,

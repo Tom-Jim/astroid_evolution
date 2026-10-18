@@ -1,27 +1,30 @@
-use std::sync::atomic::Ordering;
-use std::sync::mpsc::TryRecvError;
-
-use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera::Exposure;
+use bevy::camera::visibility::NoFrustumCulling;
+use bevy::camera_controller::pan_orbit_camera::prelude::*;
+use bevy::mesh::MeshTag;
 use bevy::pbr::wireframe::Wireframe;
+use bevy::picking::Pickable;
 use bevy::prelude::*;
-use bevy_panorbit_camera::PanOrbitCamera;
+use bevy::render::storage::ShaderBuffer;
 
-use crate::asteroid_app::pipeline::{self, WorkerMessage};
-use crate::asteroid_app::render::{build_mesh, update_mesh};
+use crate::asteroid_app::material::{AsteroidMaterial, PlaybackParams};
+use crate::asteroid_app::pipeline::{self, EvolutionPool};
+use crate::asteroid_app::playback::{Playback, VisMode, vis_name};
+use crate::asteroid_app::render::{imported_mesh, particle_mesh};
 use crate::asteroid_app::resources::{
-    display_imported, display_positions, AppConfig, Evolution, FrameStats, Phase, Scene,
+    AppConfig, Evolution, Hud, Phase, RegolithView, Scene, SurfaceView, display_imported,
 };
-
-#[derive(Component)]
-pub struct SurfaceView;
-
-#[derive(Component)]
-pub struct Hud;
 
 const START_YAW: f32 = 0.6;
 const START_PITCH: f32 = 0.35;
 const START_RADIUS: f32 = 3.4;
+
+fn home_transform() -> Transform {
+    let x = START_RADIUS * START_PITCH.cos() * START_YAW.sin();
+    let y = START_RADIUS * START_PITCH.sin();
+    let z = START_RADIUS * START_PITCH.cos() * START_YAW.cos();
+    Transform::from_xyz(x, y, z).looking_at(Vec3::ZERO, Vec3::Y)
+}
 
 /// Key light is a few thousand lux, not daylight, so it does not clip against the
 /// default photographic exposure. Ambient fills the night side.
@@ -29,18 +32,15 @@ pub fn spawn_scene(
     mut commands: Commands,
     scene: Res<Scene>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<AsteroidMaterial>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
+    let home = home_transform();
     commands.spawn((
         Camera3d::default(),
         Exposure { ev100: 8.0 },
-        PanOrbitCamera {
-            yaw: Some(START_YAW),
-            pitch: Some(START_PITCH),
-            radius: Some(START_RADIUS),
-            zoom_lower_limit: 0.4,
-            ..default()
-        },
+        PanOrbitCamera::default().with_initial_anchor_depth(f64::from(START_RADIUS)),
+        home,
     ));
     commands.spawn((
         DirectionalLight {
@@ -82,64 +82,79 @@ pub fn spawn_scene(
             ..default()
         },
     ));
+    let surface = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4]]));
+    let stream = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4], [0.0; 4]]));
+    let material = materials.add(AsteroidMaterial {
+        params: PlaybackParams::default(),
+        surface,
+        stream,
+    });
+    let positions = display_imported(&scene.vertices, scene.center, scene.scale);
     commands.spawn((
         SurfaceView,
         NoFrustumCulling,
-        Mesh3d(meshes.add(build_mesh(
-            display_imported(&scene.vertices, scene.center, scene.scale),
-            &scene.faces,
-        ))),
-        MeshMaterial3d(materials.add(surface_material())),
+        MeshTag::new(0),
+        Mesh3d(meshes.add(imported_mesh(positions, &scene.faces))),
+        MeshMaterial3d(material.clone()),
+    ));
+    commands.spawn((
+        RegolithView,
+        NoFrustumCulling,
+        Pickable::IGNORE,
+        MeshTag::new(1),
+        Mesh3d(meshes.add(particle_mesh())),
+        MeshMaterial3d(material),
     ));
 }
 
-fn surface_material() -> StandardMaterial {
-    StandardMaterial {
-        base_color: Color::srgb(0.5, 0.5, 0.5),
-        perceptual_roughness: 1.0,
-        metallic: 0.0,
-        ..default()
-    }
-}
-
 /// Start Tier 2 as soon as the window exists. Tier 3 does not wait for a key.
-pub fn begin_evolution(config: Res<AppConfig>, mut evolution: ResMut<Evolution>) {
+pub fn begin_evolution(
+    config: Res<AppConfig>,
+    scene: Res<Scene>,
+    pool: Res<EvolutionPool>,
+    mut evolution: ResMut<Evolution>,
+) {
     if evolution.phase == Phase::Idle {
-        start_worker(&mut evolution, &config);
+        start_worker(&mut evolution, &config, scene.scale, &*pool);
     }
 }
 
-fn start_worker(evolution: &mut Evolution, config: &AppConfig) {
+fn start_worker(evolution: &mut Evolution, config: &AppConfig, scale: f64, pool: &EvolutionPool) {
     let receiver = pipeline::spawn(
         config.project_text.clone(),
         config.project_dir.clone(),
         config.spin.clone(),
         config.max_steps,
+        scale,
         evolution.control.clone(),
+        pool,
     );
     *evolution.receiver.lock().unwrap() = Some(receiver);
     evolution.phase = Phase::Preparing;
     evolution.status = "loading the mesh into tier 2".into();
 }
 
-/// Space pauses or resumes. W toggles wireframe. R resets the camera.
+/// Space pauses or resumes. W toggles wireframe. R resets the camera. 1–4 select the layer.
 pub fn control_keys(
     keys: Res<ButtonInput<KeyCode>>,
     config: Res<AppConfig>,
+    scene: Res<Scene>,
+    pool: Res<EvolutionPool>,
     mut evolution: ResMut<Evolution>,
+    mut mode: ResMut<VisMode>,
     mut commands: Commands,
     views: Query<(Entity, Has<Wireframe>), With<SurfaceView>>,
-    mut cameras: Query<&mut PanOrbitCamera>,
+    mut cameras: Query<(&mut Transform, &mut PanOrbitCamera)>,
 ) {
     if keys.just_pressed(KeyCode::Space) {
         match evolution.phase {
-            Phase::Idle => start_worker(&mut evolution, &config),
+            Phase::Idle => start_worker(&mut evolution, &config, scene.scale, &*pool),
             Phase::Running => {
-                evolution.control.paused.store(true, Ordering::Relaxed);
+                evolution.control.set_paused(true);
                 evolution.phase = Phase::Paused;
             }
             Phase::Paused => {
-                evolution.control.paused.store(false, Ordering::Relaxed);
+                evolution.control.set_paused(false);
                 evolution.phase = Phase::Running;
             }
             Phase::Preparing | Phase::Done | Phase::Failed => {}
@@ -155,101 +170,20 @@ pub fn control_keys(
         }
     }
     if keys.just_pressed(KeyCode::KeyR) {
-        for mut camera in &mut cameras {
-            camera.target_focus = Vec3::ZERO;
-            camera.target_yaw = START_YAW;
-            camera.target_pitch = START_PITCH;
-            camera.target_radius = START_RADIUS;
+        let home = home_transform();
+        for (mut transform, mut camera) in &mut cameras {
+            *transform = home;
+            camera.last_anchor_depth = -f64::from(START_RADIUS);
         }
     }
-}
-
-/// Drain the worker. The imported glTF stays up until Tier 2 emits a step, then each
-/// newer body replaces the one on screen.
-pub fn poll_worker(
-    mut commands: Commands,
-    mut evolution: ResMut<Evolution>,
-    scene: Res<Scene>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    view: Query<&Mesh3d, With<SurfaceView>>,
-) {
-    let mut latest = None;
-    let mut closed = false;
-    let mut messages = Vec::new();
-    if let Some(receiver) = evolution.receiver.lock().unwrap().as_ref() {
-        loop {
-            match receiver.try_recv() {
-                Ok(message) => messages.push(message),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    closed = true;
-                    break;
-                }
-            }
-        }
-    }
-    for message in messages {
-        match message {
-            WorkerMessage::Status(text) => evolution.status = text,
-            WorkerMessage::Frame(frame) => {
-                if evolution.phase == Phase::Preparing {
-                    evolution.phase = Phase::Running;
-                }
-                latest = Some(frame);
-            }
-            WorkerMessage::Finished(text) => {
-                evolution.phase = Phase::Done;
-                evolution.status = text;
-            }
-            WorkerMessage::Failed(text) => {
-                evolution.phase = Phase::Failed;
-                evolution.status = text;
-            }
-        }
-    }
-    if closed
-        && matches!(
-            evolution.phase,
-            Phase::Preparing | Phase::Running | Phase::Paused
-        )
-    {
-        evolution.phase = Phase::Failed;
-        evolution.status = "worker stopped unexpectedly".into();
-    }
-    let Some(frame) = latest else {
-        return;
-    };
-    evolution.stats = Some(FrameStats {
-        step: frame.step,
-        time: frame.time,
-        omega: frame.omega,
-        mass: frame.mass,
-        radius_min: frame.radius_min,
-        radius_max: frame.radius_max,
-    });
-    let positions = display_positions(&frame.vertices, scene.scale);
-    match view.single() {
-        Ok(handle) => {
-            if let Some(mut mesh) = meshes.get_mut(&handle.0) {
-                let same_count = mesh
-                    .attribute(Mesh::ATTRIBUTE_POSITION)
-                    .is_some_and(|values| values.len() == positions.len());
-                if same_count {
-                    update_mesh(&mut mesh, positions);
-                } else {
-                    *mesh = build_mesh(positions, &frame.faces);
-                }
-            }
-        }
-        Err(_) => {
-            commands.spawn((
-                SurfaceView,
-                NoFrustumCulling,
-                Mesh3d(meshes.add(build_mesh(positions, &frame.faces))),
-                MeshMaterial3d(materials.add(surface_material())),
-            ));
-        }
+    if keys.just_pressed(KeyCode::Digit1) {
+        mode.mode = 1;
+    } else if keys.just_pressed(KeyCode::Digit2) {
+        mode.mode = 2;
+    } else if keys.just_pressed(KeyCode::Digit3) {
+        mode.mode = 3;
+    } else if keys.just_pressed(KeyCode::Digit4) {
+        mode.mode = 4;
     }
 }
 
@@ -257,15 +191,30 @@ pub fn refresh_hud(
     config: Res<AppConfig>,
     scene: Res<Scene>,
     evolution: Res<Evolution>,
+    playback: Res<Playback>,
+    mode: Res<VisMode>,
     mut label: Query<&mut Text, With<Hud>>,
 ) {
     let Ok(mut text) = label.single_mut() else {
         return;
     };
-    text.0 = hud_lines(&config, &scene, &evolution).join("\n");
+    **text = hud_lines(
+        &config,
+        &scene,
+        &evolution,
+        playback.tau,
+        vis_name(mode.mode),
+    )
+    .join("\n");
 }
 
-pub fn hud_lines(config: &AppConfig, scene: &Scene, evolution: &Evolution) -> Vec<String> {
+pub fn hud_lines(
+    config: &AppConfig,
+    scene: &Scene,
+    evolution: &Evolution,
+    tau: f32,
+    layer: &str,
+) -> Vec<String> {
     let mut lines = vec![
         format!("project  {}", config.project_path),
         format!("mesh     {}  ({})", config.mesh_path, config.mesh_unit),
@@ -283,17 +232,32 @@ pub fn hud_lines(config: &AppConfig, scene: &Scene, evolution: &Evolution) -> Ve
             stats.mass, stats.radius_min, stats.radius_max
         ));
         lines.push(format!(
+            "yield {:.3}   max slack {:.3e}   rho_s {:.3e} kg   max |dR| {:.3e} m",
+            stats.yielded_fraction, stats.max_slack, stats.rho_s_total, stats.max_displacement
+        ));
+        lines.push(format!("tau {tau:.3}   layer {layer}"));
+        lines.push(format!(
             "view     tier 2 frame   1 = {:.1} m",
             1.0 / scene.scale
         ));
     } else {
         lines.push("showing  imported glb".into());
         if scene.scale > 0.0 {
-            lines.push(format!("view     file axes   1 = {:.1} m", 1.0 / scene.scale));
+            lines.push(format!(
+                "view     file axes   1 = {:.1} m",
+                1.0 / scene.scale
+            ));
         }
     }
     lines.push(
-        "Space pause/resume   W wireframe   R reset view   LMB orbit  RMB pan  wheel zoom".into(),
+        "Space pause/resume   W wireframe   R reset view   1 yield  2 slope  3 regolith  4 combined   RMB orbit  LMB pan  wheel zoom"
+            .into(),
     );
     lines
+}
+
+pub fn stop_on_exit(mut exit: MessageReader<AppExit>, evolution: Res<Evolution>) {
+    for _ in exit.read() {
+        evolution.control.request_quit();
+    }
 }

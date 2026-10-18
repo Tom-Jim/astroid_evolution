@@ -1,16 +1,20 @@
-//! Tier 3 display feeder.
+//! Tier 2 driver for the viewer.
 //!
-//! The project mesh is handed to Tier 2 (`initial_body` → `start` → `run`) with the
-//! viewer's spin schedule, which defaults to a constant rate. Each message is the
-//! current Tier 2 body. Nothing here smooths, fuses, or maps that body back onto the
-//! original file.
+//! `evolve::run` stays on a one-thread Rayon pool. Packing a snapshot uses the
+//! global pool once, at the end of the step. The Bevy thread only receives the
+//! snapshot. A full channel blocks the solver, so a fast mesh does not drop steps.
 
+use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::sync::{Condvar, Mutex};
+use std::time::Instant;
 
+use bevy::prelude::Resource;
+
+use crate::asteroid_app::snapshot::{StepSnapshot, write_wavefront};
 use crate::rheo_friction::RheoGpu;
 use crate::rtfp_solver::io::{ImportRequest, load_mesh_file};
 use crate::scf_simulator::body::Body;
@@ -21,20 +25,51 @@ use crate::scf_simulator::io::initial_body;
 use crate::scf_simulator::params::Project;
 use crate::scf_simulator::spin::SpinSchedule;
 
-/// Shared flags between the viewer and the worker thread.
+/// Shared flags between the viewer and the evolution thread.
+///
+/// Pause waits on a condition variable, so a paused step does not occupy the
+/// global Rayon pool with a sleep loop.
 #[derive(Default)]
 pub struct Control {
     pub paused: AtomicBool,
     pub quit: AtomicBool,
+    pause: Mutex<()>,
+    resume: Condvar,
 }
 
-/// The mesh Tier 2 is holding right now.
+impl Control {
+    pub fn wait_if_paused(&self) -> Result<(), String> {
+        let mut guard = self.pause.lock().unwrap();
+        while self.paused.load(Ordering::SeqCst) && !self.quit.load(Ordering::SeqCst) {
+            guard = self.resume.wait(guard).unwrap();
+        }
+        if self.quit.load(Ordering::SeqCst) {
+            Err("cancelled".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+        if !paused {
+            self.resume.notify_all();
+        }
+    }
+
+    pub fn request_quit(&self) {
+        self.quit.store(true, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+        self.resume.notify_all();
+    }
+}
+
+/// The body Tier 2 holds before the first accepted step.
 pub struct SurfaceFrame {
     pub step: usize,
     pub time: f64,
     pub omega: f64,
     pub mass: f64,
-    /// Tier 2 vertex positions, in metres, in the Tier 2 frame.
     pub vertices: Vec<[f64; 3]>,
     pub faces: Vec<[u32; 3]>,
     pub radius_min: f64,
@@ -42,7 +77,6 @@ pub struct SurfaceFrame {
 }
 
 impl SurfaceFrame {
-    /// Copy `body` as it stands. Vertex order and faces are Tier 2's.
     pub fn from_body(body: &Body, step: usize, time: f64, omega: f64, mass: f64) -> Self {
         let (mut radius_min, mut radius_max) = (f64::INFINITY, 0.0_f64);
         for radius in &body.radius {
@@ -69,23 +103,21 @@ impl SurfaceFrame {
     }
 
     pub fn write_obj(&self, path: &Path) -> Result<(), String> {
-        let mut text = format!(
-            "# tier2 step={} t={:.6e} omega={:.6e} radius=[{:.6e},{:.6e}] m\n",
-            self.step, self.time, self.omega, self.radius_min, self.radius_max
-        );
-        for v in &self.vertices {
-            text.push_str(&format!("v {:.9} {:.9} {:.9}\n", v[0], v[1], v[2]));
-        }
-        for f in &self.faces {
-            text.push_str(&format!("f {} {} {}\n", f[0] + 1, f[1] + 1, f[2] + 1));
-        }
-        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+        write_wavefront(
+            path,
+            &format!(
+                "# tier2 step={} t={:.6e} omega={:.6e} radius=[{:.6e},{:.6e}] m\n",
+                self.step, self.time, self.omega, self.radius_min, self.radius_max
+            ),
+            &self.vertices,
+            &self.faces,
+        )
     }
 }
 
 pub enum WorkerMessage {
     Status(String),
-    Frame(Box<SurfaceFrame>),
+    Frame(Box<StepSnapshot>),
     Finished(String),
     Failed(String),
 }
@@ -117,7 +149,7 @@ pub fn view_fit(project: &Project) -> Result<ViewFit, String> {
         length_unit: project.body.mesh_unit.as_deref(),
         reconstruct: None,
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|err| err.to_string())?;
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
     for v in &doc.mesh.vertices {
@@ -168,7 +200,7 @@ pub fn mesh_summary(project: &Project) -> Result<MeshSummary, String> {
         length_unit: project.body.mesh_unit.as_deref(),
         reconstruct: None,
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|err| err.to_string())?;
     Ok(MeshSummary {
         path,
         unit,
@@ -177,123 +209,149 @@ pub fn mesh_summary(project: &Project) -> Result<MeshSummary, String> {
     })
 }
 
-/// Tier 2 state for one project and one spin schedule.
-pub struct Evolver {
-    project: Project,
-    gpu: RheoGpu,
-    schedule: SpinSchedule,
-    state: State,
-    forward: Forward,
+/// Parsed project and the body `evolve::start` produced.
+pub struct Prepared {
+    pub project: Project,
+    pub gpu: RheoGpu,
+    pub schedule: SpinSchedule,
+    pub state: State,
+    pub forward: Forward,
 }
 
-impl Evolver {
-    /// `initial_body` then `evolve::start`. The body is whatever Tier 2 built from the file.
-    pub fn new(project_text: &str, project_dir: &Path, spin: &str) -> Result<Self, String> {
-        let project =
-            Project::parse(project_text, project_dir.to_path_buf()).map_err(|e| e.to_string())?;
-        let schedule = SpinSchedule::parse(spin).map_err(|e| e.to_string())?;
-        schedule.validate().map_err(|e| e.to_string())?;
-        let body = initial_body(&project).map_err(|e| e.to_string())?;
-        let (state, forward) = evolve::start(&project, body).map_err(|e| e.to_string())?;
-        let gpu = RheoGpu::new().map_err(|e| e.to_string())?;
-        Ok(Self {
-            project,
-            gpu,
-            schedule,
-            state,
-            forward,
-        })
-    }
+pub fn prepare(project_text: &str, project_dir: &Path, spin: &str) -> Result<Prepared, String> {
+    let project =
+        Project::parse(project_text, project_dir.to_path_buf()).map_err(|e| e.to_string())?;
+    let schedule = SpinSchedule::parse(spin).map_err(|e| e.to_string())?;
+    schedule.validate().map_err(|e| e.to_string())?;
+    let body = initial_body(&project).map_err(|e| e.to_string())?;
+    let (state, forward) = evolve::start(&project, body).map_err(|e| e.to_string())?;
+    let gpu = RheoGpu::new().map_err(|e| e.to_string())?;
+    Ok(Prepared {
+        project,
+        gpu,
+        schedule,
+        state,
+        forward,
+    })
+}
 
-    /// The body Tier 2 holds before `run` advances it.
-    pub fn frame(&self) -> SurfaceFrame {
-        SurfaceFrame::from_state(&self.state, self.forward.moments.mass)
-    }
-
-    /// `evolve::run` with this schedule. `sink` receives the body after every accepted step.
-    pub fn run(
-        self,
-        max_steps: Option<usize>,
-        mut gate: impl FnMut() -> Result<(), String>,
-        mut sink: impl FnMut(SurfaceFrame) -> Result<(), String>,
-    ) -> Result<bool, String> {
-        let Self {
-            project,
-            gpu,
-            schedule,
-            state,
-            forward,
-        } = self;
-        let mut observer = |record: &evolve::StepRecord, state: &State| -> Result<(), ScfError> {
-            gate().map_err(ScfError::io)?;
-            sink(SurfaceFrame::from_state(state, record.mass)).map_err(ScfError::io)
-        };
-        let options = RunOptions {
+/// Run the schedule on the calling thread. `sink` receives one snapshot per accepted step.
+pub fn run_prepared(
+    prepared: Prepared,
+    max_steps: Option<usize>,
+    scale: f64,
+    mut gate: impl FnMut() -> Result<(), String>,
+    mut sink: impl FnMut(StepSnapshot) -> Result<(), String>,
+) -> Result<bool, String> {
+    let Prepared {
+        project,
+        gpu,
+        schedule,
+        state,
+        forward,
+    } = prepared;
+    let slack_tol = project.relief.tol_slack as f32;
+    let mut mark = Instant::now();
+    let mut observer = |record: &evolve::StepRecord,
+                        state: &State,
+                        fields: &evolve::StepFields|
+     -> Result<(), ScfError> {
+        let wall = mark.elapsed().as_secs_f64();
+        gate().map_err(ScfError::io)?;
+        mark = Instant::now();
+        let snapshot =
+            crate::asteroid_app::snapshot::pack(record, state, fields, scale, slack_tol, wall);
+        sink(snapshot).map_err(ScfError::io)
+    };
+    let result = evolve::run(
+        &project,
+        &gpu,
+        &schedule,
+        state,
+        forward,
+        &RunOptions {
             max_steps,
             until: None,
-        };
-        let result = evolve::run(
-            &project,
-            &gpu,
-            &schedule,
-            state,
-            forward,
-            &options,
-            &mut observer,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(result.complete)
+        },
+        &mut observer,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(result.complete)
+}
+
+/// One Rayon thread for `evolve::run`.
+///
+/// Dropping a Rayon pool waits for its thread. A window close must not join a
+/// Metal step, so the pool is left alive until the process exits.
+#[derive(Resource)]
+pub struct EvolutionPool {
+    pool: ManuallyDrop<rayon::ThreadPool>,
+}
+
+impl EvolutionPool {
+    pub fn new() -> Self {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .stack_size(64 << 20)
+            .thread_name(|index| format!("tier2-evolution-{index}"))
+            .build()
+            .expect("1-thread rayon pool for tier 2");
+        Self {
+            pool: ManuallyDrop::new(pool),
+        }
+    }
+
+    pub fn spawn_job<F>(&self, job: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.pool.spawn(job);
     }
 }
 
-/// Run Tier 2 on a worker thread. The bounded channel keeps only the newest frames.
+impl Default for EvolutionPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Submit Tier 2 to `pool`. The channel holds two snapshots and then blocks.
 pub fn spawn(
     project_text: String,
     project_dir: PathBuf,
     spin: String,
     max_steps: Option<usize>,
+    scale: f64,
     control: Arc<Control>,
+    pool: &EvolutionPool,
 ) -> Receiver<WorkerMessage> {
     let (tx, rx) = mpsc::sync_channel(2);
-    std::thread::Builder::new()
-        .name("tier2-evolution".into())
-        .stack_size(64 << 20)
-        .spawn(move || {
-            let send =
-                |message: WorkerMessage| tx.send(message).map_err(|_| "viewer closed".to_string());
-            let outcome = (|| -> Result<String, String> {
-                send(WorkerMessage::Status(
-                    "computing the first tier 2 step".into(),
-                ))?;
-                let evolver = Evolver::new(&project_text, &project_dir, &spin)?;
-                send(WorkerMessage::Status("tier 2 running".into()))?;
-                let gate = || {
-                    while control.paused.load(Ordering::Relaxed) {
-                        if control.quit.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    if control.quit.load(Ordering::Relaxed) {
-                        Err("cancelled".to_string())
-                    } else {
-                        Ok(())
-                    }
-                };
-                let complete = evolver.run(max_steps, gate, |frame| {
-                    send(WorkerMessage::Frame(Box::new(frame)))
-                })?;
-                Ok(if complete {
-                    "schedule complete".into()
-                } else {
-                    "stopped at the step limit".into()
-                })
-            })();
-            let _ = match outcome {
-                Ok(message) => tx.send(WorkerMessage::Finished(message)),
-                Err(message) => tx.send(WorkerMessage::Failed(message)),
-            };
-        })
-        .expect("spawn the tier-2 worker thread");
+    pool.spawn_job(move || {
+        let send =
+            |message: WorkerMessage| tx.send(message).map_err(|_| "viewer closed".to_string());
+        let outcome = (|| -> Result<String, String> {
+            send(WorkerMessage::Status(
+                "computing the first tier 2 step".into(),
+            ))?;
+            let prepared = prepare(&project_text, &project_dir, &spin)?;
+            send(WorkerMessage::Status("tier 2 running".into()))?;
+            let complete = run_prepared(
+                prepared,
+                max_steps,
+                scale,
+                || control.wait_if_paused(),
+                |snapshot| send(WorkerMessage::Frame(Box::new(snapshot))),
+            )?;
+            Ok(if complete {
+                "schedule complete".into()
+            } else {
+                "stopped at the step limit".into()
+            })
+        })();
+        let _ = match outcome {
+            Ok(message) => tx.send(WorkerMessage::Finished(message)),
+            Err(message) => tx.send(WorkerMessage::Failed(message)),
+        };
+    });
     rx
 }

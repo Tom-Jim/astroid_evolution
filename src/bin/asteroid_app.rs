@@ -5,7 +5,9 @@ use bevy::prelude::*;
 use clap::{Args, Parser, Subcommand};
 
 use astroid_evolution::asteroid_app::AsteroidPlugin;
-use astroid_evolution::asteroid_app::pipeline::{Evolver, SurfaceFrame, mesh_summary};
+use astroid_evolution::asteroid_app::pipeline::{
+    SurfaceFrame, mesh_summary, prepare, run_prepared,
+};
 use astroid_evolution::asteroid_app::resources::AppConfig;
 use astroid_evolution::scf_simulator::params::Project;
 use astroid_evolution::scf_simulator::spin::SpinSchedule;
@@ -93,9 +95,10 @@ fn setup(common: &Common) -> Result<Setup, String> {
         .to_path_buf();
     let project = Project::parse(&text, dir.clone()).map_err(|e| e.to_string())?;
     let summary = mesh_summary(&project)?;
-    let spin = common.spin.clone().unwrap_or_else(|| {
-        format!("const:{:.6e}@{:.5e}", common.omega, common.duration)
-    });
+    let spin = common
+        .spin
+        .clone()
+        .unwrap_or_else(|| format!("const:{:.6e}@{:.5e}", common.omega, common.duration));
     SpinSchedule::parse(&spin)
         .and_then(|s| s.validate().map(|_| s))
         .map_err(|e| e.to_string())?;
@@ -141,14 +144,9 @@ fn run(cli: Cli) -> Result<(), String> {
         } => {
             let setup = setup(&common)?;
             std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
-            let write = |name: String, frame: &SurfaceFrame| {
-                frame
-                    .write_obj(&out_dir.join(name))
-                    .map_err(|e| e.to_string())
-            };
-            let evolver = Evolver::new(&setup.text, &setup.dir, &setup.spin)?;
-            let first = evolver.frame();
-            write(format!("tier2_{:06}.obj", first.step), &first)?;
+            let prepared = prepare(&setup.text, &setup.dir, &setup.spin)?;
+            let first = SurfaceFrame::from_state(&prepared.state, prepared.forward.moments.mass);
+            first.write_obj(&out_dir.join(format!("tier2_{:06}.obj", first.step)))?;
             println!(
                 "start: {} vertices, radius [{:.3e}, {:.3e}] m",
                 first.vertices.len(),
@@ -157,24 +155,34 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             let mut last = None;
             let mut count = 0usize;
-            let complete = evolver.run(
+            let complete = run_prepared(
+                prepared,
                 common.max_steps,
+                1.0,
                 || Ok(()),
-                |frame| {
+                |snapshot| {
                     count += 1;
                     println!(
                         "step {} t={:.6e} omega={:.6e} radius [{:.3e}, {:.3e}]",
-                        frame.step, frame.time, frame.omega, frame.radius_min, frame.radius_max
+                        snapshot.step,
+                        snapshot.time,
+                        snapshot.omega,
+                        snapshot.radius_min,
+                        snapshot.radius_max
                     );
                     if every > 0 && count % every == 0 {
-                        write(format!("tier2_{:06}.obj", frame.step), &frame)?;
+                        snapshot
+                            .write_obj(&out_dir.join(format!("tier2_{:06}.obj", snapshot.step)))?;
                     }
-                    last = Some(frame);
+                    last = Some(snapshot);
                     Ok(())
                 },
             )?;
-            let last = last.unwrap_or(first);
-            write("final.obj".into(), &last)?;
+            if let Some(last) = last {
+                last.write_obj(&out_dir.join("final.obj"))?;
+            } else {
+                first.write_obj(&out_dir.join("final.obj"))?;
+            }
             println!(
                 "{}: {count} steps -> {}",
                 if complete { "complete" } else { "stopped" },
@@ -189,11 +197,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let parsed = Project::parse(&text, dir).map_err(|e| e.to_string())?;
             let summary = mesh_summary(&parsed)?;
             println!("project {}", tidy(&project).display());
-            println!(
-                "mesh {} ({})",
-                tidy(&summary.path).display(),
-                summary.unit
-            );
+            println!("mesh {} ({})", tidy(&summary.path).display(), summary.unit);
             println!(
                 "{} vertices, {} faces; tier 2 stores metres",
                 summary.vertices, summary.faces

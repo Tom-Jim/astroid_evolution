@@ -4,7 +4,7 @@ use std::sync::Arc;
 use astroid_evolution::asteroid_app::AsteroidPlugin;
 use astroid_evolution::asteroid_app::pipeline::SurfaceFrame;
 use astroid_evolution::asteroid_app::resources::{
-    display_imported, display_positions, lock_scale, AppConfig, Evolution, Phase, Scene,
+    AppConfig, Evolution, Phase, Scene, display_imported, display_positions, lock_scale,
 };
 use astroid_evolution::asteroid_app::ui::hud_lines;
 use astroid_evolution::common::density::CauchyKernel;
@@ -61,7 +61,10 @@ fn a_frame_is_the_tier2_body_itself() {
     let frame = SurfaceFrame::from_body(&body, 4, 12.0, 3.0e-4, 9.0);
     assert_eq!(frame.vertices.len(), count);
     assert_eq!(frame.faces, topo.faces);
-    assert_eq!((frame.step, frame.time, frame.omega, frame.mass), (4, 12.0, 3.0e-4, 9.0));
+    assert_eq!(
+        (frame.step, frame.time, frame.omega, frame.mass),
+        (4, 12.0, 3.0e-4, 9.0)
+    );
     assert!((frame.radius_min - 2.0).abs() < 1.0e-12);
     assert!((frame.radius_max - 2.0).abs() < 1.0e-12);
     for (shown, position) in frame.vertices.iter().zip(body.positions()) {
@@ -90,6 +93,8 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
             status: "computing the first tier 2 step".into(),
             ..Evolution::default()
         },
+        0.0,
+        "combined",
     )
     .join("\n");
     assert!(waiting.contains("project  assets/projects/ryugu_cauchy.toml"));
@@ -112,9 +117,15 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
                 mass: 1.0,
                 radius_min: 400.0,
                 radius_max: 500.0,
+                yielded_fraction: 0.25,
+                max_slack: 1.0e-3,
+                rho_s_total: 10.0,
+                max_displacement: 0.4,
             }),
             ..Evolution::default()
         },
+        0.4,
+        "yield",
     )
     .join("\n");
     assert!(shown.contains("showing  tier 2 step 3"));
@@ -132,7 +143,11 @@ fn a_headless_viewer_records_the_input_and_does_not_start_tier2() {
     let scene = app.world().resource::<Scene>();
     assert_eq!(scene.vertices.len(), 98306);
     assert_eq!(scene.faces.len(), 196608);
-    assert!(scene.scale > 0.001 && scene.scale < 0.003, "{}", scene.scale);
+    assert!(
+        scene.scale > 0.001 && scene.scale < 0.003,
+        "{}",
+        scene.scale
+    );
     let evolution = app.world().resource::<Evolution>();
     assert_eq!(evolution.phase, Phase::Idle);
     assert!(evolution.receiver.lock().unwrap().is_none());

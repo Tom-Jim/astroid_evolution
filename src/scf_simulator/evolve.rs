@@ -20,7 +20,7 @@ use super::params::Project;
 use super::relax::{AcceptError, accept};
 use super::socp::{Kind, SocpInput, mass_jacobian, solve};
 use super::spin::SpinSchedule;
-use super::transport::{mode_c, surface_flow, transport};
+use super::transport::{DirIndex, mode_c, surface_flow, transport};
 
 /// Everything that defines a restartable state of the run.
 #[derive(Clone, Debug)]
@@ -109,6 +109,30 @@ pub struct RunResult {
     pub complete: bool,
 }
 
+/// Surface fields of one accepted step, indexed like the body the observer receives.
+///
+/// `radius_from` is the ray radius at the start of the step. `d_radial` is `λ d` on a
+/// geometry step and zero on a spin or stage-equilibrium step; a frame realignment does
+/// not resample it. Every other vertex field is resampled onto the post-realignment body
+/// when the frame report was applied. `movable` is the classifier flag (true means the
+/// vertex is outside the rigid core).
+#[derive(Clone, Debug)]
+pub struct StepFields {
+    pub radius_from: Vec<f64>,
+    pub f_delta: Vec<f64>,
+    pub movable: Vec<bool>,
+    pub v_sl: Vec<DVec3>,
+    pub normal: Vec<DVec3>,
+    pub j_ero: Vec<f64>,
+    pub j_dep: Vec<f64>,
+    pub d_radial: Vec<f64>,
+    /// Per face. Incident-face scatter happens when the snapshot is packed.
+    pub slack: Vec<f64>,
+    pub g_face: Vec<DVec3>,
+    /// False on the spin-only and stage-equilibrium exits. Core creep is not drift.
+    pub flow_active: bool,
+}
+
 /// Compose the accumulated frame map with the report of one more re-alignment.
 pub fn compose_frame(
     state_rot: [[f64; 3]; 3],
@@ -165,7 +189,7 @@ pub fn run(
     mut state: State,
     mut fwd: Forward,
     opts: &RunOptions,
-    observer: &mut dyn FnMut(&StepRecord, &State) -> Result<(), ScfError>,
+    observer: &mut dyn FnMut(&StepRecord, &State, &StepFields) -> Result<(), ScfError>,
 ) -> Result<RunResult, ScfError> {
     spin.validate()?;
     let g = &project.geometry;
@@ -197,6 +221,7 @@ pub fn run(
         }
         let topo = state.body.topo.clone();
         let nv = topo.n_vertices();
+        let radius_from = state.body.radius.clone();
         let sample = spin.sample(state.t);
         let t_next = sample.t_next.min(t_end);
         let omega = sample.omega;
@@ -206,7 +231,10 @@ pub fn run(
         let mech = evaluate(project, gpu, &state.body, &mut fwd, omega, guess.as_deref())?;
         let cl = &mech.class;
         let density = state.body.density()?;
-        let area = vertex_areas(&state.body);
+        let area = {
+            let _span = super::timing::span("vertex_areas");
+            vertex_areas(&state.body)
+        };
         // χ_Y from the unyielded core is authoritative for creep and mode C (§2.8 B3).
         // A separate case: the whole surface sits in that core, but the loose-layer
         // friction chain still reports slack above `relief.tol_slack`. The regularised
@@ -236,14 +264,18 @@ pub fn run(
             .collect();
 
         // Step 5: mode C stays on the true yield set. Promoted slope nodes have F_δ ≤ 0.
-        let mc = mode_c(
-            &topo,
-            &area,
-            &state.body.rho_s,
-            &yielded,
-            &cl.f_delta,
-            &project.mode_c,
-        );
+        let mc = {
+            let _span = super::timing::span("mode_c");
+            mode_c(
+                &topo,
+                &area,
+                &state.body.rho_s,
+                &yielded,
+                &cl.f_delta,
+                &project.mode_c,
+            )
+        };
+        let slack: Vec<f64> = mech.rheo.iter().map(|node| node.slack).collect();
 
         let mut rec = StepRecord {
             step: state.step,
@@ -337,7 +369,22 @@ pub fn run(
             state.step += 1;
             steps_done += 1;
             stamp_radial(&mut rec, &state.body);
-            observer(&rec, &state)?;
+            let fields = step_fields(
+                &radius_from,
+                &cl.f_delta,
+                &cl.movable,
+                &cl.v_sl,
+                &cl.normal,
+                &mc.j_ero,
+                &mc.j_dep,
+                &radial_increments(false, st.lambda, nv, None),
+                &slack,
+                &mech.g_face,
+                false,
+                None,
+                &state.body,
+            );
+            observer(&rec, &state, &fields)?;
             records.push(rec);
             continue;
         }
@@ -367,7 +414,22 @@ pub fn run(
             state.step += 1;
             steps_done += 1;
             stamp_radial(&mut rec, &state.body);
-            observer(&rec, &state)?;
+            let fields = step_fields(
+                &radius_from,
+                &cl.f_delta,
+                &cl.movable,
+                &cl.v_sl,
+                &cl.normal,
+                &mc.j_ero,
+                &mc.j_dep,
+                &radial_increments(false, st.lambda, nv, None),
+                &slack,
+                &mech.g_face,
+                false,
+                Some(&frep),
+                &state.body,
+            );
+            observer(&rec, &state, &fields)?;
             records.push(rec);
             continue;
         }
@@ -384,7 +446,10 @@ pub fn run(
                 }
             }
         }
-        let flow = surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius);
+        let flow = {
+            let _span = super::timing::span("surface_flow");
+            surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius)
+        };
         let dt_cfl = if max_normal_speed > 0.0 {
             st.theta_cfl * h_min / max_normal_speed
         } else {
@@ -472,7 +537,10 @@ pub fn run(
             .collect();
         let sin_phi: Vec<f64> = mech.rheo.iter().map(|n| n.sin_phi).collect();
         let weight: Vec<f64> = (0..nv).map(|i| area[i]).collect();
-        let jac = mass_jacobian(&state.body, &density);
+        let jac = {
+            let _span = super::timing::span("mass_jacobian");
+            mass_jacobian(&state.body, &density)
+        };
         let r_mean = state.body.radius.iter().sum::<f64>() / nv as f64;
         let mut trust = g.trust0 * r_mean;
         let mut retries = 0usize;
@@ -499,13 +567,16 @@ pub fn run(
                 radius[i] += st.lambda * out.d[i];
             }
             // Construct new body; construction/bind errors count as geometry failures.
-            let body_result = Body::new(
-                topo.clone(),
-                radius,
-                state.body.bulk,
-                state.body.kernels.clone(),
-                state.body.rho_s.clone(),
-            );
+            let body_result = {
+                let _span = super::timing::span("geometry_build");
+                Body::new(
+                    topo.clone(),
+                    radius,
+                    state.body.bulk,
+                    state.body.kernels.clone(),
+                    state.body.rho_s.clone(),
+                )
+            };
             let (b, f) = match body_result {
                 Err(e) => {
                     // A non-positive radius or a topology failure shrinks Δ.
@@ -572,9 +643,10 @@ pub fn run(
                                 rr[i] += alpha * jac[i];
                             }
                         }
-                        if let Ok(cb) =
+                        if let Ok(cb) = {
+                            let _span = super::timing::span("geometry_build");
                             Body::new(topo.clone(), rr, b.bulk, b.kernels.clone(), b.rho_s.clone())
-                        {
+                        } {
                             if let Ok(cf) = Forward::bind(&cb, project.g) {
                                 if let Ok(cr) = accept(&cf, mass_target, g.eps_mass) {
                                     let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
@@ -609,13 +681,19 @@ pub fn run(
 
         // ρ_s: semi-Lagrangian transport (λΔt), then the mode C source.
         let adv = st.lambda * dt;
-        let area_new = vertex_areas(&new_body);
+        let area_new = {
+            let _span = super::timing::span("vertex_areas");
+            vertex_areas(&new_body)
+        };
         let j_old: Vec<f64> = (0..nv).map(|i| area[i] / topo.vertex_solid[i]).collect();
         let j_new: Vec<f64> = (0..nv)
             .map(|i| area_new[i] / topo.vertex_solid[i])
             .collect();
-        let (mut rho_s, fix) = transport(&topo, &flow, &state.body.rho_s, &j_old, &j_new, adv)
-            .map_err(|e| ScfError::solver(format!("surface transport failed: {e}")))?;
+        let (mut rho_s, fix) = {
+            let _span = super::timing::span("transport");
+            transport(&topo, &flow, &state.body.rho_s, &j_old, &j_new, adv)
+                .map_err(|e| ScfError::solver(format!("surface transport failed: {e}")))?
+        };
         for i in 0..nv {
             rho_s[i] = (rho_s[i] + adv * (mc.j_dep[i] - mc.j_ero[i])).max(0.0);
         }
@@ -645,7 +723,22 @@ pub fn run(
         state.step += 1;
         steps_done += 1;
         stamp_radial(&mut rec, &state.body);
-        observer(&rec, &state)?;
+        let fields = step_fields(
+            &radius_from,
+            &cl.f_delta,
+            &cl.movable,
+            &cl.v_sl,
+            &cl.normal,
+            &mc.j_ero,
+            &mc.j_dep,
+            &radial_increments(true, st.lambda, nv, Some(&out.d)),
+            &slack,
+            &mech.g_face,
+            true,
+            Some(&frep),
+            &state.body,
+        );
+        observer(&rec, &state, &fields)?;
         records.push(rec);
     }
     let complete = state.t >= t_end - snap_tol;
@@ -681,9 +774,259 @@ fn stamp_radial(rec: &mut StepRecord, body: &Body) {
     rec.min_radial_face = face;
 }
 
+/// `λ d` when this step moved the geometry, otherwise a zero increment per vertex.
+pub fn radial_increments(flow_active: bool, lambda: f64, nv: usize, d: Option<&[f64]>) -> Vec<f64> {
+    if !flow_active {
+        return vec![0.0; nv];
+    }
+    let mut out = Vec::with_capacity(nv);
+    for i in 0..nv {
+        let value = d.and_then(|row| row.get(i)).copied().unwrap_or(0.0);
+        out.push(lambda * value);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn step_fields(
+    radius_from: &[f64],
+    f_delta: &[f64],
+    movable: &[bool],
+    v_sl: &[DVec3],
+    normal: &[DVec3],
+    j_ero: &[f64],
+    j_dep: &[f64],
+    d_radial: &[f64],
+    slack: &[f64],
+    g_face: &[DVec3],
+    flow_active: bool,
+    frame: Option<&FrameReport>,
+    body: &Body,
+) -> StepFields {
+    let nv = body.topo.n_vertices();
+    let nf = body.topo.n_faces();
+    let Some(frame) = frame.filter(|report| report.applied) else {
+        return StepFields {
+            radius_from: fit_f64(radius_from, nv),
+            f_delta: fit_f64(f_delta, nv),
+            movable: fit_bool(movable, nv),
+            v_sl: fit_vec(v_sl, nv),
+            normal: fit_vec(normal, nv),
+            j_ero: fit_f64(j_ero, nv),
+            j_dep: fit_f64(j_dep, nv),
+            d_radial: fit_f64(d_radial, nv),
+            slack: fit_f64(slack, nf),
+            g_face: fit_vec(g_face, nf),
+            flow_active,
+        };
+    };
+    let q = frame.rotation;
+    let index = DirIndex::build(&body.topo.dirs);
+    let movable_w: Vec<f64> = (0..nv)
+        .map(|i| {
+            if movable.get(i).copied().unwrap_or(false) {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let v_rot: Vec<DVec3> = (0..v_sl.len()).map(|i| mul_q(q, v_sl[i])).collect();
+    let n_rot: Vec<DVec3> = (0..normal.len())
+        .map(|i| {
+            let turned = mul_q(q, normal[i]);
+            turned.try_normalize().unwrap_or(turned)
+        })
+        .collect();
+    let g_rot: Vec<DVec3> = (0..g_face.len()).map(|i| mul_q(q, g_face[i])).collect();
+    let mut out_f = vec![0.0; nv];
+    let mut out_m = vec![false; nv];
+    let mut out_v = vec![DVec3::ZERO; nv];
+    let mut out_n = vec![DVec3::ZERO; nv];
+    let mut out_ero = vec![0.0; nv];
+    let mut out_dep = vec![0.0; nv];
+    for i in 0..nv {
+        let x_new = body.topo.dirs[i] * body.radius[i];
+        let dir = old_direction(q, frame.translation, x_new, body.topo.dirs[i]);
+        let (ids, w) = locate_vertex(&body.topo, &index, dir);
+        out_f[i] = blend_f64(f_delta, ids, w);
+        out_m[i] = blend_f64(&movable_w, ids, w) > 0.5;
+        out_v[i] = blend_vec(&v_rot, ids, w);
+        out_n[i] = blend_vec(&n_rot, ids, w)
+            .try_normalize()
+            .unwrap_or(body.topo.dirs[i]);
+        out_ero[i] = blend_f64(j_ero, ids, w);
+        out_dep[i] = blend_f64(j_dep, ids, w);
+    }
+    let positions = body.positions();
+    let mut out_slack = vec![0.0; nf];
+    let mut out_g = vec![DVec3::ZERO; nf];
+    for (f, tri) in body.topo.faces.iter().enumerate() {
+        let [a, b, c] = tri.map(|i| positions[i as usize]);
+        let centroid = (a + b + c) * (1.0 / 3.0);
+        let fallback = body
+            .topo
+            .face_dirs
+            .get(f)
+            .copied()
+            .unwrap_or(DVec3::new(0.0, 0.0, 1.0));
+        let dir = old_direction(q, frame.translation, centroid, fallback);
+        let face = locate_face(&body.topo, &index, dir);
+        out_slack[f] = slack.get(face).copied().unwrap_or(0.0);
+        out_g[f] = g_rot.get(face).copied().unwrap_or(DVec3::ZERO);
+    }
+    StepFields {
+        radius_from: fit_f64(radius_from, nv),
+        f_delta: out_f,
+        movable: out_m,
+        v_sl: out_v,
+        normal: out_n,
+        j_ero: out_ero,
+        j_dep: out_dep,
+        d_radial: fit_f64(d_radial, nv),
+        slack: out_slack,
+        g_face: out_g,
+        flow_active,
+    }
+}
+
+fn fit_f64(src: &[f64], n: usize) -> Vec<f64> {
+    let mut out = vec![0.0; n];
+    for (slot, value) in out.iter_mut().zip(src) {
+        *slot = *value;
+    }
+    out
+}
+
+fn fit_bool(src: &[bool], n: usize) -> Vec<bool> {
+    let mut out = vec![false; n];
+    for (slot, value) in out.iter_mut().zip(src) {
+        *slot = *value;
+    }
+    out
+}
+
+fn fit_vec(src: &[DVec3], n: usize) -> Vec<DVec3> {
+    let mut out = vec![DVec3::ZERO; n];
+    for (slot, value) in out.iter_mut().zip(src) {
+        *slot = *value;
+    }
+    out
+}
+
+fn mul_q(q: [[f64; 3]; 3], v: DVec3) -> DVec3 {
+    DVec3::new(
+        q[0][0] * v.x + q[0][1] * v.y + q[0][2] * v.z,
+        q[1][0] * v.x + q[1][1] * v.y + q[1][2] * v.z,
+        q[2][0] * v.x + q[2][1] * v.y + q[2][2] * v.z,
+    )
+}
+
+fn mul_qt(q: [[f64; 3]; 3], v: DVec3) -> DVec3 {
+    DVec3::new(
+        q[0][0] * v.x + q[1][0] * v.y + q[2][0] * v.z,
+        q[0][1] * v.x + q[1][1] * v.y + q[2][1] * v.z,
+        q[0][2] * v.x + q[1][2] * v.y + q[2][2] * v.z,
+    )
+}
+
+fn old_direction(q: [[f64; 3]; 3], translation: DVec3, x_new: DVec3, fallback: DVec3) -> DVec3 {
+    (mul_qt(q, x_new) + translation)
+        .try_normalize()
+        .unwrap_or(fallback)
+}
+
+fn barycentric(a: DVec3, b: DVec3, c: DVec3, p: DVec3) -> Option<[f64; 3]> {
+    let m = Matrix3::new(a.x, b.x, c.x, a.y, b.y, c.y, a.z, b.z, c.z);
+    let inv = m.try_inverse()?;
+    let l = inv * Vector3::new(p.x, p.y, p.z);
+    let s = l.sum();
+    if s <= 0.0 {
+        return None;
+    }
+    Some([l[0] / s, l[1] / s, l[2] / s])
+}
+
+fn candidate_faces(topo: &super::body::Topology, index: &DirIndex, p: DVec3) -> Vec<usize> {
+    let nearest = index.nearest(&topo.dirs, p);
+    let mut seen = topo.vertex_faces.get(nearest).cloned().unwrap_or_default();
+    let first = seen.clone();
+    for f in first {
+        let Some(neighbors) = topo.face_neighbors.get(f) else {
+            continue;
+        };
+        for &g in neighbors {
+            if g != usize::MAX && !seen.contains(&g) {
+                seen.push(g);
+            }
+        }
+    }
+    seen
+}
+
+fn locate_vertex(
+    topo: &super::body::Topology,
+    index: &DirIndex,
+    p: DVec3,
+) -> ([usize; 3], [f64; 3]) {
+    let nearest = index.nearest(&topo.dirs, p);
+    for f in candidate_faces(topo, index, p) {
+        let Some(tri) = topo.faces.get(f) else {
+            continue;
+        };
+        let [i, j, k] = tri.map(|v| v as usize);
+        if let Some(w) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p) {
+            if w.iter().all(|value| *value >= -1.0e-12) {
+                return ([i, j, k], w);
+            }
+        }
+    }
+    ([nearest, nearest, nearest], [1.0, 0.0, 0.0])
+}
+
+fn locate_face(topo: &super::body::Topology, index: &DirIndex, p: DVec3) -> usize {
+    let nearest = index.nearest(&topo.dirs, p);
+    for f in candidate_faces(topo, index, p) {
+        let Some(tri) = topo.faces.get(f) else {
+            continue;
+        };
+        let [i, j, k] = tri.map(|v| v as usize);
+        if let Some(w) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p) {
+            if w.iter().all(|value| *value >= -1.0e-12) {
+                return f;
+            }
+        }
+    }
+    topo.vertex_faces
+        .get(nearest)
+        .and_then(|faces| faces.first())
+        .copied()
+        .unwrap_or(0)
+}
+
+fn blend_f64(field: &[f64], ids: [usize; 3], w: [f64; 3]) -> f64 {
+    ids.iter()
+        .zip(w)
+        .map(|(id, weight)| field.get(*id).copied().unwrap_or(0.0) * weight)
+        .sum()
+}
+
+fn blend_vec(field: &[DVec3], ids: [usize; 3], w: [f64; 3]) -> DVec3 {
+    ids.iter().zip(w).fold(DVec3::ZERO, |acc, (id, weight)| {
+        acc + field.get(*id).copied().unwrap_or(DVec3::ZERO) * weight
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::radial_increment;
+    use super::{IDENTITY, radial_increments, step_fields};
+    use crate::common::density::CauchyKernel;
+    use crate::common::math::DVec3;
+    use crate::scf_simulator::body::{Body, Topology};
+    use crate::scf_simulator::frame::{FrameDeparture, FrameReport};
 
     #[test]
     fn radial_increment_keeps_a_transverse_face_and_drops_a_grazing_one() {
@@ -692,5 +1035,96 @@ mod tests {
         assert_eq!(radial_increment(10.0, 0.01), 0.0);
         assert_eq!(radial_increment(10.0, -0.01), 0.0);
         assert_eq!(radial_increment(10.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn a_spin_step_records_zero_radial_increment() {
+        let zeros = radial_increments(false, 0.4, 5, Some(&[1.0, 2.0, 3.0, 4.0, 5.0]));
+        assert!(zeros.iter().all(|value| *value == 0.0));
+        let scaled = radial_increments(true, 0.5, 3, Some(&[1.0, 2.0, 4.0]));
+        assert_eq!(scaled, vec![0.5, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn realigned_fields_keep_the_post_step_vertex_count() {
+        let topo = Arc::new(Topology::icosphere(0));
+        let nv = topo.n_vertices();
+        let nf = topo.n_faces();
+        let body = Body::new(
+            topo.clone(),
+            vec![1.0; nv],
+            1000.0,
+            Vec::<CauchyKernel>::new(),
+            vec![0.0; nv],
+        )
+        .unwrap();
+        let f_delta: Vec<f64> = (0..nv).map(|i| i as f64).collect();
+        let movable: Vec<bool> = (0..nv).map(|i| i % 2 == 0).collect();
+        let v_sl = topo.dirs.clone();
+        let slack: Vec<f64> = (0..nf).map(|f| f as f64).collect();
+        let g_face = topo.face_dirs.clone();
+        let d_radial: Vec<f64> = (0..nv).map(|i| 0.1 * i as f64).collect();
+        let report = FrameReport {
+            applied: true,
+            passes: 1,
+            translation: DVec3::ZERO,
+            rotation: IDENTITY,
+            angle_deg: 0.0,
+            before: FrameDeparture {
+                centroid: 0.0,
+                off_diagonal: 0.0,
+                ordering: 0.0,
+            },
+            after: FrameDeparture {
+                centroid: 0.0,
+                off_diagonal: 0.0,
+                ordering: 0.0,
+            },
+            mass_change: 0.0,
+            volume_change: 0.0,
+            max_radius_change: 0.0,
+        };
+        let fields = step_fields(
+            &vec![2.0; nv],
+            &f_delta,
+            &movable,
+            &v_sl,
+            &topo.dirs,
+            &f_delta,
+            &f_delta,
+            &d_radial,
+            &slack,
+            &g_face,
+            false,
+            Some(&report),
+            &body,
+        );
+        assert_eq!(fields.f_delta.len(), body.radius.len());
+        assert_eq!(fields.v_sl.len(), body.radius.len());
+        assert_eq!(fields.normal.len(), body.radius.len());
+        assert_eq!(fields.movable.len(), body.radius.len());
+        assert_eq!(fields.d_radial.len(), body.radius.len());
+        assert_eq!(fields.slack.len(), body.topo.n_faces());
+        assert_eq!(fields.radius_from, vec![2.0; nv]);
+        assert!(!fields.flow_active);
+        for i in 0..nv {
+            assert!(
+                (fields.f_delta[i] - f_delta[i]).abs() < 1.0e-6,
+                "vertex {i}: {} vs {}",
+                fields.f_delta[i],
+                f_delta[i]
+            );
+            assert_eq!(fields.movable[i], movable[i]);
+            assert!((fields.d_radial[i] - d_radial[i]).abs() < 1.0e-12);
+            assert!((fields.v_sl[i] - v_sl[i]).length() < 1.0e-6);
+        }
+        for f in 0..nf {
+            assert!(
+                (fields.slack[f] - slack[f]).abs() < 1.0e-6,
+                "face {f}: {} vs {}",
+                fields.slack[f],
+                slack[f]
+            );
+        }
     }
 }

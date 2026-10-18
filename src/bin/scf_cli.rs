@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use astroid_evolution::rheo_friction::RheoGpu;
 use astroid_evolution::scf_simulator::error::ScfError;
 use astroid_evolution::scf_simulator::evolve::{
-    self, RunOptions, State, StepRecord, compose_frame,
+    self, RunOptions, State, StepFields, StepRecord, compose_frame,
 };
 use astroid_evolution::scf_simulator::forward::Forward;
 use astroid_evolution::scf_simulator::frame::{self, departure};
@@ -17,6 +17,7 @@ use astroid_evolution::scf_simulator::mechanics;
 use astroid_evolution::scf_simulator::params::Project;
 use astroid_evolution::scf_simulator::relax::relax;
 use astroid_evolution::scf_simulator::spin::SpinSchedule;
+use astroid_evolution::scf_simulator::timing::{self, Aggregate};
 
 #[derive(Parser)]
 #[command(
@@ -323,6 +324,8 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let gpu = gpu()?;
             std::fs::create_dir_all(&out_dir)
                 .map_err(|e| ScfError::io(format!("{}: {e}", out_dir.display())))?;
+            timing::set_phase("startup");
+            let wall = std::time::Instant::now();
             let (mut state, mut fwd) = match &resume {
                 Some(path) => {
                     let st = initial_state(&p, Some(path))?;
@@ -358,8 +361,14 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let log_path = out_dir.join("steps.jsonl");
             let mut log = String::new();
             let ck = out_dir.join("checkpoint.json");
+            let n_vertices = state.body.topo.n_vertices();
+            let n_faces = state.body.topo.n_faces();
             let opts = RunOptions { max_steps, until };
-            let mut obs = |r: &StepRecord, s: &State| -> Result<(), ScfError> {
+            timing::set_phase("step");
+            let mut obs = |r: &StepRecord,
+                           s: &State,
+                           _fields: &StepFields|
+             -> Result<(), ScfError> {
                 if !quiet {
                     println!("{}", line(r));
                 }
@@ -373,6 +382,20 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 Ok(())
             };
             let result = evolve::run(&p, &gpu, &schedule, state, fwd, &opts, &mut obs);
+            let samples = timing::drain();
+            let wall_seconds = wall.elapsed().as_secs_f64();
+            if !samples.is_empty() {
+                write_timing(
+                    &out_dir.join("timing.json"),
+                    &project,
+                    &spin,
+                    n_vertices,
+                    n_faces,
+                    wall_seconds,
+                    &samples,
+                    result.as_ref().ok(),
+                )?;
+            }
             std::fs::write(&log_path, &log)
                 .map_err(|e| ScfError::io(format!("{}: {e}", log_path.display())))?;
             let result = result?;
@@ -476,6 +499,107 @@ fn run(cli: Cli) -> Result<(), ScfError> {
         Command::Gpu => {
             println!("rheo_friction device: {}", gpu()?.device_name());
         }
+    }
+    Ok(())
+}
+
+fn write_timing(
+    path: &Path,
+    project: &Path,
+    spin: &str,
+    n_vertices: usize,
+    n_faces: usize,
+    wall_seconds: f64,
+    samples: &[Aggregate],
+    result: Option<&astroid_evolution::scf_simulator::evolve::RunResult>,
+) -> Result<(), ScfError> {
+    let total: f64 = samples.iter().map(|s| s.seconds).sum();
+    let group_seconds = |group: &str| -> f64 {
+        samples
+            .iter()
+            .filter(|s| timing::group(s.name) == group)
+            .map(|s| s.seconds)
+            .sum()
+    };
+    let modules: Vec<_> = samples
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "phase": s.phase,
+                "module": s.name,
+                "seconds": s.seconds,
+                "calls": s.calls,
+                "share": if total > 0.0 { s.seconds / total } else { 0.0 },
+                "group": timing::group(s.name),
+            })
+        })
+        .collect();
+    let steps = result.map(|r| {
+        r.records
+            .iter()
+            .map(|rec| {
+                serde_json::json!({
+                    "step": rec.step,
+                    "kind": rec.kind,
+                    "t": rec.t,
+                    "dt": rec.dt,
+                    "dt_bound": rec.dt_bound,
+                    "omega": rec.omega,
+                    "n_mobile": rec.n_mobile,
+                    "n_deposit": rec.n_deposit,
+                    "n_locked": rec.n_locked,
+                    "n_supercritical_faces": rec.n_supercritical_faces,
+                    "picard_iterations": rec.picard_iterations,
+                    "socp_iterations": rec.socp_iterations,
+                    "trust_retries": rec.trust_retries,
+                    "rheo_seconds": rec.rheo_seconds,
+                    "rheo_unconverged": rec.rheo_unconverged,
+                    "slope_slack": rec.slope_slack,
+                    "mass_slack": rec.mass_slack,
+                    "max_displacement": rec.max_displacement,
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    let report = serde_json::json!({
+        "project": project.display().to_string(),
+        "spin": spin,
+        "period_s": 14400.0,
+        "period_hours": 4.0,
+        "vertices": n_vertices,
+        "faces": n_faces,
+        "wall_seconds": wall_seconds,
+        "accounted_seconds": total,
+        "groups": {
+            "RTFP": group_seconds("RTFP"),
+            "rheology": group_seconds("rheology"),
+            "outer_socp": group_seconds("outer_socp"),
+            "other": group_seconds("other"),
+        },
+        "modules": modules,
+        "steps": steps,
+    });
+    let text = serde_json::to_string_pretty(&report).map_err(|e| ScfError::io(e.to_string()))?;
+    std::fs::write(path, &text).map_err(|e| ScfError::io(format!("{}: {e}", path.display())))?;
+    println!("timing report -> {}", path.display());
+    println!(
+        "groups: RTFP {:.3}s   rheology {:.3}s   outer SOCP {:.3}s   other {:.3}s   wall {:.3}s",
+        group_seconds("RTFP"),
+        group_seconds("rheology"),
+        group_seconds("outer_socp"),
+        group_seconds("other"),
+        wall_seconds
+    );
+    println!("modules, longest first:");
+    for (i, s) in samples.iter().enumerate() {
+        println!(
+            "  {:>2}. {:>8.3}s  {:>3} calls  {:<8} {}",
+            i + 1,
+            s.seconds,
+            s.calls,
+            s.phase,
+            s.name
+        );
     }
     Ok(())
 }

@@ -1,0 +1,200 @@
+// Field playback for the Tier 2 body.
+// Layout follows Bevy 0.20 examples/shader/storage_buffer.wesl:
+// the material bind group carries the uniform and the storage arrays.
+
+import bevy_pbr::render::{
+    mesh_bindings::mesh,
+    mesh_functions,
+    mesh_view_bindings::view,
+    view_transformations::position_world_to_clip,
+};
+
+struct PlaybackParams {
+    tau: f32,
+    time: f32,
+    fade: f32,
+    mode: u32,
+    f_delta_p95: f32,
+    slack_p95: f32,
+    rho_s_p95: f32,
+    slack_tol: f32,
+    vertex_count: u32,
+    particle_count: u32,
+    streamline_steps: u32,
+    has_field: u32,
+}
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> material: PlaybackParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var<storage, read> surface: array<vec4<f32>>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var<storage, read> stream: array<vec4<f32>>;
+
+struct Vertex {
+    @builtin(instance_index) instance_index: u32,
+    @builtin(vertex_index) index: u32,
+    @location(0) position: vec3<f32>,
+    @if(VERTEX_NORMALS)
+    @location(1) normal: vec3<f32>,
+}
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec4<f32>,
+    @location(1) world_normal: vec3<f32>,
+    @location(2) extras: vec4<f32>,
+    @location(3) flow: vec4<f32>,
+    @location(4) marker: f32,
+}
+
+fn surface_base(vi: u32) -> u32 {
+    return vi * 8u;
+}
+
+fn morphed_position(vi: u32, s: f32) -> vec3<f32> {
+    let b = surface_base(vi);
+    return mix(surface[b].xyz, surface[b + 1u].xyz, s);
+}
+
+fn morphed_normal(vi: u32, s: f32) -> vec3<f32> {
+    let b = surface_base(vi);
+    let n = mix(surface[b + 2u].xyz, surface[b + 3u].xyz, s);
+    let len = length(n);
+    if len > 1e-6 {
+        return n / len;
+    }
+    return vec3<f32>(0.0, 1.0, 0.0);
+}
+
+fn sample_center(pid: u32, step: u32, s: f32) -> vec3<f32> {
+    let base = (pid * material.streamline_steps + step) * 2u;
+    let head = stream[base];
+    let tail = stream[base + 1u];
+    let weight = vec3<f32>(head.w, tail.x, tail.y);
+    return weight.x * morphed_position(u32(head.x), s)
+        + weight.y * morphed_position(u32(head.y), s)
+        + weight.z * morphed_position(u32(head.z), s);
+}
+
+fn sample_vertex(pid: u32, step: u32) -> u32 {
+    let base = (pid * material.streamline_steps + step) * 2u;
+    return u32(stream[base].x);
+}
+
+fn placed(world_from_local: mat4x4<f32>, local: vec3<f32>) -> vec4<f32> {
+    return mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(local, 1.0));
+}
+
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    out.extras = vec4<f32>(0.0);
+    out.flow = vec4<f32>(0.0);
+    out.marker = 0.0;
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    let tag = mesh_functions::get_tag(vertex.instance_index);
+    let s = smoothstep(0.0, 1.0, clamp(material.tau, 0.0, 1.0));
+    let fade = clamp(material.fade, 0.0, 1.0);
+
+    if tag == 1u {
+        out.marker = 1.0;
+        let show = material.has_field == 1u && (material.mode == 3u || material.mode == 4u);
+        if !show || material.streamline_steps < 2u {
+            out.world_position = vec4<f32>(0.0);
+            out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
+            out.clip_position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+            return out;
+        }
+        let pid = u32(vertex.position.z + 0.5);
+        let steps = material.streamline_steps;
+        let along = fract(material.time * 0.2) * f32(steps - 1u);
+        let i0 = min(u32(floor(along)), steps - 1u);
+        let i1 = min(i0 + 1u, steps - 1u);
+        let frac = fract(along);
+        let center = mix(sample_center(pid, i0, s), sample_center(pid, i1, s), frac);
+        let nrm = morphed_normal(sample_vertex(pid, i0), s);
+        let right = view.world_from_view[0].xyz;
+        let up = view.world_from_view[1].xyz;
+        let local = center + (right * vertex.position.x + up * vertex.position.y) * 0.008 + nrm * 0.004;
+        out.world_position = placed(world_from_local, local);
+        out.clip_position = position_world_to_clip(out.world_position.xyz);
+        out.world_normal = nrm;
+        return out;
+    }
+
+    var local = vertex.position;
+    @if(VERTEX_NORMALS)
+    var nrm = vertex.normal;
+    @else
+    var nrm = vec3<f32>(0.0, 1.0, 0.0);
+    if material.has_field == 1u && material.vertex_count > 0u {
+        let first = mesh[vertex.instance_index].first_vertex_index;
+        let vi = vertex.index - first;
+        if vi < material.vertex_count {
+            let b = surface_base(vi);
+            local = morphed_position(vi, s);
+            nrm = morphed_normal(vi, s);
+            let f_delta = mix(surface[b].w, surface[b + 1u].w, fade);
+            let movable = mix(surface[b + 2u].w, surface[b + 3u].w, fade);
+            let rho = mix(surface[b + 4u].w, surface[b + 5u].w, fade);
+            let slack_max = mix(surface[b + 6u].x, surface[b + 6u].z, fade);
+            let slack_avg = mix(surface[b + 6u].y, surface[b + 6u].w, fade);
+            let v_from = surface[b + 4u].xyz;
+            let v_to = surface[b + 5u].xyz;
+            out.extras = vec4<f32>(f_delta, movable, rho, slack_max);
+            out.flow = vec4<f32>(mix(v_from, v_to, fade), slack_avg);
+        }
+    }
+    out.world_position = placed(world_from_local, local);
+    out.clip_position = position_world_to_clip(out.world_position.xyz);
+    out.world_normal = nrm;
+    return out;
+}
+
+fn rock() -> vec3<f32> {
+    return vec3<f32>(0.22, 0.23, 0.25);
+}
+
+fn shade(nrm: vec3<f32>, albedo: vec3<f32>) -> vec4<f32> {
+    let to_light = normalize(vec3<f32>(-0.45, 1.0, -0.3));
+    let ndl = clamp(dot(normalize(nrm), to_light), 0.0, 1.0);
+    return vec4<f32>(albedo * (0.35 + 0.65 * ndl), 1.0);
+}
+
+@fragment
+fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    if in.marker > 0.5 {
+        return shade(in.world_normal, vec3<f32>(0.72, 0.58, 0.32));
+    }
+    let f_delta = in.extras.x;
+    let movable = in.extras.y;
+    let rho = in.extras.z;
+    let slack_max = in.extras.w;
+    let flow = in.flow.xyz;
+    let nrm = normalize(in.world_normal);
+    var albedo = rock();
+    let yield_t = clamp(f_delta / max(material.f_delta_p95, 1e-6), 0.0, 1.0);
+    let yielded = movable > 0.5 && f_delta > 0.0;
+    let hazard = slack_max > material.slack_tol;
+    let rho_t = clamp(rho / max(material.rho_s_p95, 1e-6), 0.0, 1.0);
+    let pulse = 0.5 + 0.5 * sin(material.time * 6.0);
+    if material.mode == 1u || material.mode == 4u {
+        if yielded {
+            albedo = mix(albedo, vec3<f32>(0.95, 0.35, 0.08), yield_t);
+        }
+    }
+    if material.mode == 2u || material.mode == 4u {
+        if hazard {
+            albedo = mix(albedo, vec3<f32>(1.0, 0.85, 0.15), pulse);
+        }
+    }
+    if material.mode == 3u || material.mode == 4u {
+        albedo = mix(albedo, vec3<f32>(0.55, 0.48, 0.32), rho_t);
+        let tangent_flow = flow - nrm * dot(flow, nrm);
+        let speed = length(tangent_flow);
+        if speed > 1e-8 {
+            let phase = dot(in.world_position.xyz, normalize(tangent_flow)) * 12.0 - material.time * 1.5;
+            let stripe = smoothstep(0.55, 0.75, fract(phase));
+            albedo = mix(albedo, vec3<f32>(0.85, 0.75, 0.45), stripe * rho_t * clamp(speed * 20.0, 0.0, 1.0));
+        }
+    }
+    return shade(nrm, albedo);
+}

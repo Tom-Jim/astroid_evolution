@@ -207,10 +207,16 @@ pub fn realign(
     prm: &GeometryParams,
     force: bool,
 ) -> Result<(Body, FrameReport, Forward), ScfError> {
+    let mut clock = super::timing::span("frame_realign");
     let mut current = body.clone();
     let mut fwd = match forward {
         Some(f) => f,
-        None => Forward::bind(&current, g)?,
+        None => {
+            clock.pause();
+            let bound = Forward::bind(&current, g)?;
+            clock.resume();
+            bound
+        }
     };
     let r_ref = mean_radius(&current);
     let before = departure(&fwd.moments, r_ref, prm.eps_deg);
@@ -228,7 +234,9 @@ pub fn realign(
         // x_orig = q_accᵀ x_cur + t_acc  ⇒  compose.
         t_acc += q_acc.transpose() * v3(c);
         q_acc = q * q_acc;
+        clock.pause();
         fwd = Forward::bind(&current, g)?;
+        clock.resume();
         passes += 1;
     }
     let after = departure(&fwd.moments, r_ref, prm.eps_deg);

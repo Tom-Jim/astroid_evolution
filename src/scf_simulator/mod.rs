@@ -22,6 +22,8 @@ pub mod quad;
 pub mod relax;
 pub mod socp;
 mod socp_gpu;
+mod socp_pdhg;
 pub mod spin;
 pub mod stokes;
+pub mod timing;
 pub mod transport;

@@ -7,6 +7,15 @@ use bevy::prelude::*;
 
 use crate::asteroid_app::pipeline::{Control, WorkerMessage};
 
+#[derive(Component)]
+pub struct SurfaceView;
+
+#[derive(Component)]
+pub struct RegolithView;
+
+#[derive(Component)]
+pub struct Hud;
+
 /// Inputs of the viewer, written by the binary and repeated in the corner label.
 #[derive(Resource, Clone)]
 pub struct AppConfig {
@@ -91,6 +100,10 @@ pub struct FrameStats {
     pub mass: f64,
     pub radius_min: f64,
     pub radius_max: f64,
+    pub yielded_fraction: f64,
+    pub max_slack: f64,
+    pub rho_s_total: f64,
+    pub max_displacement: f64,
 }
 
 #[derive(Resource)]

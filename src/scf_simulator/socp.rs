@@ -1,4 +1,4 @@
-//! The convex step problem of §10.4.3, solved with Clarabel.
+//! The convex step problem of §10.4.3, solved with Metal-PDHG.
 //!
 //! The vertex displacements `d_i` along the fixed directions `ω̂_i` are the unknowns of the
 //! mobile set `A`; vertices of the locked set `L` do not move and those of the pure-deposition
@@ -21,11 +21,6 @@
 //! mildly overhanging face stays representable. The nonlinear acceptance test
 //! (valid mesh, mass residual) belongs to the caller, which also shrinks `Δ` on a
 //! geometry failure.
-
-use clarabel::algebra::CscMatrix;
-use clarabel::solver::{
-    DefaultSettingsBuilder, DefaultSolver, IPSolver, SolverStatus, SupportedConeT,
-};
 
 use rayon::prelude::*;
 
@@ -174,6 +169,7 @@ impl Block {
 }
 
 pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
+    let mut assemble = super::timing::span("socp_assemble");
     let body = inp.body;
     let topo = &body.topo;
     let nv = topo.n_vertices();
@@ -194,7 +190,12 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     // Slope cones are the only rows that use n̂ and ∂n̂/∂R.
     let active: Vec<usize> = (0..nf).filter(|&f| inp.slope_row[f]).collect();
     let active_faces: Vec<[u32; 3]> = active.iter().map(|&f| topo.faces[f]).collect();
-    let computed = face_frames(&ps, &topo.dirs, &active_faces).map_err(ScfError::gpu)?;
+    assemble.pause();
+    let computed = {
+        let _span = super::timing::span("socp_face_frames");
+        face_frames(&ps, &topo.dirs, &active_faces).map_err(ScfError::gpu)?
+    };
+    assemble.resume();
     if computed.len() != active.len() {
         return Err(ScfError::gpu(format!(
             "face-frame kernel returned {} frames for {} slope faces",
@@ -368,12 +369,12 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         }
     }
 
-    // Assemble.
+    // Assemble. The cone order is the one Metal-PDHG projects: one equality,
+    // one nonnegative block, then one second-order cone of length 4 per slope row.
     let mut rows = Vec::new();
     let mut cols = Vec::new();
     let mut vals = Vec::new();
     let mut b = Vec::new();
-    let mut cones = Vec::new();
     let mut offset = 0usize;
     let mut push = |blk: &Block,
                     rows: &mut Vec<usize>,
@@ -388,58 +389,56 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         b.extend_from_slice(&blk.b);
         offset += blk.b.len();
     };
+    let n_eq = eq.b.len();
+    let n_nn = nn.b.len();
+    let n_soc = soc.len();
     push(&eq, &mut rows, &mut cols, &mut vals, &mut b);
-    cones.push(SupportedConeT::ZeroConeT(eq.b.len()));
     push(&nn, &mut rows, &mut cols, &mut vals, &mut b);
-    cones.push(SupportedConeT::NonnegativeConeT(nn.b.len()));
     for blk in &soc {
         push(blk, &mut rows, &mut cols, &mut vals, &mut b);
-        cones.push(SupportedConeT::SecondOrderConeT(4));
     }
-    let m = b.len();
-    let a_mat = CscMatrix::new_from_triplets(m, nx, rows, cols, vals);
-    let p_idx: Vec<usize> = (0..nx).collect();
-    let p_mat = CscMatrix::new_from_triplets(nx, nx, p_idx.clone(), p_idx, p_diag);
-    let settings = DefaultSettingsBuilder::default()
-        .verbose(false)
-        .max_iter(200)
-        .direct_solve_method("faer".to_owned())
-        .build()
-        .map_err(|e| ScfError::solver(format!("Clarabel settings: {e}")))?;
-    let mut solver = DefaultSolver::new(&p_mat, &q, &a_mat, &b, &cones, settings)
-        .map_err(|e| ScfError::solver(format!("Clarabel setup: {e}")))?;
-    solver.solve();
-    let sol = &solver.solution;
-    let status = format!("{:?}", sol.status);
-    if !matches!(
-        sol.status,
-        SolverStatus::Solved | SolverStatus::AlmostSolved
-    ) {
-        return Err(ScfError::solver(format!(
-            "step SOCP ended with status {status} after {} iterations (primal {:.3e}, dual {:.3e}, mobile {na}, slope cones {nt})",
-            sol.iterations, sol.r_prim, sol.r_dual
-        )));
-    }
+    drop(assemble);
+    let solved = {
+        let _span = super::timing::span("socp_pdhg");
+        super::socp_pdhg::solve(super::socp_pdhg::Problem {
+            p_diag,
+            q,
+            rows,
+            cols,
+            vals,
+            b,
+            n_eq,
+            n_nn,
+            n_soc,
+        })
+        .map_err(|err| match err {
+            super::socp_pdhg::PdhgError::Gpu(detail) => ScfError::gpu(detail),
+            super::socp_pdhg::PdhgError::Failed(detail) => {
+                ScfError::solver(format!("{detail} (mobile {na}, slope cones {nt})"))
+            }
+        })?
+    };
+    let _recover = super::timing::span("socp_recover");
     let mut d = vec![0.0; nv];
     for i in 0..nv {
         d[i] = if col_of[i] != usize::MAX {
-            sol.x[col_of[i]] * r0
+            solved.x[col_of[i]] * r0
         } else {
             known[i] * r0
         };
     }
     let slope_slack = (0..nf)
         .filter(|f| t_col[*f] != usize::MAX)
-        .map(|f| sol.x[t_col[f]])
+        .map(|f| solved.x[t_col[f]])
         .sum();
     Ok(SocpOutput {
         d,
-        status,
-        iterations: sol.iterations,
+        status: "Solved".to_string(),
+        iterations: solved.iterations,
         slope_slack,
-        mass_slack: sol.x[sp] + sol.x[sm],
+        mass_slack: solved.x[sp] + solved.x[sm],
         dropped_overhang: dropped,
-        solve_seconds: sol.solve_time,
+        solve_seconds: solved.seconds,
     })
 }
 
@@ -498,7 +497,8 @@ mod tests {
         assert!(out.d[0] < -0.01, "spike moved by {}", out.d[0]);
         assert!(after < before, "{before} -> {after}");
         let dm: f64 = (0..nv).map(|i| jac[i] * out.d[i]).sum();
-        assert!(dm.abs() < 1e-6 * 4.0e3 * 3.0, "mass change {dm}");
+        // The normalised mass row is held to the PDHG tolerance, about 1e-3.
+        assert!(dm.abs() < 5.0e-3 * 4.0e3, "mass change {dm}");
     }
 
     /// f64 oracle for the face frame. Production assembly does not call this.
@@ -623,13 +623,13 @@ mod tests {
             .filter(|i| kind[*i] == Kind::Locked)
             .any(|i| out.d[i].abs() > 1e-12);
         eprintln!(
-            "local SOCP: faces={nf} slope_rows={n_cap} mobile={n_active} clarabel={:.3}s wall={:.3}s iters={} status={}",
+            "local SOCP: faces={nf} slope_rows={n_cap} mobile={n_active} pdhg={:.3}s wall={:.3}s iters={} status={}",
             out.solve_seconds, wall_s, out.iterations, out.status
         );
         assert!(!moved_locked, "a locked vertex left static friction");
         assert!(
             wall_s < 600.0 && out.solve_seconds < 600.0,
-            "Clarabel wall {wall_s:.1}s, reported {:.1}s",
+            "Metal-PDHG wall {wall_s:.1}s, reported {:.1}s",
             out.solve_seconds
         );
     }

@@ -60,8 +60,14 @@ impl Forward {
             g,
             ..RtfpOptions::default()
         };
-        let solver = RtfpSolver::bind(options, body.mesh()?, body.density()?)?;
-        let v = solver.density_integrals()?;
+        let solver = {
+            let _span = super::timing::span("rtfp_bind");
+            RtfpSolver::bind(options, body.mesh()?, body.density()?)?
+        };
+        let v = {
+            let _span = super::timing::span("rtfp_moments");
+            solver.density_integrals()?
+        };
         let moments = Moments {
             volume: v.volume,
             mass: v.mass,
@@ -88,15 +94,18 @@ impl Forward {
         }
         // Gradient and finite-part Hessian only. The potential is not an input of the
         // Stokes load or the slope row, so it is not requested.
-        let batch = self.solver.eval(
-            &PointSet::from_points(&centres),
-            PointRole::SurfaceFace,
-            FieldMask {
-                potential: false,
-                gradient: true,
-                hessian: true,
-            },
-        )?;
+        let batch = {
+            let _span = super::timing::span("rtfp_faces");
+            self.solver.eval(
+                &PointSet::from_points(&centres),
+                PointRole::SurfaceFace,
+                FieldMask {
+                    potential: false,
+                    gradient: true,
+                    hessian: true,
+                },
+            )?
+        };
         self.face = PointFields {
             points: centres,
             grad_u: batch.gradient,
@@ -116,9 +125,11 @@ impl Forward {
         } else {
             FieldMask::GRAD
         };
-        let batch = self
-            .solver
-            .eval(&PointSet::from_points(points), PointRole::Field, mask)?;
+        let batch = {
+            let _span = super::timing::span("rtfp_field");
+            self.solver
+                .eval(&PointSet::from_points(points), PointRole::Field, mask)?
+        };
         Ok(PointFields {
             points: points.to_vec(),
             grad_u: batch.gradient,
