@@ -14,13 +14,7 @@ use super::model::{StarSurface, VelocityField};
 /// Radial truncation `K = 4` (§10).
 pub const K: usize = 4;
 
-/// Highest spherical-harmonic degree the GPU kernel is validated for.
-pub const L_MAX_LIMIT: usize = 48;
-
-#[inline]
-pub fn lm_index(l: usize, m: i32) -> usize {
-    ((l * l + l) as i64 + i64::from(m)) as usize
-}
+pub use crate::sh_smooth::harmonics::{L_MAX_LIMIT, ds_pair, lm_index, recurrence_table};
 
 /// `sigma_{lk} = psi'_{lk}(1)`.
 #[inline]
@@ -147,44 +141,32 @@ pub fn sh_all(l_max: usize, d: [f64; 3]) -> Vec<f64> {
     out
 }
 
-/// `[hi, lo]` with `hi = f32(x)`, `lo = f32(x - hi)`.
-#[inline]
-pub fn ds_pair(x: f64) -> [f32; 2] {
-    let hi = x as f32;
-    [hi, (x - f64::from(hi)) as f32]
-}
-
 fn push_ds(out: &mut Vec<f32>, x: f64) {
     out.extend_from_slice(&ds_pair(x));
 }
 
-/// `a_lm, b_lm` of the normalised Legendre recursion and `pmm`, as DS pairs.
-pub fn recurrence_table(l_max: usize) -> Vec<f32> {
-    let mut out = Vec::new();
-    for l in 0..=l_max {
-        for m in 0..=l {
-            let (lf, mf) = (l as f64, m as f64);
-            let a = if l > m {
-                ((4.0 * lf * lf - 1.0) / (lf * lf - mf * mf)).sqrt()
-            } else {
-                0.0
-            };
-            let b = if l >= m + 2 {
-                (((lf - 1.0) * (lf - 1.0) - mf * mf) / (4.0 * (lf - 1.0) * (lf - 1.0) - 1.0)).sqrt()
-            } else {
-                0.0
-            };
-            push_ds(&mut out, a);
-            push_ds(&mut out, b);
-        }
-    }
-    let mut pmm = (1.0 / (4.0 * PI)).sqrt();
-    for m in 0..=l_max {
-        if m > 0 {
-            pmm *= ((2 * m + 1) as f64 / (2 * m) as f64).sqrt();
-        }
-        push_ds(&mut out, pmm);
-    }
+/// Directions as double-single triples, the layout `pack_dirs` in the GPU callers uses.
+pub fn pack_dirs(vs: &[crate::common::math::DVec3]) -> Vec<f32> {
+    use rayon::prelude::*;
+    let mut out = vec![0.0f32; vs.len() * 6];
+    out.par_chunks_mut(6)
+        .zip(vs.par_iter())
+        .for_each(|(slot, v)| {
+            let x = ds_pair(v.x);
+            let y = ds_pair(v.y);
+            let z = ds_pair(v.z);
+            slot.copy_from_slice(&[x[0], x[1], y[0], y[1], z[0], z[1]]);
+        });
+    out
+}
+
+/// Scalars as double-single pairs.
+pub fn pack_scalars(xs: &[f64]) -> Vec<f32> {
+    use rayon::prelude::*;
+    let mut out = vec![0.0f32; xs.len() * 2];
+    out.par_chunks_mut(2)
+        .zip(xs.par_iter())
+        .for_each(|(slot, x)| slot.copy_from_slice(&ds_pair(*x)));
     out
 }
 

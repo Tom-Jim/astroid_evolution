@@ -4,7 +4,7 @@ use bevy::prelude::*;
 
 use crate::asteroid_app::snapshot::{PARTICLE_COUNT, smooth_normals};
 
-/// Triangle mesh. Positions are the keyframe the shader morphs away from.
+/// Triangle mesh. Positions are the pose currently on screen.
 pub fn surface_mesh(positions: Vec<[f32; 3]>, normals: Vec<[f32; 3]>, faces: &[[u32; 3]]) -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,

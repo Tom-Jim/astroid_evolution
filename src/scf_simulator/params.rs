@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::common::density::{CauchyDensity, CauchyKernel};
+use crate::common::density::CauchyKernel;
 use crate::common::math::DVec3;
 use crate::rheo_friction::{Material, MaterialSpec, SolverSpec};
 
@@ -379,10 +379,6 @@ impl Project {
                     .expect("validated at load")
             })
             .collect()
-    }
-
-    pub fn density_model(&self) -> Result<CauchyDensity, ScfError> {
-        CauchyDensity::try_new(self.density.bulk, self.kernels()).map_err(ScfError::from)
     }
 
     pub fn resolve(&self, relative: &str) -> PathBuf {

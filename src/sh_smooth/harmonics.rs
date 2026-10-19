@@ -31,6 +31,14 @@ pub fn check_l_max(l_max: usize) -> Result<(), ShError> {
 /// All real orthonormal harmonics up to `l_max` at the unit vector `d`.
 pub fn sh_all(l_max: usize, d: [f64; 3]) -> Vec<f64> {
     let mut out = vec![0.0; coeff_count(l_max)];
+    sh_all_into(l_max, d, &mut out);
+    out
+}
+
+/// `sh_all` into a caller-owned buffer. `out` must hold `(l_max + 1)²` values.
+pub fn sh_all_into(l_max: usize, d: [f64; 3], out: &mut [f64]) {
+    let n = coeff_count(l_max);
+    assert!(out.len() >= n, "spherical-harmonic buffer is short");
     let (x, y, z) = (d[0], d[1], d[2]);
     let (mut cre, mut cim) = (1.0_f64, 0.0_f64);
     let mut pmm = (1.0 / (4.0 * PI)).sqrt();
@@ -70,7 +78,6 @@ pub fn sh_all(l_max: usize, d: [f64; 3]) -> Vec<f64> {
             p1 = p;
         }
     }
-    out
 }
 
 /// Power `Σ_m c_lm²` of each degree.

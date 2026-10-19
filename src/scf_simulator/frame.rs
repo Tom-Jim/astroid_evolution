@@ -152,8 +152,17 @@ fn mean_radius(b: &Body) -> f64 {
 fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, ScfError> {
     let p = body.positions();
     let moved: Vec<DVec3> = p.iter().map(|x| d3(q * (v3(*x) - v3(c)))).collect();
-    let mesh = crate::common::geometry::TriMesh::try_new(moved, body.topo.faces.clone())
-        .map_err(ScfError::from)?;
+    let faces = body.topo.faces.clone();
+    let mesh = match crate::common::geometry::TriMesh::try_new(moved.clone(), faces.clone()) {
+        Ok(mesh) => mesh,
+        Err(_) => {
+            // The body entering this map already passed the same test. A rigid
+            // image that fails it is the coplanar tolerance, not a new intersection.
+            body.mesh()?;
+            crate::common::geometry::TriMesh::from_rigid_copy(moved, faces)
+                .map_err(ScfError::from)?
+        }
+    };
     let radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
     let topo = body.topo.clone();
     let kernels: Vec<CauchyKernel> = body

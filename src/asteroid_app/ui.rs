@@ -2,7 +2,7 @@ use bevy::camera::Exposure;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera_controller::pan_orbit_camera::prelude::*;
 use bevy::mesh::MeshTag;
-use bevy::pbr::wireframe::Wireframe;
+use bevy::pbr::wireframe::{Wireframe, WireframeColor};
 use bevy::picking::Pickable;
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
@@ -18,6 +18,8 @@ use crate::asteroid_app::resources::{
 const START_YAW: f32 = 0.6;
 const START_PITCH: f32 = 0.35;
 const START_RADIUS: f32 = 3.4;
+/// Same yellow as the slope-hazard tint in `asteroid.wesl`.
+const WIRE_COLOR: Color = Color::srgb(1.0, 0.85, 0.15);
 
 fn home_transform() -> Transform {
     let x = START_RADIUS * START_PITCH.cos() * START_YAW.sin();
@@ -163,9 +165,15 @@ pub fn control_keys(
     if keys.just_pressed(KeyCode::KeyW) {
         for (entity, wireframe) in &views {
             if wireframe {
-                commands.entity(entity).remove::<Wireframe>();
+                commands
+                    .entity(entity)
+                    .remove::<Wireframe>()
+                    .remove::<WireframeColor>();
             } else {
-                commands.entity(entity).insert(Wireframe);
+                commands.entity(entity).insert((
+                    Wireframe,
+                    WireframeColor { color: WIRE_COLOR },
+                ));
             }
         }
     }
@@ -234,6 +242,21 @@ pub fn hud_lines(
         lines.push(format!(
             "yield {:.3}   max slack {:.3e}   rho_s {:.3e} kg   max |dR| {:.3e} m",
             stats.yielded_fraction, stats.max_slack, stats.rho_s_total, stats.max_displacement
+        ));
+        lines.push(format!(
+            "balance  eps_mom {:.3e}   eps_lam {:.3e}   picard {} ({:.3e})",
+            stats.eps_momentum, stats.eps_lambda, stats.picard_iterations, stats.eps_picard
+        ));
+        lines.push(format!(
+            "sheet    mobile {:.3}   tensile {:.3e}   Ek^-1 {:.3e}   mass residual {:.3e}",
+            stats.mobile_area_fraction,
+            stats.tensile_fraction,
+            stats.inverse_ekman,
+            stats.mass_residual
+        ));
+        lines.push(format!(
+            "cfl      bound {}   dt {:.3e} s   dt_cfl {:.3e} s",
+            stats.dt_bound, stats.dt, stats.dt_cfl
         ));
         lines.push(format!("tau {tau:.3}   layer {layer}"));
         lines.push(format!(

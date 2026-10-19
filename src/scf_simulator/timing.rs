@@ -7,9 +7,20 @@ use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-fn enabled() -> bool {
+fn flag() -> &'static OnceLock<bool> {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("SCF_TIMING").is_some())
+    &ON
+}
+
+fn enabled() -> bool {
+    *flag().get_or_init(|| std::env::var_os("SCF_TIMING").is_some())
+}
+
+/// Turn spans on if nothing has read the flag yet.
+///
+/// `SCF_TIMING` wins when it was already consulted. A later call cannot flip it.
+pub fn ensure_enabled() {
+    let _ = flag().set(true);
 }
 
 struct Sample {
@@ -42,7 +53,11 @@ impl Span {
         };
         let seconds = start.elapsed().as_secs_f64();
         let phase = PHASE.with(|p| p.get());
-        eprintln!("timing [{phase}] {:>10.3}s  {}", seconds, self.name);
+        // The PDHG loop records a few hundred sub-millisecond spans. Printing
+        // each one is slower than the residual check and inflates the parent.
+        if seconds >= 0.05 {
+            eprintln!("timing [{phase}] {:>10.3}s  {}", seconds, self.name);
+        }
         LOG.with(|log| {
             log.borrow_mut().push(Sample {
                 phase,
@@ -59,7 +74,6 @@ impl Span {
 
     pub fn resume(&mut self) {
         if enabled() && self.start.is_none() {
-            eprintln!("timing [{}] begin {}", PHASE.with(|p| p.get()), self.name);
             self.start = Some(Instant::now());
         }
     }
@@ -75,7 +89,6 @@ pub fn span(name: &'static str) -> Span {
     if !enabled() {
         return Span { name, start: None };
     }
-    eprintln!("timing [{}] begin {}", PHASE.with(|p| p.get()), name);
     Span {
         name,
         start: Some(Instant::now()),

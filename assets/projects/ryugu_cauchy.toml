@@ -66,7 +66,7 @@ sigma_0 = 1.0
 kernel_width = 0.2
 
 [step]
-theta_cfl = 0.25
+theta_cfl = 0.5
 theta_c = 0.5
 theta_char = 0.5
 eps_omega = 0.05

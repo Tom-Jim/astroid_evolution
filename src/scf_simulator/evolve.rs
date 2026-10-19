@@ -18,9 +18,9 @@ use super::frame::{FrameReport, realign, vertex_areas};
 use super::mechanics::evaluate;
 use super::params::Project;
 use super::relax::{AcceptError, accept};
-use super::socp::{Kind, SocpInput, mass_jacobian, solve};
+use super::socp::{Kind, SocpInput, SocpSeed, mass_jacobian, solve};
 use super::spin::SpinSchedule;
-use super::transport::{DirIndex, mode_c, surface_flow, transport};
+use super::transport::{DirIndex, locate_face, locate_vertex, mode_c, surface_flow, transport};
 
 /// Everything that defines a restartable state of the run.
 #[derive(Clone, Debug)]
@@ -36,7 +36,7 @@ pub struct State {
     pub velocity: Vec<f64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct StepRecord {
     pub step: usize,
     pub t: f64,
@@ -73,6 +73,12 @@ pub struct StepRecord {
     pub n_supercritical_faces: usize,
     pub max_slack: f64,
     pub eroded_rate: f64,
+    /// `|∫ J_dep − ∫ J_ero| / max(∫ J_ero, ∫ J_dep)`, zero when both vanish.
+    pub flux_gap: f64,
+    /// Largest `|d|` on the locked set. The cone fixes these nodes at zero.
+    pub max_locked_step: f64,
+    /// Largest `|d − d_pred|` on the pure-deposition set.
+    pub max_deposit_miss: f64,
     pub trust: f64,
     pub trust_retries: usize,
     pub socp_iterations: u32,
@@ -205,6 +211,7 @@ pub fn run(
     } else {
         Some(state.velocity.clone())
     };
+    let mut socp_seed: Option<SocpSeed> = None;
     let mut steps_done = 0usize;
 
     while state.t < t_end - snap_tol {
@@ -315,6 +322,9 @@ pub fn run(
                 .count(),
             max_slack: mech.rheo.iter().map(|n| n.slack).fold(0.0, f64::max),
             eroded_rate: mc.eroded_rate,
+            flux_gap: flux_gap(&mc, &area),
+            max_locked_step: 0.0,
+            max_deposit_miss: 0.0,
             trust: 0.0,
             trust_retries: 0,
             socp_iterations: 0,
@@ -408,6 +418,8 @@ pub fn run(
                 state.frame_translation = trans;
                 guess = None;
                 state.velocity.clear();
+                // The seed is indexed by vertex, and realignment resamples radii
+                // onto the same rays, so it stays a warm start for the next cone.
                 mass_target = fwd.moments.mass;
             }
             advance_time(&mut state, rec.advance, t_next, snap_tol);
@@ -434,26 +446,21 @@ pub fn run(
             continue;
         }
 
-        let h_min = state.body.min_edge();
-        let mut max_normal_speed = 0.0_f64;
-        for i in 0..nv {
-            if yielded[i] {
-                let n = cl.normal[i];
-                let mu = n.dot(topo.dirs[i]);
-                if mu.abs() >= MU_MIN {
-                    let s = cl.v_sl[i].dot(n).abs() / mu;
-                    max_normal_speed = max_normal_speed.max(s);
-                }
-            }
-        }
+        // §10.4.1 writes θ h_Γ,min / max s, with θ ≤ 1/2. That product is a
+        // sufficient bound. The accuracy it protects is local: a movable node
+        // advances by at most θ times its own nearest spacing. The per-node
+        // minimum is that bound, and it is larger whenever the fastest node
+        // does not sit on the shortest edge.
+        let dt_cfl = cfl_dt(
+            &state.body,
+            &yielded,
+            &cl.normal,
+            &cl.v_sl,
+            st.theta_cfl,
+        );
         let flow = {
             let _span = super::timing::span("surface_flow");
             surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius)
-        };
-        let dt_cfl = if max_normal_speed > 0.0 {
-            st.theta_cfl * h_min / max_normal_speed
-        } else {
-            f64::INFINITY
         };
         let max_flux = (0..nv)
             .map(|i| (mc.j_dep[i] - mc.j_ero[i]).abs())
@@ -542,136 +549,122 @@ pub fn run(
             mass_jacobian(&state.body, &density)
         };
         let r_mean = state.body.radius.iter().sum::<f64>() / nv as f64;
-        let mut trust = g.trust0 * r_mean;
-        let mut retries = 0usize;
-        let (new_body, new_fwd, resid, out, dmax) = loop {
-            let inp = SocpInput {
-                body: &state.body,
-                kind: &kind,
-                d_pred: &d_pred,
-                weight: &weight,
-                gravity: &mech.g_face,
-                sin_phi: &sin_phi,
-                slope_row: &slope_row,
-                mass_jac: &jac,
-                mass_residual: mass_target - fwd.moments.mass,
-                mass: mass_target,
-                trust,
-                eps_n: g.eps_n,
-                varrho: g.varrho,
-            };
-            let out = solve(&inp)?;
-            // 8a: R⁽ⁿ⁺¹⁾ = R⁽ⁿ⁾ + λ d_*.
-            let mut radius = state.body.radius.clone();
-            for i in 0..nv {
-                radius[i] += st.lambda * out.d[i];
+        let trust = g.trust0 * r_mean;
+        // One cone solve. A warm seed is never discarded, and a mass or volume
+        // miss does not start PDHG again.
+        let inp = SocpInput {
+            body: &state.body,
+            kind: &kind,
+            d_pred: &d_pred,
+            weight: &weight,
+            gravity: &mech.g_face,
+            sin_phi: &sin_phi,
+            slope_row: &slope_row,
+            mass_jac: &jac,
+            mass_residual: mass_target - fwd.moments.mass,
+            mass: mass_target,
+            trust,
+            eps_n: g.eps_n,
+            varrho: g.varrho,
+            warm: socp_seed.as_ref(),
+        };
+        let out = match solve(&inp) {
+            Ok(out) => out,
+            Err(err) if err.kind == "SolverFailure" => {
+                return Err(ScfError::solver(format!(
+                    "step {}: {}",
+                    state.step, err.detail
+                )));
             }
-            // Construct new body; construction/bind errors count as geometry failures.
-            let body_result = {
-                let _span = super::timing::span("geometry_build");
-                Body::new(
-                    topo.clone(),
-                    radius,
-                    state.body.bulk,
-                    state.body.kernels.clone(),
-                    state.body.rho_s.clone(),
-                )
-            };
-            let (b, f) = match body_result {
-                Err(e) => {
-                    // A non-positive radius or a topology failure shrinks Δ.
-                    trust *= g.trust_shrink;
-                    retries += 1;
-                    if trust < g.trust_min * r_mean {
-                        return Err(ScfError::trust_exhausted(format!(
-                            "step {}: body construction failed down to Δ = {trust:.3e} m ({e})",
-                            state.step
-                        )));
-                    }
-                    continue;
-                }
-                Ok(b) => match Forward::bind(&b, project.g) {
-                    Err(e) => {
-                        trust *= g.trust_shrink;
-                        retries += 1;
-                        if trust < g.trust_min * r_mean {
-                            return Err(ScfError::trust_exhausted(format!(
-                                "step {}: Forward::bind failed down to Δ = {trust:.3e} m ({e})",
-                                state.step
-                            )));
+            Err(err) => return Err(err),
+        };
+        socp_seed = Some(out.seed.clone());
+        let (max_locked_step, max_deposit_miss) = class_steps(&kind, &d_pred, &out.d);
+        rec.max_locked_step = max_locked_step;
+        rec.max_deposit_miss = max_deposit_miss;
+        // 8a: R⁽ⁿ⁺¹⁾ = R⁽ⁿ⁾ + λ d_*.
+        let mut radius = state.body.radius.clone();
+        for i in 0..nv {
+            radius[i] += st.lambda * out.d[i];
+        }
+        let b = match {
+            let _span = super::timing::span("geometry_build");
+            Body::new(
+                topo.clone(),
+                radius,
+                state.body.bulk,
+                state.body.kernels.clone(),
+                state.body.rho_s.clone(),
+            )
+        } {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(ScfError::geometry(format!(
+                    "step {}: body construction failed at Δ = {trust:.3e} m ({e})",
+                    state.step
+                )));
+            }
+        };
+        let f = match Forward::bind(&b, project.g) {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(ScfError::geometry(format!(
+                    "step {}: Forward::bind failed at Δ = {trust:.3e} m ({e})",
+                    state.step
+                )));
+            }
+        };
+        let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs())) * st.lambda;
+        // Mass misses get one mobile-set correction (§2.14). That correction is
+        // not a second cone solve; a residual that remains is recorded.
+        let (new_body, new_fwd, resid) = match accept(&f, mass_target, g.eps_mass) {
+            Ok(r) => (b, f, r),
+            Err(AcceptError::Geometry(why)) => {
+                return Err(ScfError::geometry(format!(
+                    "step {}: geometry rejected at Δ = {trust:.3e} m ({why})",
+                    state.step
+                )));
+            }
+            Err(AcceptError::Mass(resid)) => {
+                let dm = f.moments.mass - mass_target;
+                let denom: f64 = kind
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, k)| **k == Kind::Mobile)
+                    .map(|(i, _)| jac[i] * jac[i])
+                    .sum();
+                let mut chosen = (b, f, resid);
+                if denom > 0.0 {
+                    let alpha = (-dm / denom).clamp(-trust, trust);
+                    let mut rr = chosen.0.radius.clone();
+                    for i in 0..nv {
+                        if kind[i] == Kind::Mobile {
+                            rr[i] += alpha * jac[i];
                         }
-                        continue;
                     }
-                    Ok(f) => (b, f),
-                },
-            };
-            // Outer acceptance: geometry failures shrink Δ; mass failures are recorded but
-            // accepted here (§2.13 §10.4.3 unified trust strategy; §2.14 conservative correction
-            // is a follow-up step that can be added later).
-            match accept(&f, mass_target, g.eps_mass) {
-                Ok(r) => {
-                    let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs())) * st.lambda;
-                    break (b, f, r, out, dmax);
-                }
-                Err(AcceptError::Geometry(why)) => {
-                    // Positive-volume failure: shrink Δ and re-solve (§2.13).
-                    trust *= g.trust_shrink;
-                    retries += 1;
-                    if trust < g.trust_min * r_mean {
-                        return Err(ScfError::trust_exhausted(format!(
-                            "step {}: geometry rejected down to Δ = {trust:.3e} m ({why})",
-                            state.step
-                        )));
-                    }
-                }
-                Err(AcceptError::Mass(resid)) => {
-                    // §2.14: correct the nonlinear mass residual in the mobile set before
-                    // considering a time-step reduction.  This is a bounded least-squares
-                    // correction along the same radial degrees of freedom.
-                    let dm = f.moments.mass - mass_target;
-                    let denom: f64 = kind
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, k)| **k == Kind::Mobile)
-                        .map(|(i, _)| jac[i] * jac[i])
-                        .sum();
-                    if denom > 0.0 {
-                        let alpha = (-dm / denom).clamp(-trust, trust);
-                        let mut rr = b.radius.clone();
-                        for i in 0..nv {
-                            if kind[i] == Kind::Mobile {
-                                rr[i] += alpha * jac[i];
-                            }
-                        }
-                        if let Ok(cb) = {
-                            let _span = super::timing::span("geometry_build");
-                            Body::new(topo.clone(), rr, b.bulk, b.kernels.clone(), b.rho_s.clone())
-                        } {
-                            if let Ok(cf) = Forward::bind(&cb, project.g) {
-                                if let Ok(cr) = accept(&cf, mass_target, g.eps_mass) {
-                                    let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-                                        * st.lambda;
-                                    break (cb, cf, cr, out, dmax);
-                                }
+                    if let Ok(cb) = {
+                        let _span = super::timing::span("geometry_build");
+                        Body::new(
+                            topo.clone(),
+                            rr,
+                            chosen.0.bulk,
+                            chosen.0.kernels.clone(),
+                            chosen.0.rho_s.clone(),
+                        )
+                    } {
+                        if let Ok(cf) = Forward::bind(&cb, project.g) {
+                            match accept(&cf, mass_target, g.eps_mass) {
+                                Ok(cr) | Err(AcceptError::Mass(cr)) => chosen = (cb, cf, cr),
+                                Err(AcceptError::Geometry(_)) => {}
                             }
                         }
                     }
-                    // The slope update is bounded by the trust radius, not by Δt, so a
-                    // smaller Δ is what brings the O(Δ²) mass remainder under ε_M.
-                    // Δ → 0 returns the candidate to the already accepted geometry.
-                    trust *= g.trust_shrink;
-                    retries += 1;
-                    if trust < g.trust_min * r_mean {
-                        return Err(ScfError::solver(format!(
-                            "step {}: mass residual {resid:.3e} persists down to Δ = {trust:.3e} m",
-                            state.step
-                        )));
-                    }
                 }
+                chosen
             }
         };
         rec.trust = trust;
-        rec.trust_retries = retries;
+        rec.trust_retries = 0;
         rec.socp_iterations = out.iterations;
         rec.slope_slack = out.slope_slack;
         rec.mass_slack = out.mass_slack;
@@ -713,6 +706,7 @@ pub fn run(
             state.frame_translation = trans;
             guess = None;
             state.velocity.clear();
+            // Same rays after the frame update: keep the cone seed.
             mass_target = new_fwd.moments.mass;
         }
         state.body = body;
@@ -768,6 +762,56 @@ fn radial_increment(normal_disp: f64, mu: f64) -> f64 {
     }
 }
 
+fn flux_gap(mc: &super::transport::ModeC, area: &[f64]) -> f64 {
+    let ero: f64 = mc.j_ero.iter().zip(area).map(|(j, a)| j * a).sum();
+    let dep: f64 = mc.j_dep.iter().zip(area).map(|(j, a)| j * a).sum();
+    (dep - ero).abs() / ero.max(dep).max(1e-30)
+}
+
+fn class_steps(kind: &[Kind], d_pred: &[f64], d: &[f64]) -> (f64, f64) {
+    let mut locked = 0.0_f64;
+    let mut deposit = 0.0_f64;
+    for i in 0..kind.len() {
+        match kind[i] {
+            Kind::Locked => locked = locked.max(d[i].abs()),
+            Kind::Deposit => deposit = deposit.max((d[i] - d_pred[i]).abs()),
+            Kind::Mobile => {}
+        }
+    }
+    (locked, deposit)
+}
+
+/// `θ min_i h_i / s_i` over the yielded movable set.
+///
+/// `h_i` is the shortest edge at the node and `s_i = |v_sl · n| / |n · ê|` is
+/// the radial rate of §10.4.1. `θ` is the configured CFL factor, at most 1/2.
+fn cfl_dt(body: &Body, yielded: &[bool], normal: &[DVec3], v_sl: &[DVec3], theta: f64) -> f64 {
+    let position = body.positions();
+    let dirs = &body.topo.dirs;
+    let mut dt = f64::INFINITY;
+    for i in 0..yielded.len() {
+        if !yielded[i] {
+            continue;
+        }
+        let mu = normal[i].dot(dirs[i]);
+        if mu.abs() < MU_MIN {
+            continue;
+        }
+        let speed = v_sl[i].dot(normal[i]).abs() / mu;
+        if !(speed.is_finite() && speed > 0.0) {
+            continue;
+        }
+        let mut spacing = f64::INFINITY;
+        for &j in &body.topo.vertex_neighbors[i] {
+            spacing = spacing.min((position[i] - position[j]).length());
+        }
+        if spacing.is_finite() && spacing > 0.0 {
+            dt = dt.min(theta * spacing / speed);
+        }
+    }
+    dt
+}
+
 fn stamp_radial(rec: &mut StepRecord, body: &Body) {
     let (mu, face) = body.min_radial();
     rec.min_radial = mu;
@@ -807,16 +851,16 @@ pub fn step_fields(
     let nf = body.topo.n_faces();
     let Some(frame) = frame.filter(|report| report.applied) else {
         return StepFields {
-            radius_from: fit_f64(radius_from, nv),
-            f_delta: fit_f64(f_delta, nv),
-            movable: fit_bool(movable, nv),
-            v_sl: fit_vec(v_sl, nv),
-            normal: fit_vec(normal, nv),
-            j_ero: fit_f64(j_ero, nv),
-            j_dep: fit_f64(j_dep, nv),
-            d_radial: fit_f64(d_radial, nv),
-            slack: fit_f64(slack, nf),
-            g_face: fit_vec(g_face, nf),
+            radius_from: fit_copy(radius_from, nv, 0.0),
+            f_delta: fit_copy(f_delta, nv, 0.0),
+            movable: fit_copy(movable, nv, false),
+            v_sl: fit_copy(v_sl, nv, DVec3::ZERO),
+            normal: fit_copy(normal, nv, DVec3::ZERO),
+            j_ero: fit_copy(j_ero, nv, 0.0),
+            j_dep: fit_copy(j_dep, nv, 0.0),
+            d_radial: fit_copy(d_radial, nv, 0.0),
+            slack: fit_copy(slack, nf, 0.0),
+            g_face: fit_copy(g_face, nf, DVec3::ZERO),
             flow_active,
         };
     };
@@ -876,38 +920,22 @@ pub fn step_fields(
         out_g[f] = g_rot.get(face).copied().unwrap_or(DVec3::ZERO);
     }
     StepFields {
-        radius_from: fit_f64(radius_from, nv),
+        radius_from: fit_copy(radius_from, nv, 0.0),
         f_delta: out_f,
         movable: out_m,
         v_sl: out_v,
         normal: out_n,
         j_ero: out_ero,
         j_dep: out_dep,
-        d_radial: fit_f64(d_radial, nv),
+        d_radial: fit_copy(d_radial, nv, 0.0),
         slack: out_slack,
         g_face: out_g,
         flow_active,
     }
 }
 
-fn fit_f64(src: &[f64], n: usize) -> Vec<f64> {
-    let mut out = vec![0.0; n];
-    for (slot, value) in out.iter_mut().zip(src) {
-        *slot = *value;
-    }
-    out
-}
-
-fn fit_bool(src: &[bool], n: usize) -> Vec<bool> {
-    let mut out = vec![false; n];
-    for (slot, value) in out.iter_mut().zip(src) {
-        *slot = *value;
-    }
-    out
-}
-
-fn fit_vec(src: &[DVec3], n: usize) -> Vec<DVec3> {
-    let mut out = vec![DVec3::ZERO; n];
+fn fit_copy<T: Copy>(src: &[T], n: usize, zero: T) -> Vec<T> {
+    let mut out = vec![zero; n];
     for (slot, value) in out.iter_mut().zip(src) {
         *slot = *value;
     }
@@ -934,74 +962,6 @@ fn old_direction(q: [[f64; 3]; 3], translation: DVec3, x_new: DVec3, fallback: D
     (mul_qt(q, x_new) + translation)
         .try_normalize()
         .unwrap_or(fallback)
-}
-
-fn barycentric(a: DVec3, b: DVec3, c: DVec3, p: DVec3) -> Option<[f64; 3]> {
-    let m = Matrix3::new(a.x, b.x, c.x, a.y, b.y, c.y, a.z, b.z, c.z);
-    let inv = m.try_inverse()?;
-    let l = inv * Vector3::new(p.x, p.y, p.z);
-    let s = l.sum();
-    if s <= 0.0 {
-        return None;
-    }
-    Some([l[0] / s, l[1] / s, l[2] / s])
-}
-
-fn candidate_faces(topo: &super::body::Topology, index: &DirIndex, p: DVec3) -> Vec<usize> {
-    let nearest = index.nearest(&topo.dirs, p);
-    let mut seen = topo.vertex_faces.get(nearest).cloned().unwrap_or_default();
-    let first = seen.clone();
-    for f in first {
-        let Some(neighbors) = topo.face_neighbors.get(f) else {
-            continue;
-        };
-        for &g in neighbors {
-            if g != usize::MAX && !seen.contains(&g) {
-                seen.push(g);
-            }
-        }
-    }
-    seen
-}
-
-fn locate_vertex(
-    topo: &super::body::Topology,
-    index: &DirIndex,
-    p: DVec3,
-) -> ([usize; 3], [f64; 3]) {
-    let nearest = index.nearest(&topo.dirs, p);
-    for f in candidate_faces(topo, index, p) {
-        let Some(tri) = topo.faces.get(f) else {
-            continue;
-        };
-        let [i, j, k] = tri.map(|v| v as usize);
-        if let Some(w) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p) {
-            if w.iter().all(|value| *value >= -1.0e-12) {
-                return ([i, j, k], w);
-            }
-        }
-    }
-    ([nearest, nearest, nearest], [1.0, 0.0, 0.0])
-}
-
-fn locate_face(topo: &super::body::Topology, index: &DirIndex, p: DVec3) -> usize {
-    let nearest = index.nearest(&topo.dirs, p);
-    for f in candidate_faces(topo, index, p) {
-        let Some(tri) = topo.faces.get(f) else {
-            continue;
-        };
-        let [i, j, k] = tri.map(|v| v as usize);
-        if let Some(w) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p) {
-            if w.iter().all(|value| *value >= -1.0e-12) {
-                return f;
-            }
-        }
-    }
-    topo.vertex_faces
-        .get(nearest)
-        .and_then(|faces| faces.first())
-        .copied()
-        .unwrap_or(0)
 }
 
 fn blend_f64(field: &[f64], ids: [usize; 3], w: [f64; 3]) -> f64 {

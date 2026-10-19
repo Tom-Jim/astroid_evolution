@@ -334,7 +334,14 @@ pub fn spawn(
                 "computing the first tier 2 step".into(),
             ))?;
             let prepared = prepare(&project_text, &project_dir, &spin)?;
+            let initial = crate::asteroid_app::snapshot::pack_initial(
+                &prepared.state,
+                prepared.forward.moments.mass,
+                scale,
+                prepared.project.relief.tol_slack as f32,
+            );
             send(WorkerMessage::Status("tier 2 running".into()))?;
+            send(WorkerMessage::Frame(Box::new(initial)))?;
             let complete = run_prepared(
                 prepared,
                 max_steps,

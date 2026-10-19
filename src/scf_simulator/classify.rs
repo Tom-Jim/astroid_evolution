@@ -7,6 +7,7 @@
 
 use disjoint_sets::UnionFind;
 use nalgebra::{DMatrix, DVector};
+use rayon::prelude::*;
 
 use crate::common::math::DVec3;
 use crate::rheo_friction::Material;
@@ -75,23 +76,32 @@ pub fn classify(
             });
         }
     }
-    let field = contract_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD, &sol.u);
-    let v = field.v;
-    let d = field.d;
-    let pvals = contract_pressure(surf, &ops.play, &pts, &sol.pres_c, &sol.lift);
+    let (v, d, pvals) = {
+        let _span = super::timing::span("classify_contract");
+        let field = contract_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD, &sol.u);
+        let pvals = contract_pressure(surf, &ops.play, &pts, &sol.pres_c, &sol.lift);
+        (field.v, field.d, pvals)
+    };
+    let _graph = super::timing::span("classify_graph");
     let np = pts.len();
-    let mut fdelta = vec![0.0; np];
-    let mut shear = vec![0.0; np];
-    let mut eta = vec![0.0; np];
-    for p in 0..np {
-        let d6 = &d[6 * p..6 * p + 6];
-        let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
-        let ptil = pvals[p].max(p_min);
-        let ev = eta_eval(material, sh, ptil, sol.gamma_eps);
-        let tau_y = material.spec.cohesion + material.mu_y * ptil;
-        shear[p] = sh;
-        eta[p] = ev.eta;
-        fdelta[p] = ev.eta * sh - (1.0 - delta_y) * tau_y;
+    let rows: Vec<(f64, f64, f64)> = (0..np)
+        .into_par_iter()
+        .map(|p| {
+            let d6 = &d[6 * p..6 * p + 6];
+            let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
+            let ptil = pvals[p].max(p_min);
+            let ev = eta_eval(material, sh, ptil, sol.gamma_eps);
+            let tau_y = material.spec.cohesion + material.mu_y * ptil;
+            (sh, ev.eta, ev.eta * sh - (1.0 - delta_y) * tau_y)
+        })
+        .collect();
+    let mut shear = Vec::with_capacity(np);
+    let mut eta = Vec::with_capacity(np);
+    let mut fdelta = Vec::with_capacity(np);
+    for (sh, et, fd) in rows {
+        shear.push(sh);
+        eta.push(et);
+        fdelta.push(fd);
     }
     // Graph G_Y on the unyielded points.
     let virt = np;

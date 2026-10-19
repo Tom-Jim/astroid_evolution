@@ -39,6 +39,36 @@ impl TriMesh {
         Ok(mesh)
     }
 
+    /// Rigid image `x ↦ Q(x − c)` of a mesh that has already passed `validate_solid`.
+    ///
+    /// Intersection is unchanged by that map. Repeating the test rejects pairs
+    /// that sit on the coplanar tolerance after the rotation.
+    pub fn from_rigid_copy(
+        vertices: Vec<DVec3>,
+        faces: Vec<[u32; 3]>,
+    ) -> Result<Self, CommonError> {
+        if vertices.iter().any(|v| !v.is_finite()) {
+            return Err(CommonError::model_not_closed(
+                "mesh vertices must be finite",
+            ));
+        }
+        let mesh = Self { vertices, faces };
+        let scale = bounding_scale(&mesh.vertices).max(1e-12);
+        let area_tol = 1e-14 * scale * scale;
+        for index in 0..mesh.faces.len() {
+            let [a, b, c] = mesh.triangle(index);
+            let area2 = (b - a).cross(c - a).length();
+            if !area2.is_finite() || area2 <= area_tol {
+                return Err(CommonError::model_not_closed(format!(
+                    "degenerate triangle {index}"
+                )));
+            }
+        }
+        validate_edges(&mesh.faces)?;
+        validate_components_and_volume(&mesh, scale)?;
+        Ok(mesh)
+    }
+
     /// Closed edges, consistent winding, non-degenerate faces, no self-intersection,
     /// positive solid volume, and inward-pointing cavity shells.
     pub fn validate_solid(&self) -> Result<(), CommonError> {

@@ -4,7 +4,6 @@
 //! or a face index that does not exist is returned. There is no CPU substitute.
 
 use crate::common::math::DVec3;
-use crate::rheo_friction::basis::ds_pair;
 
 /// Unit normal `n̂` and the three columns `∂n̂/∂R_j` of one face.
 #[derive(Clone, Copy, Debug)]
@@ -50,20 +49,6 @@ pub fn face_frames(
     }
 }
 
-fn pack_vecs(vs: &[DVec3]) -> Vec<f32> {
-    use rayon::prelude::*;
-    let mut out = vec![0.0f32; vs.len() * 6];
-    out.par_chunks_mut(6)
-        .zip(vs.par_iter())
-        .for_each(|(slot, v)| {
-            let x = ds_pair(v.x);
-            let y = ds_pair(v.y);
-            let z = ds_pair(v.z);
-            slot.copy_from_slice(&[x[0], x[1], y[0], y[1], z[0], z[1]]);
-        });
-    out
-}
-
 fn unpack_frames(words: &[f32], nf: usize) -> Result<Vec<FaceFrame>, String> {
     if words.len() != nf * 24 {
         return Err(format!(
@@ -107,7 +92,8 @@ mod metal_rt {
         MTLMathMode, MTLResourceOptions, MTLSize,
     };
 
-    use super::{FaceFrame, pack_vecs, unpack_frames};
+    use super::{FaceFrame, unpack_frames};
+    use crate::rheo_friction::basis::pack_dirs;
     use crate::common::math::DVec3;
 
     const SOURCE: &str = concat!(
@@ -185,8 +171,8 @@ mod metal_rt {
     ) -> Result<Vec<FaceFrame>, String> {
         let core = core()?;
         let nf = faces.len();
-        let pos = pack_vecs(positions);
-        let dir = pack_vecs(dirs);
+        let pos = pack_dirs(positions);
+        let dir = pack_dirs(dirs);
         let index: Vec<u32> = faces.iter().flat_map(|t| *t).collect();
         let pos_buf = buffer_with(&core.device, &pos)?;
         let dir_buf = buffer_with(&core.device, &dir)?;

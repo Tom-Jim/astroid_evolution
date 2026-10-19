@@ -104,6 +104,17 @@ pub struct FrameStats {
     pub max_slack: f64,
     pub rho_s_total: f64,
     pub max_displacement: f64,
+    pub eps_momentum: f64,
+    pub eps_lambda: f64,
+    pub eps_picard: f64,
+    pub picard_iterations: usize,
+    pub tensile_fraction: f64,
+    pub inverse_ekman: f64,
+    pub mass_residual: f64,
+    pub mobile_area_fraction: f64,
+    pub dt: f64,
+    pub dt_cfl: f64,
+    pub dt_bound: &'static str,
 }
 
 #[derive(Resource)]

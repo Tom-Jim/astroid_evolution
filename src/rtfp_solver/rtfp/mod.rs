@@ -93,18 +93,6 @@ impl RtfpSolver {
         })
     }
 
-    pub fn mesh(&self) -> &TriMesh {
-        &self.mesh
-    }
-
-    pub fn density(&self) -> &CauchyDensity {
-        &self.density
-    }
-
-    pub fn hardware(&self) -> &HardwareMesh {
-        &self.hw
-    }
-
     pub fn options(&self) -> &RtfpOptions {
         &self.options
     }

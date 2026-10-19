@@ -227,14 +227,6 @@ impl Jet {
         r
     }
 
-    /// `self += s * o` (orders must agree or `self` is truncated to the lower one).
-    pub fn axpy(&mut self, s: f64, o: &Self) {
-        self.ord = self.ord.min(o.ord);
-        for i in 0..count(self.ord) {
-            self.c[i] += s * o.c[i];
-        }
-    }
-
     pub fn mul(&self, o: &Self) -> Self {
         let ord = self.ord.min(o.ord);
         let mut r = Self::constant(0.0, ord);
@@ -310,30 +302,6 @@ impl Jet {
             0.375 / (a * a * s),
             -0.937_5 / (a.powi(3) * s),
         ])
-    }
-
-    /// The same jet cut to a lower order.
-    pub fn truncate(&self, ord: usize) -> Self {
-        let mut r = *self;
-        r.ord = r.ord.min(ord);
-        for i in count(r.ord)..NC {
-            r.c[i] = 0.0;
-        }
-        r
-    }
-
-    /// Second derivatives `∂_b ∂_c f` at the expansion point (order >= 2).
-    pub fn hess(&self) -> [[f64; 3]; 3] {
-        assert!(self.ord >= 2, "hess needs a jet of order 2");
-        let t = tables();
-        let mut out = [[0.0; 3]; 3];
-        for b in 0..3 {
-            for c in 0..3 {
-                let factor = if b == c { 2.0 } else { 1.0 };
-                out[b][c] = factor * self.c[t.pair[b][c]];
-            }
-        }
-        out
     }
 
     /// Value of the Taylor polynomial at the offset `h`.

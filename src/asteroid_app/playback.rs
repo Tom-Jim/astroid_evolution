@@ -1,7 +1,8 @@
 //! Snapshot adoption and the per-frame `τ` advance.
 //!
 //! A new step retargets the morph at the position currently on screen and
-//! crossfades the fields. After that, the main thread only writes the uniform.
+//! crossfades the fields. The shader morphs from the storage buffers. The mesh
+//! attributes follow the same mix, so the wireframe stays on the shaded body.
 
 use std::sync::mpsc::TryRecvError;
 
@@ -13,7 +14,8 @@ use crate::asteroid_app::pipeline::WorkerMessage;
 use crate::asteroid_app::render::{surface_mesh, write_surface};
 use crate::asteroid_app::resources::{Evolution, FrameStats, Phase, SurfaceView};
 use crate::asteroid_app::snapshot::{
-    PARTICLE_COUNT, STREAMLINE_STEPS, StepSnapshot, StreamPoint, VertexSample, smoothstep,
+    PARTICLE_COUNT, STREAMLINE_STEPS, StepSnapshot, StreamPoint, VertexSample, posed_normals,
+    posed_positions, smoothstep,
 };
 
 #[derive(Clone, Copy, Debug, Resource)]
@@ -49,6 +51,8 @@ pub struct Playback {
     pub duration: f32,
     pub generation: u64,
     pub dirty: bool,
+    /// `τ` last written into the surface mesh. `-1` means the pose is stale.
+    uploaded_tau: f32,
     pub slack_tol: f32,
     pub f_delta_p95: f32,
     pub slack_p95: f32,
@@ -69,6 +73,7 @@ impl Default for Playback {
             duration: 0.25,
             generation: 0,
             dirty: false,
+            uploaded_tau: -1.0,
             slack_tol: 0.0,
             f_delta_p95: 1.0,
             slack_p95: 1.0,
@@ -146,6 +151,17 @@ pub fn poll_snapshot(mut evolution: ResMut<Evolution>, mut playback: ResMut<Play
         max_slack: snapshot.max_slack,
         rho_s_total: snapshot.rho_s_total,
         max_displacement: snapshot.max_displacement,
+        eps_momentum: snapshot.audit.eps_momentum,
+        eps_lambda: snapshot.audit.eps_lambda,
+        eps_picard: snapshot.audit.eps_picard,
+        picard_iterations: snapshot.audit.picard_iterations,
+        tensile_fraction: snapshot.audit.tensile_fraction,
+        inverse_ekman: snapshot.audit.inverse_ekman,
+        mass_residual: snapshot.audit.mass_residual,
+        mobile_area_fraction: snapshot.audit.mobile_area_fraction,
+        dt: snapshot.audit.dt,
+        dt_cfl: snapshot.audit.dt_cfl,
+        dt_bound: snapshot.dt_bound,
     });
     adopt(&mut playback, *snapshot);
 }
@@ -184,6 +200,7 @@ fn adopt(play: &mut Playback, snap: StepSnapshot) {
     play.to = to;
     play.generation += 1;
     play.dirty = true;
+    play.uploaded_tau = -1.0;
 }
 
 pub fn advance_playback(
@@ -213,22 +230,35 @@ pub fn sync_material(
     let Ok(material_id) = material_handle.single() else {
         return;
     };
-    if playback.dirty {
+    let pose_due = playback.generation > 0
+        && (playback.dirty || playback.uploaded_tau != playback.tau);
+    if pose_due {
         if let Ok(mesh_id) = surface.single() {
             if let Some(mut mesh) = meshes.get_mut(&mesh_id.0) {
                 let count = mesh
                     .attribute(Mesh::ATTRIBUTE_POSITION)
                     .map(|values| values.len())
                     .unwrap_or(0);
-                let positions = playback.from.position.clone();
-                let normals = playback.from.normal.clone();
-                if count == positions.len() {
+                let positions =
+                    posed_positions(&playback.from.position, &playback.to.position, playback.tau);
+                let normals =
+                    posed_normals(&playback.from.normal, &playback.to.normal, playback.tau);
+                let wrote = if count == positions.len() {
                     write_surface(&mut mesh, positions, normals);
+                    true
                 } else if !playback.faces.is_empty() {
                     *mesh = surface_mesh(positions, normals, &playback.faces);
+                    true
+                } else {
+                    false
+                };
+                if wrote {
+                    playback.uploaded_tau = playback.tau;
                 }
             }
         }
+    }
+    if playback.dirty {
         if let Some(material) = materials.get(&material_id.0) {
             if let Some(mut buffer) = buffers.get_mut(&material.surface) {
                 buffer.clear();

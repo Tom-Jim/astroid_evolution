@@ -216,6 +216,7 @@ impl DirIndex {
     /// Vertices that can lie inside the spherical cap of angular radius `alpha`
     /// about `origin`. The set is a superset: every unit direction with angle
     /// strictly below `alpha` is present, and some directions outside it may be too.
+    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
     fn collect_within(&self, origin: DVec3, alpha: f64, out: &mut Vec<usize>) {
         out.clear();
         if !alpha.is_finite() || alpha <= 0.0 {
@@ -225,27 +226,12 @@ impl DirIndex {
             out.extend(self.items.iter().map(|i| *i as usize));
             return;
         }
-        // One cell of slack covers the rounding gap between `acos` and the
-        // Cartesian bounds of the cap, so a point the angle test would keep
-        // cannot fall outside the visited bins.
-        let slop = (alpha + 1.0e-6).min(std::f64::consts::PI);
-        let comps = [origin.x, origin.y, origin.z];
-        let mut lo = [0usize; 3];
-        let mut hi = [0usize; 3];
-        for axis in 0..3 {
-            let bearing = comps[axis].clamp(-1.0, 1.0).acos();
-            let c_lo = (bearing + slop).min(std::f64::consts::PI).cos() - 1.0e-7;
-            let c_hi = (bearing - slop).max(0.0).cos() + 1.0e-7;
-            let i_lo = cell_axis(c_lo.clamp(-1.0, 1.0), self.g);
-            let i_hi = cell_axis(c_hi.clamp(-1.0, 1.0), self.g);
-            lo[axis] = i_lo.saturating_sub(1);
-            hi[axis] = (i_hi + 1).min(self.g - 1);
-        }
+        let b = cap_bounds(origin, alpha, self.g);
         let g = self.g;
-        for x in lo[0]..=hi[0] {
-            for y in lo[1]..=hi[1] {
-                for z in lo[2]..=hi[2] {
-                    let c = (x * g + y) * g + z;
+        for x in b[0]..=b[1] {
+            for y in b[2]..=b[3] {
+                for z in b[4]..=b[5] {
+                    let c = (x as usize * g + y as usize) * g + z as usize;
                     for &idx in &self.items[self.start[c] as usize..self.start[c + 1] as usize] {
                         out.push(idx as usize);
                     }
@@ -253,6 +239,32 @@ impl DirIndex {
             }
         }
     }
+}
+
+/// Inclusive cell box of the spherical cap, with one extra cell of slack.
+///
+/// The same box is uploaded to the Metal deposition kernels. An inverted
+/// interval (`lo > hi`) is empty.
+fn cap_bounds(origin: DVec3, alpha: f64, g: usize) -> [u32; 6] {
+    if !alpha.is_finite() || alpha <= 0.0 || g == 0 {
+        return [1, 0, 1, 0, 1, 0];
+    }
+    // One cell of slack covers the rounding gap between `acos` and the
+    // Cartesian bounds of the cap, so a point the angle test would keep
+    // cannot fall outside the visited bins.
+    let slop = (alpha + 1.0e-6).min(std::f64::consts::PI);
+    let comps = [origin.x, origin.y, origin.z];
+    let mut out = [0u32; 6];
+    for axis in 0..3 {
+        let bearing = comps[axis].clamp(-1.0, 1.0).acos();
+        let c_lo = (bearing + slop).min(std::f64::consts::PI).cos() - 1.0e-7;
+        let c_hi = (bearing - slop).max(0.0).cos() + 1.0e-7;
+        let i_lo = cell_axis(c_lo.clamp(-1.0, 1.0), g);
+        let i_hi = cell_axis(c_hi.clamp(-1.0, 1.0), g);
+        out[axis * 2] = i_lo.saturating_sub(1) as u32;
+        out[axis * 2 + 1] = (i_hi + 1).min(g - 1) as u32;
+    }
+    out
 }
 
 fn edge(i: usize, cell: f64) -> f64 {
@@ -298,30 +310,78 @@ fn dist_out_sq(p: DVec3, lo: [f64; 3], hi: [f64; 3]) -> f64 {
     if gap <= 0.0 { 0.0 } else { gap * gap }
 }
 
+/// Nearest vertex and the ring of incident faces plus their neighbours.
+///
+/// `usize::MAX` is an empty neighbour slot. The ring is the same set
+/// `interp_vertex_field` and the post-realignment resample both walk.
+fn face_ring(topo: &Topology, index: &DirIndex, p: DVec3) -> (usize, Vec<usize>) {
+    let nearest = index.nearest(&topo.dirs, p);
+    let mut seen = topo
+        .vertex_faces
+        .get(nearest)
+        .cloned()
+        .unwrap_or_default();
+    let first = seen.clone();
+    for f in first {
+        let Some(neighbors) = topo.face_neighbors.get(f) else {
+            continue;
+        };
+        for &g in neighbors {
+            if g != usize::MAX && !seen.contains(&g) {
+                seen.push(g);
+            }
+        }
+    }
+    (nearest, seen)
+}
+
+fn weights_on(topo: &Topology, face: usize, p: DVec3) -> Option<([usize; 3], [f64; 3])> {
+    let [i, j, k] = topo.faces.get(face)?.map(|v| v as usize);
+    let w = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p)?;
+    if w.iter().all(|value| *value >= -1.0e-12) {
+        Some(([i, j, k], w))
+    } else {
+        None
+    }
+}
+
+/// Containing triangle of `p`, or the nearest vertex with weight 1.
+pub(crate) fn locate_vertex(
+    topo: &Topology,
+    index: &DirIndex,
+    p: DVec3,
+) -> ([usize; 3], [f64; 3]) {
+    let (nearest, faces) = face_ring(topo, index, p);
+    for f in faces {
+        if let Some(hit) = weights_on(topo, f, p) {
+            return hit;
+        }
+    }
+    ([nearest, nearest, nearest], [1.0, 0.0, 0.0])
+}
+
+/// Face that contains `p`, or the first face incident to the nearest vertex.
+pub(crate) fn locate_face(topo: &Topology, index: &DirIndex, p: DVec3) -> usize {
+    let (nearest, faces) = face_ring(topo, index, p);
+    for f in faces {
+        if weights_on(topo, f, p).is_some() {
+            return f;
+        }
+    }
+    topo.vertex_faces
+        .get(nearest)
+        .and_then(|faces| faces.first())
+        .copied()
+        .unwrap_or(0)
+}
+
 /// Barycentric interpolation of a vertex field at the direction `p`.
 ///
 /// `index` is built once for `topo.dirs`. The face ring around the nearest vertex
 /// is unchanged: the triangle that contains `p`, then its neighbours.
 pub fn interp_vertex_field(topo: &Topology, index: &DirIndex, field: &[f64], p: DVec3) -> f64 {
-    let nearest = index.nearest(&topo.dirs, p);
-    let mut seen: Vec<usize> = topo.vertex_faces[nearest].clone();
-    let first = seen.clone();
-    for f in first {
-        for &g in &topo.face_neighbors[f] {
-            if !seen.contains(&g) {
-                seen.push(g);
-            }
-        }
-    }
-    for f in seen {
-        let [i, j, k] = topo.faces[f].map(|x| x as usize);
-        if let Some(l) = barycentric(topo.dirs[i], topo.dirs[j], topo.dirs[k], p) {
-            if l.iter().all(|x| *x >= -1e-12) {
-                return l[0] * field[i] + l[1] * field[j] + l[2] * field[k];
-            }
-        }
-    }
-    field[nearest]
+    let (ids, w) = locate_vertex(topo, index, p);
+    w[0] * field[ids[0]] + w[1] * field[ids[1]] + w[2] * field[ids[2]]
 }
 
 /// One semi-Lagrangian step of the vertex field `field` (`ρ_s`) with the area densities
@@ -429,7 +489,12 @@ pub struct ModeC {
 }
 
 /// `J_ero = χ_A k_e ρ_s [F_δ]_+ / σ₀`; `J_dep(a) = ∫ K(a, a') J_ero(a') dΓ(a')` with
-/// `∫ K(a, a') dΓ(a) = 1` for every source, so that `∫ J_dep dΓ = ∫ J_ero dΓ` exactly.
+/// `∫ K(a, a') dΓ(a) = 1` for every source, so that `∫ J_dep dΓ = ∫ J_ero dΓ`.
+///
+/// Erosion is a per-vertex scale. Deposition is the normalised angular kernel
+/// on the GPU: the Gaussian weight is native single precision, the cap sum is
+/// double-single, and the cap box is the one from
+/// [`DirIndex::collect_within`](DirIndex::collect_within).
 pub fn mode_c(
     topo: &Topology,
     area: &[f64],
@@ -438,37 +503,143 @@ pub fn mode_c(
     f_delta: &[f64],
     prm: &ModeCParams,
 ) -> ModeC {
-    let nv = topo.n_vertices();
+    let (j_ero, max_excess, eroded) = erosion(area, rho_s, movable, f_delta, prm);
+    let j_dep = deposit(topo, area, &j_ero, prm);
+    ModeC {
+        j_ero,
+        j_dep,
+        max_excess,
+        eroded_rate: eroded,
+    }
+}
+
+/// Host reference. Tests compare the GPU field with this and with the dense loop.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+fn mode_c_cpu(
+    topo: &Topology,
+    area: &[f64],
+    rho_s: &[f64],
+    movable: &[bool],
+    f_delta: &[f64],
+    prm: &ModeCParams,
+) -> ModeC {
+    let (j_ero, max_excess, eroded) = erosion(area, rho_s, movable, f_delta, prm);
+    let j_dep = deposit_cpu(topo, area, &j_ero, prm);
+    ModeC {
+        j_ero,
+        j_dep,
+        max_excess,
+        eroded_rate: eroded,
+    }
+}
+
+fn erosion(
+    area: &[f64],
+    rho_s: &[f64],
+    movable: &[bool],
+    f_delta: &[f64],
+    prm: &ModeCParams,
+) -> (Vec<f64>, f64, f64) {
+    let nv = area.len();
     let mut j_ero = vec![0.0; nv];
     let mut max_excess = 0.0_f64;
+    let mut eroded = 0.0;
     for i in 0..nv {
         if movable[i] && rho_s[i] > 0.0 {
             let ex = f_delta[i].max(0.0);
             max_excess = max_excess.max(ex);
             j_ero[i] = prm.k_e * rho_s[i] * ex / prm.sigma_0;
+            eroded += j_ero[i] * area[i];
         }
     }
-    let mut j_dep = vec![0.0; nv];
+    (j_ero, max_excess, eroded)
+}
+
+fn deposit(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) -> Vec<f64> {
+    if let Some(beta) = super::mode_c_spectral::spectrum(prm.kernel_width) {
+        let _span = super::timing::span("mode_c_spectral");
+        if let Some(j_dep) = super::mode_c_spectral::deposit(&topo.dirs, area, j_ero, &beta) {
+            return j_dep;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        deposit_gpu(topo, area, j_ero, prm).unwrap_or_else(|err| panic!("mode C GPU: {err}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _span = super::timing::span("mode_c_kernel");
+        deposit_cpu(topo, area, j_ero, prm)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn deposit_gpu(
+    topo: &Topology,
+    area: &[f64],
+    j_ero: &[f64],
+    prm: &ModeCParams,
+) -> Result<Vec<f64>, String> {
+    let _caps = super::timing::span("mode_c_caps");
+    let nv = topo.n_vertices();
     let w = prm.kernel_width;
     let cutoff = 4.0 * w;
+    let dense = cutoff >= std::f64::consts::PI;
     // `acos` is strictly decreasing, so `θ < 4w` fails once the cosine is safely
     // below `cos(4w)`. The margin keeps the reject off the rounding boundary;
     // every point that can pass still takes the original `acos` test.
+    let cos_reject = if dense {
+        f64::NEG_INFINITY
+    } else {
+        cutoff.cos() - 1.0e-8
+    };
+    let bins = DirIndex::build(&topo.dirs);
+    let caps = if dense {
+        Vec::new()
+    } else {
+        let mut caps = vec![0u32; nv * 6];
+        caps.par_chunks_mut(6)
+            .zip(topo.dirs.par_iter())
+            .for_each(|(slot, dir)| {
+                slot.copy_from_slice(&cap_bounds(*dir, cutoff, bins.g));
+            });
+        caps
+    };
+    let mass_rate: Vec<f64> = j_ero
+        .iter()
+        .zip(area)
+        .map(|(j, a)| if *j > 0.0 { j * a } else { 0.0 })
+        .collect();
+    drop(_caps);
+    let _kernel = super::timing::span("mode_c_kernel");
+    super::mode_c_gpu::deposit(
+        &topo.dirs,
+        area,
+        &mass_rate,
+        bins.g,
+        &bins.start,
+        &bins.items,
+        &caps,
+        w,
+        cutoff,
+        cos_reject,
+        dense,
+    )
+}
+
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+fn deposit_cpu(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) -> Vec<f64> {
+    let nv = topo.n_vertices();
+    let mut j_dep = vec![0.0; nv];
+    let w = prm.kernel_width;
+    let cutoff = 4.0 * w;
     let cos_reject = if cutoff < std::f64::consts::PI {
         cutoff.cos() - 1.0e-8
     } else {
         f64::NEG_INFINITY
     };
     let bins = DirIndex::build(&topo.dirs);
-    let mut eroded = 0.0;
-    let mut sources = Vec::new();
-    for src in 0..nv {
-        if j_ero[src] <= 0.0 {
-            continue;
-        }
-        eroded += j_ero[src] * area[src];
-        sources.push(src);
-    }
+    let sources: Vec<usize> = (0..nv).filter(|&src| j_ero[src] > 0.0).collect();
     let batch = rayon::current_num_threads().max(1);
     for chunk in sources.chunks(batch) {
         let parts: Vec<(f64, Vec<(u32, f64)>)> = chunk
@@ -482,12 +653,7 @@ pub fn mode_c(
             }
         }
     }
-    ModeC {
-        j_ero,
-        j_dep,
-        max_excess,
-        eroded_rate: eroded,
-    }
+    j_dep
 }
 
 /// Positive Gaussian weights of one source, in increasing target index.
@@ -496,6 +662,7 @@ pub fn mode_c(
 /// the same value the dense loop would store: clamp the dot, reject only when
 /// the cosine is safely outside, otherwise `exp(-½(acos(c)/w)²)` when
 /// `acos(c) < cutoff`.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
 fn kernel_terms(
     dirs: &[DVec3],
     bins: &DirIndex,
@@ -547,11 +714,22 @@ mod tests {
             sigma_0: 10.0,
             kernel_width: 0.3,
         };
-        let m = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
-        let ero: f64 = (0..nv).map(|i| m.j_ero[i] * area[i]).sum();
-        let dep: f64 = (0..nv).map(|i| m.j_dep[i] * area[i]).sum();
+        let cpu = mode_c_cpu(&topo, &area, &rho_s, &movable, &f, &prm);
+        let ero: f64 = (0..nv).map(|i| cpu.j_ero[i] * area[i]).sum();
+        let dep: f64 = (0..nv).map(|i| cpu.j_dep[i] * area[i]).sum();
         assert!(ero > 0.0);
         assert!((ero - dep).abs() < 1e-12 * ero);
+        let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+        assert_eq!(gpu.j_ero, cpu.j_ero);
+        assert_eq!(gpu.max_excess, cpu.max_excess);
+        assert_eq!(gpu.eroded_rate, cpu.eroded_rate);
+        let gpu_dep: f64 = (0..nv).map(|i| gpu.j_dep[i] * area[i]).sum();
+        assert!(
+            (ero - gpu_dep).abs() < 1e-6 * ero,
+            "deposition residual {}",
+            (ero - gpu_dep).abs() / ero
+        );
+        assert_deposition(&gpu.j_dep, &cpu.j_dep, prm.kernel_width);
     }
 
     #[test]
@@ -578,13 +756,110 @@ mod tests {
                 sigma_0: 10.0,
                 kernel_width,
             };
-            let got = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+            let got = mode_c_cpu(&topo, &area, &rho_s, &movable, &f, &prm);
             let want = direct_mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
             assert_eq!(got.j_ero, want.j_ero);
             assert_eq!(got.max_excess, want.max_excess);
             assert_eq!(got.eroded_rate, want.eroded_rate);
             assert_eq!(got.j_dep, want.j_dep, "kernel_width {kernel_width}");
+            let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+            assert_eq!(gpu.j_ero, want.j_ero);
+            assert_deposition(&gpu.j_dep, &want.j_dep, kernel_width);
         }
+    }
+
+    /// Cap kernels stay at the pointwise reference. A zonal truncation is
+    /// accepted at the relative L1 stated for that kernel, not pointwise.
+    fn assert_deposition(got: &[f64], want: &[f64], width: f64) {
+        let l1_num: f64 = got.iter().zip(want).map(|(g, w)| (g - w).abs()).sum();
+        let l1_den = want.iter().map(|w| w.abs()).sum::<f64>().max(1e-30);
+        let l1 = l1_num / l1_den;
+        if super::super::mode_c_spectral::spectrum(width).is_some() {
+            assert!(
+                l1 <= 1.0e-3,
+                "spectral deposition L1 {l1:.3e} at kernel width {width}"
+            );
+            return;
+        }
+        assert_field_close(got, want, 1e-5);
+    }
+
+    fn assert_field_close(got: &[f64], want: &[f64], tol: f64) {
+        assert_eq!(got.len(), want.len());
+        let scale = want
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max)
+            .max(1e-30);
+        let mut worst = 0.0_f64;
+        let mut at = 0usize;
+        for (i, (g, w)) in got.iter().zip(want).enumerate() {
+            let err = (g - w).abs() / scale;
+            if err > worst {
+                worst = err;
+                at = i;
+            }
+        }
+        assert!(
+            worst <= tol,
+            "deposition[{at}] gpu {} cpu {} relative {worst:.3e} (tolerance {tol:.1e})",
+            got[at], want[at]
+        );
+    }
+
+    #[test]
+    fn ryugu_zonal_sample_matches_the_cap_kernel() {
+        use std::path::PathBuf;
+
+        use crate::scf_simulator::frame::vertex_areas;
+        use crate::scf_simulator::io::initial_body;
+        use crate::scf_simulator::params::{ModeCParams, Project};
+
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/projects");
+        let text = std::fs::read_to_string(dir.join("ryugu_cauchy.toml")).expect("ryugu project");
+        let project = Project::parse(&text, dir).expect("parse");
+        let body = initial_body(&project).expect("body");
+        let area = vertex_areas(&body);
+        let width = project.mode_c.kernel_width;
+        let beta = super::super::mode_c_spectral::spectrum(width)
+            .expect("Ryugu kernel width must pass the 1e-3 truncation gate");
+        let nv = body.topo.n_vertices();
+        let mut j_ero = vec![0.0; nv];
+        let mut n_src = 0usize;
+        for src in (0..nv).step_by((nv / 200).max(1)) {
+            j_ero[src] = 1.0;
+            n_src += 1;
+            if n_src == 200 {
+                break;
+            }
+        }
+        let fast = super::super::mode_c_spectral::deposit(&body.topo.dirs, &area, &j_ero, &beta)
+            .expect("source norms stay positive");
+        let cap = deposit_cpu(
+            &body.topo,
+            &area,
+            &j_ero,
+            &ModeCParams {
+                k_e: 1.0,
+                sigma_0: 1.0,
+                kernel_width: width,
+            },
+        );
+        let num: f64 = fast.iter().zip(&cap).map(|(a, b)| (a - b).abs()).sum();
+        let den = cap.iter().map(|v| v.abs()).sum::<f64>().max(1e-30);
+        let l1 = num / den;
+        let ero: f64 = j_ero.iter().zip(&area).map(|(j, a)| j * a).sum();
+        let dep: f64 = fast.iter().zip(&area).map(|(j, a)| j * a).sum();
+        assert!(
+            (ero - dep).abs() <= 1.0e-8 * ero,
+            "spectral mass gap {}",
+            (ero - dep).abs() / ero
+        );
+        assert!(
+            l1 <= 1.0e-3,
+            "Ryugu zonal sample L1 {l1:.3e} on {n_src} sources"
+        );
+        eprintln!("ryugu zonal sample L1={l1:.3e} sources={n_src}");
     }
 
     #[test]

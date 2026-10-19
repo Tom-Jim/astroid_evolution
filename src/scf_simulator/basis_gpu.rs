@@ -22,7 +22,7 @@ use objc2_metal::{
 };
 
 use crate::common::math::DVec3;
-use crate::rheo_friction::basis::{K, ds_pair, psi_poly};
+use crate::rheo_friction::basis::{K, ds_pair, pack_dirs, pack_scalars, psi_poly};
 
 use super::basis::{PresLayout, PresRows, VelLayout, VelRows, Want};
 use super::harmonics::SurfaceFit;
@@ -243,24 +243,6 @@ fn blank_params() -> BasisParams {
         pmm_hi: pmm[0],
         pmm_lo: pmm[1],
     }
-}
-
-fn pack_coeff(coeff: &[f64]) -> Vec<f32> {
-    let mut words = Vec::with_capacity(coeff.len() * 2);
-    for c in coeff {
-        words.extend_from_slice(&ds_pair(*c));
-    }
-    words
-}
-
-fn pack_points(pts: &[DVec3]) -> Vec<f32> {
-    let mut words = Vec::with_capacity(pts.len() * 6);
-    for p in pts {
-        for c in [p.x, p.y, p.z] {
-            words.extend_from_slice(&ds_pair(c));
-        }
-    }
-    words
 }
 
 /// Jacobi coefficients, one `poly_stride` slot per `(l, k)`. `top` is the last power index.
@@ -542,9 +524,9 @@ pub(crate) fn velocity(
     }
     let (polys, stride) = pack_polys(lay.l_max, K)?;
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let poly_buffer = buffer_with(&core.device, &polys)?;
-    let packed = pack_points(pts);
+    let packed = pack_dirs(pts);
     let bytes_per_point = n_u * n_comp * 8;
     let rays_per_batch = (BATCH_BYTES / bytes_per_point.max(1) / n_per).clamp(1, n_rays);
     let mut params = blank_params();
@@ -688,9 +670,9 @@ pub(crate) fn pressure(
     let (polys, stride) = pack_polys(lay.l_max, lay.k_max)?;
     let top = lay.l_max + lay.k_max - 1;
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let poly_buffer = buffer_with(&core.device, &polys)?;
-    let packed = pack_points(pts);
+    let packed = pack_dirs(pts);
     let channels = if gradients { (n + nl) * 4 } else { n + nl };
     let per_batch = (BATCH_BYTES / (channels * 8).max(1)).clamp(1, np);
     let pipe = if gradients {
@@ -809,9 +791,9 @@ pub(crate) fn normals(surf: &SurfaceFit, dirs: &[DVec3]) -> Result<Vec<(f64, DVe
         return Ok(Vec::new());
     }
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let dummy = buffer_with(&core.device, &[] as &[f32])?;
-    let packed = pack_points(dirs);
+    let packed = pack_dirs(dirs);
     let per_batch = (BATCH_BYTES / 32).clamp(1, dirs.len());
     let mut params = blank_params();
     params.n_per = 1;
@@ -857,14 +839,6 @@ pub(crate) fn normals(surf: &SurfaceFit, dirs: &[DVec3]) -> Result<Vec<(f64, DVe
         point0 += batch;
     }
     Ok(out)
-}
-
-fn pack_modes(coeff: &[f64]) -> Vec<f32> {
-    let mut words = Vec::with_capacity(coeff.len() * 2);
-    for c in coeff {
-        words.extend_from_slice(&ds_pair(*c));
-    }
-    words
 }
 
 fn unpack_pairs(words: &[f32]) -> Vec<f64> {
@@ -938,10 +912,10 @@ pub(crate) fn contract_velocity(
         ));
     }
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let poly_buffer = buffer_with(&core.device, &polys)?;
-    let coef = buffer_with(&core.device, &pack_modes(u))?;
-    let packed = pack_points(pts);
+    let coef = buffer_with(&core.device, &pack_scalars(u))?;
+    let packed = pack_dirs(pts);
     let mut params = blank_params();
     params.n_per = as_u32(n_per, "samples per ray")?;
     params.n_rays = as_u32(if grouped { n_rays } else { np }, "rays")?;
@@ -1028,9 +1002,9 @@ pub(crate) fn strain_basis(
         ));
     }
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let poly_buffer = buffer_with(&core.device, &polys)?;
-    let packed = pack_points(pts);
+    let packed = pack_dirs(pts);
     let mut params = blank_params();
     params.n_per = 1;
     params.n_rays = as_u32(np, "rays")?;
@@ -1083,7 +1057,7 @@ impl GpuStrain {
             ));
         }
         let core = core()?;
-        let coef = buffer_with(&core.device, &pack_modes(u))?;
+        let coef = buffer_with(&core.device, &pack_scalars(u))?;
         let n_f32 = self.n_points * self.n_comp * 2;
         let out = core
             .device
@@ -1175,12 +1149,12 @@ pub(crate) fn contract_pressure(
     let (polys, stride) = pack_polys(lay.l_max, lay.k_max)?;
     let top = lay.l_max + lay.k_max - 1;
     let core = core()?;
-    let coeff = buffer_with(&core.device, &pack_coeff(&surf.coeff))?;
+    let coeff = buffer_with(&core.device, &pack_scalars(&surf.coeff))?;
     let poly_buffer = buffer_with(&core.device, &polys)?;
-    let mut modes = pack_modes(pres_c);
-    modes.extend_from_slice(&pack_modes(lift));
+    let mut modes = pack_scalars(pres_c);
+    modes.extend_from_slice(&pack_scalars(lift));
     let coef = buffer_with(&core.device, &modes)?;
-    let packed = pack_points(pts);
+    let packed = pack_dirs(pts);
     let pipe = if lay.l_max <= 4 {
         &core.pres0_l4_dot
     } else {

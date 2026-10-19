@@ -448,6 +448,7 @@ pub fn relax(
                 trust,
                 eps_n: g.eps_n,
                 varrho: g.varrho,
+                warm: None,
             };
             let out = solve(&inp)?;
             let mut cand = current.clone();

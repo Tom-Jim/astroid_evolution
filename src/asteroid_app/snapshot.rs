@@ -11,6 +11,66 @@ use crate::scf_simulator::evolve::{State, StepFields, StepRecord};
 pub const PARTICLE_COUNT: usize = 4096;
 pub const STREAMLINE_STEPS: usize = 8;
 
+/// Scalar acceptance numbers of one geological step (§2.15, §10.4).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepAudit {
+    pub eps_momentum: f64,
+    pub eps_lambda: f64,
+    pub eps_picard: f64,
+    pub picard_iterations: usize,
+    pub tensile_fraction: f64,
+    pub inverse_ekman: f64,
+    pub mass_residual: f64,
+    pub mobile_area_fraction: f64,
+    pub core_mass_fraction: f64,
+    pub slope_slack: f64,
+    pub mass_slack: f64,
+    pub n_mobile: usize,
+    pub n_locked: usize,
+    pub n_deposit: usize,
+    pub socp_iterations: u32,
+    pub trust: f64,
+    pub trust_retries: usize,
+    pub dt: f64,
+    pub dt_cfl: f64,
+    pub dt_c: f64,
+    pub dt_char: f64,
+    pub flux_gap: f64,
+    pub max_locked_step: f64,
+    pub max_deposit_miss: f64,
+    pub rheo_unconverged: u32,
+}
+
+fn audit_of(record: &StepRecord) -> StepAudit {
+    StepAudit {
+        eps_momentum: record.eps_momentum,
+        eps_lambda: record.eps_lambda,
+        eps_picard: record.eps_picard,
+        picard_iterations: record.picard_iterations,
+        tensile_fraction: record.tensile_fraction,
+        inverse_ekman: record.inverse_ekman,
+        mass_residual: record.mass_residual,
+        mobile_area_fraction: record.mobile_area_fraction,
+        core_mass_fraction: record.core_mass_fraction,
+        slope_slack: record.slope_slack,
+        mass_slack: record.mass_slack,
+        n_mobile: record.n_mobile,
+        n_locked: record.n_locked,
+        n_deposit: record.n_deposit,
+        socp_iterations: record.socp_iterations,
+        trust: record.trust,
+        trust_retries: record.trust_retries,
+        dt: record.dt,
+        dt_cfl: record.dt_cfl,
+        dt_c: record.dt_c,
+        dt_char: record.dt_char,
+        flux_gap: record.flux_gap,
+        max_locked_step: record.max_locked_step,
+        max_deposit_miss: record.max_deposit_miss,
+        rheo_unconverged: record.rheo_unconverged,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct VertexSample {
     pub f_delta: f32,
@@ -43,6 +103,9 @@ pub struct StepSnapshot {
     pub frame_applied: bool,
     pub wall_seconds: f64,
     pub flow_active: bool,
+    pub kind: &'static str,
+    pub dt_bound: &'static str,
+    pub audit: StepAudit,
     pub slack_tol: f32,
     pub f_delta_p95: f32,
     pub slack_p95: f32,
@@ -92,6 +155,39 @@ pub fn write_wavefront(
 pub fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Cartesian mix the vertex shader uses: `mix(from, to, smoothstep(τ))`.
+pub fn posed_positions(from: &[[f32; 3]], to: &[[f32; 3]], tau: f32) -> Vec<[f32; 3]> {
+    let s = smoothstep(tau);
+    let count = from.len().min(to.len());
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let a = from[i];
+        let b = to[i];
+        out.push([
+            a[0] + (b[0] - a[0]) * s,
+            a[1] + (b[1] - a[1]) * s,
+            a[2] + (b[2] - a[2]) * s,
+        ]);
+    }
+    out
+}
+
+/// Mixed normals, then normalized the same way as `morphed_normal` in the shader.
+pub fn posed_normals(from: &[[f32; 3]], to: &[[f32; 3]], tau: f32) -> Vec<[f32; 3]> {
+    posed_positions(from, to, tau)
+        .into_iter()
+        .map(|normal| {
+            let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
+                .sqrt();
+            if len > 1.0e-6 {
+                [normal[0] / len, normal[1] / len, normal[2] / len]
+            } else {
+                [0.0, 1.0, 0.0]
+            }
+        })
+        .collect()
 }
 
 /// `P = scale * ω̂ * mix(R_from, R_to, smoothstep(τ))`.
@@ -215,6 +311,9 @@ pub fn pack(
         frame_applied: record.frame_applied,
         wall_seconds,
         flow_active,
+        kind: record.kind,
+        dt_bound: record.dt_bound,
+        audit: audit_of(record),
         slack_tol,
         f_delta_p95: percentile_95(field.iter().map(|sample| sample.f_delta.max(0.0))),
         slack_p95: percentile_95(field.iter().map(|sample| sample.slack_max)),
@@ -233,6 +332,40 @@ pub fn pack(
         field,
         stream,
     }
+}
+
+/// Body after `evolve::start`, before the first accepted step.
+///
+/// `position_from` and `position_to` are the same Tier 2 pose. Fields are zero
+/// so the window can enter that frame while the first step is still running.
+pub fn pack_initial(state: &State, mass: f64, scale: f64, slack_tol: f32) -> StepSnapshot {
+    let nv = state.body.topo.n_vertices();
+    let fields = StepFields {
+        radius_from: state.body.radius.clone(),
+        f_delta: vec![0.0; nv],
+        movable: vec![false; nv],
+        v_sl: Vec::new(),
+        normal: Vec::new(),
+        j_ero: Vec::new(),
+        j_dep: Vec::new(),
+        d_radial: Vec::new(),
+        slack: Vec::new(),
+        g_face: Vec::new(),
+        flow_active: false,
+    };
+    let record = StepRecord {
+        step: state.step,
+        t: state.t,
+        omega: state.omega,
+        mass,
+        ..StepRecord::default()
+    };
+    let mut snap = pack(&record, state, &fields, scale, slack_tol, 0.0);
+    for sample in &mut snap.field {
+        sample.rho_s = 0.0;
+    }
+    snap.rho_s_p95 = percentile_95(snap.field.iter().map(|sample| sample.rho_s));
+    snap
 }
 
 fn view_positions(dirs: &[DVec3], radius: &[f64], scale: f64) -> Vec<[f32; 3]> {
@@ -369,7 +502,10 @@ fn percentile_95(values: impl Iterator<Item = f32>) -> f32 {
 mod tests {
     use std::sync::Arc;
 
-    use super::{morphed_position, pack, scatter_face_slack, smoothstep};
+    use super::{
+        morphed_position, pack, pack_initial, posed_normals, posed_positions, scatter_face_slack,
+        smoothstep,
+    };
     use crate::common::density::CauchyKernel;
     use crate::common::math::DVec3;
     use crate::scf_simulator::body::{Body, Topology};
@@ -384,52 +520,12 @@ mod tests {
             kind: "spin-only",
             dt: 1.0,
             dt_bound: "omega",
-            dt_cfl: 0.0,
-            dt_c: 0.0,
-            dt_char: 0.0,
             dt_omega: 1.0,
-            picard_iterations: 0,
-            eps_picard: 0.0,
-            eps_momentum: 0.0,
-            eps_lambda: 0.0,
-            eps_rot: 0.0,
-            eta_lo: 0.0,
-            eta_hi: 0.0,
-            tensile_fraction: 0.0,
-            inverse_ekman: 0.0,
             quasi_static: true,
-            yielded_fraction: 0.0,
-            mobile_area_fraction: 0.0,
             core_mass_fraction: 1.0,
-            core_degenerate: false,
-            core_creep: 0.0,
-            plastic_dissipation: 0.0,
-            n_mobile: 0,
-            n_deposit: 0,
-            n_locked: 0,
-            n_supercritical_faces: 0,
-            max_slack: 0.0,
-            eroded_rate: 0.0,
-            trust: 0.0,
-            trust_retries: 0,
-            socp_iterations: 0,
-            slope_slack: 0.0,
-            mass_slack: 0.0,
-            dropped_overhang: 0,
-            mass_residual: 0.0,
-            max_displacement: 0.0,
-            transport_fix: 0.0,
-            rho_s_total: 0.0,
-            frame_applied: false,
-            frame_angle_deg: 0.0,
-            frame_mass_change: 0.0,
-            fit_error: 0.0,
-            rheo_unconverged: 0,
-            rheo_seconds: 0.0,
             mass: 5.0,
-            centroid_offset: 0.0,
             min_radial: 1.0,
-            min_radial_face: 0,
+            ..StepRecord::default()
         }
     }
 
@@ -444,6 +540,31 @@ mod tests {
         assert!((smoothstep(0.5) - 0.5).abs() < 1.0e-6);
         let mid = morphed_position(dir, 2.0, 4.0, 0.5, 1.0);
         assert!((mid[1] - 3.0).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn the_screen_pose_matches_the_shader_mix() {
+        let from = [[0.0, 0.0, 1.0], [2.0, 0.0, 0.0]];
+        let to = [[0.0, 0.0, 3.0], [6.0, 0.0, 0.0]];
+        assert_eq!(posed_positions(&from, &to, 0.0), from);
+        assert_eq!(posed_positions(&from, &to, 1.0), to);
+        let s = smoothstep(0.25);
+        let mid = posed_positions(&from, &to, 0.25);
+        assert!((mid[0][2] - (1.0 + 2.0 * s)).abs() < 1.0e-6);
+        assert!((mid[1][0] - (2.0 + 4.0 * s)).abs() < 1.0e-6);
+        assert!((mid[0][0]).abs() < 1.0e-6);
+        assert!((mid[0][1]).abs() < 1.0e-6);
+
+        let from_n = [[0.0, 1.0, 0.0]];
+        let to_n = [[0.0, 0.0, 1.0]];
+        let start_n = posed_normals(&from_n, &to_n, 0.0);
+        let end_n = posed_normals(&from_n, &to_n, 1.0);
+        assert!((start_n[0][1] - 1.0).abs() < 1.0e-6);
+        assert!((end_n[0][2] - 1.0).abs() < 1.0e-6);
+        let mid_n = posed_normals(&from_n, &to_n, 0.5);
+        let unit = (0.5f32).sqrt();
+        assert!((mid_n[0][1] - unit).abs() < 1.0e-5);
+        assert!((mid_n[0][2] - unit).abs() < 1.0e-5);
     }
 
     #[test]
@@ -514,5 +635,40 @@ mod tests {
                 assert_eq!(point.verts, [seed as u32; 3]);
             }
         }
+    }
+
+    #[test]
+    fn the_initial_snapshot_is_a_still_tier2_pose() {
+        let topo = Arc::new(Topology::icosphere(0));
+        let count = topo.n_vertices();
+        let body = Body::new(
+            topo.clone(),
+            vec![2.0; count],
+            1000.0,
+            Vec::<CauchyKernel>::new(),
+            vec![0.0; count],
+        )
+        .unwrap();
+        let state = State {
+            body,
+            level: 0,
+            t: 0.0,
+            step: 0,
+            omega: 0.1,
+            frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            frame_translation: DVec3::ZERO,
+            velocity: Vec::new(),
+        };
+        let snapshot = pack_initial(&state, 9.0, 0.5, 0.01);
+        assert_eq!(snapshot.position_from, snapshot.position_to);
+        assert_eq!(snapshot.normal_from, snapshot.normal_to);
+        assert_eq!((snapshot.step, snapshot.mass), (0, 9.0));
+        assert!(snapshot.field.iter().all(|sample| sample.f_delta == 0.0));
+        assert_eq!(
+            snapshot.stream.len(),
+            super::PARTICLE_COUNT * super::STREAMLINE_STEPS
+        );
+        let shown = posed_positions(&snapshot.position_from, &snapshot.position_to, 0.5);
+        assert_eq!(shown, snapshot.position_to);
     }
 }
