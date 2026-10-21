@@ -13,6 +13,18 @@
 
 use super::error::ScfError;
 
+fn read_spin_table(path: &str) -> Result<String, ScfError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read_to_string(path).map_err(|e| ScfError::io(format!("spin table {path}: {e}")))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::rtfp_solver::io::memfs::read_to_string(std::path::Path::new(path))
+            .map_err(|e| ScfError::io(format!("spin table {path}: {e}")))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpinSchedule {
     /// `(duration, omega)` per stage.
@@ -100,8 +112,7 @@ impl SpinSchedule {
                 Self::Table { times, omegas }
             }
             "table-file" => {
-                let text = std::fs::read_to_string(body.trim())
-                    .map_err(|e| ScfError::io(format!("spin table {}: {e}", body.trim())))?;
+                let text = read_spin_table(body.trim())?;
                 let mut times = Vec::new();
                 let mut omegas = Vec::new();
                 for line in text

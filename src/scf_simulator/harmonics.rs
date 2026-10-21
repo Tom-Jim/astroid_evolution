@@ -154,7 +154,12 @@ impl SurfaceFit {
             return super::basis_gpu::normals(self, dirs)
                 .unwrap_or_else(|err| panic!("surface normal GPU: {err}"));
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            return super::basis_web::normals(self, dirs)
+                .unwrap_or_else(|err| panic!("surface normal GPU: {err}"));
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             let _ = dirs;
             panic!("surface normal requires Metal");

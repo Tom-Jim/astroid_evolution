@@ -6,6 +6,7 @@ pub mod chords;
 pub mod field;
 pub mod hw_rt;
 pub mod lebedev;
+pub(crate) mod lebedev_table;
 pub mod moments;
 
 use std::f64::consts::PI;

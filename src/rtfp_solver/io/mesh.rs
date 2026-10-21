@@ -20,6 +20,7 @@ pub struct ImportRequest<'a> {
     pub reconstruct: Option<Reconstruct>,
 }
 
+#[derive(Clone)]
 pub struct MeshDocument {
     pub mesh: TriMesh,
     /// Unit of the coordinates stored in `mesh`. Physical imports are converted to meters.
@@ -48,13 +49,126 @@ pub fn mesh_hash(mesh: &TriMesh) -> String {
     format!("{:08x}", hasher.finalize())
 }
 
+fn read_bytes(path: &Path) -> Result<Vec<u8>, RtfpError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read(path).map_err(|err| {
+            RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        super::memfs::read(path).map_err(|err| {
+            RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
+        })
+    }
+}
+
+fn read_text(path: &Path) -> Result<String, RtfpError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::fs::read_to_string(path).map_err(|err| {
+            RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        super::memfs::read_to_string(path).map_err(|err| {
+            RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
+        })
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+struct ViewerMesh {
+    key: String,
+    document: MeshDocument,
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+static VIEWER_MESH: std::sync::Mutex<Option<ViewerMesh>> = std::sync::Mutex::new(None);
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn viewer_mesh_key(path: &Path, length_unit: Option<&str>) -> String {
+    format!("{}|{}", path.display(), length_unit.unwrap_or(""))
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn cached_viewer_mesh(path: &Path, length_unit: Option<&str>) -> Option<MeshDocument> {
+    let key = viewer_mesh_key(path, length_unit);
+    VIEWER_MESH
+        .lock()
+        .ok()?
+        .as_ref()
+        .filter(|cached| cached.key == key)
+        .map(|cached| cached.document.clone())
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn store_viewer_mesh(path: &Path, length_unit: Option<&str>, document: &MeshDocument) {
+    if let Ok(mut slot) = VIEWER_MESH.lock() {
+        *slot = Some(ViewerMesh {
+            key: viewer_mesh_key(path, length_unit),
+            document: document.clone(),
+        });
+    }
+}
+
+/// GPU-decode a glTF mesh on the page, then keep the document for the viewer.
+/// The evolution worker decodes again through its own device gate.
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+pub async fn preload_viewer_mesh(path: &Path, length_unit: Option<&str>) -> Result<(), RtfpError> {
+    let ext = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "glb" && ext != "gltf" {
+        // The page has no worker GPU gate yet. Parsing here only feeds the
+        // canvas; the evolution worker repeats the solid checks.
+        let (unit, scale) = resolve_length(path, length_unit)?;
+        let parsed = if ext == "obj" || ext == "xyz" {
+            parse_obj(&read_text(path)?)?
+        } else {
+            return Err(RtfpError::model_not_closed(format!(
+                "mesh extension '{ext}' is not obj, xyz, glb, or gltf"
+            )));
+        };
+        let document = document_from_parsed(unit, scale, parsed, None, false)?;
+        store_viewer_mesh(path, length_unit, &document);
+        return Ok(());
+    }
+    let (unit, scale) = resolve_length(path, length_unit)?;
+    let parsed = parse_gltf_gpu(path).await?;
+    // The page cannot wait on the worker GPU gate. Solid checks run again on
+    // the evolution worker, which can post those dispatches.
+    let document = document_from_parsed(unit, scale, parsed, None, false)?;
+    store_viewer_mesh(path, length_unit, &document);
+    Ok(())
+}
+
 pub fn load_mesh_file(request: ImportRequest<'_>) -> Result<MeshDocument, RtfpError> {
-    let text_unit = declared_length_unit(request.path)?;
-    let unit = match (request.length_unit, text_unit.as_deref()) {
+    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+    if let Some(document) = cached_viewer_mesh(request.path, request.length_unit) {
+        return Ok(document);
+    }
+    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+    let mesh_path = request.path;
+    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+    let mesh_unit = request.length_unit;
+    let document = load_mesh_file_uncached(request)?;
+    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+    store_viewer_mesh(mesh_path, mesh_unit, &document);
+    Ok(document)
+}
+
+fn resolve_length(path: &Path, length_unit: Option<&str>) -> Result<(String, f64), RtfpError> {
+    let text_unit = declared_length_unit(path)?;
+    let unit = match (length_unit, text_unit.as_deref()) {
         (Some(flag), Some(file)) if flag != file => {
             return Err(RtfpError::model_not_closed(format!(
                 "length unit {flag} does not match the unit {file} declared in {}",
-                request.path.display()
+                path.display()
             )));
         }
         (Some(flag), _) => flag.to_string(),
@@ -66,6 +180,11 @@ pub fn load_mesh_file(request: ImportRequest<'_>) -> Result<MeshDocument, RtfpEr
         }
     };
     let scale = length_to_meters(&unit)?;
+    Ok((unit, scale))
+}
+
+fn load_mesh_file_uncached(request: ImportRequest<'_>) -> Result<MeshDocument, RtfpError> {
+    let (unit, scale) = resolve_length(request.path, request.length_unit)?;
     let ext = request
         .path
         .extension()
@@ -73,16 +192,24 @@ pub fn load_mesh_file(request: ImportRequest<'_>) -> Result<MeshDocument, RtfpEr
         .unwrap_or("")
         .to_ascii_lowercase();
     let parsed = match ext.as_str() {
-        "obj" | "xyz" => parse_obj(&std::fs::read_to_string(request.path).map_err(|err| {
-            RtfpError::model_not_closed(format!("cannot read {}: {err}", request.path.display()))
-        })?),
+        "obj" | "xyz" => parse_obj(&read_text(request.path)?),
         "glb" | "gltf" => parse_gltf(request.path),
         other => Err(RtfpError::model_not_closed(format!(
             "mesh extension '{other}' is not obj, xyz, glb, or gltf"
         ))),
     }?;
+    document_from_parsed(unit, scale, parsed, request.reconstruct, true)
+}
+
+fn document_from_parsed(
+    unit: String,
+    scale: f64,
+    parsed: ParsedMesh,
+    reconstruct: Option<Reconstruct>,
+    check_solid: bool,
+) -> Result<MeshDocument, RtfpError> {
     let (vertices, faces, welded, dropped) = if parsed.faces.is_empty() {
-        let strategy = request.reconstruct.ok_or_else(|| {
+        let strategy = reconstruct.ok_or_else(|| {
             RtfpError::model_not_closed(
                 "ModelNotClosed: the input has vertices and no faces; pass --reconstruct convex_hull or --reconstruct radial_raycast",
             )
@@ -99,7 +226,15 @@ pub fn load_mesh_file(request: ImportRequest<'_>) -> Result<MeshDocument, RtfpEr
         .into_iter()
         .map(|v| DVec3::new(v.x * scale, v.y * scale, v.z * scale))
         .collect();
-    let mesh = TriMesh::try_new(vertices, faces)?;
+    let mesh = if check_solid {
+        TriMesh::try_new(vertices, faces)?
+    } else if vertices.len() < 4 || faces.len() < 4 {
+        return Err(RtfpError::model_not_closed(
+            "a solid mesh needs at least 4 vertices and 4 triangles",
+        ));
+    } else {
+        TriMesh { vertices, faces }
+    };
     let mesh_hash = mesh_hash(&mesh);
     let stored_unit = if unit == "1" || unit == "dimensionless" {
         unit.clone()
@@ -172,9 +307,7 @@ fn declared_length_unit(path: &Path) -> Result<Option<String>, RtfpError> {
     if ext != "obj" {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(path).map_err(|err| {
-        RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
-    })?;
+    let text = read_text(path)?;
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("# length_unit ") {
@@ -268,10 +401,135 @@ fn parse_obj(text: &str) -> Result<ParsedMesh, RtfpError> {
     })
 }
 
-fn parse_gltf(path: &Path) -> Result<ParsedMesh, RtfpError> {
-    let bytes = std::fs::read(path).map_err(|err| {
-        RtfpError::model_not_closed(format!("cannot read {}: {err}", path.display()))
-    })?;
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+struct GpuPrim {
+    pos_count: u32,
+    pos_offset: u32,
+    pos_stride: u32,
+    index_count: u32,
+    index_offset: u32,
+    index_stride: u32,
+    index_width: u32,
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn gpu_prim_args(
+    json: &serde_json::Value,
+    primitive: &serde_json::Value,
+) -> Result<Option<GpuPrim>, RtfpError> {
+    let mode = primitive
+        .get("mode")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(4) as u32;
+    if mode != 4 || primitive.get("indices").is_none() {
+        return Ok(None);
+    }
+    let pos_index = primitive
+        .get("attributes")
+        .and_then(|value| value.get("POSITION"))
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| RtfpError::model_not_closed("missing POSITION"))?
+        as usize;
+    let pos = accessor(json, pos_index).map_err(RtfpError::model_not_closed)?;
+    if pos.ty != "VEC3" || pos.component != 5126 {
+        return Ok(None);
+    }
+    let index = primitive
+        .get("indices")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| RtfpError::model_not_closed("primitive indices are missing"))?
+        as usize;
+    let idx = accessor(json, index).map_err(RtfpError::model_not_closed)?;
+    if idx.ty != "SCALAR" {
+        return Err(RtfpError::model_not_closed("index accessor is not SCALAR"));
+    }
+    let width = match idx.component {
+        5121 => 1u32,
+        5123 => 2,
+        5125 => 4,
+        _ => return Ok(None),
+    };
+    if idx.count % 3 != 0 {
+        return Err(RtfpError::model_not_closed(
+            "indexed triangle primitive length is not a multiple of 3",
+        ));
+    }
+    Ok(Some(GpuPrim {
+        pos_count: u32::try_from(pos.count)
+            .map_err(|_| RtfpError::model_not_closed("too many mesh vertices"))?,
+        index_count: u32::try_from(idx.count)
+            .map_err(|_| RtfpError::model_not_closed("too many mesh indices"))?,
+        pos_offset: u32::try_from(pos.offset)
+            .map_err(|_| RtfpError::model_not_closed("mesh position offset does not fit"))?,
+        index_offset: u32::try_from(idx.offset)
+            .map_err(|_| RtfpError::model_not_closed("mesh index offset does not fit"))?,
+        pos_stride: u32::try_from(pos.stride)
+            .map_err(|_| RtfpError::model_not_closed("mesh position stride does not fit"))?,
+        index_stride: u32::try_from(idx.stride.max(width as usize))
+            .map_err(|_| RtfpError::model_not_closed("mesh index stride does not fit"))?,
+        index_width: width,
+    }))
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn read_primitive_gpu(
+    json: &serde_json::Value,
+    bin: &[u8],
+    primitive: &serde_json::Value,
+    world: [f64; 16],
+) -> Result<Option<(Vec<DVec3>, Vec<[u32; 3]>)>, RtfpError> {
+    let Some(prim) = gpu_prim_args(json, primitive)? else {
+        return Ok(None);
+    };
+    crate::browser::load_mesh_primitive(
+        bin,
+        prim.pos_count,
+        prim.pos_offset,
+        prim.pos_stride,
+        prim.index_count,
+        prim.index_offset,
+        prim.index_stride,
+        prim.index_width,
+        world,
+    )
+    .map(Some)
+    .map_err(RtfpError::model_not_closed)
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+async fn read_primitive_page(
+    json: &serde_json::Value,
+    bin: &[u8],
+    primitive: &serde_json::Value,
+    world: [f64; 16],
+) -> Result<Option<(Vec<DVec3>, Vec<[u32; 3]>)>, RtfpError> {
+    let Some(prim) = gpu_prim_args(json, primitive)? else {
+        return Ok(None);
+    };
+    crate::browser::load_mesh_primitive_local(
+        bin,
+        prim.pos_count,
+        prim.pos_offset,
+        prim.pos_stride,
+        prim.index_count,
+        prim.index_offset,
+        prim.index_stride,
+        prim.index_width,
+        world,
+    )
+    .await
+    .map(Some)
+    .map_err(RtfpError::model_not_closed)
+}
+
+struct GltfScene {
+    json: serde_json::Value,
+    bin: Vec<u8>,
+    worlds: Vec<[f64; 16]>,
+}
+
+fn open_gltf(path: &Path) -> Result<GltfScene, RtfpError> {
+    let bytes = read_bytes(path)?;
     let (json, bin) = if path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -289,11 +547,95 @@ fn parse_gltf(path: &Path) -> Result<ParsedMesh, RtfpError> {
         .get("nodes")
         .and_then(|v| v.as_array())
         .ok_or_else(|| RtfpError::model_not_closed("glTF has no nodes array"))?;
-    let meshes = json
+    let worlds = world_matrices(nodes, &json)?;
+    Ok(GltfScene { json, bin, worlds })
+}
+
+fn append_cpu_primitive(
+    json: &serde_json::Value,
+    bin: &[u8],
+    primitive: &serde_json::Value,
+    world: [f64; 16],
+    mesh_index: u64,
+    primitive_index: usize,
+    vertices: &mut Vec<DVec3>,
+    faces: &mut Vec<[u32; 3]>,
+) -> Result<TriKind, RtfpError> {
+    let mode = primitive.get("mode").and_then(|v| v.as_u64()).unwrap_or(4) as u32;
+    let positions = read_vec3(json, bin, primitive, "POSITION").map_err(|err| {
+        RtfpError::model_not_closed(format!(
+            "mesh {mesh_index} primitive {primitive_index}: {err}"
+        ))
+    })?;
+    let indices = match primitive.get("indices") {
+        Some(_) => read_indices(json, bin, primitive)?,
+        None => (0..positions.len() as u32).collect(),
+    };
+    let base = vertices.len() as u32;
+    for position in positions {
+        vertices.push(transform_point(world, position));
+    }
+    let (triangles, kind) = triangulate(mode, &indices)?;
+    for triangle in triangles {
+        faces.push([triangle[0] + base, triangle[1] + base, triangle[2] + base]);
+    }
+    Ok(kind)
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+fn append_loaded(
+    vertices: &mut Vec<DVec3>,
+    faces: &mut Vec<[u32; 3]>,
+    loaded: Vec<DVec3>,
+    loaded_faces: Vec<[u32; 3]>,
+) {
+    let base = vertices.len() as u32;
+    vertices.extend(loaded);
+    for triangle in loaded_faces {
+        faces.push([triangle[0] + base, triangle[1] + base, triangle[2] + base]);
+    }
+}
+
+fn note_kind(kind: TriKind, strips: &mut usize, fans: &mut usize) {
+    match kind {
+        TriKind::Triangles => {}
+        TriKind::Strip => *strips += 1,
+        TriKind::Fan => *fans += 1,
+    }
+}
+
+fn finish_parsed(
+    vertices: Vec<DVec3>,
+    faces: Vec<[u32; 3]>,
+    strips: usize,
+    fans: usize,
+) -> Result<ParsedMesh, RtfpError> {
+    if vertices.is_empty() {
+        return Err(RtfpError::model_not_closed(
+            "glTF scene contains no mesh vertices",
+        ));
+    }
+    Ok(ParsedMesh {
+        vertices,
+        faces,
+        strips,
+        fans,
+        source: "gltf".into(),
+    })
+}
+
+fn parse_gltf(path: &Path) -> Result<ParsedMesh, RtfpError> {
+    let scene = open_gltf(path)?;
+    let nodes = scene
+        .json
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| RtfpError::model_not_closed("glTF has no nodes array"))?;
+    let meshes = scene
+        .json
         .get("meshes")
         .and_then(|v| v.as_array())
         .ok_or_else(|| RtfpError::model_not_closed("glTF has no meshes array"))?;
-    let worlds = world_matrices(nodes, &json)?;
     let mut vertices = Vec::new();
     let mut faces = Vec::new();
     let mut strips = 0usize;
@@ -312,43 +654,86 @@ fn parse_gltf(path: &Path) -> Result<ParsedMesh, RtfpError> {
                 RtfpError::model_not_closed(format!("mesh {mesh_index} has no primitives"))
             })?;
         for (primitive_index, primitive) in primitives.iter().enumerate() {
-            let mode = primitive.get("mode").and_then(|v| v.as_u64()).unwrap_or(4) as u32;
-            let positions = read_vec3(&json, &bin, primitive, "POSITION").map_err(|err| {
-                RtfpError::model_not_closed(format!(
-                    "mesh {mesh_index} primitive {primitive_index}: {err}"
-                ))
-            })?;
-            let indices = match primitive.get("indices") {
-                Some(_) => read_indices(&json, &bin, primitive)?,
-                None => (0..positions.len() as u32).collect(),
-            };
-            let base = vertices.len() as u32;
-            for position in positions {
-                vertices.push(transform_point(worlds[node_index], position));
+            #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+            if crate::browser::worker_mesh()
+                && let Some((loaded, loaded_faces)) = read_primitive_gpu(
+                    &scene.json,
+                    &scene.bin,
+                    primitive,
+                    scene.worlds[node_index],
+                )?
+            {
+                append_loaded(&mut vertices, &mut faces, loaded, loaded_faces);
+                continue;
             }
-            let (triangles, kind) = triangulate(mode, &indices)?;
-            match kind {
-                TriKind::Triangles => {}
-                TriKind::Strip => strips += 1,
-                TriKind::Fan => fans += 1,
-            }
-            for triangle in triangles {
-                faces.push([triangle[0] + base, triangle[1] + base, triangle[2] + base]);
-            }
+            let kind = append_cpu_primitive(
+                &scene.json,
+                &scene.bin,
+                primitive,
+                scene.worlds[node_index],
+                mesh_index,
+                primitive_index,
+                &mut vertices,
+                &mut faces,
+            )?;
+            note_kind(kind, &mut strips, &mut fans);
         }
     }
-    if vertices.is_empty() {
-        return Err(RtfpError::model_not_closed(
-            "glTF scene contains no mesh vertices",
-        ));
+    finish_parsed(vertices, faces, strips, fans)
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+async fn parse_gltf_gpu(path: &Path) -> Result<ParsedMesh, RtfpError> {
+    let scene = open_gltf(path)?;
+    let nodes = scene
+        .json
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| RtfpError::model_not_closed("glTF has no nodes array"))?;
+    let meshes = scene
+        .json
+        .get("meshes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| RtfpError::model_not_closed("glTF has no meshes array"))?;
+    let mut vertices = Vec::new();
+    let mut faces = Vec::new();
+    let mut strips = 0usize;
+    let mut fans = 0usize;
+    for (node_index, node) in nodes.iter().enumerate() {
+        let Some(mesh_index) = node.get("mesh").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let mesh = meshes.get(mesh_index as usize).ok_or_else(|| {
+            RtfpError::model_not_closed(format!("node {node_index} references a missing mesh"))
+        })?;
+        let primitives = mesh
+            .get("primitives")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                RtfpError::model_not_closed(format!("mesh {mesh_index} has no primitives"))
+            })?;
+        for (primitive_index, primitive) in primitives.iter().enumerate() {
+            if let Some((loaded, loaded_faces)) =
+                read_primitive_page(&scene.json, &scene.bin, primitive, scene.worlds[node_index])
+                    .await?
+            {
+                append_loaded(&mut vertices, &mut faces, loaded, loaded_faces);
+                continue;
+            }
+            let kind = append_cpu_primitive(
+                &scene.json,
+                &scene.bin,
+                primitive,
+                scene.worlds[node_index],
+                mesh_index,
+                primitive_index,
+                &mut vertices,
+                &mut faces,
+            )?;
+            note_kind(kind, &mut strips, &mut fans);
+        }
     }
-    Ok(ParsedMesh {
-        vertices,
-        faces,
-        strips,
-        fans,
-        source: "gltf".into(),
-    })
+    finish_parsed(vertices, faces, strips, fans)
 }
 
 #[derive(Clone, Copy)]
@@ -467,12 +852,7 @@ fn external_buffer(path: &Path, json: &serde_json::Value) -> Result<Vec<u8>, Rtf
         return base64_decode(payload);
     }
     let bin_path = path.parent().unwrap_or(Path::new(".")).join(uri);
-    std::fs::read(&bin_path).map_err(|err| {
-        RtfpError::model_not_closed(format!(
-            "cannot read glTF buffer {}: {err}",
-            bin_path.display()
-        ))
-    })
+    read_bytes(&bin_path)
 }
 
 fn base64_decode(text: &str) -> Result<Vec<u8>, RtfpError> {

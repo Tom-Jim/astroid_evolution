@@ -229,7 +229,11 @@ impl RheoGpu {
                 core: metal_rt::init().map_err(RheoError::gpu_unavailable)?,
             })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            Ok(Self {})
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             Err(RheoError::gpu_unavailable(
                 "the rheology chain runs on Metal; this platform has no Metal device",
@@ -242,7 +246,12 @@ impl RheoGpu {
         {
             self.core.name()
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            let _ = self;
+            "WebGPU".to_string()
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             String::new()
         }
@@ -283,9 +292,82 @@ impl RheoGpu {
                 .collect::<Vec<_>>();
             Ok(ChainResult { nodes, stats })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
         {
-            let _ = (packed, params);
+            let started = crate::common::time::wall_seconds();
+            let nodes_b = crate::browser::slice_bytes(&packed);
+            let params_b = crate::browser::pod_bytes(&params);
+            let modes_b = crate::browser::slice_bytes(&t.modes);
+            let recur_b = crate::browser::slice_bytes(&t.recur);
+            let out_len = batch.len() * OUT_DS * 8;
+            let buffers = [
+                crate::browser::GpuBuffer {
+                    binding: 0,
+                    bytes: &nodes_b,
+                    zeros: 0,
+                    readback: false,
+                },
+                crate::browser::GpuBuffer {
+                    binding: 1,
+                    bytes: &params_b,
+                    zeros: 0,
+                    readback: false,
+                },
+                crate::browser::GpuBuffer {
+                    binding: 2,
+                    bytes: &modes_b,
+                    zeros: 0,
+                    readback: false,
+                },
+                crate::browser::GpuBuffer {
+                    binding: 3,
+                    bytes: &recur_b,
+                    zeros: 0,
+                    readback: false,
+                },
+                crate::browser::GpuBuffer {
+                    binding: 4,
+                    bytes: &[],
+                    zeros: out_len,
+                    readback: true,
+                },
+                crate::browser::GpuBuffer {
+                    binding: 5,
+                    bytes: &[],
+                    zeros: 12,
+                    readback: true,
+                },
+            ];
+            let back = crate::browser::dispatch(
+                "rheo",
+                "rheo_chain",
+                crate::browser::groups64(batch.len()),
+                &buffers,
+            )
+            .map_err(RheoError::gpu_unavailable)?;
+            let words = crate::browser::f32_vec(back.first().map(Vec::as_slice).unwrap_or(&[]));
+            let raw = back.get(1).map(Vec::as_slice).unwrap_or(&[]);
+            let mut summary = ChainStats {
+                seconds: crate::common::time::wall_seconds() - started,
+                ..ChainStats::default()
+            };
+            if raw.len() >= 12 {
+                summary.max_iterations = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+                summary.unconverged = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+                summary.invalid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            }
+            let nodes = words
+                .chunks_exact(OUT_DS * 2)
+                .map(unpack)
+                .collect::<Vec<_>>();
+            Ok(ChainResult {
+                nodes,
+                stats: summary,
+            })
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+        {
+            let _ = (packed, params, t);
             Err(RheoError::gpu_unavailable("no Metal device"))
         }
     }

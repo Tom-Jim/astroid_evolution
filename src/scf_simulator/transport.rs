@@ -216,7 +216,10 @@ impl DirIndex {
     /// Vertices that can lie inside the spherical cap of angular radius `alpha`
     /// about `origin`. The set is a superset: every unit direction with angle
     /// strictly below `alpha` is present, and some directions outside it may be too.
-    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+    #[cfg_attr(
+        all(any(target_os = "macos", target_arch = "wasm32"), not(test)),
+        allow(dead_code)
+    )]
     fn collect_within(&self, origin: DVec3, alpha: f64, out: &mut Vec<usize>) {
         out.clear();
         if !alpha.is_finite() || alpha <= 0.0 {
@@ -316,11 +319,7 @@ fn dist_out_sq(p: DVec3, lo: [f64; 3], hi: [f64; 3]) -> f64 {
 /// `interp_vertex_field` and the post-realignment resample both walk.
 fn face_ring(topo: &Topology, index: &DirIndex, p: DVec3) -> (usize, Vec<usize>) {
     let nearest = index.nearest(&topo.dirs, p);
-    let mut seen = topo
-        .vertex_faces
-        .get(nearest)
-        .cloned()
-        .unwrap_or_default();
+    let mut seen = topo.vertex_faces.get(nearest).cloned().unwrap_or_default();
     let first = seen.clone();
     for f in first {
         let Some(neighbors) = topo.face_neighbors.get(f) else {
@@ -346,11 +345,7 @@ fn weights_on(topo: &Topology, face: usize, p: DVec3) -> Option<([usize; 3], [f6
 }
 
 /// Containing triangle of `p`, or the nearest vertex with weight 1.
-pub(crate) fn locate_vertex(
-    topo: &Topology,
-    index: &DirIndex,
-    p: DVec3,
-) -> ([usize; 3], [f64; 3]) {
+pub(crate) fn locate_vertex(topo: &Topology, index: &DirIndex, p: DVec3) -> ([usize; 3], [f64; 3]) {
     let (nearest, faces) = face_ring(topo, index, p);
     for f in faces {
         if let Some(hit) = weights_on(topo, f, p) {
@@ -514,7 +509,10 @@ pub fn mode_c(
 }
 
 /// Host reference. Tests compare the GPU field with this and with the dense loop.
-#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+#[cfg_attr(
+    all(any(target_os = "macos", target_arch = "wasm32"), not(test)),
+    allow(dead_code)
+)]
 fn mode_c_cpu(
     topo: &Topology,
     area: &[f64],
@@ -562,18 +560,18 @@ fn deposit(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) -> V
             return j_dep;
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
     {
         deposit_gpu(topo, area, j_ero, prm).unwrap_or_else(|err| panic!("mode C GPU: {err}"))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _span = super::timing::span("mode_c_kernel");
         deposit_cpu(topo, area, j_ero, prm)
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_arch = "wasm32"))]
 fn deposit_gpu(
     topo: &Topology,
     area: &[f64],
@@ -627,7 +625,10 @@ fn deposit_gpu(
     )
 }
 
-#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+#[cfg_attr(
+    all(any(target_os = "macos", target_arch = "wasm32"), not(test)),
+    allow(dead_code)
+)]
 fn deposit_cpu(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) -> Vec<f64> {
     let nv = topo.n_vertices();
     let mut j_dep = vec![0.0; nv];
@@ -662,7 +663,10 @@ fn deposit_cpu(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) 
 /// the same value the dense loop would store: clamp the dot, reject only when
 /// the cosine is safely outside, otherwise `exp(-½(acos(c)/w)²)` when
 /// `acos(c) < cutoff`.
-#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+#[cfg_attr(
+    all(any(target_os = "macos", target_arch = "wasm32"), not(test)),
+    allow(dead_code)
+)]
 fn kernel_terms(
     dirs: &[DVec3],
     bins: &DirIndex,
@@ -803,7 +807,8 @@ mod tests {
         assert!(
             worst <= tol,
             "deposition[{at}] gpu {} cpu {} relative {worst:.3e} (tolerance {tol:.1e})",
-            got[at], want[at]
+            got[at],
+            want[at]
         );
     }
 

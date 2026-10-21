@@ -451,13 +451,7 @@ pub fn run(
         // advances by at most θ times its own nearest spacing. The per-node
         // minimum is that bound, and it is larger whenever the fastest node
         // does not sit on the shortest edge.
-        let dt_cfl = cfl_dt(
-            &state.body,
-            &yielded,
-            &cl.normal,
-            &cl.v_sl,
-            st.theta_cfl,
-        );
+        let dt_cfl = cfl_dt(&state.body, &yielded, &cl.normal, &cl.v_sl, st.theta_cfl);
         let flow = {
             let _span = super::timing::span("surface_flow");
             surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius)

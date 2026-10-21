@@ -5,12 +5,19 @@
 
 pub mod aevb;
 mod density;
+#[cfg(target_arch = "wasm32")]
+pub mod memfs;
 mod mesh;
 
 pub use density::{
     DensityInput, assert_nonnegative, density_hash, load_density, positivity_points,
 };
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+pub use mesh::preload_viewer_mesh;
 pub use mesh::{ImportRequest, MeshDocument, Reconstruct, load_mesh_file, mesh_hash, write_obj};
+
+#[cfg(target_arch = "wasm32")]
+pub use memfs::install as install_asset;
 
 use crate::common::geometry::TriMesh;
 use crate::common::math::DVec3;

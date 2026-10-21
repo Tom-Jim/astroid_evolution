@@ -148,7 +148,12 @@ pub fn eval_velocity_rays(
         return super::basis_gpu::velocity(surf, lay, pts, n_per, want)
             .unwrap_or_else(|err| panic!("velocity basis GPU: {err}"));
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        return super::basis_web::velocity(surf, lay, pts, n_per, want)
+            .unwrap_or_else(|err| panic!("velocity basis GPU: {err}"));
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (surf, lay, pts, n_per, want);
         panic!("velocity basis requires Metal");
@@ -210,7 +215,13 @@ pub fn contract_velocity_rays(
             .unwrap_or_else(|err| panic!("velocity contraction GPU: {err}"));
         return ContractedVelocity { v: got.v, d: got.d };
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        let got = super::basis_web::contract_velocity(surf, lay, pts, n_per, want, u)
+            .unwrap_or_else(|err| panic!("velocity contraction GPU: {err}"));
+        return ContractedVelocity { v: got.v, d: got.d };
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (surf, lay, pts, n_per, want, u);
         panic!("velocity contraction requires Metal");
@@ -221,18 +232,20 @@ pub fn contract_velocity_rays(
 pub struct SurfaceStrain {
     #[cfg(target_os = "macos")]
     inner: super::basis_gpu::GpuStrain,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    inner: super::basis_web::GpuStrain,
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     _private: (),
 }
 
 impl SurfaceStrain {
     /// `D(Bu)` at each stored point, six scaled components, point-major.
     pub fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_arch = "wasm32"))]
         {
             self.inner.contract(u)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             let _ = u;
             Err("strain contraction requires Metal".into())
@@ -251,7 +264,13 @@ pub fn surface_strain(
             inner: super::basis_gpu::strain_basis(surf, lay, pts)?,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        Ok(SurfaceStrain {
+            inner: super::basis_web::strain_basis(surf, lay, pts)?,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (surf, lay, pts);
         Err("strain basis requires Metal".into())
@@ -271,7 +290,12 @@ pub fn contract_pressure(
         return super::basis_gpu::contract_pressure(surf, lay, pts, pres_c, lift)
             .unwrap_or_else(|err| panic!("pressure contraction GPU: {err}"));
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        return super::basis_web::contract_pressure(surf, lay, pts, pres_c, lift)
+            .unwrap_or_else(|err| panic!("pressure contraction GPU: {err}"));
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (surf, lay, pts, pres_c, lift);
         panic!("pressure contraction requires Metal");
@@ -289,7 +313,12 @@ pub fn eval_pressure(
         return super::basis_gpu::pressure(surf, lay, pts, gradients)
             .unwrap_or_else(|err| panic!("pressure basis GPU: {err}"));
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        return super::basis_web::pressure(surf, lay, pts, gradients)
+            .unwrap_or_else(|err| panic!("pressure basis GPU: {err}"));
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (surf, lay, pts, gradients);
         panic!("pressure basis requires Metal");

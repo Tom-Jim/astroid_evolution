@@ -7,6 +7,8 @@
 pub mod basis;
 #[cfg(target_os = "macos")]
 mod basis_gpu;
+#[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+mod basis_web;
 pub mod body;
 pub mod classify;
 pub mod error;
@@ -16,9 +18,9 @@ pub mod frame;
 pub mod harmonics;
 pub mod io;
 pub mod jets;
+pub mod mechanics;
 mod mode_c_gpu;
 mod mode_c_spectral;
-pub mod mechanics;
 pub mod params;
 pub mod quad;
 pub mod relax;

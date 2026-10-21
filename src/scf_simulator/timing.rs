@@ -5,7 +5,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::OnceLock;
-use std::time::Instant;
+
+use crate::common::time::wall_seconds;
 
 fn flag() -> &'static OnceLock<bool> {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -43,7 +44,7 @@ pub fn set_phase(phase: &'static str) {
 
 pub struct Span {
     name: &'static str,
-    start: Option<Instant>,
+    start: Option<f64>,
 }
 
 impl Span {
@@ -51,7 +52,7 @@ impl Span {
         let Some(start) = self.start.take() else {
             return;
         };
-        let seconds = start.elapsed().as_secs_f64();
+        let seconds = wall_seconds() - start;
         let phase = PHASE.with(|p| p.get());
         // The PDHG loop records a few hundred sub-millisecond spans. Printing
         // each one is slower than the residual check and inflates the parent.
@@ -74,7 +75,7 @@ impl Span {
 
     pub fn resume(&mut self) {
         if enabled() && self.start.is_none() {
-            self.start = Some(Instant::now());
+            self.start = Some(wall_seconds());
         }
     }
 }
@@ -91,7 +92,7 @@ pub fn span(name: &'static str) -> Span {
     }
     Span {
         name,
-        start: Some(Instant::now()),
+        start: Some(wall_seconds()),
     }
 }
 

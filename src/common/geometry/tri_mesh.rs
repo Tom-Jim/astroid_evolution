@@ -1,3 +1,4 @@
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 use rayon::prelude::*;
 
 use crate::common::error::CommonError;
@@ -239,6 +240,19 @@ fn validate_edges(faces: &[[u32; 3]]) -> Result<(), CommonError> {
 }
 
 fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
+    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+    {
+        return crate::browser::reject_self_intersection(&mesh.vertices, &mesh.faces, scale)
+            .map_err(CommonError::model_not_closed);
+    }
+    #[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
+    {
+        validate_no_self_intersection_cpu(mesh, scale)
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
+fn validate_no_self_intersection_cpu(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
     let eps = 1e-10 * scale;
     let mut min = mesh.vertices[0];
     let mut max = mesh.vertices[0];
@@ -349,10 +363,12 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), Commo
 }
 
 /// A pair is tested in the lowest cell both boxes occupy, and nowhere else.
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn pair_owned_by(cell: [i32; 3], a: [i32; 3], b: [i32; 3]) -> bool {
     cell[0] == a[0].max(b[0]) && cell[1] == a[1].max(b[1]) && cell[2] == a[2].max(b[2])
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn share_edge(a: [u32; 3], b: [u32; 3]) -> bool {
     shared_vertex_count(a, b) >= 2
 }
@@ -367,12 +383,14 @@ fn shared_vertex_count(a: [u32; 3], b: [u32; 3]) -> usize {
     shared
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 struct InteriorHit {
     gap: f64,
 }
 
 /// Distance from an interior intersection point to the triangle boundary, in metres.
 /// `None` when the triangles do not meet in their interiors.
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn intersection_gap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let na = (a[1] - a[0]).cross(a[2] - a[0]);
     let nb = (b[1] - b[0]).cross(b[2] - b[0]);
@@ -409,6 +427,7 @@ fn intersection_gap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHi
     best
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn segment_interior_gap(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let dir = q - p;
     let e1 = tri[1] - tri[0];
@@ -436,6 +455,7 @@ fn segment_interior_gap(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> Option
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn distance_to_boundary(point: DVec3, tri: [DVec3; 3]) -> f64 {
     let mut gap = f64::MAX;
     for edge in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
@@ -449,6 +469,7 @@ fn distance_to_boundary(point: DVec3, tri: [DVec3; 3]) -> f64 {
     gap
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn coplanar_overlap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
     for vertex in b {
         if point_in_triangle_strict(vertex, a, eps) {
@@ -470,6 +491,7 @@ fn coplanar_overlap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
     false
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn point_in_triangle_strict(p: DVec3, tri: [DVec3; 3], eps: f64) -> bool {
     let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
     let axis = if n.x.abs() >= n.y.abs() && n.x.abs() >= n.z.abs() {
@@ -492,6 +514,7 @@ fn point_in_triangle_strict(p: DVec3, tri: [DVec3; 3], eps: f64) -> bool {
     bary.iter().all(|w| *w > eps)
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn barycentric_2d(p: [f64; 2], t: [[f64; 2]; 3]) -> [f64; 3] {
     let den = (t[1][1] - t[2][1]) * (t[0][0] - t[2][0]) + (t[2][0] - t[1][0]) * (t[0][1] - t[2][1]);
     if den.abs() <= 1e-18 {
@@ -504,6 +527,7 @@ fn barycentric_2d(p: [f64; 2], t: [[f64; 2]; 3]) -> [f64; 3] {
     [w0, w1, 1.0 - w0 - w1]
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn segments_cross(a: DVec3, b: DVec3, c: DVec3, d: DVec3, eps: f64) -> bool {
     let n = (b - a).cross(d - c);
     if n.length() <= eps {
@@ -530,6 +554,7 @@ fn segments_cross(a: DVec3, b: DVec3, c: DVec3, d: DVec3, eps: f64) -> bool {
     proper_2d(drop(a), drop(b), drop(c), drop(d), eps)
 }
 
+#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn proper_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], eps: f64) -> bool {
     let orient = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
         (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
@@ -739,6 +764,39 @@ pub struct RadialAlignReport {
 /// polyhedron, which is what §10.4.4 step 8b resampling requires. A convex mesh
 /// is left unchanged.
 pub fn align_radial_cones(
+    vertices: &mut [DVec3],
+    faces: &[[u32; 3]],
+) -> Result<RadialAlignReport, CommonError> {
+    // Same f64 relaxation on wasm and on the desktop. The browser double-single
+    // test treats a shared endpoint as a crossing and then walks vertices into
+    // a real self-intersection.
+    align_radial_cones_cpu(vertices, faces)
+}
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+#[allow(dead_code)]
+fn align_radial_cones_gpu(
+    vertices: &mut [DVec3],
+    faces: &[[u32; 3]],
+) -> Result<RadialAlignReport, CommonError> {
+    for face in faces {
+        if face.iter().any(|&index| index as usize >= vertices.len()) {
+            return Err(CommonError::model_not_closed(
+                "mesh face index is outside the vertex array",
+            ));
+        }
+    }
+    let (passes, bad, max_offset) =
+        crate::browser::align_radial(vertices, faces).map_err(CommonError::model_not_closed)?;
+    if bad > 0 {
+        return Err(CommonError::model_not_closed(format!(
+            "radial cones still overlap on {bad} face pairs after alignment (max offset {max_offset:.3} m)"
+        )));
+    }
+    Ok(RadialAlignReport { max_offset, passes })
+}
+
+fn align_radial_cones_cpu(
     vertices: &mut [DVec3],
     faces: &[[u32; 3]],
 ) -> Result<RadialAlignReport, CommonError> {

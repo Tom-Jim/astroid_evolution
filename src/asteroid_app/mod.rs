@@ -69,6 +69,55 @@ impl Plugin for AsteroidPlugin {
     }
 }
 
+/// Open the same viewer the `asteroid-app view` binary opens.
+///
+/// Native builds keep `DefaultPlugins`. The wasm package calls this after the
+/// project bytes are in memory and points the window at the page canvas.
+pub fn run_viewer(config: AppConfig) {
+    let mut app = App::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(DefaultPlugins);
+    #[cfg(target_arch = "wasm32")]
+    app.add_plugins(wasm_plugins());
+    app.add_plugins(AsteroidPlugin {
+        config,
+        windowed: true,
+    });
+    app.run();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn wasm_plugins() -> bevy::app::PluginGroupBuilder {
+    use bevy::asset::{AssetMetaCheck, AssetPlugin};
+    use bevy::render::RenderPlugin;
+    use bevy::render::settings::{Backends, RenderCreation, WgpuSettings, WgpuSettingsPriority};
+    use bevy::window::{PresentMode, Window, WindowPlugin};
+
+    DefaultPlugins
+        .set(WindowPlugin {
+            primary_window: Some(Window {
+                canvas: Some("#bevy".into()),
+                fit_canvas_to_parent: true,
+                prevent_default_event_handling: true,
+                present_mode: PresentMode::AutoVsync,
+                ..default()
+            }),
+            ..default()
+        })
+        .set(RenderPlugin {
+            render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
+                backends: Some(Backends::BROWSER_WEBGPU),
+                priority: WgpuSettingsPriority::WebGPU,
+                ..default()
+            })),
+            ..default()
+        })
+        .set(AssetPlugin {
+            meta_check: AssetMetaCheck::Never,
+            ..default()
+        })
+}
+
 fn load_scene(mut commands: Commands, config: Res<AppConfig>) {
     let project = Project::parse(&config.project_text, config.project_dir.clone())
         .unwrap_or_else(|err| panic!("project: {err}"));

@@ -4,13 +4,15 @@
 //! global pool once, at the end of the step. The Bevy thread only receives the
 //! snapshot. A full channel blocks the solver, so a fast mesh does not drop steps.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::sync::{Condvar, Mutex};
-use std::time::Instant;
 
 use bevy::prelude::Resource;
 
@@ -55,12 +57,16 @@ impl Control {
         if !paused {
             self.resume.notify_all();
         }
+        #[cfg(target_arch = "wasm32")]
+        crate::browser::set_pause_flag(paused);
     }
 
     pub fn request_quit(&self) {
         self.quit.store(true, Ordering::SeqCst);
         self.paused.store(false, Ordering::SeqCst);
         self.resume.notify_all();
+        #[cfg(target_arch = "wasm32")]
+        crate::browser::set_quit_flag();
     }
 }
 
@@ -251,14 +257,14 @@ pub fn run_prepared(
         forward,
     } = prepared;
     let slack_tol = project.relief.tol_slack as f32;
-    let mut mark = Instant::now();
+    let mut mark = crate::common::time::wall_seconds();
     let mut observer = |record: &evolve::StepRecord,
                         state: &State,
                         fields: &evolve::StepFields|
      -> Result<(), ScfError> {
-        let wall = mark.elapsed().as_secs_f64();
+        let wall = crate::common::time::wall_seconds() - mark;
         gate().map_err(ScfError::io)?;
-        mark = Instant::now();
+        mark = crate::common::time::wall_seconds();
         let snapshot =
             crate::asteroid_app::snapshot::pack(record, state, fields, scale, slack_tol, wall);
         sink(snapshot).map_err(ScfError::io)
@@ -282,25 +288,36 @@ pub fn run_prepared(
 /// One Rayon thread for `evolve::run`.
 ///
 /// Dropping a Rayon pool waits for its thread. A window close must not join a
-/// Metal step, so the pool is left alive until the process exits.
+/// Metal step, so the pool is left alive until the process exits. The wasm
+/// viewer has no Rayon pool; a Web Worker runs the same `prepare` and
+/// `run_prepared`.
 #[derive(Resource)]
 pub struct EvolutionPool {
+    #[cfg(not(target_arch = "wasm32"))]
     pool: ManuallyDrop<rayon::ThreadPool>,
 }
 
 impl EvolutionPool {
     pub fn new() -> Self {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(1)
-            .stack_size(64 << 20)
-            .thread_name(|index| format!("tier2-evolution-{index}"))
-            .build()
-            .expect("1-thread rayon pool for tier 2");
-        Self {
-            pool: ManuallyDrop::new(pool),
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .stack_size(64 << 20)
+                .thread_name(|index| format!("tier2-evolution-{index}"))
+                .build()
+                .expect("1-thread rayon pool for tier 2");
+            Self {
+                pool: ManuallyDrop::new(pool),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {}
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn spawn_job<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static,
@@ -325,40 +342,48 @@ pub fn spawn(
     control: Arc<Control>,
     pool: &EvolutionPool,
 ) -> Receiver<WorkerMessage> {
-    let (tx, rx) = mpsc::sync_channel(2);
-    pool.spawn_job(move || {
-        let send =
-            |message: WorkerMessage| tx.send(message).map_err(|_| "viewer closed".to_string());
-        let outcome = (|| -> Result<String, String> {
-            send(WorkerMessage::Status(
-                "computing the first tier 2 step".into(),
-            ))?;
-            let prepared = prepare(&project_text, &project_dir, &spin)?;
-            let initial = crate::asteroid_app::snapshot::pack_initial(
-                &prepared.state,
-                prepared.forward.moments.mass,
-                scale,
-                prepared.project.relief.tol_slack as f32,
-            );
-            send(WorkerMessage::Status("tier 2 running".into()))?;
-            send(WorkerMessage::Frame(Box::new(initial)))?;
-            let complete = run_prepared(
-                prepared,
-                max_steps,
-                scale,
-                || control.wait_if_paused(),
-                |snapshot| send(WorkerMessage::Frame(Box::new(snapshot))),
-            )?;
-            Ok(if complete {
-                "schedule complete".into()
-            } else {
-                "stopped at the step limit".into()
-            })
-        })();
-        let _ = match outcome {
-            Ok(message) => tx.send(WorkerMessage::Finished(message)),
-            Err(message) => tx.send(WorkerMessage::Failed(message)),
-        };
-    });
-    rx
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (control, pool);
+        crate::browser::spawn_evolution(project_text, project_dir, spin, max_steps, scale)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (tx, rx) = mpsc::sync_channel(2);
+        pool.spawn_job(move || {
+            let send =
+                |message: WorkerMessage| tx.send(message).map_err(|_| "viewer closed".to_string());
+            let outcome = (|| -> Result<String, String> {
+                send(WorkerMessage::Status(
+                    "computing the first tier 2 step".into(),
+                ))?;
+                let prepared = prepare(&project_text, &project_dir, &spin)?;
+                let initial = crate::asteroid_app::snapshot::pack_initial(
+                    &prepared.state,
+                    prepared.forward.moments.mass,
+                    scale,
+                    prepared.project.relief.tol_slack as f32,
+                );
+                send(WorkerMessage::Status("tier 2 running".into()))?;
+                send(WorkerMessage::Frame(Box::new(initial)))?;
+                let complete = run_prepared(
+                    prepared,
+                    max_steps,
+                    scale,
+                    || control.wait_if_paused(),
+                    |snapshot| send(WorkerMessage::Frame(Box::new(snapshot))),
+                )?;
+                Ok(if complete {
+                    "schedule complete".into()
+                } else {
+                    "stopped at the step limit".into()
+                })
+            })();
+            let _ = match outcome {
+                Ok(message) => tx.send(WorkerMessage::Finished(message)),
+                Err(message) => tx.send(WorkerMessage::Failed(message)),
+            };
+        });
+        rx
+    }
 }

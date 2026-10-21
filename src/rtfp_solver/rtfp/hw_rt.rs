@@ -763,6 +763,10 @@ mod metal_rt {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+#[path = "hw_web.rs"]
+mod hw_web;
+
 #[cfg(target_os = "macos")]
 type MetalCore = metal_rt::Core;
 #[cfg(not(target_os = "macos"))]
@@ -801,7 +805,11 @@ fn core() -> Result<Arc<MetalCore>, RtfpError> {
         {
             metal_rt::init().map(Arc::new)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            Ok(Arc::new(()))
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             Err("hardware ray tracing requires Metal".to_string())
         }
@@ -816,6 +824,8 @@ pub struct HardwareMesh {
     core: Arc<MetalCore>,
     #[cfg(target_os = "macos")]
     built: metal_rt::Built,
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    web: hw_web::Resident,
     frame: Frame,
 }
 
@@ -827,10 +837,10 @@ impl std::fmt::Debug for HardwareMesh {
 
 impl HardwareMesh {
     pub fn build(mesh: &TriMesh) -> Result<Self, RtfpError> {
-        let core = core()?;
         let frame = Frame::of(mesh);
         #[cfg(target_os = "macos")]
         {
+            let core = core()?;
             let vertices: Vec<f32> = mesh
                 .vertices
                 .iter()
@@ -844,9 +854,16 @@ impl HardwareMesh {
                 metal_rt::build(&core, &vertices, &indices).map_err(RtfpError::gpu_unavailable)?;
             Ok(Self { core, built, frame })
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
         {
-            let _ = (core, frame);
+            let core = core()?;
+            let web = hw_web::resident(mesh, frame.center, frame.scale)
+                .map_err(RtfpError::gpu_unavailable)?;
+            Ok(Self { core, web, frame })
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
+        {
+            let _ = frame;
             Err(RtfpError::gpu_unavailable(
                 "hardware ray tracing requires Metal",
             ))
@@ -892,7 +909,12 @@ impl HardwareMesh {
             )
             .map_err(RtfpError::gpu_unavailable)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            hw_web::field(&self.web, self.frame.center, self.frame.scale, job)
+                .map_err(RtfpError::gpu_unavailable)
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             let _ = job;
             Err(RtfpError::gpu_unavailable(
@@ -959,7 +981,24 @@ impl HardwareMesh {
             )
             .map_err(RtfpError::gpu_unavailable)
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+        {
+            hw_web::moments(
+                &self.web,
+                self.frame.center,
+                self.frame.scale,
+                origin,
+                dirs,
+                weights,
+                bulk,
+                kernels,
+                nodes,
+                finest,
+                max_panels,
+            )
+            .map_err(RtfpError::gpu_unavailable)
+        }
+        #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
         {
             let _ = (
                 origin, dirs, weights, bulk, kernels, nodes, finest, max_panels,
@@ -1065,7 +1104,13 @@ impl HardwareMesh {
         .map_err(RtfpError::gpu_unavailable)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    fn launch(&self, rays: &[[f32; 8]], slots: usize) -> Result<(Vec<u32>, Vec<f32>), RtfpError> {
+        hw_web::trace(&self.web, rays, slots, EXPECT_REL_TOL, EXPECT_ABS_TOL)
+            .map_err(RtfpError::gpu_unavailable)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     fn launch(&self, _rays: &[[f32; 8]], _slots: usize) -> Result<(Vec<u32>, Vec<f32>), RtfpError> {
         Err(RtfpError::gpu_unavailable(
             "hardware ray tracing requires Metal",

@@ -170,10 +170,9 @@ pub fn control_keys(
                     .remove::<Wireframe>()
                     .remove::<WireframeColor>();
             } else {
-                commands.entity(entity).insert((
-                    Wireframe,
-                    WireframeColor { color: WIRE_COLOR },
-                ));
+                commands
+                    .entity(entity)
+                    .insert((Wireframe, WireframeColor { color: WIRE_COLOR }));
             }
         }
     }

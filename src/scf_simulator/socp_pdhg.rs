@@ -16,7 +16,7 @@
 //! accepted when the original KKT residuals meet `KKT_TOL`. Stationarity is
 //! the worst relative residual of one variable.
 
-use std::time::Instant;
+use crate::common::time::wall_seconds;
 
 /// Row residual, block stationarity, duality gap, and dual-cone feasibility.
 const KKT_TOL: f64 = 1.0e-3;
@@ -157,7 +157,7 @@ pub(crate) fn ergodic_count(count: u32, _stalled_checks: u32) -> u32 {
 }
 
 pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
-    let started = Instant::now();
+    let started = wall_seconds();
     let n = problem.p_diag.len();
     let m = problem.b.len();
     if problem.q.len() != n {
@@ -165,8 +165,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
             "PDHG quadratic linear term has the wrong length".into(),
         ));
     }
-    if m != problem.n_eq + problem.n_nn + 4 * problem.n_soc + problem.n_trust || n == 0 || m == 0
-    {
+    if m != problem.n_eq + problem.n_nn + 4 * problem.n_soc + problem.n_trust || n == 0 || m == 0 {
         return Err(PdhgError::Failed(format!(
             "PDHG cone layout is inconsistent: n={n}, m={m}, eq={}, nn={}, soc={}, trust={}",
             problem.n_eq, problem.n_nn, problem.n_soc, problem.n_trust
@@ -236,7 +235,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
             x: x0,
             y: y0,
             iterations: 0,
-            seconds: started.elapsed().as_secs_f64(),
+            seconds: wall_seconds() - started,
             #[cfg(test)]
             primal: r0.rp,
             #[cfg(test)]
@@ -696,7 +695,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
         x: best.x,
         y: best.y_orig,
         iterations: iter,
-        seconds: started.elapsed().as_secs_f64(),
+        seconds: wall_seconds() - started,
         #[cfg(test)]
         primal: r.rp,
         #[cfg(test)]
@@ -786,7 +785,10 @@ fn diagonal_steps(
     }
     for cone in 0..n_soc {
         let begin = nn_end + 4 * cone;
-        let mag = row_sum[begin..begin + 4].iter().copied().fold(0.0, f64::max);
+        let mag = row_sum[begin..begin + 4]
+            .iter()
+            .copied()
+            .fold(0.0, f64::max);
         let s = step(mag);
         for value in &mut sigma[begin..begin + 4] {
             *value = s;
@@ -831,7 +833,11 @@ fn curvature_polish(
             n_p += 1;
         }
     }
-    let p_geo = if n_p > 0 { (log_p / n_p as f64).exp() } else { 1.0 };
+    let p_geo = if n_p > 0 {
+        (log_p / n_p as f64).exp()
+    } else {
+        1.0
+    };
     let beta = if p_geo < 0.1 {
         (0.1 / p_geo).min(1.0e8)
     } else {
@@ -1038,10 +1044,7 @@ fn equilibrate(
         // needs either a huge multiplier or a long travel in z. Balance the two
         // so each is about sqrt(s) steps: q' = sqrt(20 s), and the equality row
         // is scaled until the mass column is ±1.
-        let q_ref = (0..a.n)
-            .find(|&j| mass_col[j])
-            .map(|j| q[j])
-            .unwrap_or(1.0);
+        let q_ref = (0..a.n).find(|&j| mass_col[j]).map(|j| q[j]).unwrap_or(1.0);
         let mut s_hat = 0.0_f64;
         for i in 0..n_eq {
             s_hat = s_hat.max(b[i].abs() * q_ref);
@@ -1172,7 +1175,11 @@ fn equilibrate(
                 n_p += 1;
             }
         }
-        let p_geo = if n_p > 0 { (p_med / n_p as f64).exp() } else { 0.0 };
+        let p_geo = if n_p > 0 {
+            (p_med / n_p as f64).exp()
+        } else {
+            0.0
+        };
         let mut mass_a = 0.0_f64;
         let mut bound_a = 0.0_f64;
         if n_eq > 0 {
@@ -1313,11 +1320,7 @@ fn balance_active_multipliers(
             .map(|(old, new)| old + alpha * (new - old))
             .collect();
         let new = residuals(a, p, q, b, x, &y_try, n_eq, n_nn, n_soc, n_trust);
-        if new.rp_inf <= KKT_TOL
-            && new.gap <= KKT_TOL
-            && new.dy <= KKT_TOL
-            && new.rd < kept_rd
-        {
+        if new.rp_inf <= KKT_TOL && new.gap <= KKT_TOL && new.dy <= KKT_TOL && new.rd < kept_rd {
             kept_rd = new.rd;
             let done = new.rd <= KKT_TOL;
             kept = Some(y_try);
@@ -1353,9 +1356,7 @@ fn displacement_newton(
     }
     let mut aty = vec![0.0; a.n];
     spmv_t(a, y, &mut aty);
-    let g: Vec<f64> = (0..a.n)
-        .map(|j| p[j] * x[j] + q[j] + aty[j])
-        .collect();
+    let g: Vec<f64> = (0..a.n).map(|j| p[j] * x[j] + q[j] + aty[j]).collect();
     let mut free = vec![false; a.n];
     for j in 0..a.n {
         // Up to one trust radius in x = d/R₀. A shorter cap left the columns
@@ -1459,11 +1460,7 @@ fn displacement_newton(
             y2[i] -= alpha * lambda[i];
         }
         let new = residuals(a, p, q, b, &x2, &y2, n_eq, n_nn, n_soc, n_trust);
-        if new.rp_inf <= KKT_TOL
-            && new.gap <= KKT_TOL
-            && new.dy <= KKT_TOL
-            && new.rd < kept_rd
-        {
+        if new.rp_inf <= KKT_TOL && new.gap <= KKT_TOL && new.dy <= KKT_TOL && new.rd < kept_rd {
             kept_rd = new.rd;
             let done = new.rd <= KKT_TOL;
             kept = Some((x2, y2));
@@ -1473,10 +1470,7 @@ fn displacement_newton(
         }
     }
     if kept.is_none() && std::env::var_os("PDHG_LOG").is_some() {
-        eprintln!(
-            "pdhg newton reject rd={:.3e} (was {:.3e})",
-            kept_rd, old.rd
-        );
+        eprintln!("pdhg newton reject rd={:.3e} (was {:.3e})", kept_rd, old.rd);
     }
     kept
 }
@@ -1619,9 +1613,7 @@ fn equality_box_newton(
         }
         let mut aty = vec![0.0; a.n];
         spmv_t(a, &y2, &mut aty);
-        let g: Vec<f64> = (0..a.n)
-            .map(|j| p[j] * x2[j] + q[j] + aty[j])
-            .collect();
+        let g: Vec<f64> = (0..a.n).map(|j| p[j] * x2[j] + q[j] + aty[j]).collect();
         let mut free = vec![false; a.n];
         let mut any = false;
         for pair in pairs {
@@ -1893,14 +1885,7 @@ fn complementarity_parts(
 
 /// Equality multiplier and the largest non-trust pairing, so a gap failure
 /// names the row that actually carries it.
-fn pairing_note(
-    a: &Csr,
-    b: &[f64],
-    x: &[f64],
-    y: &[f64],
-    n_eq: usize,
-    n_nn: usize,
-) -> String {
+fn pairing_note(a: &Csr, b: &[f64], x: &[f64], y: &[f64], n_eq: usize, n_nn: usize) -> String {
     let mut ax = vec![0.0; a.m];
     spmv(a, x, &mut ax);
     let (eq_y, eq_s) = if n_eq > 0 {
@@ -2725,7 +2710,254 @@ mod gpu {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+mod gpu {
+    use super::{Csr, PdhgError};
+
+    #[repr(C)]
+    struct Step {
+        nx: u32,
+        m: u32,
+        n_eq: u32,
+        n_nn: u32,
+        n_soc: u32,
+        n_trust: u32,
+        avg_count: u32,
+        tau_hi: f32,
+        tau_lo: f32,
+        sigma_hi: f32,
+        sigma_lo: f32,
+        n_long: u32,
+    }
+
+    const _: () = assert!(std::mem::size_of::<Step>() == 48);
+
+    struct Csc {
+        ptr: Vec<u32>,
+        row: Vec<u32>,
+        val: Vec<f64>,
+    }
+
+    fn transpose(a: &Csr) -> Csc {
+        let mut counts = vec![0u32; a.n];
+        for &c in &a.col {
+            counts[c as usize] += 1;
+        }
+        let mut ptr = vec![0u32; a.n + 1];
+        for j in 0..a.n {
+            ptr[j + 1] = ptr[j] + counts[j];
+        }
+        let mut row = vec![0u32; a.val.len()];
+        let mut val = vec![0.0; a.val.len()];
+        let mut cursor = ptr.clone();
+        for i in 0..a.m {
+            for k in a.row_ptr[i] as usize..a.row_ptr[i + 1] as usize {
+                let j = a.col[k] as usize;
+                let p = cursor[j] as usize;
+                cursor[j] += 1;
+                row[p] = i as u32;
+                val[p] = a.val[k];
+            }
+        }
+        Csc { ptr, row, val }
+    }
+
+    fn pack_ds(values: &[f64]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(values.len() * 8);
+        for &x in values {
+            let hi = x as f32;
+            let lo = (x - f64::from(hi)) as f32;
+            out.extend_from_slice(&hi.to_le_bytes());
+            out.extend_from_slice(&lo.to_le_bytes());
+        }
+        out
+    }
+
+    fn unpack_ds(bytes: &[u8]) -> Vec<f64> {
+        bytes
+            .chunks_exact(8)
+            .map(|word| {
+                let hi = f32::from_le_bytes(word[0..4].try_into().unwrap());
+                let lo = f32::from_le_bytes(word[4..8].try_into().unwrap());
+                f64::from(hi) + f64::from(lo)
+            })
+            .collect()
+    }
+
+    fn pack_u32(values: &[u32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(values.len() * 4);
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    pub struct Device {
+        nx: usize,
+        m: usize,
+        n_eq: u32,
+        n_nn: u32,
+        n_soc: u32,
+        n_trust: u32,
+        n_long: u32,
+        long_rows: Vec<u8>,
+        csc_ptr: Vec<u8>,
+        csc_row: Vec<u8>,
+        csc_val: Vec<u8>,
+        csr_ptr: Vec<u8>,
+        csr_col: Vec<u8>,
+        csr_val: Vec<u8>,
+        x: std::cell::RefCell<Vec<u8>>,
+        xbar: std::cell::RefCell<Vec<u8>>,
+        xavg: std::cell::RefCell<Vec<u8>>,
+        y: std::cell::RefCell<Vec<u8>>,
+        yavg: std::cell::RefCell<Vec<u8>>,
+        q: Vec<u8>,
+        pdiag: Vec<u8>,
+        b: Vec<u8>,
+        tau_diag: Vec<u8>,
+        sigma_diag: Vec<u8>,
+    }
+
+    impl Device {
+        pub fn new(
+            a: &Csr,
+            p: &[f64],
+            q: &[f64],
+            b: &[f64],
+            tau: &[f64],
+            sigma: &[f64],
+            n_eq: usize,
+            n_nn: usize,
+            n_soc: usize,
+            n_trust: usize,
+        ) -> Result<Self, PdhgError> {
+            let csc = transpose(a);
+            let mut long_rows = Vec::new();
+            for i in 0..a.m {
+                if a.row_ptr[i + 1] - a.row_ptr[i] > 32 {
+                    long_rows.push(i as u32);
+                }
+            }
+            Ok(Self {
+                nx: a.n,
+                m: a.m,
+                n_eq: n_eq as u32,
+                n_nn: n_nn as u32,
+                n_soc: n_soc as u32,
+                n_trust: n_trust as u32,
+                n_long: long_rows.len() as u32,
+                long_rows: pack_u32(&long_rows),
+                csc_ptr: pack_u32(&csc.ptr),
+                csc_row: pack_u32(&csc.row),
+                csc_val: pack_ds(&csc.val),
+                csr_ptr: pack_u32(&a.row_ptr),
+                csr_col: pack_u32(&a.col),
+                csr_val: pack_ds(&a.val),
+                x: std::cell::RefCell::new(vec![0u8; a.n * 8]),
+                xbar: std::cell::RefCell::new(vec![0u8; a.n * 8]),
+                xavg: std::cell::RefCell::new(vec![0u8; a.n * 8]),
+                y: std::cell::RefCell::new(vec![0u8; a.m * 8]),
+                yavg: std::cell::RefCell::new(vec![0u8; a.m * 8]),
+                q: pack_ds(q),
+                pdiag: pack_ds(p),
+                b: pack_ds(b),
+                tau_diag: pack_ds(tau),
+                sigma_diag: pack_ds(sigma),
+            })
+        }
+
+        pub fn write_state(&self, x: &[f64], y: &[f64], xavg: &[f64], yavg: &[f64]) {
+            let packed = pack_ds(x);
+            *self.x.borrow_mut() = packed.clone();
+            *self.xbar.borrow_mut() = packed;
+            *self.y.borrow_mut() = pack_ds(y);
+            *self.xavg.borrow_mut() = pack_ds(xavg);
+            *self.yavg.borrow_mut() = pack_ds(yavg);
+        }
+
+        pub fn read_x(&self) -> Vec<f64> {
+            unpack_ds(&self.x.borrow())
+        }
+
+        pub fn read_y(&self) -> Vec<f64> {
+            unpack_ds(&self.y.borrow())
+        }
+
+        pub fn read_xavg(&self) -> Vec<f64> {
+            unpack_ds(&self.xavg.borrow())
+        }
+
+        pub fn read_yavg(&self) -> Vec<f64> {
+            unpack_ds(&self.yavg.borrow())
+        }
+
+        pub fn step(
+            &self,
+            iters: u32,
+            tau: f64,
+            sigma: f64,
+            avg_count: u32,
+        ) -> Result<(), PdhgError> {
+            let tau_hi = tau as f32;
+            let sigma_hi = sigma as f32;
+            let step = Step {
+                nx: self.nx as u32,
+                m: self.m as u32,
+                n_eq: self.n_eq,
+                n_nn: self.n_nn,
+                n_soc: self.n_soc,
+                n_trust: self.n_trust,
+                avg_count,
+                tau_hi,
+                tau_lo: (tau - f64::from(tau_hi)) as f32,
+                sigma_hi,
+                sigma_lo: (sigma - f64::from(sigma_hi)) as f32,
+                n_long: self.n_long,
+            };
+            let mut raw = [0u8; 48];
+            raw.copy_from_slice(&crate::browser::pod_bytes(&step));
+            let job = crate::browser::PdhgJob {
+                iters,
+                avg_count,
+                step: raw,
+                csc_ptr: self.csc_ptr.clone(),
+                csc_row: self.csc_row.clone(),
+                csc_val: self.csc_val.clone(),
+                csr_ptr: self.csr_ptr.clone(),
+                csr_col: self.csr_col.clone(),
+                csr_val: self.csr_val.clone(),
+                long_rows: self.long_rows.clone(),
+                x: self.x.borrow().clone(),
+                xbar: self.xbar.borrow().clone(),
+                xavg: self.xavg.borrow().clone(),
+                y: self.y.borrow().clone(),
+                yavg: self.yavg.borrow().clone(),
+                aty: Vec::new(),
+                ax: Vec::new(),
+                q: self.q.clone(),
+                pdiag: self.pdiag.clone(),
+                b: self.b.clone(),
+                tau_diag: self.tau_diag.clone(),
+                sigma_diag: self.sigma_diag.clone(),
+                nx: self.nx as u32,
+                m: self.m as u32,
+                n_long: self.n_long,
+                n_jobs: self.n_eq + self.n_nn + self.n_soc,
+                n_trust: self.n_trust,
+            };
+            let out = crate::browser::dispatch_pdhg(&job).map_err(PdhgError::Gpu)?;
+            *self.x.borrow_mut() = out.x;
+            *self.xbar.borrow_mut() = out.xbar;
+            *self.xavg.borrow_mut() = out.xavg;
+            *self.y.borrow_mut() = out.y;
+            *self.yavg.borrow_mut() = out.yavg;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
 mod gpu {
     use super::{Csr, PdhgError};
 

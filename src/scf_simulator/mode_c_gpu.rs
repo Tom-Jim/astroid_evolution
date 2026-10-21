@@ -61,7 +61,194 @@ pub fn deposit(
     )
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+pub fn deposit(
+    dirs: &[DVec3],
+    area: &[f64],
+    mass_rate: &[f64],
+    bins_g: usize,
+    bin_start: &[u32],
+    bin_items: &[u32],
+    caps: &[u32],
+    kernel_width: f64,
+    cutoff: f64,
+    cos_reject: f64,
+    dense: bool,
+) -> Result<Vec<f64>, String> {
+    let n = dirs.len();
+    if area.len() != n || mass_rate.len() != n {
+        return Err(format!(
+            "mode C kernel: {} directions, {} areas, {} mass rates",
+            n,
+            area.len(),
+            mass_rate.len()
+        ));
+    }
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if !dense && caps.len() != n * 6 {
+        return Err(format!(
+            "mode C kernel: {} cap bounds for {n} vertices",
+            caps.len()
+        ));
+    }
+    if bins_g == 0 || bin_start.len() != bins_g * bins_g * bins_g + 1 || bin_items.len() != n {
+        return Err(format!(
+            "mode C kernel: bin grid {bins_g}, {} starts, {} items, {n} vertices",
+            bin_start.len(),
+            bin_items.len()
+        ));
+    }
+    #[repr(C)]
+    struct ModeParams {
+        n: u32,
+        g: u32,
+        dense: u32,
+        pad: u32,
+        w_hi: f32,
+        w_lo: f32,
+        cutoff_hi: f32,
+        cutoff_lo: f32,
+        reject_hi: f32,
+        reject_lo: f32,
+    }
+    let width = crate::rheo_friction::basis::ds_pair(kernel_width);
+    let cut = crate::rheo_friction::basis::ds_pair(cutoff);
+    let reject = if dense {
+        [0.0, 0.0]
+    } else {
+        crate::rheo_friction::basis::ds_pair(cos_reject)
+    };
+    let params = ModeParams {
+        n: u32::try_from(n).map_err(|_| format!("mode C kernel: {n} vertices"))?,
+        g: u32::try_from(bins_g).map_err(|_| format!("mode C kernel: bin grid {bins_g}"))?,
+        dense: u32::from(dense),
+        pad: 0,
+        w_hi: width[0],
+        w_lo: width[1],
+        cutoff_hi: cut[0],
+        cutoff_lo: cut[1],
+        reject_hi: reject[0],
+        reject_lo: reject[1],
+    };
+    let dirs_b = crate::browser::slice_bytes(&crate::rheo_friction::basis::pack_dirs(dirs));
+    let area_b = crate::browser::slice_bytes(&crate::rheo_friction::basis::pack_scalars(area));
+    let rate_b = crate::browser::slice_bytes(&crate::rheo_friction::basis::pack_scalars(mass_rate));
+    let start_b = crate::browser::slice_bytes(bin_start);
+    let item_b = crate::browser::slice_bytes(bin_items);
+    let cap_b = crate::browser::slice_bytes(caps);
+    let params_b = crate::browser::pod_bytes(&params);
+    let norm_in = [
+        crate::browser::GpuBuffer {
+            binding: 0,
+            bytes: &dirs_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 1,
+            bytes: &area_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 2,
+            bytes: &rate_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 3,
+            bytes: &start_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 4,
+            bytes: &item_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 5,
+            bytes: &cap_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 6,
+            bytes: &[],
+            zeros: n * 8,
+            readback: true,
+        },
+        crate::browser::GpuBuffer {
+            binding: 7,
+            bytes: &params_b,
+            zeros: 0,
+            readback: false,
+        },
+    ];
+    let groups = crate::browser::groups64(n);
+    let norm = crate::browser::dispatch("mode_c", "mode_c_norm", groups, &norm_in)?;
+    let norm = norm.into_iter().next().unwrap_or_default();
+    let dep_in = [
+        crate::browser::GpuBuffer {
+            binding: 0,
+            bytes: &dirs_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 1,
+            bytes: &rate_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 2,
+            bytes: &norm,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 3,
+            bytes: &start_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 4,
+            bytes: &item_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 5,
+            bytes: &cap_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 6,
+            bytes: &[],
+            zeros: n * 8,
+            readback: true,
+        },
+        crate::browser::GpuBuffer {
+            binding: 7,
+            bytes: &params_b,
+            zeros: 0,
+            readback: false,
+        },
+    ];
+    let out = crate::browser::dispatch("mode_c", "mode_c_deposit", groups, &dep_in)?;
+    Ok(unpack_scalars(&crate::browser::f32_vec(
+        out.first().map(Vec::as_slice).unwrap_or(&[]),
+    )))
+}
+
+#[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
 pub fn deposit(
     dirs: &[DVec3],
     area: &[f64],
@@ -115,9 +302,9 @@ mod metal_rt {
     };
 
     use super::unpack_scalars;
-    use crate::rheo_friction::basis::{pack_dirs, pack_scalars};
     use crate::common::math::DVec3;
     use crate::rheo_friction::basis::ds_pair;
+    use crate::rheo_friction::basis::{pack_dirs, pack_scalars};
 
     const SOURCE: &str = concat!(
         include_str!("../rheo_friction/shaders/ds.metal"),
@@ -185,10 +372,7 @@ mod metal_rt {
                     .newComputePipelineStateWithFunction_error(&function)
                     .map_err(|err| format!("Metal pipeline {name}: {err:?}"))
             };
-            (
-                pipeline("mode_c_norm")?,
-                pipeline("mode_c_deposit")?,
-            )
+            (pipeline("mode_c_norm")?, pipeline("mode_c_deposit")?)
         };
         Ok(Core {
             device,
@@ -235,11 +419,7 @@ mod metal_rt {
         let n = dirs.len();
         let (w_hi, w_lo) = pair(kernel_width);
         let (cutoff_hi, cutoff_lo) = pair(cutoff);
-        let (reject_hi, reject_lo) = if dense {
-            (0.0, 0.0)
-        } else {
-            pair(cos_reject)
-        };
+        let (reject_hi, reject_lo) = if dense { (0.0, 0.0) } else { pair(cos_reject) };
         let params = ModeParams {
             n: u32::try_from(n).map_err(|_| format!("mode C kernel: {n} vertices"))?,
             g: u32::try_from(bins_g).map_err(|_| format!("mode C kernel: bin grid {bins_g}"))?,

@@ -527,11 +527,9 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
         }
     }
     debug_assert_eq!(row_ids.len(), b.len());
-    let warm = inp.warm.and_then(|seed| {
-        scatter_seed(
-            seed, &col_ids, &row_ids, r0, n_eq, n_nn, n_soc, n_trust,
-        )
-    });
+    let warm = inp
+        .warm
+        .and_then(|seed| scatter_seed(seed, &col_ids, &row_ids, r0, n_eq, n_nn, n_soc, n_trust));
     drop(assemble);
     // Inside the box, a·x cannot leave [-a_span, a_span]. When the mass target
     // sits outside that interval, σ = s_M/M cannot change sign, and ϱ|s_M| is
@@ -551,9 +549,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
     }
     let fold = b_mass.abs() > 1.0e-4;
     if fold && std::env::var_os("PDHG_LOG").is_some() {
-        eprintln!(
-            "socp fold mass b={b_mass:.3e} span={a_span:.3e} mobile={na}"
-        );
+        eprintln!("socp fold mass b={b_mass:.3e} span={a_span:.3e} mobile={na}");
     }
     let solved = {
         let _span = super::timing::span("socp_pdhg");
@@ -597,16 +593,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, ScfError> {
                 .collect();
             let n_nn_f = n_nn - 2;
             let warm_f = mass_penalty_start(
-                &p_f,
-                &q_f,
-                &rows_f,
-                &cols_f,
-                &vals_f,
-                &b_f,
-                n_nn_f,
-                n_soc,
-                delta,
-                inp.varrho,
+                &p_f, &q_f, &rows_f, &cols_f, &vals_f, &b_f, n_nn_f, n_soc, delta, inp.varrho,
             );
             super::socp_pdhg::Problem {
                 p_diag: p_f,
@@ -1084,7 +1071,10 @@ mod tests {
             .iter()
             .map(|(c, _, _)| {
                 let radial = c.try_normalize().unwrap();
-                (radial + DVec3::new(0.8, 0.0, 0.0)).try_normalize().unwrap() * -1.0e-4
+                (radial + DVec3::new(0.8, 0.0, 0.0))
+                    .try_normalize()
+                    .unwrap()
+                    * -1.0e-4
             })
             .collect();
         let jac = mass_jacobian(&body, &body.density().unwrap());
@@ -1335,7 +1325,11 @@ mod tests {
         let spike = Spike::new();
         let first = solve(&spike.input(0.1, None)).expect("cold SOCP");
         let second = solve(&spike.input(0.1, Some(&first.seed))).expect("warm SOCP");
-        assert_eq!(second.iterations, 0, "warm start took {}", second.iterations);
+        assert_eq!(
+            second.iterations, 0,
+            "warm start took {}",
+            second.iterations
+        );
         for (a, b) in first.d.iter().zip(&second.d) {
             assert!((a - b).abs() < 1e-8, "{a} vs {b}");
         }
@@ -1524,9 +1518,15 @@ mod tests {
             warm: None,
         })
         .expect("two vertices");
-        assert_eq!(out.n_trust, 0, "the trust region is a box, not a second-order cone");
+        assert_eq!(
+            out.n_trust, 0,
+            "the trust region is a box, not a second-order cone"
+        );
         assert_eq!(out.n_soc, 0);
-        assert_eq!(out.n_nn, 6, "s⁺, s⁻, and two box rows on each of two vertices");
+        assert_eq!(
+            out.n_nn, 6,
+            "s⁺, s⁻, and two box rows on each of two vertices"
+        );
     }
 
     #[test]

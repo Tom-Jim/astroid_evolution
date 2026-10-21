@@ -230,8 +230,8 @@ pub fn sync_material(
     let Ok(material_id) = material_handle.single() else {
         return;
     };
-    let pose_due = playback.generation > 0
-        && (playback.dirty || playback.uploaded_tau != playback.tau);
+    let pose_due =
+        playback.generation > 0 && (playback.dirty || playback.uploaded_tau != playback.tau);
     if pose_due {
         if let Ok(mesh_id) = surface.single() {
             if let Some(mut mesh) = meshes.get_mut(&mesh_id.0) {

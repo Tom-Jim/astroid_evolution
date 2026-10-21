@@ -179,8 +179,8 @@ pub fn posed_normals(from: &[[f32; 3]], to: &[[f32; 3]], tau: f32) -> Vec<[f32; 
     posed_positions(from, to, tau)
         .into_iter()
         .map(|normal| {
-            let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2])
-                .sqrt();
+            let len =
+                (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
             if len > 1.0e-6 {
                 [normal[0] / len, normal[1] / len, normal[2] / len]
             } else {

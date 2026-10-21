@@ -7,6 +7,7 @@ pub mod density;
 pub mod error;
 pub mod geometry;
 pub mod math;
+pub mod time;
 
 pub use density::{CauchyDensity, CauchyKernel};
 pub use error::CommonError;

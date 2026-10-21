@@ -42,11 +42,74 @@ pub fn face_frames(
     {
         metal_rt::launch(positions, dirs, faces)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+    {
+        web_frames(positions, dirs, faces)
+    }
+    #[cfg(not(any(target_os = "macos", target_arch = "wasm32")))]
     {
         let _ = (positions, dirs, faces);
         Err("SOCP face frames require the Metal double-single kernel".into())
     }
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "macos")))]
+fn web_frames(
+    positions: &[DVec3],
+    dirs: &[DVec3],
+    faces: &[[u32; 3]],
+) -> Result<Vec<FaceFrame>, String> {
+    let nf = faces.len();
+    let pos = crate::rheo_friction::basis::pack_dirs(positions);
+    let dir = crate::rheo_friction::basis::pack_dirs(dirs);
+    let index: Vec<u32> = faces.iter().copied().flatten().collect();
+    let nfaces = [nf as u32];
+    let pos_b = crate::browser::slice_bytes(&pos);
+    let dir_b = crate::browser::slice_bytes(&dir);
+    let face_b = crate::browser::slice_bytes(&index);
+    let n_b = crate::browser::slice_bytes(&nfaces);
+    let buffers = [
+        crate::browser::GpuBuffer {
+            binding: 0,
+            bytes: &pos_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 1,
+            bytes: &dir_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 2,
+            bytes: &face_b,
+            zeros: 0,
+            readback: false,
+        },
+        crate::browser::GpuBuffer {
+            binding: 3,
+            bytes: &[],
+            zeros: nf * 24 * 4,
+            readback: true,
+        },
+        crate::browser::GpuBuffer {
+            binding: 4,
+            bytes: &n_b,
+            zeros: 0,
+            readback: false,
+        },
+    ];
+    let back = crate::browser::dispatch(
+        "socp",
+        "socp_face_frame",
+        crate::browser::groups64(nf),
+        &buffers,
+    )?;
+    unpack_frames(
+        &crate::browser::f32_vec(back.first().map(Vec::as_slice).unwrap_or(&[])),
+        nf,
+    )
 }
 
 fn unpack_frames(words: &[f32], nf: usize) -> Result<Vec<FaceFrame>, String> {
@@ -93,8 +156,8 @@ mod metal_rt {
     };
 
     use super::{FaceFrame, unpack_frames};
-    use crate::rheo_friction::basis::pack_dirs;
     use crate::common::math::DVec3;
+    use crate::rheo_friction::basis::pack_dirs;
 
     const SOURCE: &str = concat!(
         include_str!("../rheo_friction/shaders/ds.metal"),

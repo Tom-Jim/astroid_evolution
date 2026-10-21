@@ -8,9 +8,9 @@ use astroid_evolution::asteroid_app::resources::{
 };
 use astroid_evolution::asteroid_app::snapshot::posed_positions;
 use astroid_evolution::asteroid_app::ui::hud_lines;
-use astroid_evolution::scf_simulator::timing;
 use astroid_evolution::common::density::CauchyKernel;
 use astroid_evolution::scf_simulator::body::{Body, Topology};
+use astroid_evolution::scf_simulator::timing;
 use bevy::prelude::*;
 
 fn project_dir() -> PathBuf {
@@ -144,7 +144,9 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
     assert!(shown.contains("showing  tier 2 step 3"));
     assert!(shown.contains("tier 2 frame"));
     assert!(shown.contains("balance  eps_mom 2.000e-3   eps_lam 1.000e-3   picard 6 (4.000e-2)"));
-    assert!(shown.contains("sheet    mobile 0.400   tensile 1.000e-2   Ek^-1 2.000e-1   mass residual 1.000e-5"));
+    assert!(shown.contains(
+        "sheet    mobile 0.400   tensile 1.000e-2   Ek^-1 2.000e-1   mass residual 1.000e-5"
+    ));
     assert!(shown.contains("cfl      bound mode_c   dt 1.000e4 s   dt_cfl 2.000e4 s"));
 }
 
@@ -187,10 +189,16 @@ fn ryugu_step_matches_the_quasi_static_audit() {
     let started = std::time::Instant::now();
     let prepared = prepare(&cfg.project_text, &cfg.project_dir, &cfg.spin).expect("prepare");
     let mut snaps = Vec::new();
-    let complete = run_prepared(prepared, Some(1), 1.0, || Ok(()), |snap| {
-        snaps.push(snap);
-        Ok(())
-    })
+    let complete = run_prepared(
+        prepared,
+        Some(1),
+        1.0,
+        || Ok(()),
+        |snap| {
+            snaps.push(snap);
+            Ok(())
+        },
+    )
     .expect("tier 2 step");
     let wall = started.elapsed().as_secs_f64();
     assert_eq!(snaps.len(), 1, "the step must emit one snapshot");

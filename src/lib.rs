@@ -11,5 +11,8 @@ pub mod sh_smooth;
 #[cfg(feature = "tier2")]
 pub mod scf_simulator;
 
-#[cfg(feature = "tier3")]
+#[cfg(any(feature = "tier3", feature = "bevy-web"))]
 pub mod asteroid_app;
+
+#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+pub mod browser;

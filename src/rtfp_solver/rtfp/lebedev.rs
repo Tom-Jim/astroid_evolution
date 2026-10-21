@@ -20,7 +20,7 @@ pub struct Rule {
 pub fn rule() -> &'static Rule {
     static RULE: OnceLock<Rule> = OnceLock::new();
     RULE.get_or_init(|| {
-        let (x, y, z, w) = lebedev_laikov::ld_vecs(COUNT);
+        let (x, y, z, w) = grid();
         let dirs = x
             .into_iter()
             .zip(y)
@@ -33,4 +33,45 @@ pub fn rule() -> &'static Rule {
             .collect();
         Rule { dirs, weights }
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn grid() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    lebedev_laikov::ld_vecs(COUNT)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn grid() -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    (
+        super::lebedev_table::X.to_vec(),
+        super::lebedev_table::Y.to_vec(),
+        super::lebedev_table::Z.to_vec(),
+        super::lebedev_table::W.to_vec(),
+    )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::COUNT;
+
+    #[test]
+    fn embedded_grid_matches_lebedev_laikov() {
+        let (x, y, z, w) = lebedev_laikov::ld_vecs(COUNT);
+        assert_eq!(
+            x.as_slice(),
+            crate::rtfp_solver::rtfp::lebedev_table::X.as_slice()
+        );
+        assert_eq!(
+            y.as_slice(),
+            crate::rtfp_solver::rtfp::lebedev_table::Y.as_slice()
+        );
+        assert_eq!(
+            z.as_slice(),
+            crate::rtfp_solver::rtfp::lebedev_table::Z.as_slice()
+        );
+        assert_eq!(
+            w.as_slice(),
+            crate::rtfp_solver::rtfp::lebedev_table::W.as_slice()
+        );
+    }
 }
