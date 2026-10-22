@@ -1,0 +1,462 @@
+//! Lagrangian transport and adaptive refit of the Cauchy density cores (MS §9.10).
+//!
+//! * Level 0 (`predict`): exact 2-jet transport of every core along the masked
+//!   slip velocity, `c' = Φ(c)`, `S' = F⁻ᵀ S F⁻¹`, `F = exp(τ dev ∇v)`, midpoint rule.
+//! * Level 1 (`close_mass`): uniform scaling of the core weights to the target mass.
+//! * Level 2 (`refit`): Gauss–Newton fit of `{w, c, S = L Lᵀ}` to the semi-Lagrangian
+//!   transported density on volume quadrature points, with the mass as a linear
+//!   constraint, triggered by the misfit indicator `e_ρ` or by `|ξ|`.
+
+use nalgebra::{DMatrix, DVector, Matrix3};
+use rayon::prelude::*;
+
+use crate::common::density::{CauchyDensity, CauchyKernel};
+use crate::common::math::{DMat3, DVec3, mat_sym};
+
+use crate::common::error::SimError;
+
+/// Configuration (`[cores]` of the project).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreParams {
+    /// `"lagrangian_cores"` (hypothesis A-ρL, §9.10) or `"frozen"` (hypothesis A-ρ,
+    /// regression only).
+    pub density_mode: String,
+    /// `"anisotropic"` (full metric) or `"isotropic"` (`σ'² = det(S')^{1/3}`).
+    pub core_shape: String,
+    /// Level-2 trigger on the relative mass closure `|ξ|`.
+    pub eps_xi: f64,
+    /// Level-2 trigger and target of the relative misfit `e_ρ`.
+    pub eps_rho: f64,
+    /// Gauss–Newton iterations at most.
+    pub gn_max: usize,
+}
+
+impl CoreParams {
+    pub fn validate(&self) -> Result<(), SimError> {
+        let bad = |m: &str| Err(SimError::model_not_closed(m.to_string()));
+        if !matches!(self.density_mode.as_str(), "lagrangian_cores" | "frozen") {
+            return bad("cores.density_mode must be \"lagrangian_cores\" or \"frozen\"");
+        }
+        if !matches!(self.core_shape.as_str(), "anisotropic" | "isotropic") {
+            return bad("cores.core_shape must be \"anisotropic\" or \"isotropic\"");
+        }
+        if !(self.eps_xi > 0.0 && self.eps_rho > 0.0 && self.gn_max > 0) {
+            return bad(
+                "cores.eps_xi and cores.eps_rho must be positive and cores.gn_max at least 1",
+            );
+        }
+        Ok(())
+    }
+
+    pub fn lagrangian(&self) -> bool {
+        self.density_mode == "lagrangian_cores"
+    }
+}
+
+/// Reported quantities of §9.10.7.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct CoreReport {
+    pub anchored: usize,
+    pub max_shift: f64,
+    pub max_condition: f64,
+    pub xi: f64,
+    pub e_rho: f64,
+    pub gn_iterations: usize,
+    /// `τ max |∇v|` over the moving cores.
+    pub strain_step: f64,
+}
+
+/// The masked advection velocity `v_adv = χ_Y v_sl` at a batch of points.
+pub type Velocity<'a> = dyn Fn(&[DVec3]) -> Vec<DVec3> + 'a;
+
+fn mat(m: DMat3) -> Matrix3<f64> {
+    Matrix3::from_column_slice(&m.to_cols_array())
+}
+
+fn dmat(m: Matrix3<f64>) -> DMat3 {
+    DMat3::from_cols_slice(m.as_slice())
+}
+
+/// Level 0 (§9.10.3). `inside(c)` tells a core centre inside the moving material;
+/// a core outside it, or where the velocity is masked, is anchored.
+pub fn predict(
+    kernels: &[CauchyKernel],
+    tau: f64,
+    v_adv: &Velocity<'_>,
+    inside: &dyn Fn(DVec3) -> bool,
+    h: f64,
+    params: &CoreParams,
+    report: &mut CoreReport,
+) -> Vec<CauchyKernel> {
+    if kernels.is_empty() || tau == 0.0 || !params.lagrangian() {
+        return kernels.to_vec();
+    }
+    let centres: Vec<DVec3> = kernels.iter().map(|k| k.center).collect();
+    let v0 = v_adv(&centres);
+    let mid: Vec<DVec3> = centres
+        .iter()
+        .zip(&v0)
+        .map(|(c, v)| *c + *v * (0.5 * tau))
+        .collect();
+    // v at the midpoint and its six central-difference neighbours.
+    let mut probe = Vec::with_capacity(mid.len() * 7);
+    for m in &mid {
+        probe.push(*m);
+        for a in DVec3::AXES {
+            probe.push(*m + a * h);
+            probe.push(*m - a * h);
+        }
+    }
+    let vp = v_adv(&probe);
+    let mut out = Vec::with_capacity(kernels.len());
+    for (k, kern) in kernels.iter().enumerate() {
+        let moving = inside(kern.center) && v0[k] != DVec3::ZERO;
+        if !moving {
+            report.anchored += 1;
+            out.push(*kern);
+            continue;
+        }
+        let row = &vp[7 * k..7 * k + 7];
+        let grad = DMat3::from_cols(
+            (row[1] - row[2]) / (2.0 * h),
+            (row[3] - row[4]) / (2.0 * h),
+            (row[5] - row[6]) / (2.0 * h),
+        );
+        // Columns are ∂v/∂x_j, so `grad` is ∇v with (i, j) = ∂v_i/∂x_j.
+        let trace = grad.x_axis.x + grad.y_axis.y + grad.z_axis.z;
+        let l = grad - DMat3::IDENTITY * (trace / 3.0);
+        report.strain_step = report.strain_step.max(tau * mat(l).norm());
+        let f = dmat((mat(l) * tau).exp());
+        let finv = f.inverse();
+        let c_new = kern.center + row[0] * tau;
+        let s = finv.transpose() * kern.metric_mat() * finv;
+        let metric = if params.core_shape == "isotropic" {
+            let s2 = s.determinant().cbrt();
+            [s2, s2, s2, 0.0, 0.0, 0.0]
+        } else {
+            mat_sym(s)
+        };
+        report.max_shift = report.max_shift.max((c_new - kern.center).length());
+        match CauchyKernel::try_anisotropic(c_new, kern.weight, metric, kern.alpha) {
+            Ok(n) => out.push(n),
+            Err(_) => {
+                report.anchored += 1;
+                out.push(*kern);
+            }
+        }
+    }
+    report.max_condition = out.iter().map(condition).fold(0.0, f64::max);
+    out
+}
+
+fn condition(k: &CauchyKernel) -> f64 {
+    let e = mat(k.metric_mat()).symmetric_eigenvalues();
+    e.max() / e.min().max(1e-300)
+}
+
+/// Level 1 (§9.10.4): scale the core weights so the total mass is `target`.
+/// `mass` is the mass of the current density on the new body and `bulk_mass`
+/// its constant part. Returns `ξ` relative to the core mass.
+pub fn close_mass(kernels: &mut [CauchyKernel], mass: f64, bulk_mass: f64, target: f64) -> f64 {
+    let core = mass - bulk_mass;
+    if kernels.is_empty() || core.abs() < 1e-12 * mass.abs() {
+        return 0.0;
+    }
+    let xi = (target - bulk_mass) / core - 1.0;
+    for k in kernels.iter_mut() {
+        k.weight *= 1.0 + xi;
+    }
+    xi
+}
+
+/// Volume quadrature for Level 2: points, weights.
+pub struct Quadrature {
+    pub pts: Vec<DVec3>,
+    pub w: Vec<f64>,
+}
+
+/// Directions of the Level 2 quadrature at most. The cores are smooth on the
+/// scale of a few hundred mesh vertices, so a finer surface is binned.
+pub const MAX_QUAD_DIRS: usize = 8192;
+
+impl Quadrature {
+    /// Star-shaped volume quadrature: one ray per direction bin, Gauss–Jacobi (ζ²)
+    /// nodes along it. Above `MAX_QUAD_DIRS` vertices are binned to the nearest of
+    /// a Fibonacci set; a bin keeps its solid angle, its solid-angle-weighted
+    /// direction and the radius `(Σ Ω R³ / Σ Ω)^{1/3}` of the same volume.
+    pub fn star(dirs: &[DVec3], radius: &[f64], solid: &[f64], zeta: &[f64], wr: &[f64]) -> Self {
+        let (bd, br, bs) = if dirs.len() <= MAX_QUAD_DIRS {
+            (dirs.to_vec(), radius.to_vec(), solid.to_vec())
+        } else {
+            let fib = crate::common::math::fibonacci_directions(MAX_QUAD_DIRS);
+            let index = super::transport::DirIndex::build(&fib);
+            let bin: Vec<usize> = dirs.par_iter().map(|d| index.nearest(&fib, *d)).collect();
+            let mut acc = vec![(DVec3::ZERO, 0.0f64, 0.0f64); fib.len()];
+            for (i, &b) in bin.iter().enumerate() {
+                acc[b].0 += dirs[i] * solid[i];
+                acc[b].1 += solid[i] * radius[i].powi(3);
+                acc[b].2 += solid[i];
+            }
+            let kept: Vec<_> = acc.into_iter().filter(|a| a.2 > 0.0).collect();
+            (
+                kept.iter().map(|a| a.0.normalize()).collect(),
+                kept.iter().map(|a| (a.1 / a.2).cbrt()).collect(),
+                kept.iter().map(|a| a.2).collect(),
+            )
+        };
+        let mut quad = Quadrature {
+            pts: Vec::with_capacity(bd.len() * zeta.len()),
+            w: Vec::with_capacity(bd.len() * zeta.len()),
+        };
+        for ((d, r), s) in bd.iter().zip(&br).zip(&bs) {
+            for (z, w) in zeta.iter().zip(wr) {
+                quad.pts.push(*d * (z * r));
+                quad.w.push(w * r.powi(3) * s);
+            }
+        }
+        quad
+    }
+}
+
+/// Number of parameters per core: weight, centre, Cholesky factor (log diagonal).
+const NP: usize = 10;
+
+fn pack(k: &CauchyKernel) -> [f64; NP] {
+    let l = mat(k.metric_mat())
+        .cholesky()
+        .map(|c| c.l())
+        .unwrap_or_else(Matrix3::identity);
+    [
+        k.weight,
+        k.center.x,
+        k.center.y,
+        k.center.z,
+        l[(0, 0)].ln(),
+        l[(1, 1)].ln(),
+        l[(2, 2)].ln(),
+        l[(1, 0)],
+        l[(2, 0)],
+        l[(2, 1)],
+    ]
+}
+
+fn factor(p: &[f64]) -> Matrix3<f64> {
+    Matrix3::new(
+        p[4].exp(),
+        0.0,
+        0.0,
+        p[7],
+        p[5].exp(),
+        0.0,
+        p[8],
+        p[9],
+        p[6].exp(),
+    )
+}
+
+fn unpack(p: &[f64], alpha: f64) -> Option<CauchyKernel> {
+    let l = factor(p);
+    let s = dmat(l * l.transpose());
+    CauchyKernel::try_anisotropic(DVec3::new(p[1], p[2], p[3]), p[0], mat_sym(s), alpha).ok()
+}
+
+/// ρ_k and ∂ρ_k/∂θ_k at `x`.
+fn kernel_jet(p: &[f64], alpha: f64, x: DVec3) -> (f64, [f64; NP]) {
+    let l = factor(p);
+    let s = l * l.transpose();
+    let d = nalgebra::Vector3::new(x.x - p[1], x.y - p[2], x.z - p[3]);
+    let sd = s * d;
+    let q = 1.0 + d.dot(&sd);
+    let base = q.powf(-alpha);
+    let w = p[0];
+    let rho = w * base;
+    let mut g = [0.0; NP];
+    g[0] = base;
+    let dq = 2.0 * alpha * w * base / q;
+    g[1] = dq * sd.x;
+    g[2] = dq * sd.y;
+    g[3] = dq * sd.z;
+    // ∂ρ/∂S = −α w q^{−α−1} d dᵀ, ∂ρ/∂L = 2 (∂ρ/∂S) L.
+    let gs = d * d.transpose() * (-alpha * w * base / q);
+    let gl = gs * l * 2.0;
+    g[4] = gl[(0, 0)] * l[(0, 0)];
+    g[5] = gl[(1, 1)] * l[(1, 1)];
+    g[6] = gl[(2, 2)] * l[(2, 2)];
+    g[7] = gl[(1, 0)];
+    g[8] = gl[(2, 0)];
+    g[9] = gl[(2, 1)];
+    (rho, g)
+}
+
+/// `e_ρ` of §9.10.5 between a density and target values on a quadrature.
+pub fn misfit(density: &CauchyDensity, quad: &Quadrature, target: &[f64]) -> f64 {
+    let (num, den) = quad
+        .pts
+        .par_iter()
+        .zip(&quad.w)
+        .zip(target)
+        .map(|((x, w), t)| {
+            let r = density.rho(*x) - t;
+            (w * r * r, w * t * t)
+        })
+        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+    (num / den.max(1e-300)).sqrt()
+}
+
+/// Level 2 (§9.10.5): Gauss–Newton with Levenberg–Marquardt damping and the
+/// quadrature mass held at its current value. Returns the refitted cores.
+pub fn refit(
+    bulk: f64,
+    kernels: &[CauchyKernel],
+    quad: &Quadrature,
+    target: &[f64],
+    params: &CoreParams,
+    report: &mut CoreReport,
+) -> Vec<CauchyKernel> {
+    let nk = kernels.len();
+    if nk == 0 {
+        return Vec::new();
+    }
+    let n = NP * nk;
+    let alphas: Vec<f64> = kernels.iter().map(|k| k.alpha).collect();
+    let mut theta: Vec<f64> = kernels.iter().flat_map(pack).collect();
+    // Objective, normal matrix, gradient, mass and mass gradient over the points.
+    let assemble = |theta: &[f64]| {
+        quad.pts
+            .par_iter()
+            .zip(&quad.w)
+            .zip(target)
+            .fold(
+                || {
+                    (
+                        0.0,
+                        DMatrix::<f64>::zeros(n, n),
+                        DVector::<f64>::zeros(n),
+                        0.0,
+                        DVector::<f64>::zeros(n),
+                        vec![0.0; n],
+                    )
+                },
+                |(mut f, mut h, mut g, mut m, mut gm, mut j), ((x, w), t)| {
+                    let mut rho = bulk;
+                    for k in 0..nk {
+                        let (r, d) = kernel_jet(&theta[NP * k..NP * (k + 1)], alphas[k], *x);
+                        rho += r;
+                        j[NP * k..NP * (k + 1)].copy_from_slice(&d);
+                    }
+                    let res = rho - t;
+                    f += 0.5 * w * res * res;
+                    m += w * rho;
+                    for a in 0..n {
+                        if j[a] == 0.0 {
+                            continue;
+                        }
+                        g[a] += w * res * j[a];
+                        gm[a] += w * j[a];
+                        for b in a..n {
+                            h[(a, b)] += w * j[a] * j[b];
+                        }
+                    }
+                    (f, h, g, m, gm, j)
+                },
+            )
+            .map(|(f, h, g, m, gm, _)| (f, h, g, m, gm))
+            .reduce(
+                || {
+                    (
+                        0.0,
+                        DMatrix::<f64>::zeros(n, n),
+                        DVector::<f64>::zeros(n),
+                        0.0,
+                        DVector::<f64>::zeros(n),
+                    )
+                },
+                |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4),
+            )
+    };
+    let (mut f, mut h, mut g, m0, mut gm) = assemble(&theta);
+    let mut mass = m0;
+    let mut mu = 1e-3;
+    let target_norm: f64 = quad
+        .w
+        .iter()
+        .zip(target)
+        .map(|(w, t)| w * t * t)
+        .sum::<f64>()
+        .max(1e-300);
+    for _ in 0..params.gn_max {
+        if (2.0 * f / target_norm).sqrt() <= 0.5 * params.eps_rho {
+            break;
+        }
+        for a in 0..n {
+            for b in 0..a {
+                h[(a, b)] = h[(b, a)];
+            }
+        }
+        // KKT system [H + μ diag H, gm; gmᵀ, 0] [δ; λ] = [−g; m0 − m].
+        let mut kkt = DMatrix::<f64>::zeros(n + 1, n + 1);
+        let mut rhs = DVector::<f64>::zeros(n + 1);
+        for a in 0..n {
+            for b in 0..n {
+                kkt[(a, b)] = h[(a, b)];
+            }
+            kkt[(a, a)] += mu * h[(a, a)].max(1e-30);
+            kkt[(a, n)] = gm[a];
+            kkt[(n, a)] = gm[a];
+            rhs[a] = -g[a];
+        }
+        rhs[n] = m0 - mass;
+        let Some(step) = kkt.lu().solve(&rhs) else {
+            mu *= 10.0;
+            continue;
+        };
+        let trial: Vec<f64> = theta.iter().zip(step.iter()).map(|(t, s)| t + s).collect();
+        let ok = (0..nk).all(|k| unpack(&trial[NP * k..NP * (k + 1)], alphas[k]).is_some());
+        report.gn_iterations += 1;
+        if ok {
+            let (f2, h2, g2, m2, gm2) = assemble(&trial);
+            if f2 < f {
+                let gain = (f - f2) / f.max(1e-300);
+                theta = trial;
+                (f, h, g, mass, gm) = (f2, h2, g2, m2, gm2);
+                mu = (mu * 0.3).max(1e-9);
+                if gain < 1e-3 {
+                    break;
+                }
+                continue;
+            }
+        }
+        mu *= 10.0;
+        if mu > 1e8 {
+            break;
+        }
+    }
+    report.e_rho = (2.0 * f / target_norm).sqrt();
+    (0..nk)
+        .map(|k| unpack(&theta[NP * k..NP * (k + 1)], alphas[k]).unwrap_or(kernels[k]))
+        .collect()
+}
+
+/// The transported target `ρ̃_q = ρ_K(X_d(x_q); θ⁽ⁿ⁾)` with the midpoint departure
+/// point `X_d(x) = x − τ v(x − τ/2 v(x))` (§9.10.5).
+pub fn departure_density(
+    old: &CauchyDensity,
+    quad: &Quadrature,
+    tau: f64,
+    v_adv: &Velocity<'_>,
+) -> Vec<f64> {
+    let v1 = v_adv(&quad.pts);
+    let mid: Vec<DVec3> = quad
+        .pts
+        .iter()
+        .zip(&v1)
+        .map(|(x, v)| *x - *v * (0.5 * tau))
+        .collect();
+    let v2 = v_adv(&mid);
+    quad.pts
+        .par_iter()
+        .zip(v2.par_iter())
+        .map(|(x, v)| old.rho(*x - *v * tau))
+        .collect()
+}

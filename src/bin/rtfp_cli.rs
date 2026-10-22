@@ -8,17 +8,18 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use astroid_evolution::common::density::CauchyDensity;
+use astroid_evolution::common::error::SimError;
 use astroid_evolution::common::geometry::TriMesh;
 use astroid_evolution::common::math::DVec3;
-use astroid_evolution::rtfp_solver::api::{FieldBatch, FieldMask, PointRole, PointSet};
-use astroid_evolution::rtfp_solver::io::aevb::{Comparison, FieldRecord, write_field};
-use astroid_evolution::rtfp_solver::io::{
+use astroid_evolution::io::aevb::{Comparison, FieldRecord, write_field};
+use astroid_evolution::io::{
     DensityInput, ImportRequest, MeshDocument, Reconstruct, assert_nonnegative, density_hash,
     density_to_kg_m3, face_centroids, load_density, load_mesh_file, positivity_points,
     vertex_points, write_obj,
 };
-use astroid_evolution::rtfp_solver::reference::werner;
-use astroid_evolution::rtfp_solver::{RtfpError, RtfpOptions, RtfpSolver};
+use astroid_evolution::rtfp::api::{FieldBatch, FieldMask, PointRole, PointSet};
+use astroid_evolution::rtfp::reference::werner;
+use astroid_evolution::rtfp::{RtfpOptions, RtfpSolver};
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -56,9 +57,9 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value_t = 6.67430e-11)]
         g: f64,
-        /// A patch is split while its edge exceeds this fraction of its distance from the point.
+        /// Gauss–Legendre nodes per part of the composite radial rule (8, 16 or 32).
         #[arg(long)]
-        angular_ratio: Option<f64>,
+        radial_nodes: Option<usize>,
         /// Compare uniform-density results with the independent Werner benchmark.
         #[arg(long, value_enum)]
         compare: Option<CompareArg>,
@@ -70,7 +71,7 @@ enum Command {
         #[command(flatten)]
         density: DensityArgs,
         #[arg(long)]
-        angular_ratio: Option<f64>,
+        radial_nodes: Option<usize>,
     },
 }
 
@@ -133,7 +134,7 @@ fn main() -> ExitCode {
             want,
             out,
             g,
-            angular_ratio,
+            radial_nodes,
             compare,
         } => eval_field(
             &mesh,
@@ -142,22 +143,16 @@ fn main() -> ExitCode {
             &want,
             &out,
             g,
-            angular_ratio,
+            radial_nodes,
             compare,
         ),
         Command::Integrals {
             mesh,
             density,
-            angular_ratio,
-        } => integrals(&mesh, &density, angular_ratio),
+            radial_nodes,
+        } => integrals(&mesh, &density, radial_nodes),
     };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("{err}");
-            ExitCode::from(err.code() as u8)
-        }
-    }
+    SimError::exit(result)
 }
 
 fn import_mesh(
@@ -165,7 +160,7 @@ fn import_mesh(
     out: &Path,
     length_unit: &str,
     reconstruct: Option<ReconstructArg>,
-) -> Result<(), RtfpError> {
+) -> Result<(), SimError> {
     let document = load_mesh_file(ImportRequest {
         path: input,
         length_unit: Some(length_unit),
@@ -186,13 +181,13 @@ fn import_mesh(
     Ok(())
 }
 
-fn options(g: f64, angular_ratio: Option<f64>) -> RtfpOptions {
+fn options(g: f64, radial_nodes: Option<usize>) -> RtfpOptions {
     let mut options = RtfpOptions {
         g,
         ..RtfpOptions::default()
     };
-    if let Some(ratio) = angular_ratio {
-        options.angular_ratio = ratio;
+    if let Some(n) = radial_nodes {
+        options.radial_nodes = n;
     }
     options
 }
@@ -205,9 +200,9 @@ fn eval_field(
     want: &str,
     out: &Path,
     g: f64,
-    angular_ratio: Option<f64>,
+    radial_nodes: Option<usize>,
     compare: Option<CompareArg>,
-) -> Result<(), RtfpError> {
+) -> Result<(), SimError> {
     let want = parse_want(want)?;
     let document = open_mesh(mesh_args)?;
     let density = open_density(density_args)?;
@@ -216,7 +211,7 @@ fn eval_field(
     assert_nonnegative(&density.density, &probes)?;
 
     let solver = RtfpSolver::bind(
-        options(g, angular_ratio),
+        options(g, radial_nodes),
         document.mesh.clone(),
         density.density.clone(),
     )?;
@@ -224,7 +219,7 @@ fn eval_field(
     let batch = solver.eval(&PointSet::from_points(&points), role, want)?;
     let seconds = start.elapsed().as_secs_f64();
     if !field_is_finite(&batch) {
-        return Err(RtfpError::geometry(
+        return Err(SimError::geometry(
             "the evaluated field contains a non-finite value",
         ));
     }
@@ -252,7 +247,7 @@ fn eval_field(
             mesh_hash: document.mesh_hash.clone(),
             mesh_length_unit: document.length_unit.clone(),
             faces: document.mesh.faces.len(),
-            angular_ratio: solver.options().angular_ratio,
+            radial_nodes: solver.options().radial_nodes,
             want_potential: want.potential,
             want_gradient: want.gradient,
             want_hessian: want.hessian,
@@ -281,9 +276,9 @@ fn run_comparison(
     points: &[DVec3],
     batch: &FieldBatch,
     g: f64,
-) -> Result<Comparison, RtfpError> {
+) -> Result<Comparison, SimError> {
     if kind != CompareArg::Werner || !density.kernels.is_empty() {
-        return Err(RtfpError::model_not_closed(
+        return Err(SimError::model_not_closed(
             "--compare werner requires a uniform density",
         ));
     }
@@ -324,12 +319,12 @@ fn run_comparison(
 fn integrals(
     mesh_args: &MeshArgs,
     density_args: &DensityArgs,
-    angular_ratio: Option<f64>,
-) -> Result<(), RtfpError> {
+    radial_nodes: Option<usize>,
+) -> Result<(), SimError> {
     let document = open_mesh(mesh_args)?;
     let density = open_density(density_args)?;
     let solver = RtfpSolver::bind(
-        options(RtfpOptions::default().g, angular_ratio),
+        options(RtfpOptions::default().g, radial_nodes),
         document.mesh.clone(),
         density.density.clone(),
     )?;
@@ -358,7 +353,7 @@ fn integrals(
 fn sample_points(
     mesh: &TriMesh,
     samples: &SampleArgs,
-) -> Result<(PointRole, &'static str, Vec<DVec3>), RtfpError> {
+) -> Result<(PointRole, &'static str, Vec<DVec3>), SimError> {
     let selected = [
         samples.surface_faces,
         samples.surface_vertices,
@@ -368,7 +363,7 @@ fn sample_points(
     .filter(|flag| **flag)
     .count();
     if selected != 1 {
-        return Err(RtfpError::model_not_closed(
+        return Err(SimError::model_not_closed(
             "eval-field requires exactly one of --surface-faces, --surface-vertices, or --points",
         ));
     }
@@ -394,9 +389,9 @@ fn sample_points(
     }
 }
 
-fn read_points(path: &Path, max_points: Option<usize>) -> Result<Vec<DVec3>, RtfpError> {
+fn read_points(path: &Path, max_points: Option<usize>) -> Result<Vec<DVec3>, SimError> {
     let text = std::fs::read_to_string(path).map_err(|err| {
-        RtfpError::model_not_closed(format!("cannot read points {}: {err}", path.display()))
+        SimError::model_not_closed(format!("cannot read points {}: {err}", path.display()))
     })?;
     let mut points = Vec::new();
     for (line_number, line) in text.lines().enumerate() {
@@ -409,7 +404,7 @@ fn read_points(path: &Path, max_points: Option<usize>) -> Result<Vec<DVec3>, Rtf
             .map(|token| token.parse::<f64>().unwrap_or(f64::NAN))
             .collect();
         if coords.len() < 3 || coords.iter().any(|value| !value.is_finite()) {
-            return Err(RtfpError::model_not_closed(format!(
+            return Err(SimError::model_not_closed(format!(
                 "point line {} is not three finite coordinates",
                 line_number + 1
             )));
@@ -420,12 +415,12 @@ fn read_points(path: &Path, max_points: Option<usize>) -> Result<Vec<DVec3>, Rtf
         }
     }
     if points.is_empty() {
-        return Err(RtfpError::model_not_closed("point file has no coordinates"));
+        return Err(SimError::model_not_closed("point file has no coordinates"));
     }
     Ok(points)
 }
 
-fn open_mesh(args: &MeshArgs) -> Result<MeshDocument, RtfpError> {
+fn open_mesh(args: &MeshArgs) -> Result<MeshDocument, SimError> {
     load_mesh_file(ImportRequest {
         path: &args.mesh,
         length_unit: args.length_unit.as_deref(),
@@ -433,16 +428,16 @@ fn open_mesh(args: &MeshArgs) -> Result<MeshDocument, RtfpError> {
     })
 }
 
-fn open_density(args: &DensityArgs) -> Result<DensityInput, RtfpError> {
+fn open_density(args: &DensityArgs) -> Result<DensityInput, SimError> {
     match (&args.density, args.uniform, &args.density_unit) {
-        (Some(_), Some(_), _) => Err(RtfpError::model_not_closed(
+        (Some(_), Some(_), _) => Err(SimError::model_not_closed(
             "pass either --density or --uniform, not both",
         )),
-        (None, None, _) => Err(RtfpError::model_not_closed(
+        (None, None, _) => Err(SimError::model_not_closed(
             "density is missing; pass --density or --uniform and --density-unit. The value is not defaulted to 1",
         )),
         (Some(path), None, _) => load_density(path),
-        (None, Some(_), None) => Err(RtfpError::model_not_closed(
+        (None, Some(_), None) => Err(SimError::model_not_closed(
             "uniform density requires --density-unit",
         )),
         (None, Some(value), Some(unit)) => {
@@ -460,7 +455,7 @@ fn open_density(args: &DensityArgs) -> Result<DensityInput, RtfpError> {
     }
 }
 
-fn parse_want(text: &str) -> Result<FieldMask, RtfpError> {
+fn parse_want(text: &str) -> Result<FieldMask, SimError> {
     let mut mask = FieldMask {
         potential: false,
         gradient: false,
@@ -472,7 +467,7 @@ fn parse_want(text: &str) -> Result<FieldMask, RtfpError> {
             "grad" => mask.gradient = true,
             "hess" => mask.hessian = true,
             other => {
-                return Err(RtfpError::model_not_closed(format!(
+                return Err(SimError::model_not_closed(format!(
                     "unknown field component '{other}'; use u, grad or hess"
                 )));
             }

@@ -3,28 +3,33 @@
 
 use std::path::PathBuf;
 
-use astroid_evolution::rheo_friction::RheoGpu;
-use astroid_evolution::scf_simulator::evolve::{self, RunOptions};
-use astroid_evolution::scf_simulator::frame;
-use astroid_evolution::scf_simulator::io::{Snapshot, initial_body, read_snapshot, write_snapshot};
-use astroid_evolution::scf_simulator::params::Project;
-use astroid_evolution::scf_simulator::relax::relax;
-use astroid_evolution::scf_simulator::spin::SpinSchedule;
+use astroid_evolution::rheo::RheoGpu;
+use astroid_evolution::scf::evolve::{self, RunOptions};
+use astroid_evolution::scf::forward::Loading;
+use astroid_evolution::scf::frame;
+use astroid_evolution::scf::io::{Snapshot, initial_body, read_snapshot, write_snapshot};
+use astroid_evolution::scf::params::Project;
+use astroid_evolution::scf::relax::relax;
+use astroid_evolution::scf::spin::SpinSchedule;
+
+fn projects() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/.stage/assets/projects")
+}
 
 fn sample_text(level: usize) -> String {
-    let text = include_str!("../assets/projects/sample_project.toml");
+    let text = include_str!("../dist/.stage/assets/projects/sample_project.toml");
     text.replace("level = 3 ", &format!("level = {level} "))
 }
 
 fn project(level: usize) -> Project {
-    Project::parse(&sample_text(level), PathBuf::from(".")).expect("sample project is closed")
+    Project::parse(&sample_text(level), projects()).expect("sample project is closed")
 }
 
 #[test]
 fn sample_project_is_closed_and_incomplete_ones_are_refused() {
     project(2);
     let broken = sample_text(2).replace("[yielding]\ndelta_y = 0.05\n", "");
-    let err = Project::parse(&broken, PathBuf::from(".")).unwrap_err();
+    let err = Project::parse(&broken, projects()).unwrap_err();
     assert_eq!(err.code(), 10);
 }
 
@@ -74,11 +79,11 @@ fn relaxation_and_stage_run_on_gpu() {
     };
     let t = std::time::Instant::now();
     // out.obj (metres) with Ryugu's three Cauchy kernels. Centres stay in metres.
-    let text = sample_text(2).replace(
+    let text = sample_text(4).replace(
         "kernels = []",
         "kernels = [\n  { center = [0.0, 0.0, 0.0], weight = 280.0, sigma = 0.0020, alpha = 1.2 },\n  { center = [0.0, 80.0, 140.0], weight = 160.0, sigma = 0.0080, alpha = 0.55 },\n  { center = [-110.0, 40.0, 20.0], weight = 140.0, sigma = 0.0100, alpha = 2.4 },\n]",
     );
-    let p = Project::parse(&text, PathBuf::from(".")).expect("Ryugu density on out.obj");
+    let p = Project::parse(&text, projects()).expect("Ryugu density on out.obj");
     mark("parse project", t);
     let t = std::time::Instant::now();
     let gpu = RheoGpu::new().expect("Metal device");
@@ -99,11 +104,11 @@ fn relaxation_and_stage_run_on_gpu() {
     // Relaxation never changes the mass beyond eps_mass.
     let omega = 2.0 * std::f64::consts::PI / (3.8 * 3600.0);
     let t = std::time::Instant::now();
-    let (relaxed, rep) = relax(&p, &gpu, &state.body, omega).unwrap();
+    let (relaxed, rep) = relax(&p, &gpu, &state.body, Loading { omega, tide: 0.0 }).unwrap();
     mark("relax", t);
     assert!(rep.slack_after <= rep.slack_before + 1e-12);
     let t = std::time::Instant::now();
-    let m1 = astroid_evolution::scf_simulator::forward::Forward::bind(&relaxed, p.g)
+    let m1 = astroid_evolution::scf::forward::Forward::bind(&relaxed, p.g)
         .unwrap()
         .moments
         .mass;
@@ -132,6 +137,12 @@ fn relaxation_and_stage_run_on_gpu() {
     .unwrap();
     mark("evolve", t);
     eprintln!("time total: {:.3}s", clock.elapsed().as_secs_f64());
+    for row in astroid_evolution::scf::timing::drain() {
+        eprintln!(
+            "span {:>8} {:<20} {:>9.3}s {:>6} calls",
+            row.phase, row.name, row.seconds, row.calls
+        );
+    }
     assert_eq!(seen, res.records.len());
     assert!(!res.records.is_empty());
     for r in &res.records {
@@ -157,33 +168,33 @@ fn cauchy_meshes_evolve_past_relax() {
     for (name, file) in [
         (
             "ryugu",
-            include_str!("../assets/projects/ryugu_cauchy.toml"),
+            include_str!("../dist/.stage/assets/projects/ryugu.toml"),
         ),
         (
             "phobos",
-            include_str!("../assets/projects/phobos_cauchy.toml"),
+            include_str!("../dist/.stage/assets/projects/phobos.toml"),
         ),
         (
             "deimos",
-            include_str!("../assets/projects/deimos_cauchy.toml"),
+            include_str!("../dist/.stage/assets/projects/deimos.toml"),
         ),
     ] {
-        let p = Project::parse(file, PathBuf::from("assets/projects")).unwrap_or_else(|e| {
+        // Lab glass-bead friction (Jop et al. 2006): weaker than the projects'
+        // 35° regolith, so the meshes have slopes that must flow.
+        let file = file
+            .replace("mu_s = 0.70", "mu_s = 0.38")
+            .replace("mu_2 = 0.96", "mu_2 = 0.64");
+        let p = Project::parse(&file, projects()).unwrap_or_else(|e| {
             panic!("{name} project: {e}");
         });
         if only.as_deref().is_some_and(|want| want != name) {
             continue;
         }
-        let alphas: Vec<f64> = p.kernels().iter().map(|k| k.alpha).collect();
-        assert!(
-            alphas.iter().any(|a| (*a - 1.0).abs() > 1e-9),
-            "{name} alphas {alphas:?} are all 1"
-        );
         let t0 = std::time::Instant::now();
         let (mut state, _) = evolve::start(&p, initial_body(&p).unwrap())
             .unwrap_or_else(|e| panic!("{name} start: {e}"));
-        let (relaxed, rep) =
-            relax(&p, &gpu, &state.body, omega).unwrap_or_else(|e| panic!("{name} relax: {e}"));
+        let (relaxed, rep) = relax(&p, &gpu, &state.body, Loading { omega, tide: 0.0 })
+            .unwrap_or_else(|e| panic!("{name} relax: {e}"));
         let (body, _, fwd) = frame::realign(&relaxed, None, p.g, &p.geometry, false)
             .unwrap_or_else(|e| panic!("{name} realign: {e}"));
         let radius_in = body.radius.clone();
@@ -214,7 +225,7 @@ fn cauchy_meshes_evolve_past_relax() {
             max_rel = max_rel.max(d / a.abs().max(1e-30));
         }
         eprintln!(
-            "{name}: {:.2}s mass={:.4e} alphas={alphas:?} relax_sweeps={} slack {:.3e}->{:.3e} kind={} n_mobile={} yielded={:.3e} super={} max_slack={:.3e} dR={:.4e} m ({:.3e} rel) d*={:.4e} socp={} frame={} ({:.3e} deg) picard={} eps_mom={:.3e} eps_lam={:.3e}",
+            "{name}: {:.2}s mass={:.4e} relax_sweeps={} slack {:.3e}->{:.3e} kind={} n_mobile={} yielded={:.3e} super={} max_slack={:.3e} dR={:.4e} m ({:.3e} rel) d*={:.4e} socp={} frame={} ({:.3e} deg) picard={} eps_mom={:.3e} eps_lam={:.3e}",
             t0.elapsed().as_secs_f64(),
             rec.mass,
             rep.sweeps.len(),

@@ -1,7 +1,6 @@
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 use rayon::prelude::*;
 
-use crate::common::error::CommonError;
+use crate::common::error::SimError;
 use crate::common::math::DVec3;
 
 /// Owned closed triangle mesh. Faces are ordered so a positive volume has outward normals.
@@ -12,25 +11,23 @@ pub struct TriMesh {
 }
 
 impl TriMesh {
-    pub fn try_new(vertices: Vec<DVec3>, faces: Vec<[u32; 3]>) -> Result<Self, CommonError> {
+    pub fn try_new(vertices: Vec<DVec3>, faces: Vec<[u32; 3]>) -> Result<Self, SimError> {
         if vertices.len() < 4 || faces.len() < 4 {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "a solid mesh needs at least 4 vertices and 4 triangles",
             ));
         }
         if vertices.iter().any(|v| !v.is_finite()) {
-            return Err(CommonError::model_not_closed(
-                "mesh vertices must be finite",
-            ));
+            return Err(SimError::model_not_closed("mesh vertices must be finite"));
         }
         for f in &faces {
             if f.iter().any(|&i| i as usize >= vertices.len()) {
-                return Err(CommonError::model_not_closed(
+                return Err(SimError::model_not_closed(
                     "mesh face index is outside the vertex array",
                 ));
             }
             if f[0] == f[1] || f[1] == f[2] || f[2] == f[0] {
-                return Err(CommonError::model_not_closed(
+                return Err(SimError::model_not_closed(
                     "degenerate triangle with a repeated vertex",
                 ));
             }
@@ -44,14 +41,9 @@ impl TriMesh {
     ///
     /// Intersection is unchanged by that map. Repeating the test rejects pairs
     /// that sit on the coplanar tolerance after the rotation.
-    pub fn from_rigid_copy(
-        vertices: Vec<DVec3>,
-        faces: Vec<[u32; 3]>,
-    ) -> Result<Self, CommonError> {
+    pub fn from_rigid_copy(vertices: Vec<DVec3>, faces: Vec<[u32; 3]>) -> Result<Self, SimError> {
         if vertices.iter().any(|v| !v.is_finite()) {
-            return Err(CommonError::model_not_closed(
-                "mesh vertices must be finite",
-            ));
+            return Err(SimError::model_not_closed("mesh vertices must be finite"));
         }
         let mesh = Self { vertices, faces };
         let scale = bounding_scale(&mesh.vertices).max(1e-12);
@@ -60,7 +52,7 @@ impl TriMesh {
             let [a, b, c] = mesh.triangle(index);
             let area2 = (b - a).cross(c - a).length();
             if !area2.is_finite() || area2 <= area_tol {
-                return Err(CommonError::model_not_closed(format!(
+                return Err(SimError::model_not_closed(format!(
                     "degenerate triangle {index}"
                 )));
             }
@@ -72,14 +64,14 @@ impl TriMesh {
 
     /// Closed edges, consistent winding, non-degenerate faces, no self-intersection,
     /// positive solid volume, and inward-pointing cavity shells.
-    pub fn validate_solid(&self) -> Result<(), CommonError> {
+    pub fn validate_solid(&self) -> Result<(), SimError> {
         let scale = bounding_scale(&self.vertices).max(1e-12);
         let area_tol = 1e-14 * scale * scale;
         for index in 0..self.faces.len() {
             let [a, b, c] = self.triangle(index);
             let area2 = (b - a).cross(c - a).length();
             if !area2.is_finite() || area2 <= area_tol {
-                return Err(CommonError::model_not_closed(format!(
+                return Err(SimError::model_not_closed(format!(
                     "degenerate triangle {index}"
                 )));
             }
@@ -209,7 +201,7 @@ fn bounding_scale(vertices: &[DVec3]) -> f64 {
     (max - min).length()
 }
 
-fn validate_edges(faces: &[[u32; 3]]) -> Result<(), CommonError> {
+fn validate_edges(faces: &[[u32; 3]]) -> Result<(), SimError> {
     use std::collections::BTreeMap;
     let mut uses: BTreeMap<(u32, u32), [u32; 2]> = BTreeMap::new();
     for face in faces {
@@ -228,31 +220,18 @@ fn validate_edges(faces: &[[u32; 3]]) -> Result<(), CommonError> {
             continue;
         }
         if forward + back == 2 {
-            return Err(CommonError::model_not_closed(format!(
+            return Err(SimError::model_not_closed(format!(
                 "edge {lo}-{hi} is wound the same way on both faces"
             )));
         }
-        return Err(CommonError::model_not_closed(format!(
+        return Err(SimError::model_not_closed(format!(
             "edge {lo}-{hi} is not a closed manifold edge"
         )));
     }
     Ok(())
 }
 
-fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
-    #[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
-    {
-        return crate::browser::reject_self_intersection(&mesh.vertices, &mesh.faces, scale)
-            .map_err(CommonError::model_not_closed);
-    }
-    #[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
-    {
-        validate_no_self_intersection_cpu(mesh, scale)
-    }
-}
-
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
-fn validate_no_self_intersection_cpu(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
+fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), SimError> {
     let eps = 1e-10 * scale;
     let mut min = mesh.vertices[0];
     let mut max = mesh.vertices[0];
@@ -354,7 +333,7 @@ fn validate_no_self_intersection_cpu(mesh: &TriMesh, scale: f64) -> Result<(), C
         })
         .reduce_with(|a, b| if (a.0, a.1) <= (b.0, b.1) { a } else { b });
     if let Some((lo, hi, gap)) = hit {
-        return Err(CommonError::model_not_closed(format!(
+        return Err(SimError::model_not_closed(format!(
             "triangles {lo} and {hi} intersect (gap {:.4} m)",
             gap
         )));
@@ -363,12 +342,10 @@ fn validate_no_self_intersection_cpu(mesh: &TriMesh, scale: f64) -> Result<(), C
 }
 
 /// A pair is tested in the lowest cell both boxes occupy, and nowhere else.
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn pair_owned_by(cell: [i32; 3], a: [i32; 3], b: [i32; 3]) -> bool {
     cell[0] == a[0].max(b[0]) && cell[1] == a[1].max(b[1]) && cell[2] == a[2].max(b[2])
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn share_edge(a: [u32; 3], b: [u32; 3]) -> bool {
     shared_vertex_count(a, b) >= 2
 }
@@ -383,14 +360,12 @@ fn shared_vertex_count(a: [u32; 3], b: [u32; 3]) -> usize {
     shared
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 struct InteriorHit {
     gap: f64,
 }
 
 /// Distance from an interior intersection point to the triangle boundary, in metres.
 /// `None` when the triangles do not meet in their interiors.
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn intersection_gap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let na = (a[1] - a[0]).cross(a[2] - a[0]);
     let nb = (b[1] - b[0]).cross(b[2] - b[0]);
@@ -427,7 +402,6 @@ fn intersection_gap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHi
     best
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn segment_interior_gap(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
     let dir = q - p;
     let e1 = tri[1] - tri[0];
@@ -455,7 +429,6 @@ fn segment_interior_gap(p: DVec3, q: DVec3, tri: [DVec3; 3], eps: f64) -> Option
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn distance_to_boundary(point: DVec3, tri: [DVec3; 3]) -> f64 {
     let mut gap = f64::MAX;
     for edge in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
@@ -469,7 +442,6 @@ fn distance_to_boundary(point: DVec3, tri: [DVec3; 3]) -> f64 {
     gap
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn coplanar_overlap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
     for vertex in b {
         if point_in_triangle_strict(vertex, a, eps) {
@@ -491,7 +463,6 @@ fn coplanar_overlap(a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> bool {
     false
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn point_in_triangle_strict(p: DVec3, tri: [DVec3; 3], eps: f64) -> bool {
     let n = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
     let axis = if n.x.abs() >= n.y.abs() && n.x.abs() >= n.z.abs() {
@@ -514,7 +485,6 @@ fn point_in_triangle_strict(p: DVec3, tri: [DVec3; 3], eps: f64) -> bool {
     bary.iter().all(|w| *w > eps)
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn barycentric_2d(p: [f64; 2], t: [[f64; 2]; 3]) -> [f64; 3] {
     let den = (t[1][1] - t[2][1]) * (t[0][0] - t[2][0]) + (t[2][0] - t[1][0]) * (t[0][1] - t[2][1]);
     if den.abs() <= 1e-18 {
@@ -527,7 +497,6 @@ fn barycentric_2d(p: [f64; 2], t: [[f64; 2]; 3]) -> [f64; 3] {
     [w0, w1, 1.0 - w0 - w1]
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn segments_cross(a: DVec3, b: DVec3, c: DVec3, d: DVec3, eps: f64) -> bool {
     let n = (b - a).cross(d - c);
     if n.length() <= eps {
@@ -554,7 +523,6 @@ fn segments_cross(a: DVec3, b: DVec3, c: DVec3, d: DVec3, eps: f64) -> bool {
     proper_2d(drop(a), drop(b), drop(c), drop(d), eps)
 }
 
-#[cfg(not(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web"))))]
 fn proper_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], eps: f64) -> bool {
     let orient = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
         (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
@@ -566,13 +534,13 @@ fn proper_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2], eps: f64) -> bo
     ab_c * ab_d < -eps && cd_a * cd_b < -eps
 }
 
-fn validate_components_and_volume(mesh: &TriMesh, scale: f64) -> Result<(), CommonError> {
+fn validate_components_and_volume(mesh: &TriMesh, scale: f64) -> Result<(), SimError> {
     let components = face_components(mesh);
     let mut shells = Vec::new();
     for faces in &components {
         let volume = component_volume(mesh, faces);
         if !volume.is_finite() || volume.abs() <= 1e-14 * scale * scale * scale {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "a mesh shell has zero signed volume",
             ));
         }
@@ -585,7 +553,7 @@ fn validate_components_and_volume(mesh: &TriMesh, scale: f64) -> Result<(), Comm
         .map(|(index, _)| index)
         .collect();
     if positive.is_empty() {
-        return Err(CommonError::model_not_closed(
+        return Err(SimError::model_not_closed(
             "mesh signed volume is non-positive; face winding is not the outward orientation",
         ));
     }
@@ -602,7 +570,7 @@ fn validate_components_and_volume(mesh: &TriMesh, scale: f64) -> Result<(), Comm
                     continue;
                 }
                 if shell_inside(mesh, faces, &shells[*other].0, scale) {
-                    return Err(CommonError::model_not_closed(
+                    return Err(SimError::model_not_closed(
                         "an interior shell is wound as a solid instead of a cavity",
                     ));
                 }
@@ -613,14 +581,14 @@ fn validate_components_and_volume(mesh: &TriMesh, scale: f64) -> Result<(), Comm
             .iter()
             .find(|outer| shell_inside(mesh, faces, &shells[**outer].0, scale));
         if host.is_none() {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "a cavity shell is not inside a positively oriented solid",
             ));
         }
     }
     let total: f64 = shells.iter().map(|(_, volume)| *volume).sum();
     if !total.is_finite() || total <= 0.0 {
-        return Err(CommonError::model_not_closed(
+        return Err(SimError::model_not_closed(
             "mesh signed volume is non-positive; face winding is not the outward orientation",
         ));
     }
@@ -766,43 +734,20 @@ pub struct RadialAlignReport {
 pub fn align_radial_cones(
     vertices: &mut [DVec3],
     faces: &[[u32; 3]],
-) -> Result<RadialAlignReport, CommonError> {
+) -> Result<RadialAlignReport, SimError> {
     // Same f64 relaxation on wasm and on the desktop. The browser double-single
     // test treats a shared endpoint as a crossing and then walks vertices into
     // a real self-intersection.
     align_radial_cones_cpu(vertices, faces)
 }
 
-#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
-#[allow(dead_code)]
-fn align_radial_cones_gpu(
-    vertices: &mut [DVec3],
-    faces: &[[u32; 3]],
-) -> Result<RadialAlignReport, CommonError> {
-    for face in faces {
-        if face.iter().any(|&index| index as usize >= vertices.len()) {
-            return Err(CommonError::model_not_closed(
-                "mesh face index is outside the vertex array",
-            ));
-        }
-    }
-    let (passes, bad, max_offset) =
-        crate::browser::align_radial(vertices, faces).map_err(CommonError::model_not_closed)?;
-    if bad > 0 {
-        return Err(CommonError::model_not_closed(format!(
-            "radial cones still overlap on {bad} face pairs after alignment (max offset {max_offset:.3} m)"
-        )));
-    }
-    Ok(RadialAlignReport { max_offset, passes })
-}
-
 fn align_radial_cones_cpu(
     vertices: &mut [DVec3],
     faces: &[[u32; 3]],
-) -> Result<RadialAlignReport, CommonError> {
+) -> Result<RadialAlignReport, SimError> {
     for face in faces {
         if face.iter().any(|&i| i as usize >= vertices.len()) {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "mesh face index is outside the vertex array",
             ));
         }
@@ -831,7 +776,7 @@ fn align_radial_cones_cpu(
         .map(|(now, was)| (*now - *was).length())
         .fold(0.0, f64::max);
     if bad > 0 {
-        return Err(CommonError::model_not_closed(format!(
+        return Err(SimError::model_not_closed(format!(
             "radial cones still overlap on {bad} face pairs after alignment (max offset {max_offset:.3} m)"
         )));
     }
@@ -947,204 +892,4 @@ fn segments_cross_2d(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64))
 
 fn orient2(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
     (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-}
-
-#[cfg(test)]
-mod solid_rules {
-    use super::TriMesh;
-    use crate::common::math::DVec3;
-
-    #[test]
-    fn a_convex_mesh_needs_no_radial_alignment() {
-        let cube = TriMesh::unit_cube();
-        let mut vertices = cube.vertices.clone();
-        let report = super::align_radial_cones(&mut vertices, &cube.faces).unwrap();
-        assert_eq!(report.passes, 0);
-        assert!(report.max_offset < 1e-12);
-    }
-
-    /// `output/out.obj` is a closed mesh whose radial cones overlap, so a later
-    /// radius resample self-intersects. Alignment must make every positive radius
-    /// field on those directions an embedded polyhedron. Release only: the mesh
-    /// has ~2e5 faces.
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn radial_alignment_makes_equal_radii_intersection_free() {
-        let path = std::path::Path::new("output/out.obj");
-        if !path.exists() {
-            return;
-        }
-        let text = std::fs::read_to_string(path).unwrap();
-        let mut vertices = Vec::new();
-        let mut faces = Vec::new();
-        for line in text.lines() {
-            let mut parts = line.split_whitespace();
-            match parts.next() {
-                Some("v") => {
-                    let x: f64 = parts.next().unwrap().parse().unwrap();
-                    let y: f64 = parts.next().unwrap().parse().unwrap();
-                    let z: f64 = parts.next().unwrap().parse().unwrap();
-                    vertices.push(DVec3::new(x, y, z));
-                }
-                Some("f") => {
-                    let ids: Vec<u32> = parts
-                        .map(|token| token.split('/').next().unwrap().parse::<i64>().unwrap())
-                        .map(|id| (id - 1) as u32)
-                        .collect();
-                    if ids.len() == 3 {
-                        faces.push([ids[0], ids[1], ids[2]]);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let n = vertices.len();
-        let origin =
-            vertices.iter().copied().fold(DVec3::ZERO, |acc, v| acc + v) * (1.0 / n as f64);
-        for v in &mut vertices {
-            *v = *v - origin;
-        }
-        let before = TriMesh::try_new(vertices.clone(), faces.clone())
-            .expect("centred import")
-            .signed_volume();
-        let report = super::align_radial_cones(&mut vertices, &faces).unwrap();
-        let after = TriMesh::try_new(vertices.clone(), faces.clone())
-            .expect("aligned mesh")
-            .signed_volume();
-        let mean_r = vertices.iter().map(|v| v.length()).sum::<f64>() / n as f64;
-        let sphere: Vec<DVec3> = vertices
-            .iter()
-            .map(|v| v.try_normalize().unwrap() * mean_r)
-            .collect();
-        TriMesh::try_new(sphere, faces).unwrap_or_else(|err| {
-            panic!("equal radius after alignment: {err}");
-        });
-        eprintln!(
-            "radial align passes {} max offset {:.4} m volume {:.6}",
-            report.passes,
-            report.max_offset,
-            after / before
-        );
-        assert!(report.max_offset < 20.0, "{}", report.max_offset);
-        assert!((after - before).abs() / before < 0.01, "{}", after / before);
-    }
-
-    #[test]
-    fn reference_solids_are_closed() {
-        TriMesh::unit_cube();
-        TriMesh::right_tetrahedron();
-        let sphere = TriMesh::uv_sphere(4, 1.0);
-        assert!(sphere.signed_volume() > 0.0);
-    }
-
-    #[test]
-    fn an_open_edge_is_rejected() {
-        let cube = TriMesh::unit_cube();
-        let faces = cube.faces[..cube.faces.len() - 1].to_vec();
-        let err = TriMesh::try_new(cube.vertices, faces).unwrap_err();
-        assert!(
-            err.detail.contains("not a closed manifold edge"),
-            "{}",
-            err.detail
-        );
-    }
-
-    #[test]
-    fn a_face_wound_the_same_way_is_rejected() {
-        let cube = TriMesh::unit_cube();
-        let mut faces = cube.faces.clone();
-        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
-        let err = TriMesh::try_new(cube.vertices, faces).unwrap_err();
-        assert!(err.detail.contains("wound the same way"), "{}", err.detail);
-    }
-
-    #[test]
-    fn a_degenerate_triangle_is_rejected() {
-        let vertices = vec![
-            DVec3::new(0.0, 0.0, 0.0),
-            DVec3::new(1.0, 0.0, 0.0),
-            DVec3::new(2.0, 0.0, 0.0),
-            DVec3::new(0.0, 1.0, 0.0),
-        ];
-        let faces = vec![[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]];
-        let err = TriMesh::try_new(vertices, faces).unwrap_err();
-        assert!(err.detail.contains("degenerate triangle"), "{}", err.detail);
-    }
-
-    #[test]
-    fn crossing_shells_are_rejected() {
-        let (mut vertices, mut faces) = shifted_tet(DVec3::ZERO, 0);
-        let (extra, extra_faces) = shifted_tet(DVec3::new(0.25, 0.25, -0.15), 4);
-        vertices.extend(extra);
-        faces.extend(extra_faces);
-        let err = TriMesh::try_new(vertices, faces).unwrap_err();
-        assert!(err.detail.contains("intersect"), "{}", err.detail);
-    }
-
-    #[test]
-    fn an_inward_cavity_inside_a_solid_is_accepted() {
-        let (mut vertices, mut faces) = cube_shell(1.0, 0, false);
-        let (inner, inner_faces) = cube_shell(0.4, 8, true);
-        vertices.extend(inner);
-        faces.extend(inner_faces);
-        let mesh = TriMesh::try_new(vertices, faces).expect("cavity");
-        assert!(mesh.signed_volume() > 0.0);
-    }
-
-    #[test]
-    fn a_positive_inner_shell_is_rejected() {
-        let (mut vertices, mut faces) = cube_shell(1.0, 0, false);
-        let (inner, inner_faces) = cube_shell(0.4, 8, false);
-        vertices.extend(inner);
-        faces.extend(inner_faces);
-        let err = TriMesh::try_new(vertices, faces).unwrap_err();
-        assert!(err.detail.contains("wound as a solid"), "{}", err.detail);
-    }
-
-    #[test]
-    fn a_cavity_outside_the_solid_is_rejected() {
-        let (mut vertices, mut faces) = cube_shell(1.0, 0, false);
-        let (mut inner, inner_faces) = cube_shell(0.4, 8, true);
-        for vertex in &mut inner {
-            *vertex = *vertex + DVec3::new(3.0, 0.0, 0.0);
-        }
-        vertices.extend(inner);
-        faces.extend(inner_faces);
-        let err = TriMesh::try_new(vertices, faces).unwrap_err();
-        assert!(
-            err.detail
-                .contains("not inside a positively oriented solid"),
-            "{}",
-            err.detail
-        );
-    }
-
-    fn cube_shell(scale: f64, offset: u32, inward: bool) -> (Vec<DVec3>, Vec<[u32; 3]>) {
-        let cube = TriMesh::unit_cube();
-        let vertices = cube.vertices.into_iter().map(|v| v * scale).collect();
-        let faces = cube
-            .faces
-            .into_iter()
-            .map(|face| {
-                let shifted = [face[0] + offset, face[1] + offset, face[2] + offset];
-                if inward {
-                    [shifted[0], shifted[2], shifted[1]]
-                } else {
-                    shifted
-                }
-            })
-            .collect();
-        (vertices, faces)
-    }
-
-    fn shifted_tet(shift: DVec3, offset: u32) -> (Vec<DVec3>, Vec<[u32; 3]>) {
-        let tet = TriMesh::right_tetrahedron();
-        let vertices = tet.vertices.into_iter().map(|v| v + shift).collect();
-        let faces = tet
-            .faces
-            .into_iter()
-            .map(|face| [face[0] + offset, face[1] + offset, face[2] + offset])
-            .collect();
-        (vertices, faces)
-    }
 }

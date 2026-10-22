@@ -7,9 +7,10 @@ pub mod density;
 pub mod error;
 pub mod geometry;
 pub mod math;
+pub mod obj;
 pub mod time;
 
 pub use density::{CauchyDensity, CauchyKernel};
-pub use error::CommonError;
+pub use error::SimError;
 pub use geometry::TriMesh;
 pub use math::{DVec3, Sym6};

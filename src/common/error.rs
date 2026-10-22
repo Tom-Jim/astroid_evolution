@@ -1,25 +1,83 @@
+//! The one failure type of every module. Each CLI exits with `code()`.
+
 use std::fmt;
 
-/// Missing or non-finite model data. Callers must not substitute a default.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommonError {
+pub struct SimError {
     pub kind: &'static str,
     pub detail: String,
 }
 
-impl CommonError {
-    pub fn model_not_closed(detail: impl Into<String>) -> Self {
-        Self {
-            kind: "ModelNotClosed",
-            detail: detail.into(),
+macro_rules! kinds {
+    ($($(#[$doc:meta])* $name:ident => $kind:literal, $code:literal;)*) => {
+        impl SimError {
+            $(
+                $(#[$doc])*
+                pub fn $name(detail: impl Into<String>) -> Self {
+                    Self { kind: $kind, detail: detail.into() }
+                }
+            )*
+
+            pub fn code(&self) -> i32 {
+                match self.kind {
+                    $($kind => $code,)*
+                    _ => 1,
+                }
+            }
+        }
+    };
+}
+
+kinds! {
+    /// A required constant or input is missing or out of range (§10.4.4 step 0).
+    /// Callers must not substitute a default.
+    model_not_closed => "ModelNotClosed", 10;
+    /// The body is not an admissible star-shaped solid.
+    geometry => "GeometryInvalid", 11;
+    invalid_input => "InvalidInput", 12;
+    /// `B_rb` lost rank, or the load is incompatible with the rigid modes (§8.5, A.3).
+    rigid_rank => "RigidRankDeficient", 13;
+    /// The Picard iteration, the weak momentum balance, or the friction chain
+    /// did not converge (§2.15 a, b).
+    rheology_not_converged => "RheologyNotConverged", 20;
+    /// The outer geometry acceptance failed at the trust-radius floor (§10.4.3).
+    trust_exhausted => "TrustRadiusExhausted", 23;
+    /// The configured `step.max_steps` limit was reached before `T_end` (§10.4.4 step 9).
+    step_limit_exhausted => "StepLimitExhausted", 24;
+    solver => "SolverFailure", 30;
+    io => "Io", 31;
+    gpu => "GpuUnavailable", 50;
+}
+
+impl fmt::Display for SimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({}): {}", self.kind, self.code(), self.detail)
+    }
+}
+
+impl std::error::Error for SimError {}
+
+impl SimError {
+    /// Exit status of a CLI run: success, or the message on stderr and `code()`.
+    pub fn exit(result: Result<(), Self>) -> std::process::ExitCode {
+        match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::ExitCode::from(err.code().clamp(1, 255) as u8)
+            }
         }
     }
 }
 
-impl fmt::Display for CommonError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.kind, self.detail)
+impl From<std::io::Error> for SimError {
+    fn from(e: std::io::Error) -> Self {
+        Self::io(e.to_string())
     }
 }
 
-impl std::error::Error for CommonError {}
+impl From<serde_json::Error> for SimError {
+    fn from(e: serde_json::Error) -> Self {
+        Self::io(e.to_string())
+    }
+}

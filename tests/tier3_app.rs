@@ -1,35 +1,36 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use astroid_evolution::asteroid_app::AsteroidPlugin;
-use astroid_evolution::asteroid_app::pipeline::{SurfaceFrame, prepare, run_prepared};
-use astroid_evolution::asteroid_app::resources::{
+use astroid_evolution::app::AsteroidPlugin;
+use astroid_evolution::app::pipeline::{SurfaceFrame, prepare, run_prepared};
+use astroid_evolution::app::resources::{
     AppConfig, Evolution, Phase, Scene, display_imported, display_positions, lock_scale,
 };
-use astroid_evolution::asteroid_app::snapshot::posed_positions;
-use astroid_evolution::asteroid_app::ui::hud_lines;
+use astroid_evolution::app::snapshot::posed_positions;
+use astroid_evolution::app::ui::hud_lines;
 use astroid_evolution::common::density::CauchyKernel;
-use astroid_evolution::scf_simulator::body::{Body, Topology};
-use astroid_evolution::scf_simulator::timing;
+use astroid_evolution::scf::body::{Body, Topology};
+use astroid_evolution::scf::timing;
 use bevy::prelude::*;
 
 fn project_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/projects")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("dist/.stage/assets/projects")
 }
 
 fn project_text() -> String {
-    std::fs::read_to_string(project_dir().join("ryugu_cauchy.toml")).expect("ryugu project")
+    std::fs::read_to_string(project_dir().join("ryugu.toml")).expect("ryugu project")
 }
 
 fn config() -> AppConfig {
     AppConfig {
         project_text: project_text(),
         project_dir: project_dir(),
-        project_path: "assets/projects/ryugu_cauchy.toml".into(),
+        project_path: "assets/projects/ryugu.toml".into(),
         mesh_path: "assets/models/ryugu.glb".into(),
         mesh_unit: "km".into(),
         spin: "const:4.986655e-4@3.15576e13".into(),
         max_steps: Some(1),
+        snapshot: None,
     }
 }
 
@@ -99,7 +100,7 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
         "combined",
     )
     .join("\n");
-    assert!(waiting.contains("project  assets/projects/ryugu_cauchy.toml"));
+    assert!(waiting.contains("project  assets/projects/ryugu.toml"));
     assert!(waiting.contains("mesh     assets/models/ryugu.glb  (km)"));
     assert!(waiting.contains("spin     const:4.986655e-4@3.15576e13"));
     assert!(waiting.contains("showing  imported glb"));
@@ -112,7 +113,7 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
         &Evolution {
             phase: Phase::Running,
             status: "tier 2 running".into(),
-            stats: Some(astroid_evolution::asteroid_app::resources::FrameStats {
+            stats: Some(astroid_evolution::app::resources::FrameStats {
                 step: 3,
                 time: 1.0,
                 omega: 4.986655e-4,
@@ -171,7 +172,7 @@ fn a_headless_viewer_records_the_input_and_does_not_start_tier2() {
     assert!(evolution.receiver.lock().unwrap().is_none());
     assert!(evolution.stats.is_none());
     let stored = app.world().resource::<AppConfig>();
-    assert_eq!(stored.project_path, "assets/projects/ryugu_cauchy.toml");
+    assert_eq!(stored.project_path, "assets/projects/ryugu.toml");
     assert_eq!(stored.mesh_path, "assets/models/ryugu.glb");
     assert_eq!(stored.mesh_unit, "km");
     assert!(stored.spin.starts_with("const:"));
@@ -187,7 +188,7 @@ fn ryugu_step_matches_the_quasi_static_audit() {
     timing::ensure_enabled();
     let cfg = config();
     let started = std::time::Instant::now();
-    let prepared = prepare(&cfg.project_text, &cfg.project_dir, &cfg.spin).expect("prepare");
+    let prepared = prepare(&cfg.project_text, &cfg.project_dir, &cfg.spin, None).expect("prepare");
     let mut snaps = Vec::new();
     let complete = run_prepared(
         prepared,

@@ -6,13 +6,13 @@ use std::time::Instant;
 use astroid_evolution::common::density::{CauchyDensity, CauchyKernel};
 use astroid_evolution::common::geometry::TriMesh;
 use astroid_evolution::common::math::{DVec3, Sym6};
-use astroid_evolution::rtfp_solver::api::{FieldBatch, FieldMask, PointRole, PointSet};
-use astroid_evolution::rtfp_solver::reference::werner;
-use astroid_evolution::rtfp_solver::volume::uniform_integrals;
-use astroid_evolution::rtfp_solver::{RtfpOptions, RtfpSolver};
+use astroid_evolution::rtfp::api::{FieldBatch, FieldMask, PointRole, PointSet};
+use astroid_evolution::rtfp::reference::werner;
+use astroid_evolution::rtfp::volume::uniform_integrals;
+use astroid_evolution::rtfp::{RtfpOptions, RtfpSolver};
 use std::f64::consts::PI;
 
-const TOLERANCE: f64 = 1.0e-2;
+const TOLERANCE: f64 = 2.0e-4;
 const G: f64 = 1.0;
 
 fn solver(mesh: &TriMesh, density: CauchyDensity) -> RtfpSolver {

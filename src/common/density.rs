@@ -1,45 +1,125 @@
-//! Cauchy density `ρ_K` and its classical derivatives (MS §1.1).
+//! Cauchy density `ρ_K` and its classical derivatives (MS §1.1, §6.1).
+//!
+//! `ρ_K(y) = bulk + Σ_k w_k [1 + (y − c_k)ᵀ S_k (y − c_k)]^{−α_k}` with a symmetric
+//! positive-definite metric `S_k` (dimension L⁻²). The isotropic core is
+//! `S_k = σ_k² I`. The core value at `c_k` is `w_k` and its Hessian there is
+//! `−2 α_k w_k S_k`; MS §9.10 transports exactly these.
 
-use crate::common::error::CommonError;
-use crate::common::math::{DVec3, Sym6};
+use crate::common::error::SimError;
+use crate::common::math::{DMat3, DVec3, Sym6, mat_sym, sym_mat};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CauchyKernel {
     pub center: DVec3,
     pub weight: f64,
-    pub sigma: f64,
+    /// `S` in the layout `(xx, yy, zz, xy, xz, yz)`.
+    pub metric: Sym6,
     pub alpha: f64,
 }
 
 impl CauchyKernel {
-    pub fn try_new(
-        center: DVec3,
-        weight: f64,
-        sigma: f64,
-        alpha: f64,
-    ) -> Result<Self, CommonError> {
-        if !center.is_finite() || !weight.is_finite() {
-            return Err(CommonError::model_not_closed(
-                "Cauchy kernel center and weight must be finite",
-            ));
-        }
+    /// An isotropic core `w [1 + σ² |y − c|²]^{−α}`.
+    pub fn try_new(center: DVec3, weight: f64, sigma: f64, alpha: f64) -> Result<Self, SimError> {
         if !(sigma.is_finite() && sigma > 0.0) {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "Cauchy kernel sigma must be finite and positive",
             ));
         }
+        let s2 = sigma * sigma;
+        Self::try_anisotropic(center, weight, [s2, s2, s2, 0.0, 0.0, 0.0], alpha)
+    }
+
+    /// A core with metric `S` (symmetric positive definite).
+    pub fn try_anisotropic(
+        center: DVec3,
+        weight: f64,
+        metric: Sym6,
+        alpha: f64,
+    ) -> Result<Self, SimError> {
+        if !center.is_finite() || !weight.is_finite() {
+            return Err(SimError::model_not_closed(
+                "Cauchy kernel center and weight must be finite",
+            ));
+        }
         if !(alpha.is_finite() && alpha > 0.0) {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "Cauchy kernel alpha must be finite and positive; no implicit alpha=1",
+            ));
+        }
+        if !metric.iter().all(|v| v.is_finite()) || !is_spd(&metric) {
+            return Err(SimError::model_not_closed(
+                "Cauchy kernel metric must be symmetric positive definite",
             ));
         }
         Ok(Self {
             center,
             weight,
-            sigma,
+            metric,
             alpha,
         })
     }
+
+    pub fn metric_mat(&self) -> DMat3 {
+        sym_mat(self.metric)
+    }
+
+    /// Isotropic equivalent `σ = det(S)^{1/6}` (geometric mean of the principal values).
+    pub fn sigma_mean(&self) -> f64 {
+        self.metric_mat().determinant().max(0.0).powf(1.0 / 6.0)
+    }
+
+    /// Largest principal value of `S`, `σ_max²`: the narrowest core direction is `1/σ_max`.
+    pub fn sigma_max2(&self) -> f64 {
+        let m = &self.metric;
+        // Gershgorin bound, exact for a diagonal metric and an upper bound otherwise.
+        (m[0] + m[3].abs() + m[4].abs())
+            .max(m[1] + m[3].abs() + m[5].abs())
+            .max(m[2] + m[4].abs() + m[5].abs())
+    }
+
+    /// `w ∫_{ℝ³} [1 + xᵀSx]^{−α} dx = w π^{3/2} Γ(α − 3/2)/Γ(α) / √det S` for α > 3/2.
+    pub fn total_mass(&self) -> Option<f64> {
+        if self.alpha <= 1.5 {
+            return None;
+        }
+        let det = self.metric_mat().determinant();
+        let ratio = (ln_gamma(self.alpha - 1.5) - ln_gamma(self.alpha)).exp();
+        Some(self.weight * std::f64::consts::PI.powf(1.5) * ratio / det.sqrt())
+    }
+}
+
+fn is_spd(m: &Sym6) -> bool {
+    // Sylvester's criterion.
+    let a = sym_mat(*m);
+    let d1 = m[0];
+    let d2 = m[0] * m[1] - m[3] * m[3];
+    d1 > 0.0 && d2 > 0.0 && a.determinant() > 0.0
+}
+
+/// `ln Γ(x)` for x > 0 (Lanczos, g = 7, relative error below 1e-15).
+pub fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        let pi = std::f64::consts::PI;
+        return (pi / (pi * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = G[0];
+    let t = x + 7.5;
+    for (i, g) in G.iter().enumerate().skip(1) {
+        a += g / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
 /// Physical density is `bulk + Σ kernels`. `bulk` may be zero. A negative bulk is rejected.
@@ -50,40 +130,32 @@ pub struct CauchyDensity {
 }
 
 impl CauchyDensity {
-    pub fn try_new(bulk: f64, kernels: Vec<CauchyKernel>) -> Result<Self, CommonError> {
+    pub fn try_new(bulk: f64, kernels: Vec<CauchyKernel>) -> Result<Self, SimError> {
         if !(bulk.is_finite() && bulk >= 0.0) {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "bulk density must be finite and non-negative",
             ));
         }
         if bulk == 0.0 && kernels.is_empty() {
-            return Err(CommonError::model_not_closed(
+            return Err(SimError::model_not_closed(
                 "density model is empty: bulk is zero and no Cauchy kernel was supplied",
             ));
         }
         Ok(Self { bulk, kernels })
     }
 
-    pub fn uniform(bulk: f64) -> Result<Self, CommonError> {
+    pub fn uniform(bulk: f64) -> Result<Self, SimError> {
         Self::try_new(bulk, Vec::new())
     }
 
     #[inline]
     pub fn rho(&self, y: DVec3) -> f64 {
-        let mut s = self.bulk;
-        for k in &self.kernels {
-            s += kernel_rho(k, y);
-        }
-        s
+        self.bulk + self.kernels.iter().map(|k| kernel_rho(k, y)).sum::<f64>()
     }
 
     #[inline]
     pub fn grad(&self, y: DVec3) -> DVec3 {
-        let mut g = DVec3::ZERO;
-        for k in &self.kernels {
-            g = g + kernel_grad(k, y);
-        }
-        g
+        self.kernels.iter().map(|k| kernel_grad(k, y)).sum()
     }
 
     #[inline]
@@ -99,101 +171,33 @@ impl CauchyDensity {
     }
 }
 
+/// `q = 1 + dᵀ S d` and `S d`.
 #[inline]
-fn kernel_rho(k: &CauchyKernel, y: DVec3) -> f64 {
-    let r2 = (y - k.center).length_squared();
-    let q = 1.0 + k.sigma * k.sigma * r2;
+fn quad(k: &CauchyKernel, y: DVec3) -> (f64, DVec3) {
+    let d = y - k.center;
+    let sd = k.metric_mat() * d;
+    (1.0 + d.dot(sd), sd)
+}
+
+#[inline]
+pub fn kernel_rho(k: &CauchyKernel, y: DVec3) -> f64 {
+    let (q, _) = quad(k, y);
     k.weight * q.powf(-k.alpha)
 }
 
-/// `∂_i ρ = −2 α w σ² q^{−α−1} (y − c)_i`.
+/// `∇ρ = −2 α w q^{−α−1} S (y − c)`.
 #[inline]
-fn kernel_grad(k: &CauchyKernel, y: DVec3) -> DVec3 {
-    let d = y - k.center;
-    let s2 = k.sigma * k.sigma;
-    let q = 1.0 + s2 * d.length_squared();
-    let coeff = -2.0 * k.alpha * k.weight * s2 * q.powf(-k.alpha - 1.0);
-    d * coeff
+pub fn kernel_grad(k: &CauchyKernel, y: DVec3) -> DVec3 {
+    let (q, sd) = quad(k, y);
+    sd * (-2.0 * k.alpha * k.weight * q.powf(-k.alpha - 1.0))
 }
 
-/// Second derivatives of one Cauchy kernel. Layout is `(xx, yy, zz, xy, xz, yz)`.
+/// `∇∇ρ = −2 α w q^{−α−1} S + 4 α (α + 1) w q^{−α−2} (S d)(S d)ᵀ`, layout `(xx, yy, zz, xy, xz, yz)`.
 #[inline]
-fn kernel_hessian(k: &CauchyKernel, y: DVec3) -> Sym6 {
-    let d = y - k.center;
-    let s2 = k.sigma * k.sigma;
-    let q = 1.0 + s2 * d.length_squared();
-    let q1 = q.powf(-k.alpha - 1.0);
-    let q2 = q.powf(-k.alpha - 2.0);
-    let diag = -2.0 * k.alpha * k.weight * s2 * q1;
-    let outer = 4.0 * k.alpha * (k.alpha + 1.0) * k.weight * s2 * s2 * q2;
-    [
-        diag + outer * d.x * d.x,
-        diag + outer * d.y * d.y,
-        diag + outer * d.z * d.z,
-        outer * d.x * d.y,
-        outer * d.x * d.z,
-        outer * d.y * d.z,
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn gradient_matches_central_difference() {
-        let k = CauchyKernel::try_new(DVec3::new(0.2, -0.1, 0.05), 1.4, 0.7, 1.3).unwrap();
-        let density = CauchyDensity::try_new(0.2, vec![k]).unwrap();
-        let y = DVec3::new(0.4, 0.2, -0.3);
-        let analytic = density.grad(y);
-        let eps = 1e-6;
-        let mut numeric = DVec3::ZERO;
-        for axis in 0..3 {
-            let mut yp = y;
-            let mut ym = y;
-            match axis {
-                0 => {
-                    yp.x += eps;
-                    ym.x -= eps;
-                }
-                1 => {
-                    yp.y += eps;
-                    ym.y -= eps;
-                }
-                _ => {
-                    yp.z += eps;
-                    ym.z -= eps;
-                }
-            }
-            let d = (density.rho(yp) - density.rho(ym)) / (2.0 * eps);
-            match axis {
-                0 => numeric.x = d,
-                1 => numeric.y = d,
-                _ => numeric.z = d,
-            }
-        }
-        assert!((analytic - numeric).length() < 1e-7);
-        let h = density.hessian(y);
-        assert!((h[0] + h[1] + h[2] - laplacian_from_grad(&density, y)).abs() < 1e-6);
-    }
-
-    fn laplacian_from_grad(density: &CauchyDensity, y: DVec3) -> f64 {
-        let eps = 1e-5;
-        let axes = [
-            DVec3::new(eps, 0.0, 0.0),
-            DVec3::new(0.0, eps, 0.0),
-            DVec3::new(0.0, 0.0, eps),
-        ];
-        let mut lap = 0.0;
-        for a in axes {
-            lap += (density.grad(y + a) - density.grad(y - a)).dot(a) / (a.length_squared() * 2.0);
-        }
-        lap
-    }
-
-    #[test]
-    fn missing_alpha_is_rejected() {
-        let err = CauchyKernel::try_new(DVec3::ZERO, 1.0, 1.0, f64::NAN).unwrap_err();
-        assert_eq!(err.kind, "ModelNotClosed");
-    }
+pub fn kernel_hessian(k: &CauchyKernel, y: DVec3) -> Sym6 {
+    let (q, sd) = quad(k, y);
+    let a = -2.0 * k.alpha * k.weight * q.powf(-k.alpha - 1.0);
+    let b = 4.0 * k.alpha * (k.alpha + 1.0) * k.weight * q.powf(-k.alpha - 2.0);
+    let m = k.metric_mat() * a + DMat3::from_cols(sd * sd.x, sd * sd.y, sd * sd.z) * b;
+    mat_sym(m)
 }

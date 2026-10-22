@@ -4,8 +4,11 @@
 
 use std::sync::OnceLock;
 
-use astroid_evolution::sh_smooth::ShGpu;
-use astroid_evolution::sh_smooth::selfcheck::{self, Check};
+use astroid_evolution::shsmooth::ShGpu;
+#[path = "support/sh_selfcheck.rs"]
+mod selfcheck;
+
+use selfcheck::Check;
 
 fn gpu() -> &'static ShGpu {
     static GPU: OnceLock<ShGpu> = OnceLock::new();
@@ -115,7 +118,7 @@ fn ancient_ryugu_rollback_drops_the_equator() {
 
 #[test]
 fn y40_gain_outside_the_unit_interval_is_rejected() {
-    let err = astroid_evolution::sh_smooth::Filter::Heat { kappa: 0.0 }
+    let err = astroid_evolution::shsmooth::Filter::Heat { kappa: 0.0 }
         .ancient(8, &vec![0.0; 81], 1.0, 1.5)
         .unwrap_err();
     assert_eq!(err.kind, "InvalidInput");
@@ -124,22 +127,22 @@ fn y40_gain_outside_the_unit_interval_is_rejected() {
 #[test]
 fn quads_and_degenerate_faces_are_refused() {
     let quad = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n";
-    let err = astroid_evolution::sh_smooth::Mesh::parse_obj(quad).unwrap_err();
+    let err = astroid_evolution::shsmooth::Mesh::parse_obj(quad).unwrap_err();
     assert_eq!(err.kind, "ModelNotClosed");
     let degenerate = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 1 2\n";
-    let err = astroid_evolution::sh_smooth::Mesh::parse_obj(degenerate).unwrap_err();
+    let err = astroid_evolution::shsmooth::Mesh::parse_obj(degenerate).unwrap_err();
     assert_eq!(err.kind, "ModelNotClosed");
 }
 
 #[test]
 fn a_vertex_at_the_center_is_not_star_shaped() {
-    let mesh = astroid_evolution::sh_smooth::Mesh::parse_obj(
+    let mesh = astroid_evolution::shsmooth::Mesh::parse_obj(
         "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3\nf 1 3 4\nf 1 4 2\nf 2 4 3\n",
     )
     .unwrap();
     let err = mesh
         .radial_samples(
-            astroid_evolution::sh_smooth::Center::Origin
+            astroid_evolution::shsmooth::Center::Origin
                 .resolve(&mesh)
                 .unwrap(),
         )
@@ -149,7 +152,7 @@ fn a_vertex_at_the_center_is_not_star_shaped() {
 
 #[test]
 fn too_few_samples_cannot_determine_the_fit() {
-    let err = astroid_evolution::sh_smooth::fit::fit(2, &[[0.0, 0.0, 1.0]], &[1.0], &[1.0], 1e-12)
+    let err = astroid_evolution::shsmooth::fit::fit(2, &[[0.0, 0.0, 1.0]], &[1.0], &[1.0], 1e-12)
         .unwrap_err();
     assert_eq!(err.kind, "InvalidInput");
 }
@@ -161,12 +164,12 @@ fn radius_about(center: [f64; 3], p: [f64; 3]) -> f64 {
 
 #[test]
 fn fuse_of_a_mesh_with_itself_is_the_identity() {
-    let mesh = astroid_evolution::sh_smooth::Mesh::from_radial(10, |_, _| 1.4).unwrap();
-    let out = astroid_evolution::sh_smooth::fuse(
+    let mesh = astroid_evolution::shsmooth::Mesh::from_radial(10, |_, _| 1.4).unwrap();
+    let out = astroid_evolution::shsmooth::fuse(
         &mesh,
         &mesh,
-        &astroid_evolution::sh_smooth::FuseOptions {
-            center: astroid_evolution::sh_smooth::Center::Origin,
+        &astroid_evolution::shsmooth::FuseOptions {
+            center: astroid_evolution::shsmooth::Center::Origin,
         },
     )
     .unwrap();
@@ -185,7 +188,7 @@ fn fuse_of_a_mesh_with_itself_is_the_identity() {
 
 #[test]
 fn fuse_adds_a_coarse_bulge_and_keeps_a_crater() {
-    let mut high = astroid_evolution::sh_smooth::Mesh::from_radial(12, |_, _| 1.2).unwrap();
+    let mut high = astroid_evolution::shsmooth::Mesh::from_radial(12, |_, _| 1.2).unwrap();
     let crater = high
         .vertices
         .iter()
@@ -214,14 +217,14 @@ fn fuse_adds_a_coarse_bulge_and_keeps_a_crater() {
         sum / n - radius_about([0.0; 3], high.vertices[crater])
     };
     let coarse =
-        astroid_evolution::sh_smooth::Mesh::from_radial(5, |theta, _| 1.2 + 0.3 * theta.sin())
+        astroid_evolution::shsmooth::Mesh::from_radial(5, |theta, _| 1.2 + 0.3 * theta.sin())
             .unwrap();
     assert_ne!(coarse.face_count(), high.face_count());
-    let out = astroid_evolution::sh_smooth::fuse(
+    let out = astroid_evolution::shsmooth::fuse(
         &high,
         &coarse,
-        &astroid_evolution::sh_smooth::FuseOptions {
-            center: astroid_evolution::sh_smooth::Center::Origin,
+        &astroid_evolution::shsmooth::FuseOptions {
+            center: astroid_evolution::shsmooth::Center::Origin,
         },
     )
     .unwrap();
@@ -265,17 +268,17 @@ fn fuse_adds_a_coarse_bulge_and_keeps_a_crater() {
 
 #[test]
 fn fuse_refuses_a_coarse_mesh_that_misses_a_direction() {
-    let high = astroid_evolution::sh_smooth::Mesh::from_radial(4, |_, _| 1.0).unwrap();
-    let coarse = astroid_evolution::sh_smooth::Mesh {
+    let high = astroid_evolution::shsmooth::Mesh::from_radial(4, |_, _| 1.0).unwrap();
+    let coarse = astroid_evolution::shsmooth::Mesh {
         vertices: vec![[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]],
         faces: vec![[0, 1, 2]],
         length_unit: "1".to_string(),
     };
-    match astroid_evolution::sh_smooth::fuse(
+    match astroid_evolution::shsmooth::fuse(
         &high,
         &coarse,
-        &astroid_evolution::sh_smooth::FuseOptions {
-            center: astroid_evolution::sh_smooth::Center::Origin,
+        &astroid_evolution::shsmooth::FuseOptions {
+            center: astroid_evolution::shsmooth::Center::Origin,
         },
     ) {
         Err(err) => assert_eq!(err.kind, "GeometryInvalid"),

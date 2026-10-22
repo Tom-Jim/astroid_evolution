@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Asteroid</title>
+  <base data-trunk-public-url />
+  <link data-trunk rel="copy-dir" href="../../dist/.stage/assets" data-target-path="assets" />
+  <link data-trunk rel="copy-file" href="worker.js" />
+  <style>
+    /* Same palette as src/app/ui.rs `theme`. */
+    html, body { margin: 0; height: 100%; background: #1c1f24; color: #edeff5; font: 15px/1.4 ui-monospace, Menlo, monospace; }
+    #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
+    #status { position: absolute; left: 12px; bottom: 12px; max-width: 40rem; padding: 10px; background: rgba(10, 13, 15, 0.78); }
+    #status:empty { display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="bevy"></canvas>
+  <div id="status">Loading the viewer…</div>
+  <script type="module" src="boot.js" data-trunk data-no-minify></script>
+  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="0" data-bindgen-target="web" />
+</body>
+</html>

@@ -1,108 +1,46 @@
-//! f64 vectors and the six-component symmetric tensor used by the Hessian.
+//! Vector types. `DVec3` is `glam::DVec3`; the Hessian is the six-component symmetric tensor `Sym6`.
 
-use std::ops::{Add, Mul, Neg, Sub};
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DVec3 {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-}
-
-impl DVec3 {
-    pub const ZERO: Self = Self {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-
-    #[inline]
-    pub const fn new(x: f64, y: f64, z: f64) -> Self {
-        Self { x, y, z }
-    }
-
-    #[inline]
-    pub fn from_array(a: [f64; 3]) -> Self {
-        Self::new(a[0], a[1], a[2])
-    }
-
-    #[inline]
-    pub fn to_array(self) -> [f64; 3] {
-        [self.x, self.y, self.z]
-    }
-
-    #[inline]
-    pub fn dot(self, o: Self) -> f64 {
-        self.x * o.x + self.y * o.y + self.z * o.z
-    }
-
-    #[inline]
-    pub fn cross(self, o: Self) -> Self {
-        Self::new(
-            self.y * o.z - self.z * o.y,
-            self.z * o.x - self.x * o.z,
-            self.x * o.y - self.y * o.x,
-        )
-    }
-
-    #[inline]
-    pub fn length_squared(self) -> f64 {
-        self.dot(self)
-    }
-
-    #[inline]
-    pub fn length(self) -> f64 {
-        self.length_squared().sqrt()
-    }
-
-    /// Unit vector. A zero vector is rejected so a missing direction cannot become a silent zero.
-    #[inline]
-    pub fn try_normalize(self) -> Option<Self> {
-        let len = self.length();
-        if len > 0.0 && len.is_finite() {
-            Some(self * (1.0 / len))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn is_finite(self) -> bool {
-        self.x.is_finite() && self.y.is_finite() && self.z.is_finite()
-    }
-}
-
-impl Add for DVec3 {
-    type Output = Self;
-    #[inline]
-    fn add(self, o: Self) -> Self {
-        Self::new(self.x + o.x, self.y + o.y, self.z + o.z)
-    }
-}
-
-impl Sub for DVec3 {
-    type Output = Self;
-    #[inline]
-    fn sub(self, o: Self) -> Self {
-        Self::new(self.x - o.x, self.y - o.y, self.z - o.z)
-    }
-}
-
-impl Neg for DVec3 {
-    type Output = Self;
-    #[inline]
-    fn neg(self) -> Self {
-        Self::new(-self.x, -self.y, -self.z)
-    }
-}
-
-impl Mul<f64> for DVec3 {
-    type Output = Self;
-    #[inline]
-    fn mul(self, s: f64) -> Self {
-        Self::new(self.x * s, self.y * s, self.z * s)
-    }
-}
+pub use glam::{DMat3, DMat4, DVec3};
 
 /// Symmetric tensor packed as `(xx, yy, zz, xy, xz, yz)`.
 pub type Sym6 = [f64; 6];
+
+/// `Sym6` as a full matrix.
+#[inline]
+pub fn sym_mat(s: Sym6) -> DMat3 {
+    DMat3::from_cols_array(&[s[0], s[3], s[4], s[3], s[1], s[5], s[4], s[5], s[2]])
+}
+
+/// The symmetric part of `m` packed as `Sym6`.
+#[inline]
+pub fn mat_sym(m: DMat3) -> Sym6 {
+    let a = m.to_cols_array_2d();
+    [
+        a[0][0],
+        a[1][1],
+        a[2][2],
+        0.5 * (a[1][0] + a[0][1]),
+        0.5 * (a[2][0] + a[0][2]),
+        0.5 * (a[2][1] + a[1][2]),
+    ]
+}
+
+/// `[hi, lo]` with `hi = f32(x)` and `lo = f32(x − hi)`: the double-single pair the kernels read.
+#[inline]
+pub fn ds_pair(x: f64) -> [f32; 2] {
+    let hi = x as f32;
+    [hi, (x - f64::from(hi)) as f32]
+}
+
+/// `n` nearly uniform unit directions on the golden-angle spiral, regular at both poles.
+pub fn fibonacci_directions(n: usize) -> Vec<DVec3> {
+    let golden = std::f64::consts::PI * (3.0 - 5.0_f64.sqrt());
+    (0..n)
+        .map(|i| {
+            let z = 1.0 - 2.0 * (i as f64 + 0.5) / n as f64;
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let phi = golden * i as f64;
+            DVec3::new(r * phi.cos(), r * phi.sin(), z)
+        })
+        .collect()
+}

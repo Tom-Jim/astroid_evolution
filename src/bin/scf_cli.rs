@@ -3,21 +3,22 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use astroid_evolution::rheo_friction::RheoGpu;
-use astroid_evolution::scf_simulator::error::ScfError;
-use astroid_evolution::scf_simulator::evolve::{
+use astroid_evolution::common::error::SimError;
+use astroid_evolution::rheo::RheoGpu;
+use astroid_evolution::scf::evolve::{
     self, RunOptions, State, StepFields, StepRecord, compose_frame,
 };
-use astroid_evolution::scf_simulator::forward::Forward;
-use astroid_evolution::scf_simulator::frame::{self, departure};
-use astroid_evolution::scf_simulator::io::{
+use astroid_evolution::scf::forward::Forward;
+use astroid_evolution::scf::forward::Loading;
+use astroid_evolution::scf::frame::{self, departure};
+use astroid_evolution::scf::io::{
     Snapshot, initial_body, read_snapshot, write_obj, write_snapshot, write_vertices_csv,
 };
-use astroid_evolution::scf_simulator::mechanics;
-use astroid_evolution::scf_simulator::params::Project;
-use astroid_evolution::scf_simulator::relax::relax;
-use astroid_evolution::scf_simulator::spin::SpinSchedule;
-use astroid_evolution::scf_simulator::timing::{self, Aggregate};
+use astroid_evolution::scf::mechanics;
+use astroid_evolution::scf::params::Project;
+use astroid_evolution::scf::relax::relax;
+use astroid_evolution::scf::spin::SpinSchedule;
+use astroid_evolution::scf::timing::{self, Aggregate};
 
 #[derive(Parser)]
 #[command(
@@ -98,6 +99,9 @@ enum Command {
         snapshot: Option<PathBuf>,
         #[arg(long)]
         omega: f64,
+        /// Also report the unnormalized C20 and C22 at this reference radius (m).
+        #[arg(long)]
+        r_ref: Option<f64>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -111,62 +115,55 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Report the Metal device used by `rheo_friction`.
-    Gpu,
+    /// Reconstruct the pre-evolution state of a tidally decaying moon: fit the
+    /// present density to the mass and C20, then iterate X0 <- X0 + (X_p - F(X0))
+    /// over a synchronous orbit that decays to `a_now` at `--years`.
+    History {
+        #[arg(long)]
+        project: PathBuf,
+        /// Spin schedule from the start of the history to today (any `--spin` grammar).
+        #[arg(long)]
+        spin: String,
+        /// Fit the present density to this mass (kg) and unnormalized C20 at `--r-ref` (m)
+        /// with a central core; without them the project density is used as it is.
+        #[arg(long, requires_all = ["c20", "r_ref", "core_sigma"])]
+        mass: Option<f64>,
+        #[arg(long)]
+        c20: Option<f64>,
+        #[arg(long)]
+        r_ref: Option<f64>,
+        /// Inverse width (1/m) and exponent of the central core.
+        #[arg(long)]
+        core_sigma: Option<f64>,
+        #[arg(long, default_value_t = 2.0)]
+        core_alpha: f64,
+        #[arg(long, default_value_t = 4)]
+        iterations: usize,
+        /// RMS radius misfit (m) that ends the iteration.
+        #[arg(long, default_value_t = 0.5)]
+        tol: f64,
+        /// Damping β of the fixed-point update, in (0, 1].
+        #[arg(long, default_value_t = 1.0)]
+        damping: f64,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Also write the project with the fitted present-day density here.
+        #[arg(long)]
+        write_project: Option<PathBuf>,
+    },
 }
 
-fn fail(err: &ScfError) -> ExitCode {
-    eprintln!("{err}");
-    ExitCode::from(err.code().clamp(1, 255) as u8)
-}
-
-fn load(project: &Path) -> Result<Project, ScfError> {
-    Project::load(project)
-}
-
-fn gpu() -> Result<RheoGpu, ScfError> {
-    RheoGpu::new().map_err(ScfError::from)
-}
-
-fn snapshot_of(state: &State, level: usize) -> Snapshot {
-    Snapshot::from_body(
-        &state.body,
-        level,
-        state.t,
-        state.step,
-        state.omega,
-        state.frame_rotation,
-        state.frame_translation,
-        state.velocity.clone(),
-    )
-}
-
-fn state_from(snap: &Snapshot) -> Result<State, ScfError> {
-    Ok(State {
-        body: snap.to_body()?,
-        level: snap.level,
-        t: snap.time,
-        step: snap.step,
-        omega: snap.omega,
-        frame_rotation: snap.frame_rotation,
-        frame_translation: astroid_evolution::common::math::DVec3::from_array(
-            snap.frame_translation,
-        ),
-        velocity: snap.velocity.clone(),
-    })
-}
-
-fn initial_state(project: &Project, snapshot: Option<&Path>) -> Result<State, ScfError> {
+fn initial_state(project: &Project, snapshot: Option<&Path>) -> Result<State, SimError> {
     match snapshot {
         Some(p) => {
             let snap = read_snapshot(p)?;
             if project.body.shape == "ellipsoid" && snap.level != project.body.level {
-                return Err(ScfError::model_not_closed(format!(
+                return Err(SimError::model_not_closed(format!(
                     "snapshot level {} differs from body.level {}",
                     snap.level, project.body.level
                 )));
             }
-            state_from(&snap)
+            snap.to_state()
         }
         None => {
             let (state, _) = evolve::start(project, initial_body(project)?)?;
@@ -197,10 +194,10 @@ fn line(r: &StepRecord) -> String {
     )
 }
 
-fn run(cli: Cli) -> Result<(), ScfError> {
+fn run(cli: Cli) -> Result<(), SimError> {
     match cli.command {
         Command::Validate { project } => {
-            let p = load(&project)?;
+            let p = Project::load(&project)?;
             println!(
                 "closed {}  level={} g={:e} l_surface={} l_velocity={}",
                 project.display(),
@@ -228,10 +225,10 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             out,
             obj,
         } => {
-            let p = load(&project)?;
-            let gpu = gpu()?;
+            let p = Project::load(&project)?;
+            let gpu = RheoGpu::new()?;
             let (state, _) = evolve::start(&p, initial_body(&p)?)?;
-            let (body, rep) = relax(&p, &gpu, &state.body, omega)?;
+            let (body, rep) = relax(&p, &gpu, &state.body, Loading { omega, tide: 0.0 })?;
             let (body, frep, _) = frame::realign(&body, None, p.g, &p.geometry, false)?;
             println!(
                 "relax: converged={} stalled={} protection={} locked={} protected={} preserved_supercritical={} slack {:.3e} -> {:.3e} in {} sweeps",
@@ -270,7 +267,7 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let (rot, tr) = compose_frame(next.frame_rotation, next.frame_translation, &frep);
             next.frame_rotation = rot;
             next.frame_translation = tr;
-            write_snapshot(&out, &snapshot_of(&next, p.body.level))?;
+            write_snapshot(&out, &Snapshot::from_state(&next))?;
             if let Some(o) = obj {
                 write_obj(&o, &next.body)?;
             }
@@ -280,7 +277,7 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             snapshot,
             out,
         } => {
-            let p = load(&project)?;
+            let p = Project::load(&project)?;
             let state = initial_state(&p, snapshot.as_deref())?;
             let (body, rep, _) = frame::realign(&state.body, None, p.g, &p.geometry, true)?;
             println!(
@@ -305,7 +302,7 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let (rot, tr) = compose_frame(next.frame_rotation, next.frame_translation, &rep);
             next.frame_rotation = rot;
             next.frame_translation = tr;
-            write_snapshot(&out, &snapshot_of(&next, p.body.level))?;
+            write_snapshot(&out, &Snapshot::from_state(&next))?;
         }
         Command::RunSim {
             project,
@@ -318,12 +315,12 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             checkpoint_every,
             quiet,
         } => {
-            let p = load(&project)?;
+            let p = Project::load(&project)?;
             let schedule = SpinSchedule::parse(&spin)?;
             schedule.validate()?;
-            let gpu = gpu()?;
+            let gpu = RheoGpu::new()?;
             std::fs::create_dir_all(&out_dir)
-                .map_err(|e| ScfError::io(format!("{}: {e}", out_dir.display())))?;
+                .map_err(|e| SimError::io(format!("{}: {e}", out_dir.display())))?;
             timing::set_phase("startup");
             let wall = std::time::Instant::now();
             let (mut state, mut fwd) = match &resume {
@@ -336,7 +333,15 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             };
             if relax_first && resume.is_none() {
                 let omega0 = schedule.sample(0.0).omega;
-                let (body, rep) = relax(&p, &gpu, &state.body, omega0)?;
+                let (body, rep) = relax(
+                    &p,
+                    &gpu,
+                    &state.body,
+                    Loading {
+                        omega: omega0,
+                        tide: schedule.tide(0.0),
+                    },
+                )?;
                 println!(
                     "relax-first: converged={} slack {:.3e} -> {:.3e} ({} sweeps)",
                     rep.converged,
@@ -357,7 +362,6 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 "start: t={:.5e} mass={:.6e} kg  frame departure centroid={:.1e} offdiag={:.1e}",
                 state.t, fwd.moments.mass, dep.centroid, dep.off_diagonal
             );
-            let level = p.body.level;
             let log_path = out_dir.join("steps.jsonl");
             let mut log = String::new();
             let ck = out_dir.join("checkpoint.json");
@@ -365,22 +369,20 @@ fn run(cli: Cli) -> Result<(), ScfError> {
             let n_faces = state.body.topo.n_faces();
             let opts = RunOptions { max_steps, until };
             timing::set_phase("step");
-            let mut obs = |r: &StepRecord,
-                           s: &State,
-                           _fields: &StepFields|
-             -> Result<(), ScfError> {
-                if !quiet {
-                    println!("{}", line(r));
-                }
-                log.push_str(&serde_json::to_string(r).map_err(|e| ScfError::io(e.to_string()))?);
-                log.push('\n');
-                if checkpoint_every > 0 && s.step % checkpoint_every == 0 {
-                    write_snapshot(&ck, &snapshot_of(s, level))?;
-                    std::fs::write(&log_path, &log)
-                        .map_err(|e| ScfError::io(format!("{}: {e}", log_path.display())))?;
-                }
-                Ok(())
-            };
+            let mut obs =
+                |r: &StepRecord, s: &State, _fields: &StepFields| -> Result<(), SimError> {
+                    if !quiet {
+                        println!("{}", line(r));
+                    }
+                    log.push_str(&serde_json::to_string(r)?);
+                    log.push('\n');
+                    if checkpoint_every > 0 && s.step.is_multiple_of(checkpoint_every) {
+                        write_snapshot(&ck, &Snapshot::from_state(s))?;
+                        std::fs::write(&log_path, &log)
+                            .map_err(|e| SimError::io(format!("{}: {e}", log_path.display())))?;
+                    }
+                    Ok(())
+                };
             let result = evolve::run(&p, &gpu, &schedule, state, fwd, &opts, &mut obs);
             let samples = timing::drain();
             let wall_seconds = wall.elapsed().as_secs_f64();
@@ -397,11 +399,11 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 )?;
             }
             std::fs::write(&log_path, &log)
-                .map_err(|e| ScfError::io(format!("{}: {e}", log_path.display())))?;
+                .map_err(|e| SimError::io(format!("{}: {e}", log_path.display())))?;
             let result = result?;
             write_snapshot(
                 &out_dir.join("final.json"),
-                &snapshot_of(&result.state, level),
+                &Snapshot::from_state(&result.state),
             )?;
             write_obj(&out_dir.join("final.obj"), &result.state.body)?;
             println!(
@@ -416,17 +418,128 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 out_dir.display()
             );
         }
+        Command::History {
+            project,
+            mass,
+            c20,
+            r_ref,
+            core_sigma,
+            core_alpha,
+            spin,
+            iterations,
+            tol,
+            damping,
+            out_dir,
+            write_project,
+        } => {
+            use astroid_evolution::scf::history::{self, GravityTarget, InversionOptions};
+            let p = Project::load(&project)?;
+            let gpu = RheoGpu::new()?;
+            std::fs::create_dir_all(&out_dir)?;
+            let (state, _) = evolve::start(&p, initial_body(&p)?)?;
+            let (present, fit) = match (mass, c20, r_ref, core_sigma) {
+                (Some(mass), Some(c20), Some(r_ref), Some(sigma)) => {
+                    let target = GravityTarget {
+                        mass,
+                        c20,
+                        r_ref,
+                        sigma,
+                        alpha: core_alpha,
+                    };
+                    let (present, fit) = history::fit_core(&state.body, p.g, &target)?;
+                    println!(
+                        "present density: bulk {:.1} kg/m3, core weight {:.1}, centre {:.1} kg/m3; C20 homogeneous {:.4} -> {:.4}, C22 {:.4}",
+                        fit.bulk,
+                        fit.weight,
+                        fit.centre_density,
+                        fit.homogeneous.c20,
+                        fit.fitted.c20,
+                        fit.fitted.c22
+                    );
+                    if let Some(path) = &write_project {
+                        write_present_project(&project, &p, &fit, &target, path)?;
+                        println!("present project -> {}", path.display());
+                    }
+                    (present, Some(fit))
+                }
+                _ => (state.body, None),
+            };
+            let schedule = SpinSchedule::parse(&spin)?;
+            schedule.validate()?;
+            // The present state opens a future run, so its clock starts at zero.
+            write_snapshot(
+                &out_dir.join("present.json"),
+                &Snapshot::at_rest(&present, p.body.level),
+            )?;
+            write_obj(&out_dir.join("present.obj"), &present)?;
+            let mut obs = |k: usize, r: &StepRecord, _s: &State, _f: &StepFields| {
+                println!("iter {k} {}", line(r));
+                Ok(())
+            };
+            let inv = history::invert(
+                &p,
+                &gpu,
+                &schedule,
+                &present,
+                &InversionOptions {
+                    max_iterations: iterations,
+                    tol,
+                    damping,
+                },
+                &mut obs,
+            )?;
+            for st in &inv.steps {
+                println!(
+                    "iteration {}: misfit rms {:.3} m max {:.3} m, departure {:.3} m, {} steps ({} geometry), {:.1}s",
+                    st.iteration,
+                    st.rms,
+                    st.max,
+                    st.departure,
+                    st.steps,
+                    st.geometry_steps,
+                    st.seconds
+                );
+            }
+            write_snapshot(
+                &out_dir.join("initial.json"),
+                &Snapshot::at_rest(&inv.initial, p.body.level),
+            )?;
+            write_obj(&out_dir.join("initial.obj"), &inv.initial)?;
+            let report = serde_json::json!({
+                "spin": spin,
+                "fit": fit,
+                "iterations": inv.steps,
+                "converged": inv.converged,
+            });
+            std::fs::write(
+                out_dir.join("history.json"),
+                serde_json::to_string_pretty(&report)?,
+            )?;
+            println!(
+                "history: converged={} -> {}",
+                inv.converged,
+                out_dir.display()
+            );
+        }
         Command::Inspect {
             project,
             snapshot,
             omega,
+            r_ref,
             out,
         } => {
-            let p = load(&project)?;
-            let gpu = gpu()?;
+            let p = Project::load(&project)?;
+            let gpu = RheoGpu::new()?;
             let state = initial_state(&p, snapshot.as_deref())?;
             let mut fwd = Forward::bind(&state.body, p.g)?;
-            let m = mechanics::evaluate(&p, &gpu, &state.body, &mut fwd, omega, None)?;
+            let m = mechanics::evaluate(
+                &p,
+                &gpu,
+                &state.body,
+                &mut fwd,
+                Loading { omega, tide: 0.0 },
+                None,
+            )?;
             let dep = departure(
                 &fwd.moments,
                 state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64,
@@ -471,13 +584,13 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                     "max_phi": m.rheo.iter().map(|n| n.phi).fold(0.0, f64::max),
                 },
                 "rho_s_total": rho_total,
+                "degree2": r_ref.map(|r| astroid_evolution::scf::history::degree2(&fwd.moments, r)),
             });
-            let text =
-                serde_json::to_string_pretty(&report).map_err(|e| ScfError::io(e.to_string()))?;
+            let text = serde_json::to_string_pretty(&report)?;
             println!("{text}");
             if let Some(o) = out {
                 std::fs::write(&o, text)
-                    .map_err(|e| ScfError::io(format!("{}: {e}", o.display())))?;
+                    .map_err(|e| SimError::io(format!("{}: {e}", o.display())))?;
             }
         }
         Command::Export {
@@ -490,14 +603,11 @@ fn run(cli: Cli) -> Result<(), ScfError> {
                 "obj" => write_obj(&out, &body)?,
                 "csv" => write_vertices_csv(&out, &body)?,
                 other => {
-                    return Err(ScfError::model_not_closed(format!(
+                    return Err(SimError::model_not_closed(format!(
                         "export format must be obj or csv, got {other}"
                     )));
                 }
             }
-        }
-        Command::Gpu => {
-            println!("rheo_friction device: {}", gpu()?.device_name());
         }
     }
     Ok(())
@@ -511,8 +621,8 @@ fn write_timing(
     n_faces: usize,
     wall_seconds: f64,
     samples: &[Aggregate],
-    result: Option<&astroid_evolution::scf_simulator::evolve::RunResult>,
-) -> Result<(), ScfError> {
+    result: Option<&astroid_evolution::scf::evolve::RunResult>,
+) -> Result<(), SimError> {
     let total: f64 = samples.iter().map(|s| s.seconds).sum();
     let group_seconds = |group: &str| -> f64 {
         samples
@@ -564,8 +674,6 @@ fn write_timing(
     let report = serde_json::json!({
         "project": project.display().to_string(),
         "spin": spin,
-        "period_s": 14400.0,
-        "period_hours": 4.0,
         "vertices": n_vertices,
         "faces": n_faces,
         "wall_seconds": wall_seconds,
@@ -579,8 +687,8 @@ fn write_timing(
         "modules": modules,
         "steps": steps,
     });
-    let text = serde_json::to_string_pretty(&report).map_err(|e| ScfError::io(e.to_string()))?;
-    std::fs::write(path, &text).map_err(|e| ScfError::io(format!("{}: {e}", path.display())))?;
+    let text = serde_json::to_string_pretty(&report)?;
+    std::fs::write(path, &text).map_err(|e| SimError::io(format!("{}: {e}", path.display())))?;
     println!("timing report -> {}", path.display());
     println!(
         "groups: RTFP {:.3}s   rheology {:.3}s   outer SOCP {:.3}s   other {:.3}s   wall {:.3}s",
@@ -604,9 +712,82 @@ fn write_timing(
     Ok(())
 }
 
-fn main() -> ExitCode {
-    match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(&e),
+/// The project text with `[density]` replaced by the fitted matrix and core. The core
+/// sits at the centre of mass of the uniform body, written in the mesh input frame.
+fn write_present_project(
+    source: &Path,
+    p: &Project,
+    fit: &astroid_evolution::scf::history::CoreFit,
+    target: &astroid_evolution::scf::history::GravityTarget,
+    out: &Path,
+) -> Result<(), SimError> {
+    use astroid_evolution::io::{ImportRequest, load_mesh_file};
+    use astroid_evolution::scf::io::mesh_body;
+    let mesh_path = p.resolve(
+        p.body
+            .mesh
+            .as_deref()
+            .ok_or_else(|| SimError::model_not_closed("history needs a mesh body"))?,
+    );
+    let doc = load_mesh_file(ImportRequest {
+        path: &mesh_path,
+        length_unit: p.body.mesh_unit.as_deref(),
+        reconstruct: None,
+    })?;
+    let (mut body, origin) = mesh_body(p, &doc.mesh.vertices, doc.mesh.faces.clone())?;
+    body.kernels.clear();
+    body.bulk = 1.0;
+    let c = Forward::bind(&body, p.g)?.moments.centroid + origin;
+    let text = std::fs::read_to_string(source)?;
+    let start = text
+        .find("[density]")
+        .ok_or_else(|| SimError::model_not_closed("no [density] section"))?;
+    let end = text[start + 1..]
+        .find("\n[")
+        .map_or(text.len(), |i| start + 2 + i);
+    let density = format!(
+        "[density]\n# Fitted by scf-cli history: mass {:.4e} kg, C20 {:.4} at {} m (homogeneous {:.4}).\nbulk = {:.3}\nkernels = [\n  {{ center = [{:.3}, {:.3}, {:.3}], weight = {:.3}, sigma = {:e}, alpha = {:?} }},\n]\n\n",
+        target.mass,
+        fit.fitted.c20,
+        target.r_ref,
+        fit.homogeneous.c20,
+        fit.bulk,
+        c.x,
+        c.y,
+        c.z,
+        fit.weight,
+        target.sigma,
+        target.alpha
+    );
+    let mut out_text = format!("{}{}{}", &text[..start], density, &text[end..]);
+    // Keep the mesh reachable from the new location.
+    if let (Some(rel), Some(dir)) = (p.body.mesh.as_deref(), out.parent()) {
+        let abs = std::fs::canonicalize(&mesh_path)?;
+        let dir = std::fs::canonicalize(if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        })?;
+        let r = pathdiff(&abs, &dir);
+        out_text = out_text.replace(&format!("mesh = \"{rel}\""), &format!("mesh = \"{r}\""));
     }
+    Ok(std::fs::write(out, out_text)?)
+}
+
+/// `target` relative to `base` (both absolute).
+fn pathdiff(target: &Path, base: &Path) -> String {
+    let t: Vec<_> = target.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let common = t.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut parts: Vec<String> = vec!["..".into(); b.len() - common];
+    parts.extend(
+        t[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
+}
+
+fn main() -> ExitCode {
+    SimError::exit(run(Cli::parse()))
 }

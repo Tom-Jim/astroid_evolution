@@ -2,14 +2,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use astroid_evolution::sh_smooth::ShError;
-use astroid_evolution::sh_smooth::ShGpu;
-use astroid_evolution::sh_smooth::filter::Filter;
-use astroid_evolution::sh_smooth::fuse::{self, FuseOptions};
-use astroid_evolution::sh_smooth::harmonics::{self, fibonacci_directions};
-use astroid_evolution::sh_smooth::mesh::{Center, Mesh};
-use astroid_evolution::sh_smooth::selfcheck;
-use astroid_evolution::sh_smooth::smooth::{self, SmoothOptions};
+use astroid_evolution::common::error::SimError;
+use astroid_evolution::shsmooth::ShGpu;
+use astroid_evolution::shsmooth::filter::Filter;
+use astroid_evolution::shsmooth::fuse::{self, FuseOptions};
+use astroid_evolution::shsmooth::harmonics;
+use astroid_evolution::shsmooth::mesh::{Center, Mesh};
+use astroid_evolution::shsmooth::smooth::{self, SmoothOptions};
 
 #[derive(Parser)]
 #[command(
@@ -116,15 +115,6 @@ enum Command {
         #[arg(long, default_value_t = 1e-12)]
         ridge: f64,
     },
-    /// Acceptance checks: harmonics, fit, filter, and device evaluation against f64.
-    Check,
-    /// Throughput of the device evaluation.
-    Bench {
-        #[arg(long, default_value_t = 200_000)]
-        vertices: usize,
-        #[arg(long, default_value_t = 12)]
-        l_max: usize,
-    },
     /// Report the Metal device the evaluator would use.
     Gpu,
 }
@@ -148,26 +138,21 @@ impl std::fmt::Display for FilterName {
     }
 }
 
-fn fail(err: &ShError) -> ExitCode {
-    eprintln!("{err}");
-    ExitCode::from(err.code().clamp(1, 255) as u8)
-}
-
-fn parse_center(text: &str) -> Result<Center, ShError> {
+fn parse_center(text: &str) -> Result<Center, SimError> {
     match text {
         "auto" => Ok(Center::Auto),
         "origin" => Ok(Center::Origin),
         other => {
             let parts: Vec<&str> = other.split(',').collect();
             if parts.len() != 3 {
-                return Err(ShError::invalid_input(
+                return Err(SimError::invalid_input(
                     "center must be auto, origin, or x,y,z",
                 ));
             }
             let mut c = [0.0; 3];
             for i in 0..3 {
                 c[i] = parts[i].trim().parse::<f64>().map_err(|_| {
-                    ShError::invalid_input(format!("bad center component '{}'", parts[i]))
+                    SimError::invalid_input(format!("bad center component '{}'", parts[i]))
                 })?;
             }
             Ok(Center::At(c))
@@ -183,7 +168,7 @@ fn build_filter(
     l0: Option<f64>,
     l1: Option<f64>,
     sigma: Option<f64>,
-) -> Result<Filter, ShError> {
+) -> Result<Filter, SimError> {
     let filter = match name {
         FilterName::Heat => Filter::Heat { kappa },
         FilterName::Truncate => Filter::Truncate {
@@ -201,19 +186,7 @@ fn build_filter(
     Ok(filter)
 }
 
-fn lumpy(l_max: usize) -> Vec<f64> {
-    let mut c = vec![0.0; harmonics::coeff_count(l_max)];
-    c[0] = (4.0 * std::f64::consts::PI).sqrt();
-    let specs = [(2, 0, 0.04), (3, 1, -0.02), (4, -2, 0.01), (6, 3, 0.008)];
-    for (l, m, v) in specs {
-        if l <= l_max {
-            c[harmonics::lm_index(l, m)] = v;
-        }
-    }
-    c
-}
-
-fn run(cli: Cli) -> Result<(), ShError> {
+fn run(cli: Cli) -> Result<(), SimError> {
     match cli.command {
         Command::Smooth {
             input,
@@ -279,7 +252,7 @@ fn run(cli: Cli) -> Result<(), ShError> {
             if let Some(path) = report {
                 let text = serde_json::to_string_pretty(&smoothed.report).unwrap_or_default();
                 std::fs::write(&path, text).map_err(|err| {
-                    ShError::invalid_input(format!("cannot write {}: {err}", path.display()))
+                    SimError::invalid_input(format!("cannot write {}: {err}", path.display()))
                 })?;
             }
         }
@@ -319,7 +292,7 @@ fn run(cli: Cli) -> Result<(), ShError> {
             if let Some(path) = report {
                 let text = serde_json::to_string_pretty(&fused.report).unwrap_or_default();
                 std::fs::write(&path, text).map_err(|err| {
-                    ShError::invalid_input(format!("cannot write {}: {err}", path.display()))
+                    SimError::invalid_input(format!("cannot write {}: {err}", path.display()))
                 })?;
             }
         }
@@ -354,7 +327,7 @@ fn run(cli: Cli) -> Result<(), ShError> {
             let mesh = Mesh::read_obj(&input)?;
             let center = parse_center(&center)?.resolve(&mesh)?;
             let samples = mesh.radial_samples(center)?;
-            let spectrum = astroid_evolution::sh_smooth::fit::fit(
+            let spectrum = astroid_evolution::shsmooth::fit::fit(
                 l_max,
                 &samples.dir,
                 &samples.radius,
@@ -374,39 +347,6 @@ fn run(cli: Cli) -> Result<(), ShError> {
                 serde_json::to_string_pretty(&report).unwrap_or_default()
             );
         }
-        Command::Check => {
-            let gpu = ShGpu::new()?;
-            let checks = selfcheck::run_all(&gpu)?;
-            let mut failed = 0;
-            for c in &checks {
-                let ok = c.passed();
-                failed += usize::from(!ok);
-                println!(
-                    "{} {:<64} {:.3e} <= {:.1e}",
-                    if ok { "pass" } else { "FAIL" },
-                    c.name,
-                    c.value,
-                    c.limit
-                );
-            }
-            if failed > 0 {
-                return Err(ShError::invalid_input(format!("{failed} checks failed")));
-            }
-        }
-        Command::Bench { vertices, l_max } => {
-            let gpu = ShGpu::new()?;
-            let coeff = lumpy(l_max);
-            let dirs = fibonacci_directions(vertices);
-            gpu.evaluate(l_max, &coeff, &dirs)?;
-            let r = gpu.evaluate(l_max, &coeff, &dirs)?;
-            println!(
-                "{} vertices at l_max {l_max} in {:.4} s on {} ({:.2e} vertices/s)",
-                vertices,
-                r.seconds,
-                gpu.device_name(),
-                vertices as f64 / r.seconds
-            );
-        }
         Command::Gpu => {
             let gpu = ShGpu::new()?;
             println!(
@@ -419,8 +359,5 @@ fn run(cli: Cli) -> Result<(), ShError> {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => fail(&err),
-    }
+    SimError::exit(run(Cli::parse()))
 }
