@@ -13,26 +13,29 @@ import type { Host } from "./host";
 import { PARAMS, displayValues, fmt, overrides, same } from "./params";
 import type { Phase, Status } from "./types";
 
-const PHASE: Record<Phase, [string, string]> = {
-  idle: ["STANDBY", "未启动"],
-  preparing: ["INITIALIZING", "准备中"],
-  running: ["NOMINAL", "演化中"],
-  paused: ["HOLD", "已暂停"],
-  done: ["COMPLETE", "完成"],
-  failed: ["FAULT", "失败"],
-};
-
-const SCENARIO_TAG: Record<string, string> = {
-  past: "RECONSTRUCTION",
-  future: "FORECAST",
-  measured: "MEASURED SHAPE",
+const PHASE: Record<Phase, string> = {
+  idle: "STANDBY",
+  preparing: "INITIALIZING",
+  running: "NOMINAL",
+  paused: "HOLD",
+  done: "COMPLETE",
+  failed: "FAULT",
 };
 
 const LAYERS = [
-  { value: 1, en: "YIELD", zh: "屈服", legend: "橙色：已屈服区域，按 F_δ / p95 着色" },
-  { value: 2, en: "SLOPE", zh: "坡度", legend: "闪烁黄：坡面松弛量超过容差" },
-  { value: 3, en: "REGOLITH", zh: "风化层", legend: "棕褐：松散层面密度 ρ_s，移动条纹为流向" },
-  { value: 4, en: "COMBINED", zh: "综合", legend: "屈服 + 坡度 + 风化层叠加" },
+  { value: 1, en: "YIELD", legend: "Orange: yielded regions, shaded by F_δ / p95" },
+  { value: 2, en: "SLOPE", legend: "Pulsing yellow: slope slack above tolerance" },
+  {
+    value: 3,
+    en: "REGOLITH",
+    legend: "Tan: loose layer ρ_s; stripes show creep; cyan trails are runouts of eroded packets (amber: ballistic hops)",
+  },
+  { value: 4, en: "COMBINED", legend: "Yield, slope and regolith together, with the runout trails" },
+  {
+    value: 5,
+    en: "TENSION",
+    legend: "Largest principal stress σ₁ > 0: heat colour by σ₁ / p95, white ticks along its direction",
+  },
 ];
 
 export function App({ host }: { host: Host }) {
@@ -116,11 +119,11 @@ export function App({ host }: { host: Host }) {
           <Mark />
           <div>
             <h1>ASTEROID EVOLUTION</h1>
-            <p>小行星形貌演化 · STOKES / MODE C / YORP / TIDES</p>
+            <p>STOKES · MODE C REGOLITH · YORP · TIDES</p>
           </div>
           <button
             className="collapse"
-            title={collapsed ? "展开面板" : "收起面板"}
+            title={collapsed ? "Expand panels" : "Collapse panels"}
             onClick={() => setCollapsed(!collapsed)}
           >
             {collapsed ? "+" : "−"}
@@ -129,21 +132,18 @@ export function App({ host }: { host: Host }) {
 
         {!collapsed && (
           <>
-            <Panel en="MISSION" zh="天体与情景">
+            <Panel en="MISSION" sub="Body and scenario">
               <Tabs
-                options={BODIES.map((b) => {
-                  const [zh, en] = b.name.split(" ");
-                  return {
-                    value: b.id,
-                    title: b.name,
-                    label: (
-                      <>
-                        <b>{en.toUpperCase()}</b>
-                        <i>{zh}</i>
-                      </>
-                    ),
-                  };
-                })}
+                options={BODIES.map((b) => ({
+                  value: b.id,
+                  title: `${b.designation} ${b.name}`,
+                  label: (
+                    <>
+                      <b>{b.name.toUpperCase()}</b>
+                      <i>{b.designation}</i>
+                    </>
+                  ),
+                }))}
                 value={body.id}
                 onChange={chooseBody}
               />
@@ -155,17 +155,17 @@ export function App({ host }: { host: Host }) {
                     className={`scenario ${s.id === scenario.id ? "on" : ""}`}
                     onClick={() => chooseScenario(s.id)}
                   >
-                    <Label en={SCENARIO_TAG[s.id] ?? s.id.toUpperCase()} zh={s.label} />
+                    <Label en={s.label} />
                     <small>{s.span}</small>
                     {running?.body.id === body.id && running?.scenario?.id === s.id && (
-                      <i className="live" title="正在运行" />
+                      <i className="live" title="Running" />
                     )}
                   </button>
                 ))}
               </div>
               <details className="spin">
                 <summary>
-                  <Label en="SPIN SCHEDULE" zh="自转 / 轨道时间表" />
+                  <Label en="SPIN SCHEDULE" sub="spin / orbit grammar" />
                 </summary>
                 <input
                   value={spin}
@@ -178,7 +178,7 @@ export function App({ host }: { host: Host }) {
 
             <Panel
               en="PARAMETERS"
-              zh="物理参数"
+              sub="Physical constants"
               aside={edited ? <span className="badge">MODIFIED</span> : null}
             >
               <div className="sliders">
@@ -194,11 +194,11 @@ export function App({ host }: { host: Host }) {
               </div>
               <div className="actions">
                 <button className="ghost" onClick={() => setDraft(displayValues(base))}>
-                  RESET <i>文献值</i>
+                  RESET <i>literature</i>
                 </button>
                 <button className="primary" disabled={busy} onClick={start}>
                   <Icon name="restart" />
-                  {runningHere ? "RESTART" : "LAUNCH"} <i>{runningHere ? "重新开始" : "开始演化"}</i>
+                  {runningHere ? "RESTART" : "LAUNCH"}
                 </button>
               </div>
             </Panel>
@@ -212,10 +212,11 @@ export function App({ host }: { host: Host }) {
 
       <footer className="transport">
         <Timeline status={status} future={future} />
+        <Scrubber status={status} send={send} />
         <div className="tools">
           <button
             className="round"
-            title="暂停 / 继续（空格）"
+            title="Pause / resume (Space)"
             disabled={!status || !["running", "paused"].includes(status.phase)}
             onClick={() => send({ cmd: "pause", paused: !paused })}
           >
@@ -225,13 +226,8 @@ export function App({ host }: { host: Host }) {
             small
             options={LAYERS.map((l, i) => ({
               value: l.value,
-              label: (
-                <>
-                  <b>{l.en}</b>
-                  <i>{l.zh}</i>
-                </>
-              ),
-              title: `${l.legend}（${i + 1}）`,
+              label: <b>{l.en}</b>,
+              title: `${l.legend} (${i + 1})`,
             }))}
             value={layer}
             onChange={(mode) => send({ cmd: "layer", mode })}
@@ -239,8 +235,8 @@ export function App({ host }: { host: Host }) {
           <span className="sep" />
           <Toggle
             on={interior}
-            label={<Label en="INTERIOR" zh="内部密度" />}
-            title="过球心、朝向相机的剖面（I）"
+            label={<Label en="INTERIOR" />}
+            title="Density cutaway through the centre, facing the camera (I)"
             onChange={(on) => send({ cmd: "interior", on, offset: 0 })}
           />
           {interior && (
@@ -251,38 +247,38 @@ export function App({ host }: { host: Host }) {
               max={0.9}
               step={0.01}
               value={cut}
-              title="剖面偏移（[ ]）"
+              title="Cut-plane offset ([ ])"
               style={{ "--fill": `${((cut + 0.9) / 1.8) * 100}%` } as CSSProperties}
               onChange={(e) => send({ cmd: "interior", on: true, offset: Number(e.target.value) })}
             />
           )}
           <Toggle
             on={status?.wireframe ?? false}
-            label={<Label en="MESH" zh="网格" />}
-            title="线框（W）"
+            label={<Label en="MESH" />}
+            title="Wireframe (W)"
             onChange={(on) => send({ cmd: "wireframe", on })}
           />
           <span className="grow" />
-          <button className="icon" title="重置视角（R）" onClick={() => send({ cmd: "reset_view" })}>
+          <button className="icon" title="Reset view (R)" onClick={() => send({ cmd: "reset_view" })}>
             <Icon name="reset" />
           </button>
-          <button className="icon" title="截图（P）" onClick={() => send({ cmd: "screenshot" })}>
+          <button className="icon" title="Screenshot (P)" onClick={() => send({ cmd: "screenshot" })}>
             <Icon name="camera" />
           </button>
         </div>
         <div className="legend">
           <span>
             {interior && status
-              ? `内部密度 ${fmt(status.rho_range[0])} → ${fmt(status.rho_range[1])} kg/m³（靛蓝 → 黄，每 ${fmt((status.rho_range[1] - status.rho_range[0]) / 10)} 一条等值线）`
+              ? `Interior density ${fmt(status.rho_range[0])} → ${fmt(status.rho_range[1])} kg/m³ (indigo → yellow, one contour every ${fmt((status.rho_range[1] - status.rho_range[0]) / 10)})`
               : LAYERS.find((l) => l.value === layer)?.legend}
           </span>
-          <span className="mouse">RMB 旋转 · LMB 平移 · WHEEL 缩放</span>
+          <span className="mouse">RMB ORBIT · LMB PAN · WHEEL ZOOM</span>
         </div>
       </footer>
 
       {status?.notice && (
         <div className="toast">
-          <Label en="FAULT" zh="命令未执行" />
+          <Label en="FAULT" sub="command not applied" />
           <p>{status.notice}</p>
         </div>
       )}
@@ -305,6 +301,9 @@ function Timeline({ status, future }: { status: Status | null; future: boolean }
   const t = status?.time_myr ?? 0;
   const end = status?.t_end_myr ?? null;
   const progress = end ? Math.min(1, t / end) : 0;
+  // The bar shows how far the run has computed; the head, the step on screen.
+  const held = status?.view != null;
+  const computed = end ? Math.min(1, (status?.live_time_myr ?? t) / end) : 0;
   const when = status ? epoch(status, future) : null;
   const sign = when === null ? "" : when < 0 ? "−" : "+";
   return (
@@ -314,19 +313,57 @@ function Timeline({ status, future }: { status: Status | null; future: boolean }
           T{sign}
           {when === null ? "--.---" : Math.abs(when).toFixed(3).padStart(6, "0")}
         </strong>
-        <Label
-          en={when === null ? "AWAITING STEP" : when < 0 ? "MYR BEFORE PRESENT" : "MYR AFTER PRESENT"}
-          zh={when === null ? "等待第一步" : when < 0 ? "距今" : "未来"}
-        />
+        <Label en={when === null ? "AWAITING STEP" : when < 0 ? "MYR BEFORE PRESENT" : "MYR AFTER PRESENT"} />
       </div>
       <div className="track" aria-label="schedule progress">
-        <div className="bar" style={{ width: `${progress * 100}%` }} />
-        <div className="head" style={{ left: `${progress * 100}%` }} />
+        <div className="bar" style={{ width: `${computed * 100}%` }} />
+        <div className={`head ${held ? "held" : ""}`} style={{ left: `${progress * 100}%` }} />
       </div>
       <div className="span">
         <strong>{fmt(t)}</strong>
         <small> / {fmt(end)} MYR</small>
       </div>
+    </div>
+  );
+}
+
+/** Step-by-step replay of everything computed so far. */
+function Scrubber({ status, send }: { status: Status | null; send: Host["send"] }) {
+  const frames = status?.frames ?? 0;
+  if (frames < 2) {
+    return null;
+  }
+  const last = frames - 1;
+  const index = status?.view ?? last;
+  const live = status?.view == null;
+  const seek = (i: number) => send({ cmd: "seek", index: i >= last ? null : Math.max(0, i) });
+  return (
+    <div className="scrubber">
+      <Label en={live ? "LIVE" : "REPLAY"} />
+      <button className="icon small" title="Previous step (←)" disabled={index === 0} onClick={() => seek(index - 1)}>
+        ‹
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={last}
+        step={1}
+        value={index}
+        aria-label="stored step"
+        style={{ "--fill": `${(index / last) * 100}%` } as CSSProperties}
+        onChange={(e) => seek(Number(e.target.value))}
+      />
+      <button className="icon small" title="Next step (→)" disabled={live} onClick={() => seek(index + 1)}>
+        ›
+      </button>
+      <span className="count">
+        <strong>{(status?.stats?.step ?? 0).toLocaleString()}</strong>
+        <small> STEP · {index + 1}/{frames}</small>
+      </span>
+      <button className={`chip ${live ? "on" : ""}`} title="Follow the run" onClick={() => send({ cmd: "seek", index: null })}>
+        <i className="led" aria-hidden />
+        <Label en="LIVE" />
+      </button>
     </div>
   );
 }
@@ -338,52 +375,65 @@ function StatusPanel({ status, future }: { status: Status | null; future: boolea
   return (
     <Panel
       en="TELEMETRY"
-      zh="演化状态"
       aside={
         phase && (
           <span className={`phase ${status!.phase}`}>
             <i className="led" />
-            {phase[0]} <em>{phase[1]}</em>
+            {phase}
           </span>
         )
       }
     >
       <p className="status-line">{status?.status ?? "connecting…"}</p>
       <div className="gauges">
-        <Gauge en="YIELD" zh="屈服" fraction={s?.yielded_fraction ?? null} text={s ? `${fmt(100 * s.yielded_fraction, 2)}%` : "—"} />
+        <Gauge en="YIELD" fraction={s?.yielded_fraction ?? null} text={s ? `${fmt(100 * s.yielded_fraction, 2)}%` : "—"} />
         <Gauge
           en="MOBILE"
-          zh="可动面积"
+         
           fraction={s?.mobile_area_fraction ?? null}
           text={s ? `${fmt(100 * s.mobile_area_fraction, 2)}%` : "—"}
         />
-        <Gauge en="SCHEDULE" zh="进度" fraction={progress} text={progress === null ? "—" : `${(100 * progress).toFixed(1)}%`} />
+        <Gauge en="SCHEDULE" fraction={progress} text={progress === null ? "—" : `${(100 * progress).toFixed(1)}%`} />
       </div>
       <div className="readouts">
-        <Readout en="STEP" zh="步数" value={s ? s.step.toLocaleString() : "—"} />
-        <Readout en={future ? "ELAPSED" : "RUN TIME"} zh={future ? "今后" : "演化时间"} value={s ? fmt(status?.time_myr) : "—"} unit="Myr" />
-        <Readout en="SPIN PERIOD" zh="自转周期" value={fmt(status?.period_h, 5)} unit="h" />
-        {status?.orbit && <Readout en="SEMI-MAJOR AXIS" zh="轨道半长轴" value={fmt(status.orbit.a_km, 5)} unit="km" />}
-        <Readout en="MASS" zh="质量" value={fmt(s?.mass, 5)} unit="kg" />
-        <Readout en="RADIUS" zh="半径范围" value={s ? `${fmt(s.radius_min, 4)} – ${fmt(s.radius_max, 4)}` : "—"} unit="m" />
-        <Readout en="MAX |ΔR|" zh="单步最大位移" value={fmt(s?.max_displacement)} unit="m" />
-        <Readout en="REGOLITH" zh="松散层质量" value={fmt(s?.rho_s_total)} unit="kg" />
-        <Readout en="TIME STEP" zh="时间步" value={fmt(s?.dt)} unit="s" />
-        <Readout en="LIMITED BY" zh="步长约束" value={s?.dt_bound ?? "—"} />
+        <Readout en="STEP" value={s ? s.step.toLocaleString() : "—"} />
+        <Readout en={future ? "ELAPSED" : "RUN TIME"} value={s ? fmt(status?.time_myr) : "—"} unit="Myr" />
+        <Readout en="SPIN PERIOD" value={fmt(status?.period_h, 5)} unit="h" />
+        {status?.orbit && <Readout en="SEMI-MAJOR AXIS" value={fmt(status.orbit.a_km, 5)} unit="km" />}
+        <Readout en="MASS" value={fmt(s?.mass, 5)} unit="kg" />
+        <Readout en="RADIUS" value={s ? `${fmt(s.radius_min, 4)} – ${fmt(s.radius_max, 4)}` : "—"} unit="m" />
+        <Readout en="MAX |ΔR|" value={fmt(s?.max_displacement)} unit="m" />
+        <Readout en="REGOLITH" value={fmt(s?.rho_s_total)} unit="kg" />
+        <Readout en="TIME STEP" value={fmt(s?.dt)} unit="s" />
+        <Readout en="LIMITED BY" value={s?.dt_bound ?? "—"} />
+        <Readout en="PEAK TENSION" sub="σ₁ max" value={s && s.tension_max > 0 ? fmt(s.tension_max) : "—"} unit="Pa" />
+        <Readout
+          en="RUNOUT"
+          sub={s && s.runout_traced > 0 ? `${s.runout_traced} packets` : undefined}
+          value={s && s.runout_traced > 0 ? fmt(s.runout_distance) : "—"}
+          unit="m"
+        />
+        <Readout
+          en="EQUATORWARD"
+          sub="Δ|lat|"
+          value={s && s.runout_traced > 0 ? fmt((-s.runout_dlat * 180) / Math.PI) : "—"}
+          unit="°"
+        />
+        <Readout en="HOPS" value={s && s.runout_traced > 0 ? s.runout_hops.toLocaleString() : "—"} />
       </div>
       <details className="diagnostics">
         <summary>
-          <Label en="SOLVER" zh="求解器诊断" />
+          <Label en="SOLVER" />
         </summary>
         <div className="readouts">
-          <Readout en="ε MOMENTUM" zh="动量残差" value={fmt(s?.eps_momentum)} />
-          <Readout en="ε MULTIPLIER" zh="乘子残差" value={fmt(s?.eps_lambda)} />
-          <Readout en="PICARD" zh="迭代" value={s ? `${s.picard_iterations} · ${fmt(s.eps_picard)}` : "—"} />
-          <Readout en="TENSILE" zh="张拉比例" value={fmt(s?.tensile_fraction)} />
-          <Readout en="EK⁻¹" zh="Ekman 逆数" value={fmt(s?.inverse_ekman)} />
-          <Readout en="MASS RESIDUAL" zh="质量残差" value={fmt(s?.mass_residual)} />
-          <Readout en="MAX SLACK" zh="坡面松弛" value={fmt(s?.max_slack)} />
-          <Readout en="CFL STEP" zh="CFL 步长" value={fmt(s?.dt_cfl)} unit="s" />
+          <Readout en="ε MOMENTUM" value={fmt(s?.eps_momentum)} />
+          <Readout en="ε MULTIPLIER" value={fmt(s?.eps_lambda)} />
+          <Readout en="PICARD" value={s ? `${s.picard_iterations} · ${fmt(s.eps_picard)}` : "—"} />
+          <Readout en="TENSILE" value={fmt(s?.tensile_fraction)} />
+          <Readout en="EK⁻¹" value={fmt(s?.inverse_ekman)} />
+          <Readout en="MASS RESIDUAL" value={fmt(s?.mass_residual)} />
+          <Readout en="MAX SLACK" value={fmt(s?.max_slack)} />
+          <Readout en="CFL STEP" value={fmt(s?.dt_cfl)} unit="s" />
         </div>
         {status && (
           <dl className="files">
@@ -426,7 +476,12 @@ function useKeys(host: Host, status: Status | null) {
       if (key === " ") {
         e.preventDefault();
         host.send({ cmd: "pause", paused: s.phase !== "paused" });
-      } else if (key >= "1" && key <= "4") {
+      } else if ((key === "arrowleft" || key === "arrowright") && s.frames > 1) {
+        e.preventDefault();
+        const last = s.frames - 1;
+        const at = (s.view ?? last) + (key === "arrowright" ? 1 : -1);
+        host.send({ cmd: "seek", index: at >= last ? null : Math.max(0, at) });
+      } else if (key >= "1" && key <= "5") {
         host.send({ cmd: "layer", mode: Number(key) });
       } else if (key === "w") {
         host.send({ cmd: "wireframe", on: !s.wireframe });

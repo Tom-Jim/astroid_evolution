@@ -8,6 +8,7 @@ use astroid_evolution::app::resources::{
 };
 use astroid_evolution::app::snapshot::posed_positions;
 use astroid_evolution::app::bridge::{self, Command, RunRequest};
+use astroid_evolution::app::history::History;
 use astroid_evolution::app::playback::VisMode;
 use astroid_evolution::common::density::CauchyKernel;
 use astroid_evolution::scf::body::{Body, Topology};
@@ -113,6 +114,11 @@ fn running() -> Evolution {
             dt: 1.0e4,
             dt_cfl: 2.0e4,
             dt_bound: "mode_c",
+            tension_max: 12.5,
+            runout_traced: 40,
+            runout_distance: 35.0,
+            runout_dlat: -0.05,
+            runout_hops: 2,
         }),
         ..Evolution::default()
     }
@@ -128,6 +134,7 @@ fn the_status_names_the_run_and_reads_back_the_slider_keys() {
             status: "computing the first tier 2 step".into(),
             ..Evolution::default()
         },
+        &History::default(),
         &VisMode::default(),
         [0.0, 1.0],
         false,
@@ -151,6 +158,7 @@ fn the_status_names_the_run_and_reads_back_the_slider_keys() {
         &config(),
         &scene(),
         &running(),
+        &History::default(),
         &VisMode::default(),
         [0.0, 1.0],
         true,
@@ -306,8 +314,8 @@ fn ryugu_step_matches_the_quasi_static_audit() {
 
     let audit = &snap.audit;
     eprintln!(
-        "tier3 census wall={wall:.3}s complete={complete} kind={} bound={} dt={:.3e} dt_cfl={:.3e} dt_c={:.3e} dt_char={:.3e}",
-        snap.kind, snap.dt_bound, audit.dt, audit.dt_cfl, audit.dt_c, audit.dt_char
+        "tier3 census wall={wall:.3}s complete={complete} bound={} dt={:.3e} dt_cfl={:.3e} dt_c={:.3e} dt_char={:.3e}",
+        snap.dt_bound.0, audit.dt, audit.dt_cfl, audit.dt_c, audit.dt_char
     );
     eprintln!(
         "tier3 census omega={:.6e} mass={:.6e} residual={:.3e} yielded={:.3e} mobile_area={:.3e} core_mass={:.3e} n_mobile={} n_locked={} n_deposit={}",

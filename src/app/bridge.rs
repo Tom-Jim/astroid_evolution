@@ -16,7 +16,8 @@ use bevy::window::{CursorMoved, PrimaryWindow, WindowEvent};
 use serde::{Deserialize, Serialize};
 
 use crate::app::pipeline::EvolutionPool;
-use crate::app::playback::{Playback, VisMode};
+use crate::app::history::History;
+use crate::app::playback::{self, Playback, VisMode};
 use crate::app::render::imported_mesh;
 use crate::app::resources::{
     AppConfig, Evolution, FrameStats, Phase, Scene, SurfaceView, display_imported,
@@ -30,7 +31,7 @@ pub enum Command {
         paused: bool,
     },
     Restart(RunRequest),
-    /// 1 yield, 2 slope, 3 regolith, 4 combined.
+    /// 1 yield, 2 slope, 3 regolith, 4 combined, 5 principal tension.
     Layer {
         mode: u32,
     },
@@ -45,6 +46,11 @@ pub enum Command {
     },
     ResetView,
     Screenshot,
+    /// Hold the view on stored step `index`; `None` follows the run again.
+    Seek {
+        #[serde(default)]
+        index: Option<usize>,
+    },
     /// Pointer in logical window pixels. `button` uses DOM numbering (0 left, 1 middle,
     /// 2 right). Only the Tauri shell sends these: its webview covers the window.
     Pointer {
@@ -142,6 +148,12 @@ pub struct Status {
     pub t_end_myr: Option<f64>,
     pub period_h: Option<f64>,
     pub orbit: Option<Orbit>,
+    /// Steps stored for the timeline, and the one held on screen (`None`: live).
+    pub frames: usize,
+    pub view: Option<usize>,
+    /// Newest step and its time while an earlier one is held.
+    pub live_step: Option<usize>,
+    pub live_time_myr: Option<f64>,
     pub layer: u32,
     pub interior: bool,
     pub cut: f32,
@@ -156,12 +168,17 @@ pub fn status(
     config: &AppConfig,
     scene: &Scene,
     evolution: &Evolution,
+    history: &History,
     mode: &VisMode,
     rho_range: [f32; 2],
     wireframe: bool,
 ) -> Status {
     let schedule = crate::scf::spin::SpinSchedule::parse(&config.spin).ok();
-    let stats = evolution.stats;
+    // The held step, if any, drives every readout.
+    let stats = history
+        .view
+        .and_then(|i| history.stats(i))
+        .or(evolution.stats);
     let orbit = stats.zip(schedule.as_ref()).and_then(|(s, schedule)| {
         let tide = schedule.tide(s.time);
         (tide > 0.0).then(|| Orbit {
@@ -199,6 +216,10 @@ pub fn status(
             .filter(|t| t.is_finite()),
         period_h: stats.map(|s| std::f64::consts::TAU / s.omega / 3600.0),
         orbit,
+        frames: history.len(),
+        view: history.view,
+        live_step: evolution.stats.map(|s| s.step),
+        live_time_myr: evolution.stats.map(|s| s.time / MYR),
         layer: mode.mode,
         interior: mode.interior,
         cut: mode.cut_offset,
@@ -220,6 +241,7 @@ pub fn publish_status(
     scene: Res<Scene>,
     evolution: Res<Evolution>,
     playback: Res<Playback>,
+    history: Res<History>,
     mode: Res<VisMode>,
     notice: Res<Notice>,
     views: Query<Has<Wireframe>, With<SurfaceView>>,
@@ -234,6 +256,7 @@ pub fn publish_status(
         &config,
         &scene,
         &evolution,
+        &history,
         &mode,
         playback.rho_range,
         views.iter().any(|w| w),
@@ -261,6 +284,7 @@ pub fn apply_commands(
     pool: Res<EvolutionPool>,
     mut evolution: ResMut<Evolution>,
     mut playback: ResMut<Playback>,
+    mut history: ResMut<History>,
     mut mode: ResMut<VisMode>,
     mut notice: ResMut<Notice>,
     shots: Res<ui::ShotDir>,
@@ -268,7 +292,15 @@ pub fn apply_commands(
     views: Query<(Entity, &Mesh3d), With<SurfaceView>>,
     mut cameras: Query<(&mut Transform, &mut PanOrbitCamera)>,
 ) {
-    let queued = std::mem::take(&mut *INBOX.lock().unwrap());
+    let mut queued = std::mem::take(&mut *INBOX.lock().unwrap());
+    // A drag sends many seeks; only the last one of a frame is worth decoding.
+    if let Some(last) = queued.iter().rposition(|c| matches!(c, Command::Seek { .. })) {
+        let mut i = 0;
+        queued.retain(|c| {
+            i += 1;
+            !matches!(c, Command::Seek { .. }) || i - 1 == last
+        });
+    }
     for command in queued {
         match command {
             Command::Pause { paused } => match (evolution.phase, paused) {
@@ -289,6 +321,7 @@ pub fn apply_commands(
                         evolution.control.request_quit();
                         *evolution = Evolution::default();
                         *playback = Playback::default();
+                        history.clear();
                         let positions = display_imported(
                             &next_scene.vertices,
                             next_scene.center,
@@ -307,7 +340,7 @@ pub fn apply_commands(
                     Err(err) => notice.0 = Some(err),
                 }
             }
-            Command::Layer { mode: layer } => mode.mode = layer.clamp(1, 4),
+            Command::Layer { mode: layer } => mode.mode = layer.clamp(1, 5),
             Command::Interior { on, offset } => {
                 mode.interior = on;
                 mode.cut_offset = offset.clamp(-1.0, 1.0);
@@ -332,6 +365,15 @@ pub fn apply_commands(
                 }
             }
             Command::Screenshot => ui::save_screenshot(&mut commands, &shots, "asteroid"),
+            Command::Seek { index } => {
+                let newest = history.len().checked_sub(1);
+                // Seeking to the newest step is the same as following the run.
+                let held = index.filter(|i| Some(*i) != newest);
+                history.view = held;
+                if let Some(snap) = held.or(newest).and_then(|i| history.frame(i)) {
+                    playback::show(&mut playback, snap);
+                }
+            }
             Command::Pointer { .. } | Command::Wheel { .. } => {}
         }
     }

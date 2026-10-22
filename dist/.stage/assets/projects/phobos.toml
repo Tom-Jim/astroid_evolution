@@ -78,6 +78,12 @@ delta_y = 0.05
 k_e = 3.3866e-02
 sigma_0 = 3.7470e+01
 kernel_width = 0.2
+# Runout of eroded packets in the rotating frame (mathstrict §2.8b, A-C3): mu(I) sliding,
+# Coriolis, ballistic hops. T_run = 1e6 s is far above a runout (~1e3-1e4 s) and far
+# below a geological step; packets stop below 1e-3 sqrt(g h_s).
+runout = true
+runout_time = 1.0e6
+runout_stop = 1.0e-3
 
 [step]
 theta_cfl = 0.5

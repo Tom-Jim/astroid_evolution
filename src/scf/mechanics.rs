@@ -29,6 +29,9 @@ pub struct Mechanics {
     /// Friction-angle chain at the face centres.
     pub rheo: Vec<NodeResult>,
     pub rheo_stats: ChainStats,
+    /// Cauchy stress `σ = −p I + T_tide + 2η D` at the face centres (Pa,
+    /// `(xx, yy, zz, xy, xz, yz)`).
+    pub surface_stress: Vec<[f64; 6]>,
 }
 
 /// `n · T · n` of a `(xx, yy, zz, xy, xz, yz)` tensor.
@@ -37,6 +40,66 @@ pub fn quad_form(t: [f64; 6], n: DVec3) -> f64 {
         + t[1] * n.y * n.y
         + t[2] * n.z * n.z
         + 2.0 * (t[3] * n.x * n.y + t[4] * n.x * n.z + t[5] * n.y * n.z)
+}
+
+/// Cartesian `D` from its chart components: `D_ab = e_a·D·e_b`, `D_nα = n·D·e_α`,
+/// `D_nn = n·D·n`. With the dual vectors `e^a = g^{ab} e_b`,
+/// `D = D_ab e^a⊗e^b + D_nα (n⊗e^α + e^α⊗n) + D_nn n⊗n`. `metric` is `(g11, g12, g22)`.
+pub fn cartesian_strain(
+    e: [DVec3; 2],
+    n: DVec3,
+    metric: [f64; 3],
+    d_ab: [f64; 3],
+    d_na: [f64; 2],
+    d_nn: f64,
+) -> [[f64; 3]; 3] {
+    let [g11, g12, g22] = metric;
+    let det = g11 * g22 - g12 * g12;
+    let mut d = [[0.0f64; 3]; 3];
+    if !det.is_finite() || det.abs() < 1e-300 {
+        return d;
+    }
+    let (i11, i12, i22) = (g22 / det, -g12 / det, g11 / det);
+    let up = [e[0] * i11 + e[1] * i12, e[0] * i12 + e[1] * i22];
+    let tangential = [[d_ab[0], d_ab[1]], [d_ab[1], d_ab[2]]];
+    let mut add = |a: DVec3, b: DVec3, w: f64| {
+        let (a, b) = (a.to_array(), b.to_array());
+        for i in 0..3 {
+            for j in 0..3 {
+                d[i][j] += w * a[i] * b[j];
+            }
+        }
+    };
+    for a in 0..2 {
+        for b in 0..2 {
+            add(up[a], up[b], tangential[a][b]);
+        }
+        add(n, up[a], d_na[a]);
+        add(up[a], n, d_na[a]);
+    }
+    add(n, n, d_nn);
+    d
+}
+
+/// Cartesian `σ = −p I + T_tide + 2η D` at one face centre (Pa, `(xx, yy, zz, xy, xz, yz)`).
+pub fn surface_cauchy(node: &NodeResult, pressure: f64, tide: [f64; 6]) -> [f64; 6] {
+    let d = cartesian_strain(
+        [node.e1, node.e2],
+        node.normal,
+        node.metric,
+        node.d_ab,
+        node.d_na,
+        node.d_nn,
+    );
+    let two_eta = 2.0 * node.eta;
+    [
+        -pressure + tide[0] + two_eta * d[0][0],
+        -pressure + tide[1] + two_eta * d[1][1],
+        -pressure + tide[2] + two_eta * d[2][2],
+        tide[3] + two_eta * d[0][1],
+        tide[4] + two_eta * d[0][2],
+        tide[5] + two_eta * d[1][2],
+    ]
 }
 
 /// Harmonic fit of the radii (the Stokes domain and the `rheo_friction` surface).
@@ -220,6 +283,10 @@ pub fn evaluate(
     };
 
     let velocity = ops.lay.to_rheo(&sol.u);
+    let tide_face: Vec<[f64; 6]> = hess_w
+        .iter()
+        .map(|h| deviator(*h).map(|v| material.tide_coef * v))
+        .collect();
     let (rheo, rheo_stats) = {
         let _span = super::timing::span("rheology");
         face_chain(
@@ -233,6 +300,12 @@ pub fn evaluate(
             sol.p_surface.clone(),
         )?
     };
+    let surface_stress = rheo
+        .iter()
+        .zip(&sol.p_surface)
+        .zip(&tide_face)
+        .map(|((node, p), tide)| surface_cauchy(node, *p, *tide))
+        .collect();
     Ok(Mechanics {
         omega: load.omega,
         surf,
@@ -243,5 +316,6 @@ pub fn evaluate(
         g_face,
         rheo,
         rheo_stats,
+        surface_stress,
     })
 }

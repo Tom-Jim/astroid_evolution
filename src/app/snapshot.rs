@@ -4,15 +4,18 @@
 //! `scale * ω̂ * mix(R_from, R_to, smoothstep(τ))`. `d_radial` stays a scalar.
 
 use rayon::prelude::*;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::common::math::DVec3;
 use crate::scf::evolve::{State, StepFields, StepRecord};
 
 pub const PARTICLE_COUNT: usize = 4096;
 pub const STREAMLINE_STEPS: usize = 8;
+/// Direction ticks of the tension layer, spread evenly over the vertices.
+pub const TENSION_GLYPHS: usize = 3072;
 
 /// Scalar acceptance numbers of one geological step (§2.15, §10.4).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct StepAudit {
     pub eps_momentum: f64,
     pub eps_lambda: f64,
@@ -39,6 +42,12 @@ pub struct StepAudit {
     pub max_locked_step: f64,
     pub max_deposit_miss: f64,
     pub rheo_unconverged: u32,
+    /// Runout of the eroded packets (§2.8b): count, mass-weighted mean distance (m),
+    /// mean change of |latitude| (rad, negative equatorward), packets that hopped.
+    pub runout_traced: usize,
+    pub runout_distance: f64,
+    pub runout_dlat: f64,
+    pub runout_hops: usize,
 }
 
 fn audit_of(record: &StepRecord) -> StepAudit {
@@ -68,10 +77,14 @@ fn audit_of(record: &StepRecord) -> StepAudit {
         max_locked_step: record.max_locked_step,
         max_deposit_miss: record.max_deposit_miss,
         rheo_unconverged: record.rheo_unconverged,
+        runout_traced: record.runout.traced,
+        runout_distance: record.runout.mean_distance,
+        runout_dlat: record.runout.mean_dlat,
+        runout_hops: record.runout.hops,
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct VertexSample {
     pub f_delta: f32,
     pub movable: f32,
@@ -81,14 +94,20 @@ pub struct VertexSample {
     pub d_radial: f32,
     pub slack_max: f32,
     pub slack_avg: f32,
+    /// Largest principal Cauchy stress (Pa, tension positive).
+    pub sigma1: f32,
+    /// Its direction projected on the tangent plane (unit), zero under compression.
+    pub sigma_dir: [f32; 3],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct StreamPoint {
     pub verts: [u32; 3],
     pub bary: [f32; 3],
 }
 
+/// Crosses the worker boundary of the browser build as postcard bytes (`web::wire`).
+#[derive(Serialize, Deserialize)]
 pub struct StepSnapshot {
     pub step: usize,
     pub time: f64,
@@ -103,13 +122,17 @@ pub struct StepSnapshot {
     pub frame_applied: bool,
     pub wall_seconds: f64,
     pub flow_active: bool,
-    pub kind: &'static str,
-    pub dt_bound: &'static str,
+    /// Which bound set the step (`cfl`, `mode_c`, …).
+    pub dt_bound: Tag,
     pub audit: StepAudit,
     pub slack_tol: f32,
     pub f_delta_p95: f32,
     pub slack_p95: f32,
     pub rho_s_p95: f32,
+    /// 95th percentile of the positive `σ₁` (Pa), the scale of the tension layer.
+    pub sigma_p95: f32,
+    /// Largest `σ₁` on the surface (Pa).
+    pub tension_max: f64,
     pub faces: Vec<[u32; 3]>,
     /// Final body, metres, Tier 2 frame. The headless OBJ writer uses this.
     pub vertices_m: Vec<[f64; 3]>,
@@ -120,6 +143,9 @@ pub struct StepSnapshot {
     pub field: Vec<VertexSample>,
     /// `PARTICLE_COUNT` seeds, `STREAMLINE_STEPS` samples each.
     pub stream: Vec<StreamPoint>,
+    /// Runout paths of this step (§2.8b), `runout::PATH_SAMPLES` points each, view units;
+    /// `w = 1` while airborne.
+    pub runout: Vec<[f32; 4]>,
     /// Interior density in view units: the matrix, and per core three rows
     /// `(c, w)`, `(S_xx, S_yy, S_zz, α)`, `(S_xy, S_xz, S_yz, 0)`.
     pub bulk: f32,
@@ -297,6 +323,7 @@ pub fn pack(
     let geometry = state.body.face_geometry();
     let area: Vec<f64> = geometry.iter().map(|face| face.2).collect();
     let (slack_max, slack_avg) = scatter_face_slack(nv, faces, &fields.slack, &area);
+    let tension = principal_tension(nv, faces, &fields.stress, &area, &normal_to);
     let mut field = Vec::with_capacity(nv);
     for i in 0..nv {
         let velocity = fields.v_sl.get(i).copied().unwrap_or(DVec3::ZERO);
@@ -314,6 +341,8 @@ pub fn pack(
             d_radial: fields.d_radial.get(i).copied().unwrap_or(0.0) as f32,
             slack_max: slack_max.get(i).copied().unwrap_or(0.0),
             slack_avg: slack_avg.get(i).copied().unwrap_or(0.0),
+            sigma1: tension[i].0,
+            sigma_dir: tension[i].1,
         });
     }
     let (mut radius_min, mut radius_max) = (f64::INFINITY, 0.0_f64);
@@ -356,13 +385,18 @@ pub fn pack(
         frame_applied: record.frame_applied,
         wall_seconds,
         flow_active,
-        kind: record.kind,
-        dt_bound: record.dt_bound,
+        dt_bound: Tag(record.dt_bound),
         audit: audit_of(record),
         slack_tol,
         f_delta_p95: percentile_95(field.iter().map(|sample| sample.f_delta.max(0.0))),
         slack_p95: percentile_95(field.iter().map(|sample| sample.slack_max)),
         rho_s_p95: percentile_95(field.iter().map(|sample| sample.rho_s)),
+        sigma_p95: percentile_95(field.iter().map(|sample| sample.sigma1)),
+        tension_max: field
+            .iter()
+            .map(|sample| f64::from(sample.sigma1))
+            .reduce(f64::max)
+            .unwrap_or(0.0),
         faces: faces.clone(),
         vertices_m: state
             .body
@@ -376,6 +410,18 @@ pub fn pack(
         normal_to,
         field,
         stream,
+        runout: fields
+            .runout
+            .iter()
+            .map(|p| {
+                [
+                    (p[0] * scale) as f32,
+                    (p[1] * scale) as f32,
+                    (p[2] * scale) as f32,
+                    p[3] as f32,
+                ]
+            })
+            .collect(),
     }
 }
 
@@ -396,6 +442,8 @@ pub fn pack_initial(state: &State, mass: f64, scale: f64, slack_tol: f32) -> Ste
         d_radial: Vec::new(),
         slack: Vec::new(),
         g_face: Vec::new(),
+        stress: Vec::new(),
+        runout: Vec::new(),
         flow_active: false,
     };
     let record = StepRecord {
@@ -527,6 +575,155 @@ fn walk(
         current = best;
     }
     out
+}
+
+/// Largest principal stress `σ₁` (tension positive) at each vertex, and its direction
+/// projected on the tangent plane. Face tensors are averaged by area onto the vertices
+/// first, so the eigenvectors are those of the averaged tensor.
+fn principal_tension(
+    nv: usize,
+    faces: &[[u32; 3]],
+    stress: &[[f64; 6]],
+    area: &[f64],
+    normals: &[[f32; 3]],
+) -> Vec<(f32, [f32; 3])> {
+    let mut sum = vec![[0.0f64; 6]; nv];
+    let mut weight = vec![0.0f64; nv];
+    for (face, tri) in faces.iter().enumerate() {
+        let Some(t) = stress.get(face) else {
+            continue;
+        };
+        let a = area.get(face).copied().unwrap_or(0.0).max(0.0);
+        for &v in tri {
+            let v = v as usize;
+            if v < nv {
+                for k in 0..6 {
+                    sum[v][k] += a * t[k];
+                }
+                weight[v] += a;
+            }
+        }
+    }
+    (0..nv)
+        .into_par_iter()
+        .map(|i| {
+            if weight[i] <= 0.0 {
+                return (0.0, [0.0; 3]);
+            }
+            let t = sum[i].map(|x| x / weight[i]);
+            let m = nalgebra::Matrix3::new(t[0], t[3], t[4], t[3], t[1], t[5], t[4], t[5], t[2]);
+            let eig = m.symmetric_eigen();
+            let k = eig.eigenvalues.imax();
+            let sigma1 = eig.eigenvalues[k];
+            if sigma1 <= 0.0 {
+                return (sigma1 as f32, [0.0; 3]);
+            }
+            let v = eig.eigenvectors.column(k);
+            let v = DVec3::new(v[0], v[1], v[2]);
+            let n = normals.get(i).map_or(DVec3::ZERO, |n| {
+                DVec3::new(f64::from(n[0]), f64::from(n[1]), f64::from(n[2]))
+            });
+            let along = (v - n * v.dot(n)).try_normalize().unwrap_or(DVec3::ZERO);
+            (sigma1 as f32, [along.x as f32, along.y as f32, along.z as f32])
+        })
+        .collect()
+}
+
+/// Vertex neighbours from the faces (the ring `walk` steps through).
+pub fn face_neighbors(nv: usize, faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
+    let mut neighbors = vec![Vec::with_capacity(6); nv];
+    for face in faces {
+        for k in 0..3 {
+            let (a, b) = (face[k] as usize, face[(k + 1) % 3] as usize);
+            if a < nv && b < nv {
+                if !neighbors[a].contains(&b) {
+                    neighbors[a].push(b);
+                }
+                if !neighbors[b].contains(&a) {
+                    neighbors[b].push(a);
+                }
+            }
+        }
+    }
+    neighbors
+}
+
+/// Streamlines of a stored frame, rebuilt from its view positions, vertex neighbours and
+/// surface velocity: the same walk as `pack`.
+pub fn streamlines(
+    positions: &[[f32; 3]],
+    neighbors: &[Vec<usize>],
+    field: &[VertexSample],
+    flow_active: bool,
+) -> Vec<StreamPoint> {
+    let nv = positions.len();
+    if !flow_active {
+        // Every seed stays put; `walk` would return the same.
+        return (0..PARTICLE_COUNT)
+            .flat_map(|particle| {
+                let seed = if nv == 0 { 0 } else { (particle * nv) / PARTICLE_COUNT } as u32;
+                [StreamPoint {
+                    verts: [seed; 3],
+                    bary: [1.0, 0.0, 0.0],
+                }; STREAMLINE_STEPS]
+            })
+            .collect();
+    }
+    let dirs: Vec<DVec3> = positions
+        .iter()
+        .map(|p| {
+            let p = DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
+            p.try_normalize().unwrap_or(DVec3::Z)
+        })
+        .collect();
+    let v_sl: Vec<DVec3> = field
+        .iter()
+        .map(|s| DVec3::new(f64::from(s.v_sl[0]), f64::from(s.v_sl[1]), f64::from(s.v_sl[2])))
+        .collect();
+    (0..PARTICLE_COUNT)
+        .into_par_iter()
+        .flat_map_iter(|particle| {
+            let seed = if nv == 0 { 0 } else { (particle * nv) / PARTICLE_COUNT };
+            walk(&dirs, neighbors, &v_sl, true, seed)
+        })
+        .collect()
+}
+
+/// A Tier 2 label (`&'static str`) that crosses the worker boundary as a string. Reading
+/// it back maps the strings Tier 2 uses to themselves and leaks anything else once, so
+/// the snapshot needs no borrowed lifetime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tag(pub &'static str);
+
+impl Serialize for Tag {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Tag {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(d)?;
+        Ok(Tag(intern(&text)))
+    }
+}
+
+fn intern(text: &str) -> &'static str {
+    match text {
+        "geometry" => "geometry",
+        "stage-equilibrium" => "stage-equilibrium",
+        "spin-only" => "spin-only",
+        "cfl" => "cfl",
+        "mode_c" => "mode_c",
+        "characteristic" => "characteristic",
+        "omega" => "omega",
+        "dt_max" => "dt_max",
+        "t_next" => "t_next",
+        "core" => "core",
+        "omega/max/t_next" => "omega/max/t_next",
+        "" => "",
+        other => Box::leak(other.to_string().into_boxed_str()),
+    }
 }
 
 fn percentile_95(values: impl Iterator<Item = f32>) -> f32 {

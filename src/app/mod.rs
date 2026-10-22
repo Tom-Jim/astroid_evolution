@@ -2,6 +2,7 @@
 //! playback snapshot; the shader morphs radii and colours the surface fields.
 
 pub mod bridge;
+pub mod history;
 pub mod material;
 pub mod pan_orbit_input;
 pub mod pipeline;
@@ -48,6 +49,7 @@ impl Plugin for AsteroidPlugin {
                 .insert_resource(EvolutionPool::new())
                 .init_resource::<Playback>()
                 .init_resource::<VisMode>()
+                .init_resource::<history::History>()
                 .add_plugins((
                     MeshPickingPlugin,
                     DefaultPanOrbitCameraPlugins,

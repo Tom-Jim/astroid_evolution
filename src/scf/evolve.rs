@@ -5,6 +5,8 @@
 //! geometric SOCP with outer acceptance, `ρ_s` transport, frame re-alignment. The spin
 //! schedule is an exogenous input; neither angular momentum nor any Tier 3 coupling enters.
 
+use std::borrow::Cow;
+
 use nalgebra::{Matrix3, Vector3};
 use serde::Serialize;
 
@@ -22,6 +24,7 @@ use super::params::Project;
 use super::relax::{AcceptError, accept};
 use super::socp::{Kind, SocpInput, SocpOutput, SocpSeed, mass_jacobian, solve};
 use super::spin::SpinSchedule;
+use super::runout::{self, RunoutField, RunoutReport};
 use super::transport::{
     DirIndex, locate_face, locate_vertex, mode_c, mode_c_over, surface_flow, transport,
 };
@@ -109,6 +112,11 @@ pub struct StepRecord {
     /// Smallest `n·ê` on the body kept by this step, and the face that carries it.
     pub min_radial: f64,
     pub min_radial_face: usize,
+    /// Runout of the eroded and the routed packets together (§2.8b).
+    pub runout: RunoutReport,
+    /// Mass the slope relief removed and routed (kg), and the routing gap (§2.8b).
+    pub relief_mass: f64,
+    pub relief_gap: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +139,9 @@ pub struct RunResult {
 /// not resample it. Every other vertex field is resampled onto the post-realignment body
 /// when the frame report was applied. `movable` is the classifier flag (true means the
 /// vertex is outside the rigid core).
+/// Runout paths handed to the viewer per step (§2.8b).
+pub const RUNOUT_PATHS: usize = 256;
+
 #[derive(Clone, Debug)]
 pub struct StepFields {
     pub radius_from: Vec<f64>,
@@ -144,6 +155,10 @@ pub struct StepFields {
     /// Per face. Incident-face scatter happens when the snapshot is packed.
     pub slack: Vec<f64>,
     pub g_face: Vec<DVec3>,
+    /// Cauchy stress at the face centres (Pa, `(xx, yy, zz, xy, xz, yz)`).
+    pub stress: Vec<[f64; 6]>,
+    /// Runout paths, `runout::PATH_SAMPLES` points each (m; `w = 1` airborne).
+    pub runout: Vec<[f64; 4]>,
     /// False on the spin-only and stage-equilibrium exits. Core creep is not drift.
     pub flow_active: bool,
 }
@@ -285,6 +300,31 @@ pub fn run(
             .collect();
 
         // Step 5: mode C stays on the true yield set. Promoted slope nodes have F_δ ≤ 0.
+        // §2.8b: where each eroded packet comes to rest. The sources are the nodes with
+        // J_ero > 0; the arrivals do not depend on the step length, so both mode C
+        // evaluations of this step share them.
+        let positions = state.body.positions();
+        let field = RunoutField {
+            topo: &topo,
+            index: &dir_index,
+            positions: &positions,
+            g_face: &mech.g_face,
+            load,
+            material: &project.material,
+            time_limit: project.mode_c.runout_time,
+            stop: project.mode_c.runout_stop,
+            theta: runout::THETA,
+        };
+        let arrivals = if project.mode_c.runout {
+            let _span = super::timing::span("runout");
+            let sources: Vec<usize> = (0..nv)
+                .filter(|&i| yielded[i] && state.body.rho_s[i] > 0.0 && cl.f_delta[i] > 0.0)
+                .collect();
+            field.trace(&sources)
+        } else {
+            Vec::new()
+        };
+        let arrived = project.mode_c.runout.then_some(arrivals.as_slice());
         let mc = {
             let _span = super::timing::span("mode_c");
             mode_c(
@@ -294,11 +334,17 @@ pub fn run(
                 &yielded,
                 &cl.f_delta,
                 &project.mode_c,
+                arrived,
             )
         };
+        let eroded = runout::eroded_masses(&area, &mc.j_ero, &arrivals, 1.0);
+        let paths = runout::paths(&eroded, &arrivals, RUNOUT_PATHS);
         let slack: Vec<f64> = mech.rheo.iter().map(|node| node.slack).collect();
 
         let mut rec = StepRecord {
+            runout: RunoutReport::default(),
+            relief_mass: 0.0,
+            relief_gap: 0.0,
             cores: CoreReport::default(),
             step: state.step,
             t: state.t,
@@ -362,6 +408,7 @@ pub fn run(
             min_radial: 0.0,
             min_radial_face: 0,
         };
+        rec.runout = runout::report(&eroded, &arrivals);
         guess = Some(mech.sol.u.clone());
         state.velocity = mech.sol.u.clone();
 
@@ -391,7 +438,7 @@ pub fn run(
                 "omega/max/t_next"
             };
             rec.n_locked = nv;
-            advance_time(&mut state, dt, t_next, snap_tol);
+            advance_time(&mut state, spin, dt, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
             stamp_radial(&mut rec, &state.body);
@@ -406,6 +453,8 @@ pub fn run(
                 &radial_increments(false, st.lambda, nv, None),
                 &slack,
                 &mech.g_face,
+                &mech.surface_stress,
+                &paths,
                 false,
                 None,
                 &state.body,
@@ -438,7 +487,7 @@ pub fn run(
                 // onto the same rays, so it stays a warm start for the next cone.
                 mass_target = fwd.moments.mass;
             }
-            advance_time(&mut state, rec.advance, t_next, snap_tol);
+            advance_time(&mut state, spin, rec.advance, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
             stamp_radial(&mut rec, &state.body);
@@ -453,6 +502,8 @@ pub fn run(
                 &radial_increments(false, st.lambda, nv, None),
                 &slack,
                 &mech.g_face,
+                &mech.surface_stress,
+                &paths,
                 false,
                 Some(&frep),
                 &state.body,
@@ -543,6 +594,7 @@ pub fn run(
                 &yielded,
                 &cl.f_delta,
                 &project.mode_c,
+                arrived,
                 rec.advance,
             )
         } else {
@@ -552,7 +604,7 @@ pub fn run(
         // Step 7: d_pred and the node classes L / D / A.
         let mut d_pred = vec![0.0; nv];
         let mut kind = vec![Kind::Locked; nv];
-        let pos = state.body.positions();
+        let pos = &positions;
         for i in 0..nv {
             let n = cl.normal[i];
             let mu = n.dot(topo.dirs[i]);
@@ -591,6 +643,17 @@ pub fn run(
             })
             .collect();
         let sin_phi: Vec<f64> = mech.rheo.iter().map(|n| n.sin_phi).collect();
+        // Vertices of the supercritical slope rows: where the relief removes mass (§2.8b).
+        let mut slope_vertex = vec![false; nv];
+        for (f, on) in slope_row.iter().enumerate() {
+            if *on {
+                for v in topo.faces[f] {
+                    slope_vertex[v as usize] = true;
+                }
+            }
+        }
+        let route = project.mode_c.runout && slope_vertex.iter().any(|v| *v);
+        let mut routing: Option<(runout::Routing, f64)> = None;
         // Dimensionless fidelity weights around 1 (area over its mean), so that the
         // exact-penalty scale ϱ ≥ 10 h̄² of §2.13 holds with d in metres.
         let mean_area = area.iter().sum::<f64>() / nv as f64;
@@ -684,8 +747,62 @@ pub fn run(
                 }
                 Err(err) => return Err(err),
             };
+            // §2.8b: route the mass the relief removed from the slope vertices, then solve
+            // again from the first solution with the deposit added to the prediction.
+            let removed: Vec<f64> = if route {
+                (0..nv)
+                    .map(|i| if slope_vertex[i] { (d_pred[i] - out.d[i]).max(0.0) } else { 0.0 })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let (out, kind_used, d_pred_used) = if removed.iter().any(|r| *r > 0.0) {
+                let routed = {
+                    let _span = super::timing::span("relief_routing");
+                    runout::route_relief(&field, &area, &jac, &removed, &project.mode_c)
+                };
+                let mut d2 = d_pred.clone();
+                let mut k2 = kind.clone();
+                for j in 0..nv {
+                    if routed.delta[j] > 0.0 {
+                        d2[j] += routed.delta[j];
+                        if k2[j] == Kind::Locked {
+                            k2[j] = Kind::Deposit;
+                        }
+                    }
+                }
+                let second = SocpInput {
+                    kind: &k2,
+                    d_pred: &d2,
+                    warm: Some(&out.seed),
+                    ..inp
+                };
+                match solve(&second) {
+                    Ok(out2) => {
+                        let first: f64 = routed.masses.iter().sum();
+                        let again: f64 = (0..nv)
+                            .filter(|&i| slope_vertex[i])
+                            .map(|i| jac[i] * (d2[i] - out2.d[i]).max(0.0))
+                            .sum();
+                        let gap = if first > 0.0 { (again - first).abs() / first } else { 0.0 };
+                        routing = Some((routed, gap));
+                        (out2, Cow::Owned(k2), Cow::Owned(d2))
+                    }
+                    Err(err) if err.kind == "SolverFailure" => {
+                        rejected = Some(format!("cone solve (routed): {}", err.detail));
+                        socp_seed = None;
+                        trust *= g.trust_shrink;
+                        retries += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                }
+            } else {
+                routing = None;
+                (out, Cow::Borrowed(&kind), Cow::Borrowed(&d_pred))
+            };
             socp_seed = Some(out.seed.clone());
-            let (max_locked_step, max_deposit_miss) = class_steps(&kind, &d_pred, &out.d);
+            let (max_locked_step, max_deposit_miss) = class_steps(&kind_used, &d_pred_used, &out.d);
             rec.max_locked_step = max_locked_step;
             rec.max_deposit_miss = max_deposit_miss;
             // 8a: R⁽ⁿ⁺¹⁾ = R⁽ⁿ⁾ + λ d_*.
@@ -779,6 +896,17 @@ pub fn run(
         rec.dropped_overhang = out.dropped_overhang;
         rec.mass_residual = resid;
         rec.max_displacement = dmax;
+        // Runout of the eroded packets over the step and of the routed relief together.
+        let mut weights = runout::eroded_masses(&area, &mc.j_ero, &arrivals, rec.advance);
+        let mut packets = arrivals;
+        if let Some((routed, gap)) = routing {
+            rec.relief_mass = routed.masses.iter().sum();
+            rec.relief_gap = gap;
+            weights.extend(routed.masses);
+            packets.extend(routed.arrivals);
+        }
+        rec.runout = runout::report(&weights, &packets);
+        let paths = runout::paths(&weights, &packets, RUNOUT_PATHS);
 
         // ρ_s: semi-Lagrangian transport (λΔt), then the mode C source.
         let adv = st.lambda * dt;
@@ -850,7 +978,7 @@ pub fn run(
         fwd = new_fwd;
 
         // 9: advance time.
-        advance_time(&mut state, adv, t_next, snap_tol);
+        advance_time(&mut state, spin, adv, t_next, snap_tol);
         state.step += 1;
         steps_done += 1;
         stamp_radial(&mut rec, &state.body);
@@ -865,6 +993,8 @@ pub fn run(
             &radial_increments(true, st.lambda, nv, Some(&out.d)),
             &slack,
             &mech.g_face,
+            &mech.surface_stress,
+            &paths,
             true,
             Some(&frep),
             &state.body,
@@ -951,11 +1081,14 @@ fn close_cores(
     Ok((ks, refit))
 }
 
-fn advance_time(state: &mut State, dt: f64, t_next: f64, tol: f64) {
+/// Advance the clock; the state then carries the spin of its own time, so a snapshot
+/// written after the last step reports the spin at the end of the schedule.
+fn advance_time(state: &mut State, spin: &SpinSchedule, dt: f64, t_next: f64, tol: f64) {
     state.t += dt;
     if (state.t - t_next).abs() < tol {
         state.t = t_next;
     }
+    state.omega = spin.sample(state.t).omega;
 }
 
 /// `|n·ê|` below this is left unconverted. The vertex takes no radial step from
@@ -1051,6 +1184,8 @@ pub fn step_fields(
     d_radial: &[f64],
     slack: &[f64],
     g_face: &[DVec3],
+    stress: &[[f64; 6]],
+    runout: &[[f64; 4]],
     flow_active: bool,
     frame: Option<&FrameReport>,
     body: &Body,
@@ -1069,6 +1204,8 @@ pub fn step_fields(
             d_radial: fit_copy(d_radial, nv, 0.0),
             slack: fit_copy(slack, nf, 0.0),
             g_face: fit_copy(g_face, nf, DVec3::ZERO),
+            stress: fit_copy(stress, nf, [0.0; 6]),
+            runout: runout.to_vec(),
             flow_active,
         };
     };
@@ -1113,6 +1250,7 @@ pub fn step_fields(
     let positions = body.positions();
     let mut out_slack = vec![0.0; nf];
     let mut out_g = vec![DVec3::ZERO; nf];
+    let mut out_stress = vec![[0.0; 6]; nf];
     for (f, tri) in body.topo.faces.iter().enumerate() {
         let [a, b, c] = tri.map(|i| positions[i as usize]);
         let centroid = (a + b + c) * (1.0 / 3.0);
@@ -1126,6 +1264,7 @@ pub fn step_fields(
         let face = locate_face(&body.topo, &index, dir);
         out_slack[f] = slack.get(face).copied().unwrap_or(0.0);
         out_g[f] = g_rot.get(face).copied().unwrap_or(DVec3::ZERO);
+        out_stress[f] = stress.get(face).map_or([0.0; 6], |t| rotate_sym(q, *t));
     }
     StepFields {
         radius_from: fit_copy(radius_from, nv, 0.0),
@@ -1138,8 +1277,31 @@ pub fn step_fields(
         d_radial: fit_copy(d_radial, nv, 0.0),
         slack: out_slack,
         g_face: out_g,
+        stress: out_stress,
+        // x_new = Q (x_old − t): the paths were traced before the realignment.
+        runout: runout
+            .iter()
+            .map(|p| {
+                let x = mul_q(q, DVec3::new(p[0], p[1], p[2]) - frame.translation);
+                [x.x, x.y, x.z, p[3]]
+            })
+            .collect(),
         flow_active,
     }
+}
+
+/// `Q T Qᵀ` of a symmetric `(xx, yy, zz, xy, xz, yz)` tensor.
+fn rotate_sym(q: [[f64; 3]; 3], t: [f64; 6]) -> [f64; 6] {
+    let m = [[t[0], t[3], t[4]], [t[3], t[1], t[5]], [t[4], t[5], t[2]]];
+    let mut r = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            r[i][j] = (0..3)
+                .map(|k| (0..3).map(|l| q[i][k] * m[k][l] * q[j][l]).sum::<f64>())
+                .sum();
+        }
+    }
+    [r[0][0], r[1][1], r[2][2], r[0][1], r[0][2], r[1][2]]
 }
 
 fn fit_copy<T: Copy>(src: &[T], n: usize, zero: T) -> Vec<T> {

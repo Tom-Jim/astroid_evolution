@@ -24,6 +24,11 @@ export interface FrameStats {
   dt: number;
   dt_cfl: number;
   dt_bound: string;
+  tension_max: number;
+  runout_traced: number;
+  runout_distance: number;
+  runout_dlat: number;
+  runout_hops: number;
 }
 
 export interface Status {
@@ -41,6 +46,10 @@ export interface Status {
   t_end_myr: number | null;
   period_h: number | null;
   orbit: { a_km: number; period_h: number } | null;
+  frames: number;
+  view: number | null;
+  live_step: number | null;
+  live_time_myr: number | null;
   layer: number;
   interior: boolean;
   cut: number;
@@ -65,6 +74,7 @@ export type Command =
   | { cmd: "wireframe"; on: boolean }
   | { cmd: "reset_view" }
   | { cmd: "screenshot" }
+  | { cmd: "seek"; index: number | null }
   | { cmd: "pointer"; x: number; y: number; button?: number; down?: boolean }
   | { cmd: "wheel"; dy: number };
 
@@ -79,6 +89,7 @@ export interface Scenario {
 export interface BodyEntry {
   id: string;
   name: string;
+  designation: string;
   project: string;
   note: string;
   scenarios: Scenario[];

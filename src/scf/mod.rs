@@ -22,6 +22,7 @@ pub mod mode_c_spectral;
 pub mod params;
 pub mod quad;
 pub mod relax;
+pub mod runout;
 pub mod socp;
 pub mod socp_gpu;
 pub mod socp_pdhg;

@@ -110,6 +110,13 @@ pub struct ModeCParams {
     pub sigma_0: f64,
     /// Angular width (rad) of the deposition kernel `K`.
     pub kernel_width: f64,
+    /// Rotating-frame runout of the eroded packets (§2.8b, A-C3); `false` keeps the
+    /// isotropic kernel of §2.8.
+    pub runout: bool,
+    /// `T_run` (s): a packet still moving then stops where it is.
+    pub runout_time: f64,
+    /// `ε_stop`: stopping speed as a fraction of `√(|g_eff| h_s)`.
+    pub runout_stop: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -327,6 +334,8 @@ impl Project {
         non_negative("mode_c.k_e", f.mode_c.k_e)?;
         positive("mode_c.sigma_0", f.mode_c.sigma_0)?;
         positive("mode_c.kernel_width", f.mode_c.kernel_width)?;
+        positive("mode_c.runout_time", f.mode_c.runout_time)?;
+        unit_interval("mode_c.runout_stop", f.mode_c.runout_stop)?;
         let t = &f.step;
         unit_interval("step.theta_cfl", t.theta_cfl)?;
         if t.theta_cfl > 0.5 {

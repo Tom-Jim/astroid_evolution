@@ -545,6 +545,12 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64,
                 p.geometry.eps_deg,
             );
+            let inward: Vec<f64> = m
+                .g_face
+                .iter()
+                .zip(&m.rheo)
+                .map(|(g, node)| -g.dot(node.normal))
+                .collect();
             let area = frame::vertex_areas(&state.body);
             let rho_total: f64 = (0..area.len()).map(|i| area[i] * state.body.rho_s[i]).sum();
             let report = serde_json::json!({
@@ -582,6 +588,13 @@ fn run(cli: Cli) -> Result<(), SimError> {
                     "supercritical_faces": m.rheo.iter().filter(|n| n.slack > p.relief.tol_slack).count(),
                     "min_phi": m.rheo.iter().map(|n| n.phi).fold(f64::INFINITY, f64::min),
                     "max_phi": m.rheo.iter().map(|n| n.phi).fold(0.0, f64::max),
+                },
+                // Binding of the surface: −g_eff·n at the face centres (positive inward). A
+                // non-positive value is a face the spin would shed (§2.8b, lift-off).
+                "surface_binding": {
+                    "min_inward": inward.iter().copied().fold(f64::INFINITY, f64::min),
+                    "mean_inward": inward.iter().sum::<f64>() / inward.len().max(1) as f64,
+                    "unbound_faces": inward.iter().filter(|g| **g <= 0.0).count(),
                 },
                 "rho_s_total": rho_total,
                 "degree2": r_ref.map(|r| astroid_evolution::scf::history::degree2(&fwd.moments, r)),

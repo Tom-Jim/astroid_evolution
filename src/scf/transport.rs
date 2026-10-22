@@ -12,6 +12,7 @@ use crate::common::math::DVec3;
 
 use super::body::Topology;
 use super::params::ModeCParams;
+use super::runout::{Arrival, moved_source};
 
 /// Surface parameter velocity and its first derivatives.
 #[derive(Clone, Debug)]
@@ -486,6 +487,9 @@ pub struct ModeC {
 /// on the GPU: the Gaussian weight is native single precision, the cap sum is
 /// double-single, and the cap box is the one from
 /// [`DirIndex::collect_within`](DirIndex::collect_within).
+///
+/// With `arrivals` (§2.8b, A-C3) each source's eroded mass is first moved to where its
+/// packet came to rest; the spread is then the same.
 pub fn mode_c(
     topo: &Topology,
     area: &[f64],
@@ -493,9 +497,10 @@ pub fn mode_c(
     movable: &[bool],
     f_delta: &[f64],
     prm: &ModeCParams,
+    arrivals: Option<&[Arrival]>,
 ) -> ModeC {
     let (j_ero, max_excess, eroded) = erosion(area, rho_s, movable, f_delta, prm);
-    let j_dep = deposit(topo, area, &j_ero, prm);
+    let j_dep = deposit_from(topo, area, &j_ero, prm, arrivals);
     ModeC {
         j_ero,
         j_dep,
@@ -512,10 +517,11 @@ pub fn mode_c_over(
     movable: &[bool],
     f_delta: &[f64],
     prm: &ModeCParams,
+    arrivals: Option<&[Arrival]>,
     dt: f64,
 ) -> ModeC {
     let (j_ero, max_excess, eroded) = erosion_over(area, rho_s, movable, f_delta, prm, dt);
-    let j_dep = deposit(topo, area, &j_ero, prm);
+    let j_dep = deposit_from(topo, area, &j_ero, prm, arrivals);
     ModeC {
         j_ero,
         j_dep,
@@ -564,6 +570,19 @@ pub fn erosion_over(
         }
     }
     (j_ero, max_excess, eroded)
+}
+
+fn deposit_from(
+    topo: &Topology,
+    area: &[f64],
+    j_ero: &[f64],
+    prm: &ModeCParams,
+    arrivals: Option<&[Arrival]>,
+) -> Vec<f64> {
+    match arrivals {
+        Some(arrivals) => deposit(topo, area, &moved_source(area, j_ero, arrivals), prm),
+        None => deposit(topo, area, j_ero, prm),
+    }
 }
 
 pub fn deposit(topo: &Topology, area: &[f64], j_ero: &[f64], prm: &ModeCParams) -> Vec<f64> {

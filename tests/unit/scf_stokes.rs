@@ -195,3 +195,35 @@ fn depth_gradient_matches_finite_differences() {
         );
     }
 }
+
+#[test]
+fn chart_strain_rebuilds_the_cartesian_tensor() {
+    use astroid_evolution::common::math::DVec3;
+    use astroid_evolution::scf::mechanics::cartesian_strain;
+    // A symmetric tensor and a skewed chart: e1, e2 neither unit nor orthogonal.
+    let d = [[0.3, -0.2, 0.5], [-0.2, -0.7, 0.1], [0.5, 0.1, 0.4]];
+    let apply = |v: DVec3| {
+        let v = v.to_array();
+        DVec3::new(
+            d[0][0] * v[0] + d[0][1] * v[1] + d[0][2] * v[2],
+            d[1][0] * v[0] + d[1][1] * v[1] + d[1][2] * v[2],
+            d[2][0] * v[0] + d[2][1] * v[1] + d[2][2] * v[2],
+        )
+    };
+    let e1 = DVec3::new(1.3, 0.2, -0.1);
+    let e2 = DVec3::new(0.4, 0.9, 0.3);
+    let n = e1.cross(e2).normalize();
+    let rebuilt = cartesian_strain(
+        [e1, e2],
+        n,
+        [e1.dot(e1), e1.dot(e2), e2.dot(e2)],
+        [e1.dot(apply(e1)), e1.dot(apply(e2)), e2.dot(apply(e2))],
+        [n.dot(apply(e1)), n.dot(apply(e2))],
+        n.dot(apply(n)),
+    );
+    for i in 0..3 {
+        for j in 0..3 {
+            assert!((rebuilt[i][j] - d[i][j]).abs() < 1e-12, "{i}{j}: {}", rebuilt[i][j]);
+        }
+    }
+}

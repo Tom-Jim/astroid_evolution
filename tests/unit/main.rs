@@ -38,6 +38,8 @@ mod scf_quad;
 #[cfg(feature = "tier2")]
 mod scf_relax;
 #[cfg(feature = "tier2")]
+mod scf_runout;
+#[cfg(feature = "tier2")]
 mod scf_socp;
 #[cfg(feature = "tier2")]
 mod scf_socp_pdhg;

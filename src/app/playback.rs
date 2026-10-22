@@ -12,9 +12,11 @@ use bevy::render::storage::ShaderBuffer;
 use crate::app::material::{AsteroidMaterial, PlaybackParams};
 use crate::app::pipeline::WorkerMessage;
 use crate::app::render::{surface_mesh, write_surface};
+use crate::app::history::History;
+use crate::scf::runout::PATH_SAMPLES;
 use crate::app::resources::{Evolution, FrameStats, Phase, SurfaceView};
 use crate::app::snapshot::{
-    PARTICLE_COUNT, STREAMLINE_STEPS, StepSnapshot, StreamPoint, VertexSample, posed_normals,
+    PARTICLE_COUNT, STREAMLINE_STEPS, StepSnapshot, TENSION_GLYPHS, StreamPoint, VertexSample, posed_normals,
     posed_positions, smoothstep,
 };
 
@@ -33,15 +35,6 @@ impl Default for VisMode {
             interior: false,
             cut_offset: 0.0,
         }
-    }
-}
-
-pub fn vis_name(mode: u32) -> &'static str {
-    match mode {
-        1 => "yield",
-        2 => "slope",
-        3 => "regolith",
-        _ => "combined",
     }
 }
 
@@ -64,11 +57,13 @@ pub struct Playback {
     pub f_delta_p95: f32,
     pub slack_p95: f32,
     pub rho_s_p95: f32,
+    pub sigma_p95: f32,
     pub vertex_count: u32,
     pub faces: Vec<[u32; 3]>,
     pub bulk: f32,
     pub rho_range: [f32; 2],
     cores_gpu: Vec<[f32; 4]>,
+    runout_gpu: Vec<[f32; 4]>,
     surface_gpu: Vec<[f32; 4]>,
     stream_gpu: Vec<[f32; 4]>,
     from: Keyframe,
@@ -88,11 +83,13 @@ impl Default for Playback {
             f_delta_p95: 1.0,
             slack_p95: 1.0,
             rho_s_p95: 1.0,
+            sigma_p95: 1.0,
             vertex_count: 0,
             faces: Vec::new(),
             bulk: 0.0,
             rho_range: [0.0, 1.0],
             cores_gpu: vec![[0.0; 4]; 3],
+            runout_gpu: vec![[0.0; 4]],
             surface_gpu: vec![[0.0; 4]],
             stream_gpu: vec![[0.0; 4], [0.0; 4]],
             from: Keyframe {
@@ -109,7 +106,11 @@ impl Default for Playback {
     }
 }
 
-pub fn poll_snapshot(mut evolution: ResMut<Evolution>, mut playback: ResMut<Playback>) {
+pub fn poll_snapshot(
+    mut evolution: ResMut<Evolution>,
+    mut playback: ResMut<Playback>,
+    mut history: ResMut<History>,
+) {
     let receiver = evolution.receiver.lock().unwrap().take();
     let mut frame = None;
     let mut closed = false;
@@ -153,30 +154,21 @@ pub fn poll_snapshot(mut evolution: ResMut<Evolution>, mut playback: ResMut<Play
     let Some(snapshot) = frame else {
         return;
     };
-    evolution.stats = Some(FrameStats {
-        step: snapshot.step,
-        time: snapshot.time,
-        omega: snapshot.omega,
-        mass: snapshot.mass,
-        radius_min: snapshot.radius_min,
-        radius_max: snapshot.radius_max,
-        yielded_fraction: snapshot.yielded_fraction,
-        max_slack: snapshot.max_slack,
-        rho_s_total: snapshot.rho_s_total,
-        max_displacement: snapshot.max_displacement,
-        eps_momentum: snapshot.audit.eps_momentum,
-        eps_lambda: snapshot.audit.eps_lambda,
-        eps_picard: snapshot.audit.eps_picard,
-        picard_iterations: snapshot.audit.picard_iterations,
-        tensile_fraction: snapshot.audit.tensile_fraction,
-        inverse_ekman: snapshot.audit.inverse_ekman,
-        mass_residual: snapshot.audit.mass_residual,
-        mobile_area_fraction: snapshot.audit.mobile_area_fraction,
-        dt: snapshot.audit.dt,
-        dt_cfl: snapshot.audit.dt_cfl,
-        dt_bound: snapshot.dt_bound,
-    });
-    adopt(&mut playback, *snapshot);
+    evolution.stats = Some(FrameStats::of(&snapshot));
+    history.record(&snapshot);
+    // While the timeline is held on an earlier step, new steps are only recorded.
+    if history.view.is_none() {
+        adopt(&mut playback, *snapshot);
+    }
+}
+
+/// Put a stored step on screen as a still pose (no morph from the previous one).
+pub fn show(play: &mut Playback, snap: StepSnapshot) {
+    let generation = play.generation;
+    play.generation = 0;
+    adopt(play, snap);
+    play.generation = generation + 1;
+    play.tau = 1.0;
 }
 
 fn adopt(play: &mut Playback, snap: StepSnapshot) {
@@ -203,12 +195,18 @@ fn adopt(play: &mut Playback, snap: StepSnapshot) {
     play.f_delta_p95 = snap.f_delta_p95;
     play.slack_p95 = snap.slack_p95;
     play.rho_s_p95 = snap.rho_s_p95;
+    play.sigma_p95 = snap.sigma_p95;
     play.vertex_count = from.position.len() as u32;
     play.surface_gpu = pack_surface(&from, &to);
     play.stream_gpu = pack_stream(&snap.stream);
     play.bulk = snap.bulk;
     play.rho_range = snap.rho_range;
     play.cores_gpu = snap.cores;
+    play.runout_gpu = if snap.runout.is_empty() {
+        vec![[0.0; 4]]
+    } else {
+        snap.runout
+    };
     if play.faces.len() != snap.faces.len() {
         play.faces = snap.faces;
     }
@@ -289,6 +287,10 @@ pub fn sync_material(
                 buffer.clear();
                 buffer.extend(playback.cores_gpu.iter().copied());
             }
+            if let Some(mut buffer) = buffers.get_mut(&material.runout) {
+                buffer.clear();
+                buffer.extend(playback.runout_gpu.iter().copied());
+            }
         }
         playback.dirty = false;
     }
@@ -319,6 +321,10 @@ pub fn sync_material(
             bulk: playback.bulk,
             rho_lo: playback.rho_range[0],
             rho_hi: playback.rho_range[1],
+            sigma_p95: playback.sigma_p95,
+            glyph_count: (playback.vertex_count as usize).min(TENSION_GLYPHS) as u32,
+            runout_count: (playback.runout_gpu.len() / PATH_SAMPLES) as u32,
+            runout_samples: PATH_SAMPLES as u32,
         };
     }
 }
@@ -350,6 +356,20 @@ fn mix_sample(a: VertexSample, b: VertexSample, t: f32) -> VertexSample {
         d_radial: a.d_radial + (b.d_radial - a.d_radial) * t,
         slack_max: a.slack_max + (b.slack_max - a.slack_max) * t,
         slack_avg: a.slack_avg + (b.slack_avg - a.slack_avg) * t,
+        sigma1: a.sigma1 + (b.sigma1 - a.sigma1) * t,
+        // Principal directions are axes; blend with the sign of the later one.
+        sigma_dir: {
+            let flip = if a.sigma_dir[0] * b.sigma_dir[0]
+                + a.sigma_dir[1] * b.sigma_dir[1]
+                + a.sigma_dir[2] * b.sigma_dir[2]
+                < 0.0
+            {
+                -1.0
+            } else {
+                1.0
+            };
+            mix3(a.sigma_dir.map(|v| v * flip), b.sigma_dir, t)
+        },
     }
 }
 
@@ -370,6 +390,9 @@ fn mix_key(from: &Keyframe, to: &Keyframe, position_t: f32, field_t: f32) -> Key
     }
 }
 
+/// `vec4` rows per vertex in the surface buffer (`surface_base` in `asteroid.wesl`).
+const SURFACE_ROWS: usize = 10;
+
 fn pack_surface(from: &Keyframe, to: &Keyframe) -> Vec<[f32; 4]> {
     let count = from
         .position
@@ -380,7 +403,7 @@ fn pack_surface(from: &Keyframe, to: &Keyframe) -> Vec<[f32; 4]> {
     if count == 0 {
         return vec![[0.0; 4]];
     }
-    let mut out = Vec::with_capacity(count * 8);
+    let mut out = Vec::with_capacity(count * SURFACE_ROWS);
     for i in 0..count {
         let a = from.field[i];
         let b = to.field[i];
@@ -396,6 +419,8 @@ fn pack_surface(from: &Keyframe, to: &Keyframe) -> Vec<[f32; 4]> {
         out.push([b.v_sl[0], b.v_sl[1], b.v_sl[2], b.rho_s]);
         out.push([a.slack_max, a.slack_avg, b.slack_max, b.slack_avg]);
         out.push([a.j_net, b.j_net, a.d_radial, b.d_radial]);
+        out.push([a.sigma_dir[0], a.sigma_dir[1], a.sigma_dir[2], a.sigma1]);
+        out.push([b.sigma_dir[0], b.sigma_dir[1], b.sigma_dir[2], b.sigma1]);
     }
     out
 }

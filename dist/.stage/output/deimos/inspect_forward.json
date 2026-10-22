@@ -1,0 +1,53 @@
+{
+  "centroid": [
+    -0.2657217681562951,
+    -0.14937595202846055,
+    -0.43900632287111085
+  ],
+  "classification": {
+    "core_creep": 1.979872798213241e-6,
+    "core_degenerate": false,
+    "core_empty": false,
+    "core_mass_fraction": 1.0,
+    "inverse_ekman": 0.0,
+    "mobile_area_fraction": -0.0,
+    "n_mobile": 0,
+    "plastic_dissipation": 0.0,
+    "yielded_fraction": 0.0
+  },
+  "degree2": {
+    "c20": -0.033697313111819116,
+    "c22": 0.009929439050184178
+  },
+  "frame_departure": {
+    "centroid": 0.00008671908782146055,
+    "off_diagonal": 0.0000564688425667853,
+    "ordering": 0.0
+  },
+  "friction_chain": {
+    "max_iterations": 1,
+    "max_phi": 0.6299260026551767,
+    "max_slack": 0.0,
+    "min_phi": 0.6266056096068748,
+    "nodes": 20480,
+    "seconds": 0.005011667,
+    "supercritical_faces": 0,
+    "unconverged": 0
+  },
+  "mass": 1510011289816866.0,
+  "omega": 0.00001,
+  "picard": {
+    "eps_lambda": 0.0010588164969499588,
+    "eps_momentum": 0.0005181498365999171,
+    "eps_picard": 0.024155011032003737,
+    "eps_rot": 0.29997841578612694,
+    "eta_hi": 7225685326011.193,
+    "eta_lo": 712652028816.7651,
+    "gamma_eps": 1e-9,
+    "iterations": 3,
+    "tensile_fraction": -0.0
+  },
+  "rho_s_total": 3419254372715.5747,
+  "surface_fit_error": 0.08752772858987584,
+  "volume": 1031498934228.3394
+}

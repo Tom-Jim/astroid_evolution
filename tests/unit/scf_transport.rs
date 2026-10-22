@@ -19,6 +19,9 @@ fn step_averaged_erosion_is_exact_and_positive() {
         k_e: 1e-3,
         sigma_0: 1.0,
         kernel_width: 0.2,
+        runout: false,
+        runout_time: 1.0,
+        runout_stop: 0.5,
     };
     let (area, rho_s, movable, f) = (
         vec![1.0; 3],
@@ -55,13 +58,16 @@ fn mode_c_conserves_mass_exactly() {
         k_e: 0.1,
         sigma_0: 10.0,
         kernel_width: 0.3,
+        runout: false,
+        runout_time: 1.0,
+        runout_stop: 0.5,
     };
     let cpu = mode_c_cpu(&topo, &area, &rho_s, &movable, &f, &prm);
     let ero: f64 = (0..nv).map(|i| cpu.j_ero[i] * area[i]).sum();
     let dep: f64 = (0..nv).map(|i| cpu.j_dep[i] * area[i]).sum();
     assert!(ero > 0.0);
     assert!((ero - dep).abs() < 1e-12 * ero);
-    let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+    let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm, None);
     assert_eq!(gpu.j_ero, cpu.j_ero);
     assert_eq!(gpu.max_excess, cpu.max_excess);
     assert_eq!(gpu.eroded_rate, cpu.eroded_rate);
@@ -97,6 +103,9 @@ fn deposition_matches_the_direct_angular_kernel() {
             k_e: 0.1,
             sigma_0: 10.0,
             kernel_width,
+            runout: false,
+            runout_time: 1.0,
+            runout_stop: 0.5,
         };
         let got = mode_c_cpu(&topo, &area, &rho_s, &movable, &f, &prm);
         let want = direct_mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
@@ -104,7 +113,7 @@ fn deposition_matches_the_direct_angular_kernel() {
         assert!((got.max_excess - want.max_excess).abs() <= 1e-14 * want.max_excess.abs());
         assert!((got.eroded_rate - want.eroded_rate).abs() <= 1e-14 * want.eroded_rate.abs());
         assert_deposition(&got.j_dep, &want.j_dep, kernel_width);
-        let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm);
+        let gpu = mode_c(&topo, &area, &rho_s, &movable, &f, &prm, None);
         assert_field_close(&gpu.j_ero, &want.j_ero, 1e-14);
         assert_deposition(&gpu.j_dep, &want.j_dep, kernel_width);
     }
@@ -187,6 +196,9 @@ fn ryugu_zonal_sample_matches_the_cap_kernel() {
             k_e: 1.0,
             sigma_0: 1.0,
             kernel_width: width,
+            runout: false,
+            runout_time: 1.0,
+            runout_stop: 0.5,
         },
     );
     let num: f64 = fast.iter().zip(&cap).map(|(a, b)| (a - b).abs()).sum();

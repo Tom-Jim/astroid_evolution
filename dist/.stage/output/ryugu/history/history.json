@@ -1,0 +1,79 @@
+{
+  "converged": false,
+  "fit": null,
+  "iterations": [
+    {
+      "departure": 0.0,
+      "geometry_steps": 14,
+      "iteration": 0,
+      "max": 4.649143286771846,
+      "rms": 0.07296181044244282,
+      "seconds": 94.87737125,
+      "steps": 990
+    },
+    {
+      "departure": 2.3245716433859798,
+      "geometry_steps": 15,
+      "iteration": 1,
+      "max": 3.734114819522574,
+      "rms": 0.055631992478698995,
+      "seconds": 108.076624459,
+      "steps": 990
+    },
+    {
+      "departure": 3.0278925515427773,
+      "geometry_steps": 9,
+      "iteration": 2,
+      "max": 2.558224353036053,
+      "rms": 0.030917387411752754,
+      "seconds": 35.075185125,
+      "steps": 990
+    },
+    {
+      "departure": 2.562202739193708,
+      "geometry_steps": 13,
+      "iteration": 3,
+      "max": 2.4188898366603553,
+      "rms": 0.03981514945478193,
+      "seconds": 68.356320917,
+      "steps": 990
+    },
+    {
+      "departure": 3.558093540009736,
+      "geometry_steps": 10,
+      "iteration": 4,
+      "max": 1.4959601055003304,
+      "rms": 0.027441118832240385,
+      "seconds": 37.19516575,
+      "steps": 990
+    },
+    {
+      "departure": 2.810113487259514,
+      "geometry_steps": 11,
+      "iteration": 5,
+      "max": 1.9443406842457307,
+      "rms": 0.026275230339259284,
+      "seconds": 47.068094417,
+      "steps": 990
+    },
+    {
+      "departure": 3.1362285393571483,
+      "geometry_steps": 11,
+      "iteration": 6,
+      "max": 2.077321763730083,
+      "rms": 0.027860216370124476,
+      "seconds": 40.444465833,
+      "steps": 990
+    },
+    {
+      "departure": 3.172888307892208,
+      "geometry_steps": 12,
+      "iteration": 7,
+      "max": 2.0112438915089115,
+      "rms": 0.02818026112723922,
+      "seconds": 43.402085125,
+      "steps": 990
+    }
+  ],
+  "spin": "linear:5.1333213e-4,-9.585919e-19,2.969610e14"
+}

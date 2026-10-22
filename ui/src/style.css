@@ -15,9 +15,8 @@
   --hold: #f3c454;
   --fault: #ff5a4f;
   --gap: 12px;
-  --sans: "Barlow", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
-    system-ui, sans-serif;
-  --num: "Barlow Condensed", "Barlow", "PingFang SC", system-ui, sans-serif;
+  --sans: "Barlow", system-ui, sans-serif;
+  --num: "Barlow Condensed", "Barlow", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -150,7 +149,7 @@ body {
   font-weight: 600;
 }
 
-/* English tag in tracked capitals, Chinese name after it. */
+/* Tag in tracked capitals, detail (symbol, description) after it. */
 .label {
   display: inline-flex;
   align-items: baseline;
@@ -523,12 +522,6 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.2em;
   color: var(--muted);
 }
-.phase em {
-  font-style: normal;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  color: var(--faint);
-}
 .led {
   display: inline-block;
   width: 6px;
@@ -731,6 +724,37 @@ input[type="range"]::-moz-range-thumb {
 .timeline .span strong {
   font: 500 16px var(--num);
   font-variant-numeric: tabular-nums;
+}
+.track .head.held {
+  background: var(--hold);
+  box-shadow: 0 0 6px var(--hold);
+}
+.scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.scrubber input[type="range"] {
+  flex: 1;
+}
+.scrubber .count {
+  white-space: nowrap;
+}
+.scrubber .count strong {
+  font: 500 15px var(--num);
+  font-variant-numeric: tabular-nums;
+}
+.scrubber .count small {
+  margin-left: 4px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.icon.small {
+  width: 24px;
+  height: 24px;
+  font-size: 16px;
+  line-height: 1;
 }
 .tools {
   display: flex;

@@ -2,49 +2,51 @@
   "bodies": [
     {
       "id": "ryugu",
-      "name": "龙宫 Ryugu",
+      "name": "Ryugu",
+      "designation": "162173",
       "project": "assets/projects/ryugu.toml",
-      "note": "YORP 减速 −4.1×10⁻⁷ °/day²（Cho 2021），3.3 h → 7.6326 h",
+      "note": "YORP spin-down −4.1×10⁻⁷ °/day² (Cho 2021): 3.40 h → 7.6326 h",
       "scenarios": [
         {
           "id": "past",
-          "label": "反演起点 → 今天",
-          "span": "−9.92 Myr → 0",
-          "spin": "linear:5.288877e-4,-9.585919e-19,3.131885e14",
+          "label": "Reconstruction → today",
+          "span": "−9.41 Myr → 0",
+          "spin": "linear:5.1333213e-4,-9.585919e-19,2.969610e14",
           "snapshot": "output/ryugu/history/initial.json"
         },
         {
           "id": "future",
-          "label": "今天 → 未来",
+          "label": "Today → future",
           "span": "0 → +5 Myr",
           "spin": "linear:2.286677e-4,-9.585919e-19,1.577880e14",
           "snapshot": "output/ryugu/history/present.json"
         },
         {
           "id": "measured",
-          "label": "实测形状 · 快自转历史",
-          "span": "9.92 Myr",
-          "spin": "linear:5.288877e-4,-9.585919e-19,3.131885e14",
+          "label": "Measured shape, fast-spin history",
+          "span": "9.41 Myr",
+          "spin": "linear:5.1333213e-4,-9.585919e-19,2.969610e14",
           "snapshot": null
         }
       ]
     },
     {
       "id": "phobos",
-      "name": "火卫一 Phobos",
+      "name": "Phobos",
+      "designation": "Mars I",
       "project": "assets/projects/phobos.toml",
-      "note": "同步自转，常 Q 潮汐内旋，火星 k₂/Q = 1.816×10⁻³（Brozović 2025）",
+      "note": "Synchronous spin; constant-Q tidal decay, Mars k₂/Q = 1.816×10⁻³ (Brozović 2025)",
       "scenarios": [
         {
           "id": "past",
-          "label": "反演起点 → 今天",
+          "label": "Reconstruction → today",
           "span": "−30 Myr → 0",
           "spin": "orbit:4.282837e13,1.024543e7,-7.293772e-10,9.467280e14",
           "snapshot": "output/phobos/history/initial.json"
         },
         {
           "id": "future",
-          "label": "今天 → 未来",
+          "label": "Today → future",
           "span": "0 → +30 Myr",
           "spin": "orbit:4.282837e13,9.376e6,-1.187900e-9,9.467280e14",
           "snapshot": "output/phobos/history/present.json"
@@ -53,20 +55,21 @@
     },
     {
       "id": "deimos",
-      "name": "火卫二 Deimos",
+      "name": "Deimos",
+      "designation": "Mars II",
       "project": "assets/projects/deimos.toml",
-      "note": "同步自转，轨道缓慢外移（同一潮汐律）",
+      "note": "Synchronous spin; slow outward drift under the same tidal law",
       "scenarios": [
         {
           "id": "past",
-          "label": "反演起点 → 今天",
+          "label": "Reconstruction → today",
           "span": "−30 Myr → 0",
           "spin": "orbit:4.282837e13,2.346217e7,1.089952e-12,9.467280e14",
           "snapshot": "output/deimos/history/initial.json"
         },
         {
           "id": "future",
-          "label": "今天 → 未来",
+          "label": "Today → future",
           "span": "0 → +30 Myr",
           "spin": "orbit:4.282837e13,2.34632e7,1.089952e-12,9.467280e14",
           "snapshot": "output/deimos/history/present.json"

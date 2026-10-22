@@ -4,19 +4,19 @@
 import { useId, type CSSProperties, type ReactNode } from "react";
 import { fmt, type ParamSpec } from "./params";
 
-/** English tag (the HUD voice) with the Chinese name beside it. */
-export function Label(props: { en: string; zh?: string }) {
+/** Tag in tracked capitals, with an optional detail (symbol, description) beside it. */
+export function Label(props: { en: string; sub?: string }) {
   return (
     <span className="label">
       <b>{props.en}</b>
-      {props.zh && <i>{props.zh}</i>}
+      {props.sub && <i>{props.sub}</i>}
     </span>
   );
 }
 
 export function Panel(props: {
   en: string;
-  zh: string;
+  sub?: string;
   className?: string;
   aside?: ReactNode;
   children: ReactNode;
@@ -24,7 +24,7 @@ export function Panel(props: {
   return (
     <section className={`panel ${props.className ?? ""}`}>
       <header className="panel-head">
-        <Label en={props.en} zh={props.zh} />
+        <Label en={props.en} sub={props.sub} />
         {props.aside}
       </header>
       {props.children}
@@ -53,7 +53,7 @@ export function ParamSlider(props: {
   return (
     <div className={`slider ${props.changed ? "changed" : ""}`} title={spec.hint}>
       <label htmlFor={id}>
-        <Label en={spec.en} zh={spec.label} />
+        <Label en={spec.en} sub={spec.symbol} />
         <output>
           {spec.integer ? value.toFixed(0) : fmt(value)}
           {spec.unit && <small>{spec.unit}</small>}
@@ -117,10 +117,10 @@ export function Toggle(props: {
 }
 
 /** One telemetry line: tag on the left, value on the right. */
-export function Readout(props: { en: string; zh: string; value: ReactNode; unit?: string }) {
+export function Readout(props: { en: string; sub?: string; value: ReactNode; unit?: string }) {
   return (
     <div className="readout">
-      <Label en={props.en} zh={props.zh} />
+      <Label en={props.en} sub={props.sub} />
       <strong title={typeof props.value === "string" ? props.value : undefined}>
         {props.value}
         {props.unit && <small>{props.unit}</small>}
@@ -130,7 +130,7 @@ export function Readout(props: { en: string; zh: string; value: ReactNode; unit?
 }
 
 /** A ring that fills with a fraction in [0, 1]. */
-export function Gauge(props: { en: string; zh: string; fraction: number | null; text: string }) {
+export function Gauge(props: { en: string; sub?: string; fraction: number | null; text: string }) {
   const r = 30;
   const c = 2 * Math.PI * r;
   const f = Math.max(0, Math.min(1, props.fraction ?? 0));
@@ -152,7 +152,7 @@ export function Gauge(props: { en: string; zh: string; fraction: number | null; 
         <strong>{props.text}</strong>
       </div>
       <figcaption>
-        <Label en={props.en} zh={props.zh} />
+        <Label en={props.en} sub={props.sub} />
       </figcaption>
     </figure>
   );

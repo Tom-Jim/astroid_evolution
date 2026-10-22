@@ -40,6 +40,13 @@ pub struct PlaybackParams {
     pub bulk: f32,
     pub rho_lo: f32,
     pub rho_hi: f32,
+    /// 95th percentile of the positive `σ₁` (Pa): the scale of the tension layer.
+    pub sigma_p95: f32,
+    /// Direction glyphs (`TENSION_GLYPHS` at most) spread over the vertices.
+    pub glyph_count: u32,
+    /// Runout paths in the `runout` buffer, `PATH_SAMPLES` points each (§2.8b).
+    pub runout_count: u32,
+    pub runout_samples: u32,
 }
 
 impl Default for PlaybackParams {
@@ -63,6 +70,10 @@ impl Default for PlaybackParams {
             bulk: 0.0,
             rho_lo: 0.0,
             rho_hi: 1.0,
+            sigma_p95: 1.0,
+            glyph_count: 0,
+            runout_count: 0,
+            runout_samples: 0,
         }
     }
 }
@@ -78,6 +89,9 @@ pub struct AsteroidMaterial {
     /// Interior density cores, three rows each (`StepSnapshot::cores`).
     #[storage(3, read_only)]
     pub cores: Handle<ShaderBuffer>,
+    /// Runout paths of the step on screen (`StepSnapshot::runout`).
+    #[storage(4, read_only)]
+    pub runout: Handle<ShaderBuffer>,
 }
 
 impl Material for AsteroidMaterial {

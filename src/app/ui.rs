@@ -9,7 +9,10 @@ use bevy::render::storage::ShaderBuffer;
 use crate::app::material::{AsteroidMaterial, PlaybackParams};
 use crate::app::pipeline::{self, EvolutionPool};
 use crate::app::playback::VisMode;
-use crate::app::render::{imported_mesh, particle_mesh};
+use crate::app::render::{imported_mesh, quad_mesh};
+use crate::app::snapshot::{PARTICLE_COUNT, TENSION_GLYPHS};
+use crate::scf::evolve::RUNOUT_PATHS;
+use crate::scf::runout::PATH_SAMPLES;
 use crate::app::resources::{
     AppConfig, Evolution, Phase, RegolithView, Scene, SurfaceView, display_imported,
 };
@@ -71,11 +74,13 @@ pub fn spawn_scene(
     let surface = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4]]));
     let stream = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4], [0.0; 4]]));
     let cores = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4]; 3]));
+    let runout = buffers.add(ShaderBuffer::from(vec![[0.0f32; 4]]));
     let material = materials.add(AsteroidMaterial {
         params: PlaybackParams::default(),
         surface,
         stream,
         cores,
+        runout,
     });
     let positions = display_imported(&scene.vertices, scene.center, scene.scale);
     commands.spawn((
@@ -90,7 +95,23 @@ pub fn spawn_scene(
         NoFrustumCulling,
         Pickable::IGNORE,
         MeshTag::new(1),
-        Mesh3d(meshes.add(particle_mesh())),
+        Mesh3d(meshes.add(quad_mesh(PARTICLE_COUNT))),
+        MeshMaterial3d(material.clone()),
+    ));
+    // Runout trails: tag 3, one segment per pair of path samples (§2.8b).
+    commands.spawn((
+        NoFrustumCulling,
+        Pickable::IGNORE,
+        MeshTag::new(3),
+        Mesh3d(meshes.add(quad_mesh(RUNOUT_PATHS * (PATH_SAMPLES - 1)))),
+        MeshMaterial3d(material.clone()),
+    ));
+    // Tension ticks: tag 2, placed on the vertices by the shader.
+    commands.spawn((
+        NoFrustumCulling,
+        Pickable::IGNORE,
+        MeshTag::new(2),
+        Mesh3d(meshes.add(quad_mesh(TENSION_GLYPHS))),
         MeshMaterial3d(material),
     ));
 }

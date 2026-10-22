@@ -1,0 +1,16 @@
+{
+  "converged": true,
+  "fit": null,
+  "iterations": [
+    {
+      "departure": 0.0,
+      "geometry_steps": 0,
+      "iteration": 0,
+      "max": 0.0,
+      "rms": 0.0,
+      "seconds": 278.87099425,
+      "steps": 947
+    }
+  ],
+  "spin": "orbit:4.282837e13,1.024543e7,-7.293772e-10,9.467280e14"
+}

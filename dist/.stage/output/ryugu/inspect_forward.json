@@ -1,0 +1,55 @@
+{
+  "centroid": [
+    0.0010116054547019695,
+    -0.006019643406471398,
+    0.007941407129385448
+  ],
+  "classification": {
+    "core_creep": 2.7056174908321254e-8,
+    "core_degenerate": false,
+    "core_empty": false,
+    "core_mass_fraction": 1.0,
+    "inverse_ekman": 0.0,
+    "mobile_area_fraction": -0.0,
+    "n_mobile": 0,
+    "plastic_dissipation": 0.0,
+    "yielded_fraction": 0.0
+  },
+  "degree2": null,
+  "frame_departure": {
+    "centroid": 0.00002245576443273887,
+    "off_diagonal": 7.011723405988351e-6,
+    "ordering": 0.0
+  },
+  "friction_chain": {
+    "max_iterations": 1,
+    "max_phi": 1.1442519040951602,
+    "max_slack": 0.0,
+    "min_phi": 1.0998051462837566,
+    "nodes": 20480,
+    "seconds": 0.005468125,
+    "supercritical_faces": 0,
+    "unconverged": 0
+  },
+  "mass": 449491089518.70624,
+  "omega": 0.0002286677,
+  "picard": {
+    "eps_lambda": 0.0007362496933409685,
+    "eps_momentum": 9.840051399740811e-8,
+    "eps_picard": 0.002038796050422999,
+    "eps_rot": 0.19807589107307108,
+    "eta_hi": 26709643089.717876,
+    "eta_lo": 6831475424.314314,
+    "gamma_eps": 1e-9,
+    "iterations": 3,
+    "tensile_fraction": -0.0
+  },
+  "rho_s_total": 3509848229.271675,
+  "surface_binding": {
+    "mean_inward": 0.00013069711468436282,
+    "min_inward": 0.00010955300116313887,
+    "unbound_faces": 0
+  },
+  "surface_fit_error": 0.12198080191180193,
+  "volume": 376868524.7914029
+}

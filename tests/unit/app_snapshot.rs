@@ -119,9 +119,24 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
         d_radial: vec![0.0; count],
         slack: vec![0.0; state.body.topo.n_faces()],
         g_face: vec![DVec3::ZERO; state.body.topo.n_faces()],
+        // Uniaxial tension 5 Pa along x, compression along z.
+        stress: vec![[5.0, 1.0, -2.0, 0.0, 0.0, 0.0]; state.body.topo.n_faces()],
+        runout: Vec::new(),
         flow_active: false,
     };
     let snapshot = pack(&record(), &state, &fields, 0.5, 0.01, 1.5);
+    assert!((snapshot.tension_max - 5.0).abs() < 1e-5);
+    for (sample, dir) in snapshot.field.iter().zip(&state.body.topo.dirs) {
+        assert!((sample.sigma1 - 5.0).abs() < 1e-4);
+        let [x, y, z] = sample.sigma_dir;
+        // The tangent projection of ±x: unit, normal to the radial direction.
+        let len = (x * x + y * y + z * z).sqrt();
+        if dir.x.abs() < 0.99 {
+            assert!((len - 1.0).abs() < 1e-4, "{len}");
+            assert!((x as f64 * dir.x + y as f64 * dir.y + z as f64 * dir.z).abs() < 0.05);
+            assert!(x.abs() > y.abs() && x.abs() > z.abs() || dir.x.abs() > 0.7);
+        }
+    }
     assert_eq!(snapshot.field.len(), state.body.radius.len());
     assert!(snapshot.field.iter().all(|sample| sample.d_radial == 0.0));
     assert!(!snapshot.flow_active);
@@ -180,4 +195,98 @@ fn the_initial_snapshot_is_a_still_tier2_pose() {
     );
     let shown = posed_positions(&snapshot.position_from, &snapshot.position_to, 0.5);
     assert_eq!(shown, snapshot.position_to);
+}
+
+#[test]
+fn the_history_returns_each_recorded_step_within_quantization() {
+    use astroid_evolution::app::history::History;
+    let topo = Arc::new(Topology::icosphere(2));
+    let count = topo.n_vertices();
+    let faces = topo.n_faces();
+    let mut history = History::default();
+    let mut originals = Vec::new();
+    for step in 0..3 {
+        // A bump that grows with the step, and a stress that changes with it.
+        let radius: Vec<f64> = topo
+            .dirs
+            .iter()
+            .map(|d| 2.0 + 0.1 * step as f64 * d.z.max(0.0))
+            .collect();
+        let body = Body::new(
+            topo.clone(),
+            radius.clone(),
+            1000.0,
+            Vec::<CauchyKernel>::new(),
+            vec![0.0; count],
+        )
+        .unwrap();
+        let state = State {
+            body,
+            level: 2,
+            t: step as f64,
+            step,
+            omega: 0.2,
+            frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            frame_translation: DVec3::ZERO,
+            velocity: Vec::new(),
+        };
+        let fields = StepFields {
+            radius_from: radius,
+            f_delta: (0..count).map(|i| i as f64 * 1e-3).collect(),
+            movable: vec![true; count],
+            v_sl: vec![DVec3::new(0.0, 1e-9, 0.0); count],
+            normal: topo.dirs.clone(),
+            j_ero: vec![0.0; count],
+            j_dep: vec![0.0; count],
+            d_radial: vec![0.0; count],
+            slack: vec![0.0; faces],
+            g_face: vec![DVec3::ZERO; faces],
+            stress: vec![[step as f64 + 1.0, 0.0, -1.0, 0.0, 0.0, 0.0]; faces],
+            // One straight 12-point path that hops halfway.
+            runout: (0..12)
+                .map(|k| [2.0, 0.1 * k as f64, 0.0, f64::from(u8::from(k > 5))])
+                .collect(),
+            flow_active: true,
+        };
+        let snap = pack(
+            &StepRecord {
+                step,
+                t: step as f64,
+                ..record()
+            },
+            &state,
+            &fields,
+            0.4,
+            0.01,
+            1.0,
+        );
+        history.record(&snap);
+        originals.push(snap);
+    }
+    assert_eq!(history.len(), 3);
+    for (i, original) in originals.iter().enumerate() {
+        let back = history.frame(i).unwrap();
+        assert_eq!(back.step, original.step);
+        assert_eq!(back.faces, original.faces);
+        assert_eq!(back.position_from, back.position_to);
+        for (a, b) in back.position_to.iter().zip(&original.position_to) {
+            for k in 0..3 {
+                assert!((a[k] - b[k]).abs() < 1e-4, "step {i}: {a:?} vs {b:?}");
+            }
+        }
+        for (a, b) in back.field.iter().zip(&original.field) {
+            assert!((a.f_delta - b.f_delta).abs() < 1e-4);
+            assert!((a.sigma1 - b.sigma1).abs() < 1e-3 * b.sigma1.abs().max(1.0));
+        }
+        assert!((back.tension_max - original.tension_max).abs() < 1e-9);
+        assert_eq!(back.runout.len(), original.runout.len());
+        for (a, b) in back.runout.iter().zip(&original.runout) {
+            for k in 0..3 {
+                assert!((a[k] - b[k]).abs() < 2e-4, "{a:?} vs {b:?}");
+            }
+            assert_eq!(a[3], b[3]);
+        }
+        assert_eq!(history.stats(i).unwrap().step, original.step);
+    }
+    assert!(history.frame(3).is_none());
 }

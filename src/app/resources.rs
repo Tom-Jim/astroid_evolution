@@ -18,10 +18,11 @@ pub struct RegolithView;
 pub const DEFAULT_PROJECT: &str = "dist/.stage/assets/projects/ryugu.toml";
 /// Directory the browser build serves as its root: `assets/` in it is the page's `assets/`.
 pub const DATA_DIR: &str = "dist/.stage/";
-/// Ryugu's YORP spin-down from 3.3 h (inside the 3.0–3.5 h window of the western-bulge
-/// deformation, Hirabayashi et al. 2019) to today's 7.6326 h (Watanabe et al. 2019) at
-/// −4.1e-7 °/day² (Cho et al. 2021): 9.92 Myr.
-pub const DEFAULT_SPIN: &str = "linear:5.288877e-4,-9.585919e-19,3.131885e14";
+/// Ryugu's YORP spin-down from 3.40 h to today's 7.6326 h (Watanabe et al. 2019) at
+/// −4.1e-7 °/day² (Cho et al. 2021): 9.41 Myr. 3.40 h is the fastest spin at which the
+/// whole surface stays bound (inside the 3.0–3.5 h window of the western-bulge
+/// deformation, Hirabayashi et al. 2019).
+pub const DEFAULT_SPIN: &str = "linear:5.1333213e-4,-9.585919e-19,2.969610e14";
 
 /// Inputs of the viewer, written by the binary and repeated in the corner label.
 #[derive(Resource, Clone)]
@@ -195,6 +196,47 @@ pub struct FrameStats {
     pub dt: f64,
     pub dt_cfl: f64,
     pub dt_bound: &'static str,
+    /// Largest principal Cauchy stress on the surface (Pa, tension positive).
+    pub tension_max: f64,
+    /// Runout of the eroded packets (§2.8b): packets, mass-weighted mean distance (m),
+    /// mean change of |latitude| (rad, negative equatorward), packets that hopped.
+    pub runout_traced: usize,
+    pub runout_distance: f64,
+    pub runout_dlat: f64,
+    pub runout_hops: usize,
+}
+
+impl FrameStats {
+    pub fn of(s: &crate::app::snapshot::StepSnapshot) -> Self {
+        Self {
+            step: s.step,
+            time: s.time,
+            omega: s.omega,
+            mass: s.mass,
+            radius_min: s.radius_min,
+            radius_max: s.radius_max,
+            yielded_fraction: s.yielded_fraction,
+            max_slack: s.max_slack,
+            rho_s_total: s.rho_s_total,
+            max_displacement: s.max_displacement,
+            eps_momentum: s.audit.eps_momentum,
+            eps_lambda: s.audit.eps_lambda,
+            eps_picard: s.audit.eps_picard,
+            picard_iterations: s.audit.picard_iterations,
+            tensile_fraction: s.audit.tensile_fraction,
+            inverse_ekman: s.audit.inverse_ekman,
+            mass_residual: s.audit.mass_residual,
+            mobile_area_fraction: s.audit.mobile_area_fraction,
+            dt: s.audit.dt,
+            dt_cfl: s.audit.dt_cfl,
+            dt_bound: s.dt_bound.0,
+            tension_max: s.tension_max,
+            runout_traced: s.audit.runout_traced,
+            runout_distance: s.audit.runout_distance,
+            runout_dlat: s.audit.runout_dlat,
+            runout_hops: s.audit.runout_hops,
+        }
+    }
 }
 
 #[derive(Resource)]

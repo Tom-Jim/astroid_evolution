@@ -99,10 +99,18 @@ fn realigned_fields_keep_the_post_step_vertex_count() {
         &d_radial,
         &slack,
         &g_face,
+        &vec![[3.0, 3.0, 3.0, 0.0, 0.0, 0.0]; slack.len()],
+        &[],
         false,
         Some(&report),
         &body,
     );
+    // An isotropic stress is unchanged by the frame rotation.
+    assert_eq!(fields.stress.len(), slack.len());
+    for t in &fields.stress {
+        assert!((t[0] - 3.0).abs() < 1e-12 && (t[1] - 3.0).abs() < 1e-12 && (t[2] - 3.0).abs() < 1e-12);
+        assert!(t[3].abs() < 1e-12 && t[4].abs() < 1e-12 && t[5].abs() < 1e-12);
+    }
     assert_eq!(fields.f_delta.len(), body.radius.len());
     assert_eq!(fields.v_sl.len(), body.radius.len());
     assert_eq!(fields.normal.len(), body.radius.len());

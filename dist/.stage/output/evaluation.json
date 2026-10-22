@@ -1,0 +1,241 @@
+{
+  "ryugu": {
+    "nodes": 10242,
+    "reconstruction_vs_present": {
+      "rms_m": 0.04268428559511148,
+      "max_m": 2.810113487259514,
+      "nodes_moved_over_1m": 4
+    },
+    "forward_vs_observed_shape": {
+      "rms_m": 0.026275230339259513,
+      "max_m": 1.9443406842457307,
+      "nodes_off_over_1m": 1
+    },
+    "future_vs_present": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_moved_over_1m": 0
+    },
+    "forward_end": {
+      "t_s": 296961000000000.0,
+      "omega": 0.00022866772078410005,
+      "period_h": 7.632600027715356
+    },
+    "future_end": {
+      "t_s": 157788000000000.0,
+      "omega": 7.741340128279998e-05,
+      "period_h": 22.545569928111576
+    },
+    "inversion": [
+      {
+        "departure": 0.0,
+        "geometry_steps": 14,
+        "iteration": 0,
+        "max": 4.649143286771846,
+        "rms": 0.07296181044244282,
+        "seconds": 94.87737125,
+        "steps": 990
+      },
+      {
+        "departure": 2.3245716433859798,
+        "geometry_steps": 15,
+        "iteration": 1,
+        "max": 3.734114819522574,
+        "rms": 0.055631992478698995,
+        "seconds": 108.076624459,
+        "steps": 990
+      },
+      {
+        "departure": 3.0278925515427773,
+        "geometry_steps": 9,
+        "iteration": 2,
+        "max": 2.558224353036053,
+        "rms": 0.030917387411752754,
+        "seconds": 35.075185125,
+        "steps": 990
+      },
+      {
+        "departure": 2.562202739193708,
+        "geometry_steps": 13,
+        "iteration": 3,
+        "max": 2.4188898366603553,
+        "rms": 0.03981514945478193,
+        "seconds": 68.356320917,
+        "steps": 990
+      },
+      {
+        "departure": 3.558093540009736,
+        "geometry_steps": 10,
+        "iteration": 4,
+        "max": 1.4959601055003304,
+        "rms": 0.027441118832240385,
+        "seconds": 37.19516575,
+        "steps": 990
+      },
+      {
+        "departure": 2.810113487259514,
+        "geometry_steps": 11,
+        "iteration": 5,
+        "max": 1.9443406842457307,
+        "rms": 0.026275230339259284,
+        "seconds": 47.068094417,
+        "steps": 990
+      },
+      {
+        "departure": 3.1362285393571483,
+        "geometry_steps": 11,
+        "iteration": 6,
+        "max": 2.077321763730083,
+        "rms": 0.027860216370124476,
+        "seconds": 40.444465833,
+        "steps": 990
+      },
+      {
+        "departure": 3.172888307892208,
+        "geometry_steps": 12,
+        "iteration": 7,
+        "max": 2.0112438915089115,
+        "rms": 0.02818026112723922,
+        "seconds": 43.402085125,
+        "steps": 990
+      }
+    ],
+    "converged": false,
+    "forward_mass": {
+      "model": 449491089518.70624,
+      "observed": 449485339286.51697,
+      "rel": 1.279292490028163e-05,
+      "sigma": 0.0009594693675211222
+    },
+    "forward_volume": {
+      "model": 376868524.7914029,
+      "observed": 377000000.0,
+      "rel": -0.0003487406063584181,
+      "sigma": -0.026295041719424726
+    },
+    "forward_period": {
+      "model_h": 7.632600027715356,
+      "observed_h": 7.6326,
+      "rel": 3.6311815413161483e-09
+    }
+  },
+  "phobos": {
+    "nodes": 10242,
+    "reconstruction_vs_present": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_moved_over_1m": 0
+    },
+    "forward_vs_observed_shape": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_off_over_1m": 0
+    },
+    "future_vs_present": {
+      "rms_m": 11.93625579423835,
+      "max_m": 246.06983977987693,
+      "nodes_moved_over_1m": 336
+    },
+    "forward_end": {
+      "t_s": 946728000000000.0,
+      "omega": 0.00022791826595088363,
+      "period_h": 7.657698011665497
+    },
+    "future_end": {
+      "t_s": 946728000000000.0,
+      "omega": 0.00032296638202832244,
+      "period_h": 5.404058592826772
+    },
+    "inversion": [
+      {
+        "departure": 0.0,
+        "geometry_steps": 0,
+        "iteration": 0,
+        "max": 0.0,
+        "rms": 0.0,
+        "seconds": 278.87099425,
+        "steps": 947
+      }
+    ],
+    "converged": true,
+    "forward_mass": {
+      "model": 1.0602630594065186e+16,
+      "observed": 1.0602610011536792e+16,
+      "rel": 1.941269967640418e-06,
+      "sigma": 0.0018316529234676559
+    },
+    "forward_volume": {
+      "model": 5734307945052.301,
+      "observed": 5742000000000.0,
+      "rel": -0.001339612495245423,
+      "sigma": -0.21977299850569196
+    },
+    "forward_c20": {
+      "model": -0.10300087962988975,
+      "observed": -0.1378,
+      "sigma": 0.9999747232790303
+    },
+    "forward_period": {
+      "model_h": 7.657698011665497,
+      "observed_h": 7.65384,
+      "rel": 0.0005040622309190095
+    }
+  },
+  "deimos": {
+    "nodes": 10242,
+    "reconstruction_vs_present": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_moved_over_1m": 0
+    },
+    "forward_vs_observed_shape": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_off_over_1m": 0
+    },
+    "future_vs_present": {
+      "rms_m": 0.0,
+      "max_m": 0.0,
+      "nodes_moved_over_1m": 0
+    },
+    "forward_end": {
+      "t_s": 946728000000000.0,
+      "omega": 5.7581752995298794e-05,
+      "period_h": 30.310457066786856
+    },
+    "future_end": {
+      "t_s": 946728000000000.0,
+      "omega": 5.7577961571976436e-05,
+      "period_h": 30.312452965403217
+    },
+    "inversion": [
+      {
+        "departure": 0.0,
+        "geometry_steps": 0,
+        "iteration": 0,
+        "max": 0.0,
+        "rms": 0.0,
+        "seconds": 274.372116459,
+        "steps": 947
+      }
+    ],
+    "converged": true,
+    "forward_mass": {
+      "model": 1510011289816866.0,
+      "observed": 1510000000000000.0,
+      "rel": 7.476699911258278e-06,
+      "sigma": 0.00028224542165
+    },
+    "forward_volume": {
+      "model": 1031498934228.3394,
+      "observed": 1033000000000.0,
+      "rel": -0.0014531130412978165,
+      "sigma": -0.07900346166634971
+    },
+    "forward_period": {
+      "model_h": 30.310457066786856,
+      "observed_h": 30.312,
+      "rel": -5.090172912195476e-05
+    }
+  }
+}

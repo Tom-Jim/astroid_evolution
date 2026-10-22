@@ -2,7 +2,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
-use crate::app::snapshot::{PARTICLE_COUNT, smooth_normals};
+use crate::app::snapshot::smooth_normals;
 
 /// Triangle mesh. Positions are the pose currently on screen.
 pub fn surface_mesh(positions: Vec<[f32; 3]>, normals: Vec<[f32; 3]>, faces: &[[u32; 3]]) -> Mesh {
@@ -27,15 +27,14 @@ pub fn imported_mesh(positions: Vec<[f32; 3]>, faces: &[[u32; 3]]) -> Mesh {
     surface_mesh(positions, normals, faces)
 }
 
-/// One camera-facing quad per seed. `position.z` is the particle index.
-///
-/// The vertex shader rebuilds the centre from the streamline, so these
-/// coordinates are not the drawn positions.
-pub fn particle_mesh() -> Mesh {
-    let mut positions = Vec::with_capacity(PARTICLE_COUNT * 4);
-    let mut indices = Vec::with_capacity(PARTICLE_COUNT * 6);
+/// `count` quads; `position.xy` is the corner in `[-1, 1]²` and `position.z` the quad
+/// index. The vertex shader places each quad (a regolith particle on its streamline,
+/// or a tension tick on its vertex), so these coordinates are not the drawn positions.
+pub fn quad_mesh(count: usize) -> Mesh {
+    let mut positions = Vec::with_capacity(count * 4);
+    let mut indices = Vec::with_capacity(count * 6);
     let corners = [[-1.0f32, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
-    for particle in 0..PARTICLE_COUNT {
+    for particle in 0..count {
         let base = (particle * 4) as u32;
         let id = particle as f32;
         for corner in corners {

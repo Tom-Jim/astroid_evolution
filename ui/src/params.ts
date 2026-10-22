@@ -5,7 +5,8 @@ export interface ParamSpec {
   id: string;
   /** HUD tag. */
   en: string;
-  label: string;
+  /** Symbol of the quantity in mathstrict_EN.md. */
+  symbol: string;
   hint: string;
   unit: string;
   min: number;
@@ -29,8 +30,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "phi",
     en: "FRICTION ANGLE",
-    label: "内摩擦角",
-    hint: "μ_s = tan φ；μ₂ 随之平移，保持 μ₂ − μ_s 不变（μ(I) 律）",
+    symbol: "φ",
+    hint: "μ_s = tan φ; μ₂ moves with it, keeping μ₂ − μ_s fixed (μ(I) law)",
     unit: "°",
     min: 20,
     max: 45,
@@ -47,8 +48,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "cb",
     en: "BULK COHESION",
-    label: "内部黏聚力",
-    hint: "深部碎石堆强度（§4.3a）",
+    symbol: "c_b",
+    hint: "Strength of the rubble pile at depth (§4.3a)",
     unit: "Pa",
     min: 0.1,
     max: 200,
@@ -58,8 +59,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "cs",
     en: "SURFACE COHESION",
-    label: "表层黏聚力",
-    hint: "风化层表面强度，d → 0 时的极限",
+    symbol: "c_s",
+    hint: "Strength of the regolith at the surface, the limit d → 0",
     unit: "Pa",
     min: 0.01,
     max: 20,
@@ -69,7 +70,7 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "hc",
     en: "STRENGTH DEPTH",
-    label: "过渡深度",
+    symbol: "h_c",
     hint: "c(d) = c_b + (c_s − c_b)·e^(−d/h_c)",
     unit: "m",
     min: 0.1,
@@ -80,8 +81,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "hs",
     en: "ACTIVE LAYER",
-    label: "活动层",
-    hint: "Mode C 松散层（滑坡层）厚度",
+    symbol: "h_s",
+    hint: "Thickness of the Mode C loose (landslide) layer",
     unit: "m",
     min: 0.1,
     max: 50,
@@ -91,8 +92,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "level",
     en: "MESH LEVEL",
-    label: "网格级别",
-    hint: "icosphere 射线重采样：10·4ᴸ + 2 个节点",
+    symbol: "L",
+    hint: "Icosphere ray resampling: 10·4ᴸ + 2 nodes",
     unit: "",
     min: 3,
     max: 6,
@@ -103,8 +104,8 @@ export const PARAMS: ParamSpec[] = [
   {
     id: "dt",
     en: "MAX TIME STEP",
-    label: "最大步长",
-    hint: "CFL 与自转变化率仍会进一步限制步长",
+    symbol: "Δt_max",
+    hint: "The CFL bound and the spin-rate change can still shorten the step",
     unit: "s",
     min: 1e9,
     max: 1e13,

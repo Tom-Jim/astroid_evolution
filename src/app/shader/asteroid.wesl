@@ -28,6 +28,10 @@ struct PlaybackParams {
     bulk: f32,
     rho_lo: f32,
     rho_hi: f32,
+    sigma_p95: f32,
+    glyph_count: u32,
+    runout_count: u32,
+    runout_samples: u32,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0)
@@ -38,6 +42,8 @@ var<storage, read> surface: array<vec4<f32>>;
 var<storage, read> stream: array<vec4<f32>>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(3)
 var<storage, read> cores: array<vec4<f32>>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(4)
+var<storage, read> runout: array<vec4<f32>>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -54,10 +60,21 @@ struct VertexOutput {
     @location(2) extras: vec4<f32>,
     @location(3) flow: vec4<f32>,
     @location(4) marker: f32,
+    @location(5) tension: f32,
 }
 
+// Ten rows per vertex: positions, normals, flow and ρ_s, slack, fluxes, then the largest
+// principal stress σ₁ and its tangent direction (playback.rs `pack_surface`).
 fn surface_base(vi: u32) -> u32 {
-    return vi * 8u;
+    return vi * 10u;
+}
+
+fn hidden(out_in: VertexOutput) -> VertexOutput {
+    var out = out_in;
+    out.world_position = vec4<f32>(0.0);
+    out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
+    out.clip_position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    return out;
 }
 
 fn morphed_position(vi: u32, s: f32) -> vec3<f32> {
@@ -99,6 +116,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     out.extras = vec4<f32>(0.0);
     out.flow = vec4<f32>(0.0);
     out.marker = 0.0;
+    out.tension = 0.0;
     let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     let tag = mesh_functions::get_tag(vertex.instance_index);
     let s = smoothstep(0.0, 1.0, clamp(material.tau, 0.0, 1.0));
@@ -108,10 +126,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         out.marker = 1.0;
         let show = material.has_field == 1u && (material.mode == 3u || material.mode == 4u);
         if !show || material.streamline_steps < 2u {
-            out.world_position = vec4<f32>(0.0);
-            out.world_normal = vec3<f32>(0.0, 1.0, 0.0);
-            out.clip_position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
-            return out;
+            return hidden(out);
         }
         let pid = u32(vertex.position.z + 0.5);
         let steps = material.streamline_steps;
@@ -125,6 +140,71 @@ fn vertex(vertex: Vertex) -> VertexOutput {
         let up = view.world_from_view[1].xyz;
         let local = center + (right * vertex.position.x + up * vertex.position.y) * 0.008
             + nrm * 0.004;
+        out.world_position = placed(world_from_local, local);
+        out.clip_position = position_world_to_clip(out.world_position.xyz);
+        out.world_normal = nrm;
+        return out;
+    }
+
+    if tag == 3u {
+        // Runout trail (§2.8b): segment k of path p, a thin ribbon lifted off the surface.
+        // `tension` carries the coordinate along the path, `extras.x` the airborne flag.
+        out.marker = 3.0;
+        let seg = u32(vertex.position.z + 0.5);
+        let per = max(material.runout_samples, 2u) - 1u;
+        let path = seg / per;
+        let k = seg % per;
+        if (material.mode != 3u && material.mode != 4u) || path >= material.runout_count
+            || material.interior == 1u {
+            return hidden(out);
+        }
+        let base = path * material.runout_samples;
+        let a = runout[base + k];
+        let b = runout[base + k + 1u];
+        let d = b.xyz - a.xyz;
+        if length(d) < 1e-6 {
+            return hidden(out);
+        }
+        let along = normalize(d);
+        let up = normalize(a.xyz + b.xyz);
+        let across = normalize(cross(up, along));
+        let t = vertex.position.x * 0.5 + 0.5;
+        let local = mix(a.xyz, b.xyz, t) + across * (vertex.position.y * 0.0025) + up * 0.006;
+        out.tension = (f32(k) + t) / f32(per);
+        out.extras = vec4<f32>(max(a.w, b.w), 0.0, 0.0, 0.0);
+        out.world_position = placed(world_from_local, local);
+        out.clip_position = position_world_to_clip(out.world_position.xyz);
+        out.world_normal = up;
+        return out;
+    }
+
+    if tag == 2u {
+        // Tension tick: a thin quad through vertex `vi` along the σ₁ direction, its
+        // length growing with σ₁ / p95. Compression draws nothing.
+        out.marker = 2.0;
+        let gid = u32(vertex.position.z + 0.5);
+        if material.has_field != 1u || material.mode != 5u || gid >= material.glyph_count
+            || material.vertex_count == 0u {
+            return hidden(out);
+        }
+        let vi = (gid * material.vertex_count) / material.glyph_count;
+        let b = surface_base(vi);
+        let earlier = surface[b + 8u];
+        let later = surface[b + 9u];
+        let sigma = mix(earlier.w, later.w, fade);
+        let flip = select(1.0, -1.0, dot(earlier.xyz, later.xyz) < 0.0);
+        let axis = mix(earlier.xyz * flip, later.xyz, fade);
+        if sigma <= 0.0 || length(axis) < 1e-4 {
+            return hidden(out);
+        }
+        let along = normalize(axis);
+        let nrm = morphed_normal(vi, s);
+        let across = normalize(cross(nrm, along));
+        let t = clamp(sigma / max(material.sigma_p95, 1e-12), 0.0, 1.0);
+        let half_length = 0.006 + 0.016 * t;
+        let local = morphed_position(vi, s) + along * (vertex.position.x * half_length)
+            + across * (vertex.position.y * 0.0015) + nrm * 0.004;
+        out.tension = t;
         out.world_position = placed(world_from_local, local);
         out.clip_position = position_world_to_clip(out.world_position.xyz);
         out.world_normal = nrm;
@@ -152,6 +232,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
             let v_to = surface[b + 5u].xyz;
             out.extras = vec4<f32>(f_delta, movable, rho, slack_max);
             out.flow = vec4<f32>(mix(v_from, v_to, fade), slack_avg);
+            out.tension = mix(surface[b + 8u].w, surface[b + 9u].w, fade);
         }
     }
     out.world_position = placed(world_from_local, local);
@@ -185,6 +266,15 @@ fn density(x: vec3<f32>) -> f32 {
     return rho;
 }
 
+// Tension ramp: dark red → orange → pale yellow.
+fn heat(t: f32) -> vec3<f32> {
+    let u = clamp(t, 0.0, 1.0);
+    if u < 0.5 {
+        return mix(vec3<f32>(0.35, 0.04, 0.05), vec3<f32>(0.93, 0.36, 0.10), u * 2.0);
+    }
+    return mix(vec3<f32>(0.93, 0.36, 0.10), vec3<f32>(1.0, 0.93, 0.62), u * 2.0 - 1.0);
+}
+
 // Perceptually ordered ramp (dark indigo → teal → pale yellow).
 fn ramp(t: f32) -> vec3<f32> {
     let c0 = vec3<f32>(0.18, 0.05, 0.33);
@@ -203,6 +293,21 @@ fn ramp(t: f32) -> vec3<f32> {
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    if in.marker > 2.5 {
+        // Dashes flowing from the source to the arrival point; hops in amber.
+        let dash = fract(in.tension * 6.0 - material.time * 0.6);
+        if dash > 0.7 {
+            discard;
+        }
+        let hue = select(vec3<f32>(0.55, 0.9, 1.0), vec3<f32>(1.0, 0.72, 0.28), in.extras.x > 0.5);
+        return vec4<f32>(hue * (0.55 + 0.45 * in.tension), 1.0);
+    }
+    if in.marker > 1.5 {
+        if material.interior == 1u {
+            discard;
+        }
+        return vec4<f32>(mix(vec3<f32>(0.78, 0.86, 1.0), vec3<f32>(1.0), in.tension), 1.0);
+    }
     if in.marker > 0.5 {
         if material.interior == 1u {
             discard;
@@ -268,6 +373,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0
                     stripe * rho_t * clamp(speed * 20.0, 0.0, 1.0),
                 );
         }
+    }
+    if material.mode == 5u && in.tension > 0.0 {
+        let t = clamp(in.tension / max(material.sigma_p95, 1e-12), 0.0, 1.0);
+        albedo = mix(albedo, heat(t), 0.25 + 0.75 * t);
     }
     return shade(nrm, albedo);
 }
