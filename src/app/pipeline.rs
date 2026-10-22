@@ -359,13 +359,7 @@ pub fn spawn(
     #[cfg(target_arch = "wasm32")]
     {
         let _ = (control, pool);
-        crate::web::spawn_evolution(
-            config.project_text.clone(),
-            config.project_dir.clone(),
-            config.spin.clone(),
-            config.max_steps,
-            scale,
-        )
+        crate::web::spawn_evolution(config, scale)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

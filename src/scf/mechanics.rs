@@ -147,7 +147,13 @@ pub fn evaluate(
     let ops = operators(project, body, &surf, &density, &dirs)?;
 
     // Interior fields at the Stokes quadrature points.
-    let field = fwd.eval_field(&ops.vol.pts, true)?;
+    let field = match ops.vol_field.get() {
+        Some(field) => field,
+        None => {
+            let field = fwd.eval_field(&ops.vol.pts, true)?;
+            ops.vol_field.get_or_init(|| field)
+        }
+    };
     let _loads = super::timing::span("effective_loads");
     let g_vol: Vec<DVec3> = ops
         .vol

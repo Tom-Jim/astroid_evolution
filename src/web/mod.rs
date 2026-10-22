@@ -1,10 +1,10 @@
 //! Browser side of the viewer.
 //!
-//! The page and the evolution worker are two copies of this module. The page
-//! owns the WebGPU device and the Bevy window. The worker runs `evolve::run`
-//! and sends snapshots back. A compute call from the worker posts its bytes to
-//! the page, then waits. The page is never blocked inside that wait, so the
-//! canvas keeps drawing.
+//! The page, the evolution worker and the GPU worker are three instances of this
+//! module. The page owns the Bevy window. The evolution worker runs
+//! `evolve::run` and sends snapshots back. A compute call from it posts its
+//! bytes to the GPU worker, which owns the compute device, and waits; the page
+//! takes no part in compute, so the canvas keeps drawing at its own rate.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -18,8 +18,8 @@ pub use host::{
 
 static WORKER_MESH: AtomicBool = AtomicBool::new(false);
 
-/// The evolution worker can post a compute call and wait. The page cannot:
-/// WebGPU runs there, and the page must stay free to service that wait.
+/// The evolution worker can post a compute call and wait; the other instances
+/// never compute.
 pub fn use_worker_mesh() {
     WORKER_MESH.store(true, Ordering::Relaxed);
 }
@@ -29,10 +29,10 @@ pub fn worker_mesh() -> bool {
 }
 
 thread_local! {
-    static PAGE: std::cell::RefCell<Option<crate::gpu::Exec>> = const { std::cell::RefCell::new(None) };
+    static DEVICE: std::cell::RefCell<Option<crate::gpu::Exec>> = const { std::cell::RefCell::new(None) };
 }
 
-async fn page_exec() -> Result<crate::gpu::Exec, String> {
+async fn compute_exec() -> Result<crate::gpu::Exec, String> {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::BROWSER_WEBGPU;
     let adapter = wgpu::Instance::new(desc)
@@ -58,13 +58,13 @@ async fn page_exec() -> Result<crate::gpu::Exec, String> {
     ))
 }
 
-/// Run one serialized compute job from the worker on the page's device.
+/// Run one serialized compute job from the evolution worker (GPU worker side).
 pub async fn execute_gpu(request: &[u8]) -> Result<Vec<u8>, String> {
-    let mut exec = match PAGE.with(|p| p.borrow_mut().take()) {
+    let mut exec = match DEVICE.with(|p| p.borrow_mut().take()) {
         Some(e) => e,
-        None => page_exec().await?,
+        None => compute_exec().await?,
     };
     let reply = crate::gpu::serve(&mut exec, request).await;
-    PAGE.with(|p| *p.borrow_mut() = Some(exec));
+    DEVICE.with(|p| *p.borrow_mut() = Some(exec));
     Ok(reply)
 }

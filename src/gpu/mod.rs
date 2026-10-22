@@ -4,7 +4,7 @@
 //!   compiled at build time (`build.rs`) and loaded as passthrough modules, and a
 //!   program that traces rays uses hardware ray queries when the adapter has them.
 //! * Browser: the evolution worker cannot wait on a WebGPU promise, so it
-//!   serializes each [`Job`] and blocks while the page runs it on its own device.
+//!   serializes each [`Job`] and blocks while the GPU worker runs it on its device.
 //!
 //! A [`Job`] is a list of operations recorded into one command buffer: local
 //! buffers, kernel dispatches, copies and read-backs. Device-resident buffers
@@ -541,7 +541,7 @@ impl Gpu {
         Ok(Gpu {
             backend: Backend::Proxy,
             hw_rt: false,
-            adapter: "WebGPU (page)".into(),
+            adapter: "WebGPU (GPU worker)".into(),
             pending: Mutex::new(Vec::new()),
             next: AtomicU64::new(1),
         })

@@ -1,0 +1,106 @@
+# Desktop packages (Tauri 2: macOS .app/.dmg, Windows .msi/.exe, Linux .deb/.AppImage/.rpm)
+# and the static browser build. A tag `v*` publishes a draft release; any other run keeps
+# the files as workflow artifacts.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system libraries (WebKitGTK, GTK, Vulkan loader)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libudev-dev libvulkan1 mesa-vulkan-drivers
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Panel dependencies
+        working-directory: ui
+        run: bun install --frozen-lockfile
+
+      - name: Build and bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: .
+          tauriScript: ui/node_modules/.bin/tauri
+          # Whole-program LTO, one codegen unit, stripped (Cargo.toml `[profile.dist]`).
+          args: --target ${{ matrix.target }} -- --profile dist
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: Asteroid Evolution ${{ github.ref_name }}
+          releaseDraft: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/dist/bundle/**/*.dmg
+            target/${{ matrix.target }}/dist/bundle/**/*.app.tar.gz
+            target/${{ matrix.target }}/dist/bundle/**/*.msi
+            target/${{ matrix.target }}/dist/bundle/**/*.exe
+            target/${{ matrix.target }}/dist/bundle/**/*.deb
+            target/${{ matrix.target }}/dist/bundle/**/*.rpm
+            target/${{ matrix.target }}/dist/bundle/**/*.AppImage
+          if-no-files-found: error
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+      - uses: oven-sh/setup-bun@v2
+      - name: Trunk
+        run: cargo install trunk --locked
+      - name: Panels
+        working-directory: ui
+        run: bun install --frozen-lockfile && bun run build
+      - name: Page (whole-program LTO, wasm-opt -O3)
+        working-directory: src/web
+        run: trunk build --release --cargo-profile dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: target/web-dist

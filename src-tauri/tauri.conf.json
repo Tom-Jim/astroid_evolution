@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Asteroid Evolution",
+  "version": "0.1.0",
+  "identifier": "dev.astroid-evolution.app",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": {
+      "script": "bun run dev",
+      "cwd": "../ui"
+    },
+    "beforeBuildCommand": {
+      "script": "bun run build",
+      "cwd": "../ui"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Asteroid Evolution",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "transparent": true,
+        "center": true
+      }
+    ],
+    "macOSPrivateApi": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Education",
+    "shortDescription": "Rubble-pile asteroid and moon evolution",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../dist/.stage/assets/projects/ryugu.toml": "assets/projects/ryugu.toml",
+      "../dist/.stage/assets/projects/phobos.toml": "assets/projects/phobos.toml",
+      "../dist/.stage/assets/projects/deimos.toml": "assets/projects/deimos.toml",
+      "../dist/.stage/assets/models/ryugu.glb": "assets/models/ryugu.glb",
+      "../dist/.stage/assets/models/Phobos.glb": "assets/models/Phobos.glb",
+      "../dist/.stage/assets/models/Deimos.glb": "assets/models/Deimos.glb",
+      "../dist/.stage/output/ryugu/history/initial.json": "output/ryugu/history/initial.json",
+      "../dist/.stage/output/ryugu/history/present.json": "output/ryugu/history/present.json",
+      "../dist/.stage/output/phobos/history/initial.json": "output/phobos/history/initial.json",
+      "../dist/.stage/output/phobos/history/present.json": "output/phobos/history/present.json",
+      "../dist/.stage/output/deimos/history/initial.json": "output/deimos/history/initial.json",
+      "../dist/.stage/output/deimos/history/present.json": "output/deimos/history/present.json"
+    },
+    "longDescription": "Shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under YORP spin change and tides: quasi-static Stokes flow, Mode C regolith transport, GPU compute."
+  }
+}

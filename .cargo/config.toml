@@ -1,2 +1,6 @@
+# Incremental caches grow by gigabytes per profile; full rebuilds of this crate are cheap.
+[build]
+incremental = false
+
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

@@ -92,12 +92,49 @@ async function start() {
     fail("Trunk did not publish the viewer bindings.");
     return;
   }
-  const { boot, install_asset, deliver, execute_gpu, prepare_viewer, viewer_defaults } = bindings;
+  const { boot, install_asset, deliver, prepare_viewer, viewer_defaults, ui_command } = bindings;
   const query = new URLSearchParams(location.search);
-  const sab = new SharedArrayBuffer(256 + 96 * 1024 * 1024);
-  const header = new Int32Array(sab, 0, 16);
-  let worker = null;
-  const pending = [];
+  // Files installed in this page's memory table; every new worker gets a copy.
+  const installed = new Map();
+  // The current run: its shared buffer and its two workers. A restart replaces it.
+  let run = null;
+
+  async function fetchBytes(path) {
+    const response = await fetch(new URL(path, document.baseURI));
+    if (!response.ok) {
+      throw new Error(path + " " + response.status);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  async function install(path) {
+    if (!installed.has(path)) {
+      const bytes = await fetchBytes(path);
+      install_asset(path, bytes);
+      installed.set(path, bytes);
+    }
+    return installed.get(path);
+  }
+
+  /** The project, its mesh, a table spin file and the start snapshot. */
+  async function ensure(project, spin, snapshot) {
+    const text = new TextDecoder().decode(await install(project));
+    const paths = filesFor(project, text, spin);
+    if (snapshot) {
+      paths.push(snapshot);
+    }
+    await Promise.all(paths.map(install));
+  }
+
+  function onWorker(event) {
+    const data = event.data;
+    if (!data || !run || (event.target !== run.worker && event.target !== run.gpu)) {
+      return;
+    }
+    if (data.kind === "status" || data.kind === "frame" || data.kind === "finished" || data.kind === "failed") {
+      deliver(data.kind, data.payload || "");
+    }
+  }
 
   globalThis.asteroid = {
     gpuCall() {
@@ -108,93 +145,69 @@ async function start() {
       return 0;
     },
     setFlag(index, value) {
-      Atomics.store(header, index, value);
-      Atomics.notify(header, index);
+      if (run) {
+        Atomics.store(run.header, index, value);
+        Atomics.notify(run.header, index);
+      }
     },
     note(text) {
       status.textContent = String(text);
     },
+    // Status JSON for the panels (ui/src/host.ts).
+    last: "",
+    status(json) {
+      globalThis.asteroid.last = json;
+      dispatchEvent(new CustomEvent("asteroid-status", { detail: json }));
+    },
+    command(json) {
+      ui_command(json);
+    },
+    async restart(request) {
+      await ensure(request.project, request.spin, request.snapshot);
+      ui_command(JSON.stringify({ cmd: "restart", ...request }));
+    },
     startWorker(config) {
-      worker = new Worker(new URL("worker.js", document.baseURI), { type: "module" });
+      // A new run gets new workers and a new buffer; the old ones stop mid-step.
+      if (run) {
+        run.worker.terminate();
+        run.gpu.terminate();
+      }
+      // Compute jobs go from the evolution worker straight to the GPU worker,
+      // which owns its own WebGPU device; this thread only renders.
+      const sab = new SharedArrayBuffer(256 + 96 * 1024 * 1024);
+      const channel = new MessageChannel();
+      const module = viewerModuleUrl();
+      const wasm = viewerWasmUrl();
+      const gpu = new Worker(new URL("gpu_worker.js", document.baseURI), { type: "module" });
+      const worker = new Worker(new URL("worker.js", document.baseURI), { type: "module" });
+      run = { sab, header: new Int32Array(sab, 0, 16), gpu, worker };
+      gpu.onmessage = onWorker;
       worker.onmessage = onWorker;
+      gpu.postMessage({ kind: "start", sab, module, wasm, port: channel.port2 }, [channel.port2]);
+      const files = [...installed].map(([path, bytes]) => ({ path, bytes: bytes.slice().buffer }));
       worker.postMessage(
-        { kind: "start", config, sab, module: viewerModuleUrl(), wasm: viewerWasmUrl(), files: pending },
-        pending.map((file) => file.bytes),
+        { kind: "start", config, sab, module, wasm, files, port: channel.port1 },
+        [channel.port1, ...files.map((file) => file.bytes)],
       );
     },
   };
 
-  async function onWorker(event) {
-    const data = event.data;
-    if (!data) {
-      return;
-    }
-    if (data.kind === "gpu") {
-      const len = Atomics.load(header, 1);
-      const dataBytes = new Uint8Array(sab, 256);
-      const request = dataBytes.slice(0, len);
-      try {
-        const out = new Uint8Array(await execute_gpu(request));
-        if (out.length > dataBytes.length) {
-          throw new Error("gpu response does not fit (" + out.length + " bytes)");
-        }
-        dataBytes.set(out);
-        Atomics.store(header, 1, out.length);
-        Atomics.store(header, 0, 2);
-      } catch (error) {
-        const text = String(error && error.stack ? error.stack : error);
-        console.error(text);
-        const msg = new TextEncoder().encode(text);
-        dataBytes.set(msg);
-        Atomics.store(header, 1, msg.length);
-        Atomics.store(header, 0, 3);
-      }
-      Atomics.notify(header, 0);
-      return;
-    }
-    if (data.kind === "status" || data.kind === "frame" || data.kind === "finished" || data.kind === "failed") {
-      deliver(data.kind, data.payload || "");
-      if (data.kind === "failed") {
-        const text = data.payload || "evolution failed";
-        const prior = status.dataset.fail || "";
-        status.dataset.fail = prior && !text.includes(prior) ? prior + "\n" + text : text;
-        status.textContent = status.dataset.fail;
-      }
-    }
-  }
-
-  // Without a query the page opens what `asteroid-app view` opens.
+  // Without a query the page opens the run the desktop shell opens.
   const defaults = JSON.parse(viewer_defaults());
   const project = query.get("project") || defaults.project;
   const spin = query.get("spin") || defaults.spin;
+  const snapshot = query.get("snapshot");
   const maxSteps = query.get("max_steps");
-  const projectResponse = await fetch(new URL(project, document.baseURI));
-  if (!projectResponse.ok) {
-    throw new Error(project + " " + projectResponse.status);
-  }
-  const projectBytes = new Uint8Array(await projectResponse.arrayBuffer());
-  const projectText = new TextDecoder().decode(projectBytes);
-  const paths = filesFor(project, projectText, spin);
-  for (const path of paths) {
-    const bytes = path === project
-      ? projectBytes
-      : await (async () => {
-          const response = await fetch(new URL(path, document.baseURI));
-          if (!response.ok) {
-            throw new Error(path + " " + response.status);
-          }
-          return new Uint8Array(await response.arrayBuffer());
-        })();
-    install_asset(path, bytes);
-    pending.push({ path, bytes: bytes.buffer });
-  }
+  await ensure(project, spin, snapshot);
   const config = JSON.stringify({
     project,
     spin,
+    snapshot,
     max_steps: maxSteps ? Number(maxSteps) : null,
   });
   status.textContent = "Decoding the mesh on the GPU…";
   await prepare_viewer(config);
   status.textContent = "";
+  dispatchEvent(new Event("asteroid-ready"));
   boot(config);
 }

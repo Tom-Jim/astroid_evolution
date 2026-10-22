@@ -1,0 +1,22 @@
+[package]
+name = "asteroid-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "Asteroid Evolution desktop shell: Bevy renders natively under a React control layer"
+
+[[bin]]
+name = "asteroid-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+astroid_evolution = { path = "..", default-features = false, features = ["desktop"] }
+bevy = { version = "0.20.0", default-features = false }
+tauri = { version = "2", features = ["macos-private-api"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSGraphics"] }

@@ -159,8 +159,8 @@ pub fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<(), SimError> {
 }
 
 pub fn read_snapshot(path: &Path) -> Result<Snapshot, SimError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| SimError::io(format!("{}: {e}", path.display())))?;
+    // The page and its workers read installed bytes; native builds read the disk.
+    let text = crate::io::memfs::read_to_string(path).map_err(SimError::io)?;
     let snap: Snapshot = serde_json::from_str(&text)
         .map_err(|e| SimError::io(format!("{}: {e}", path.display())))?;
     if snap.format != FORMAT {

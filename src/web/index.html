@@ -3,22 +3,40 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Asteroid</title>
+  <title>Asteroid Evolution</title>
   <base data-trunk-public-url />
-  <link data-trunk rel="copy-dir" href="../../dist/.stage/assets" data-target-path="assets" />
+  <link data-trunk rel="copy-dir" href="../../dist/.stage/assets/projects" data-target-path="assets/projects" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/ryugu.glb" data-target-path="assets/models" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/Phobos.glb" data-target-path="assets/models" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/Deimos.glb" data-target-path="assets/models" />
   <link data-trunk rel="copy-file" href="worker.js" />
+  <link data-trunk rel="copy-file" href="gpu_worker.js" />
+  <!-- Start snapshots of the scenarios (scenarios.json). -->
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/ryugu/history/initial.json" data-target-path="output/ryugu/history" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/ryugu/history/present.json" data-target-path="output/ryugu/history" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/phobos/history/initial.json" data-target-path="output/phobos/history" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/phobos/history/present.json" data-target-path="output/phobos/history" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/deimos/history/initial.json" data-target-path="output/deimos/history" />
+  <link data-trunk rel="copy-file" href="../../dist/.stage/output/deimos/history/present.json" data-target-path="output/deimos/history" />
+  <!-- Control panels: the React bundle built by `bun run build` in ui/. -->
+  <link data-trunk rel="copy-dir" href="../../ui/dist/assets" data-target-path="ui" />
+  <link rel="stylesheet" href="ui/ui.css" />
   <style>
-    /* Same palette as src/app/ui.rs `theme`. */
-    html, body { margin: 0; height: 100%; background: #1c1f24; color: #edeff5; font: 15px/1.4 ui-monospace, Menlo, monospace; }
-    #bevy { width: 100%; height: 100%; display: block; touch-action: none; }
-    #status { position: absolute; left: 12px; bottom: 12px; max-width: 40rem; padding: 10px; background: rgba(10, 13, 15, 0.78); }
+    /* Background of src/app/ui.rs; the panels bring their own style. */
+    html, body { background: #050608; }
+    #bevy { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+    #status { position: fixed; left: 50%; top: 40%; transform: translateX(-50%); max-width: 40rem; padding: 12px 16px;
+      border-radius: 12px; background: rgba(0, 0, 0, 0.85); color: #f5f6f7; font: 13px/1.5 ui-monospace, Menlo, monospace;
+      white-space: pre-wrap; z-index: 20; }
     #status:empty { display: none; }
   </style>
 </head>
 <body>
   <canvas id="bevy"></canvas>
+  <div id="ui-root"></div>
   <div id="status">Loading the viewer…</div>
+  <script type="module" src="ui/ui.js"></script>
   <script type="module" src="boot.js" data-trunk data-no-minify></script>
-  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="0" data-bindgen-target="web" />
+  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="3" data-bindgen-target="web" />
 </body>
 </html>

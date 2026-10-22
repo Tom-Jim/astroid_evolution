@@ -27,7 +27,20 @@ pub struct Exec {
     /// Bind groups whose arguments are all resident, by kernel and arguments.
     groups: HashMap<(usize, Vec<Ref>), wgpu::BindGroup>,
     fault: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Job-local and read-back buffers kept between jobs, by (capacity, usage).
+    pool: HashMap<(u64, u32), Vec<wgpu::Buffer>>,
     pub adapter: String,
+}
+
+/// Buffers a size class keeps for reuse; more are destroyed.
+const POOL_PER_CLASS: usize = 4;
+const READBACK: wgpu::BufferUsages =
+    wgpu::BufferUsages::MAP_READ.union(wgpu::BufferUsages::COPY_DST);
+
+/// A job-local buffer from the pool and the bytes the job uses of it.
+struct Local {
+    buf: wgpu::Buffer,
+    size: u64,
 }
 
 const STORAGE: wgpu::BufferUsages = wgpu::BufferUsages::STORAGE
@@ -115,6 +128,7 @@ impl Exec {
             res: HashMap::new(),
             accels: HashMap::new(),
             groups: HashMap::new(),
+            pool: HashMap::new(),
             adapter,
         }
     }
@@ -227,6 +241,30 @@ impl Exec {
         }
         self.pipes[id] = Some((pipe, bgl));
         Ok(())
+    }
+
+    /// A buffer of at least `size` bytes: reused from the pool, or created at the
+    /// next power of two so that later jobs of a similar size reuse it.
+    fn take(&mut self, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
+        let cap = padded(size).next_power_of_two().max(256);
+        if let Some(b) = self.pool.get_mut(&(cap, usage.bits())).and_then(Vec::pop) {
+            return b;
+        }
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pooled"),
+            size: cap,
+            usage,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn give(&mut self, buf: wgpu::Buffer) {
+        let class = self.pool.entry((buf.size(), buf.usage().bits())).or_default();
+        if class.len() < POOL_PER_CLASS {
+            class.push(buf);
+        } else {
+            buf.destroy();
+        }
     }
 
     fn storage(&self, size: u64, label: &str) -> wgpu::Buffer {
@@ -343,9 +381,9 @@ impl Exec {
 
     /// Run one job. Resolves once every read-back is mapped.
     pub async fn run(&mut self, ops: Vec<Op>) -> Result<Vec<Vec<u8>>, String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let mut locals: HashMap<u32, wgpu::Buffer> = HashMap::new();
+        // Validation and out-of-memory errors reach `fault` through the
+        // uncaptured-error handler, so a job pushes no error scopes.
+        let mut locals: HashMap<u32, Local> = HashMap::new();
         let mut staging: Vec<(wgpu::Buffer, u64)> = Vec::new();
         for op in &ops {
             if let Op::Run { kernel, .. } = op {
@@ -386,11 +424,15 @@ impl Exec {
                         .retain(|(_, args), _| !args.contains(&Ref::Accel(id)));
                 }
                 Op::Local { id, size, data } => {
-                    let buf = match data {
-                        Some(d) => self.filled(&d, STORAGE, "local"),
-                        None => self.storage(size, "local"),
-                    };
-                    locals.insert(id, buf);
+                    let buf = self.take(size, STORAGE);
+                    match data {
+                        Some(mut d) => {
+                            d.resize(d.len().div_ceil(4) * 4, 0);
+                            self.queue.write_buffer(&buf, 0, &d);
+                        }
+                        None => enc.clear_buffer(&buf, 0, Some(padded(size))),
+                    }
+                    locals.insert(id, Local { buf, size: padded(size) });
                 }
                 Op::Write { dst, offset, data } => {
                     let src = self.filled(&data, wgpu::BufferUsages::COPY_SRC, "write");
@@ -409,13 +451,8 @@ impl Exec {
                     enc.copy_buffer_to_buffer(s, src_offset, d, dst_offset, Some(size));
                 }
                 Op::Read { src, offset, size } => {
+                    let st = self.take(size.max(4).div_ceil(4) * 4, READBACK);
                     let s = buffer(&locals, &self.res, src)?;
-                    let st = self.device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("read"),
-                        size: size.max(4).div_ceil(4) * 4,
-                        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
                     if size > 0 {
                         enc.copy_buffer_to_buffer(s, offset, &st, 0, Some(size.div_ceil(4) * 4));
                     }
@@ -466,11 +503,6 @@ impl Exec {
         self.device
             .poll(wgpu::PollType::wait_indefinitely())
             .map_err(|e| format!("device poll: {e}"))?;
-        let oom = oom.pop().await;
-        let err = scope.pop().await;
-        if let Some(e) = err.or(oom) {
-            return Err(format!("gpu: {e}"));
-        }
         if let Some(e) = self.fault.lock().unwrap_or_else(|p| p.into_inner()).take() {
             return Err(format!("gpu: {e}"));
         }
@@ -485,23 +517,25 @@ impl Exec {
                 .map_err(|e| format!("gpu read-back: {e}"))?;
             out.push(view[..size as usize].to_vec());
             drop(view);
-            st.destroy();
+            st.unmap();
+            self.give(st);
         }
-        for b in locals.values() {
-            b.destroy();
+        for (_, l) in locals {
+            self.give(l.buf);
         }
         Ok(out)
     }
 }
 
 fn buffer<'a>(
-    locals: &'a HashMap<u32, wgpu::Buffer>,
+    locals: &'a HashMap<u32, Local>,
     res: &'a HashMap<u64, wgpu::Buffer>,
     r: Ref,
 ) -> Result<&'a wgpu::Buffer, String> {
     match r {
         Ref::Local(id) => locals
             .get(&id)
+            .map(|l| &l.buf)
             .ok_or_else(|| format!("no local buffer {id}")),
         Ref::Res(id) => res
             .get(&id)
@@ -516,7 +550,7 @@ impl Exec {
         &self,
         kernel: usize,
         args: &[Ref],
-        locals: &HashMap<u32, wgpu::Buffer>,
+        locals: &HashMap<u32, Local>,
     ) -> Result<wgpu::BindGroup, String> {
         let k = ALL[kernel];
         let v = self.variant(k);
@@ -552,6 +586,17 @@ impl Exec {
                 },
                 (BindKind::Accel | BindKind::Bvh, _) => {
                     return Err(format!("{}: argument {} must be a mesh", k.name, next - 1));
+                }
+                // A pooled local is larger than the job's data: bind its own bytes.
+                (_, Ref::Local(id)) => {
+                    let l = locals
+                        .get(&id)
+                        .ok_or_else(|| format!("no local buffer {id}"))?;
+                    wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &l.buf,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(l.size),
+                    })
                 }
                 (_, r) => buffer(locals, &self.res, r)?.as_entire_binding(),
             };

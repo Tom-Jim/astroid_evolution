@@ -15,20 +15,20 @@ pub mod shsmooth;
 #[cfg(feature = "tier2")]
 pub mod scf;
 
-#[cfg(any(feature = "tier3", feature = "bevy-web"))]
+#[cfg(feature = "tier3")]
 pub mod app;
 
-#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+#[cfg(all(target_arch = "wasm32", feature = "bevy-web"))]
 pub mod web;
 
 /// wasm-bindgen entry points for the browser build, which Trunk builds from this
-/// crate as a cdylib. The native `asteroid-app` binary does not use them.
-#[cfg(all(target_arch = "wasm32", any(feature = "tier3", feature = "bevy-web")))]
+/// crate as a cdylib.
+#[cfg(all(target_arch = "wasm32", feature = "bevy-web"))]
 mod wasm_entry {
     use wasm_bindgen::prelude::*;
 
-    /// Project and spin schedule the page opens without query parameters: the
-    /// defaults of `asteroid-app view`.
+    /// Project and spin schedule the page opens without query parameters, the same
+    /// run the desktop shell opens.
     #[wasm_bindgen]
     pub fn viewer_defaults() -> String {
         use crate::app::resources::{DATA_DIR, DEFAULT_PROJECT, DEFAULT_SPIN};
@@ -66,6 +66,12 @@ mod wasm_entry {
         crate::web::execute_gpu(request)
             .await
             .map_err(|err| JsValue::from_str(&err))
+    }
+
+    /// One JSON command from the control panels (`app::bridge::Command`).
+    #[wasm_bindgen]
+    pub fn ui_command(json: &str) -> Result<(), JsValue> {
+        crate::app::bridge::send(json).map_err(|err| JsValue::from_str(&err))
     }
 
     #[wasm_bindgen]

@@ -1,4 +1,5 @@
 let sab = null;
+let port = null;
 
 const reportError = console.error.bind(console);
 console.error = (...args) => {
@@ -31,7 +32,7 @@ function installBridge() {
       const words = header();
       Atomics.store(words, 1, src.length);
       Atomics.store(words, 0, 1);
-      self.postMessage({ kind: "gpu" });
+      port.postMessage(null);
       while (Atomics.load(words, 0) === 1) {
         Atomics.wait(words, 0, 1);
       }
@@ -64,6 +65,7 @@ self.onmessage = async (event) => {
     return;
   }
   sab = event.data.sab;
+  port = event.data.port;
   installBridge();
   try {
     const { default: init, install_asset, worker_main } = await import(event.data.module);

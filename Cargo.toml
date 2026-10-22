@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "src-tauri"]
+default-members = ["."]
+
 [package]
 name = "astroid_evolution"
 version = "0.1.0"
@@ -6,22 +10,20 @@ autobins = false
 build = "src/build.rs"
 
 [features]
-default = ["tier1", "rheo"]
+# `cli` builds the command-line tools; the browser build leaves it out.
+default = ["tier1", "rheo", "cli"]
+cli = []
 tier1 = []
 rheo = []
 tier2 = ["tier1", "rheo"]
-tier3 = ["tier2", "bevy-desktop"]
-# Desktop window. Same Bevy features the native viewer already used.
-bevy-desktop = [
+tier3 = [
+    "tier2",
     "dep:bevy",
     "bevy/std",
     "bevy/async_executor",
-    "bevy/multi_threaded",
     "bevy/reflect_auto_register",
     "bevy/bevy_asset",
     "bevy/bevy_log",
-    "bevy/bevy_state",
-    "bevy/bevy_winit",
     "bevy/bevy_window",
     "bevy/bevy_render",
     "bevy/bevy_core_pipeline",
@@ -33,13 +35,7 @@ bevy-desktop = [
     "bevy/bevy_mesh",
     "bevy/bevy_shader",
     "bevy/bevy_material",
-    "bevy/bevy_text",
-    "bevy/bevy_ui",
-    "bevy/bevy_ui_render",
-    "bevy/bevy_sprite",
-    "bevy/bevy_sprite_render",
     "bevy/png",
-    "bevy/default_font",
     "bevy/hdr",
     "bevy/tonemapping_luts",
     "bevy/smaa_luts",
@@ -49,54 +45,15 @@ bevy-desktop = [
     "bevy/pan_orbit_camera",
     "bevy/bevy_post_process",
     "bevy/bevy_anti_alias",
-    "bevy/keyboard",
     "bevy/mouse",
-    "bevy/bevy_input_focus",
     "bevy/bevy_mikktspace",
 ]
-# Browser window. No Rayon-backed task pool, and WebGPU instead of WebGL2.
-bevy-web = [
-    "dep:bevy",
-    "bevy/std",
-    "bevy/async_executor",
-    "bevy/reflect_auto_register",
-    "bevy/bevy_asset",
-    "bevy/bevy_log",
-    "bevy/bevy_state",
-    "bevy/bevy_winit",
-    "bevy/bevy_window",
-    "bevy/bevy_render",
-    "bevy/bevy_core_pipeline",
-    "bevy/bevy_pbr",
-    "bevy/bevy_light",
-    "bevy/bevy_camera",
-    "bevy/bevy_color",
-    "bevy/bevy_image",
-    "bevy/bevy_mesh",
-    "bevy/bevy_shader",
-    "bevy/bevy_material",
-    "bevy/bevy_text",
-    "bevy/bevy_ui",
-    "bevy/bevy_ui_render",
-    "bevy/bevy_sprite",
-    "bevy/bevy_sprite_render",
-    "bevy/png",
-    "bevy/default_font",
-    "bevy/hdr",
-    "bevy/tonemapping_luts",
-    "bevy/smaa_luts",
-    "bevy/zstd_rust",
-    "bevy/bevy_picking",
-    "bevy/mesh_picking",
-    "bevy/pan_orbit_camera",
-    "bevy/bevy_post_process",
-    "bevy/bevy_anti_alias",
-    "bevy/keyboard",
-    "bevy/mouse",
-    "bevy/bevy_input_focus",
-    "bevy/bevy_mikktspace",
-    "bevy/webgpu",
-]
+# Tier 3 viewer without a window backend. The desktop shell (src-tauri) owns the
+# window; the React panels replace any in-scene text, so no UI, text or font crates.
+# Native builds add the multi-threaded executor.
+desktop = ["tier3", "bevy/multi_threaded"]
+# Browser: winit drives the page canvas, WebGPU instead of WebGL2.
+bevy-web = ["tier3", "bevy/bevy_winit", "bevy/webgpu"]
 
 [build-dependencies]
 wesl = "0.6"
@@ -169,30 +126,25 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "webgpu"]
 name = "rtfp-cli"
 path = "src/bin/rtfp_cli.rs"
 test = false
-required-features = ["tier1"]
+required-features = ["tier1", "cli"]
 
 [[bin]]
 name = "rheo-cli"
 path = "src/bin/rheo_cli.rs"
 test = false
-required-features = ["rheo"]
+required-features = ["rheo", "cli"]
 
 [[bin]]
 name = "sh-cli"
 path = "src/bin/sh_cli.rs"
+required-features = ["cli"]
 test = false
 
 [[bin]]
 name = "scf-cli"
 path = "src/bin/scf_cli.rs"
 test = false
-required-features = ["tier2"]
-
-[[bin]]
-name = "asteroid-app"
-path = "src/bin/asteroid_app.rs"
-test = false
-required-features = ["tier3"]
+required-features = ["tier2", "cli"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -200,10 +152,21 @@ test = false
 doctest = false
 
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
 opt-level = 2
 
 [profile.test]
-debug = 1
+debug = "line-tables-only"
 opt-level = 2
 
+# Day-to-day optimized builds: thin LTO keeps link times short.
+[profile.release]
+lto = "thin"
+
+# Shipped builds (desktop bundles and the browser wasm): whole-program LTO,
+# one codegen unit, no symbols.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

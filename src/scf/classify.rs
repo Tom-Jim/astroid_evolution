@@ -73,7 +73,10 @@ pub fn classify(
     let (zeta, wr) = gauss_jacobi_zeta2(n_radial);
     let layers = n_radial + 1;
     // Grid X_Y: layer q < n_radial is interior, layer n_radial the surface.
-    let (radius, normal): (Vec<f64>, Vec<DVec3>) = surf.normals(&topo.dirs).into_iter().unzip();
+    let (radius, normal) = ops
+        .class_normals
+        .get_or_init(|| surf.normals(&topo.dirs).into_iter().unzip());
+    let (radius, normal) = (radius.clone(), normal.clone());
     let mut pts = Vec::with_capacity(nv * layers);
     let mut wgt = Vec::with_capacity(nv * layers);
     let mut depth = Vec::with_capacity(nv * layers);

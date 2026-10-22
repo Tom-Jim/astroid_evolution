@@ -2,18 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use wasm_bindgen::prelude::*;
 
 use crate::app::pipeline::{self, WorkerMessage};
 use crate::app::resources::AppConfig;
 use crate::app::snapshot::StepSnapshot;
-use crate::scf::params::Project;
 
 use super::wire;
 
-static SENDER: OnceLock<Mutex<Sender<WorkerMessage>>> = OnceLock::new();
+/// Channel of the current run; a restart replaces it.
+static SENDER: Mutex<Option<Sender<WorkerMessage>>> = Mutex::new(None);
 
 #[wasm_bindgen]
 extern "C" {
@@ -29,6 +29,9 @@ extern "C" {
     #[wasm_bindgen(js_namespace = asteroid, js_name = note)]
     fn note(text: &str);
 
+    #[wasm_bindgen(js_namespace = asteroid, js_name = status)]
+    fn status_js(json: &str);
+
     #[wasm_bindgen(js_namespace = asteroid, js_name = setFlag)]
     fn set_flag(index: u32, value: u32);
 
@@ -41,6 +44,8 @@ struct BootConfig {
     project: String,
     spin: String,
     #[serde(default)]
+    snapshot: Option<String>,
+    #[serde(default)]
     max_steps: Option<usize>,
 }
 
@@ -50,31 +55,15 @@ fn hook_panic() {
     }));
 }
 
-fn load_config(config_json: &str) -> Result<(AppConfig, f64), String> {
+fn load_config(config_json: &str) -> Result<AppConfig, String> {
     let cfg: BootConfig =
         serde_json::from_str(config_json).map_err(|err| format!("viewer config: {err}"))?;
-    let project_path = PathBuf::from(&cfg.project);
-    let text = crate::io::memfs::read_to_string(&project_path)?;
-    let dir = project_path
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf();
-    let project = Project::parse(&text, dir.clone()).map_err(|err| err.to_string())?;
-    let summary = pipeline::mesh_summary(&project)?;
-    let scene = pipeline::view_fit(&project)?;
-    Ok((
-        AppConfig {
-            project_text: text,
-            project_dir: dir,
-            project_path: cfg.project,
-            mesh_path: summary.path.display().to_string(),
-            mesh_unit: summary.unit,
-            spin: cfg.spin,
-            max_steps: cfg.max_steps,
-            snapshot: None,
-        },
-        scene.scale,
-    ))
+    AppConfig::load(
+        std::path::Path::new(&cfg.project),
+        &cfg.spin,
+        cfg.max_steps,
+        cfg.snapshot.map(PathBuf::from),
+    )
 }
 
 /// Check that the project and its mesh are installed before Bevy starts.
@@ -86,7 +75,10 @@ pub async fn prepare_viewer(config_json: &str) -> Result<(), String> {
 pub fn boot(config_json: &str) {
     hook_panic();
     match load_config(config_json) {
-        Ok((config, _)) => crate::app::run_viewer(config),
+        Ok(config) => {
+            crate::app::bridge::set_sink(status_js);
+            crate::app::run_viewer(config)
+        }
         Err(err) => {
             web_sys::console::error_1(&JsValue::from_str(&err));
             note(&err);
@@ -94,24 +86,20 @@ pub fn boot(config_json: &str) {
     }
 }
 
-/// Hand the same project to the worker. Bevy keeps polling `rx`.
-pub fn spawn_evolution(
-    project_text: String,
-    project_dir: PathBuf,
-    spin: String,
-    max_steps: Option<usize>,
-    scale: f64,
-) -> Receiver<WorkerMessage> {
+/// Hand the same run to a new worker (the page stops the previous one). Bevy keeps
+/// polling `rx`.
+pub fn spawn_evolution(config: &AppConfig, scale: f64) -> Receiver<WorkerMessage> {
     let (tx, rx) = mpsc::channel();
-    let _ = SENDER.set(Mutex::new(tx));
-    let config = serde_json::json!({
-        "project_text": project_text,
-        "project_dir": project_dir.display().to_string(),
-        "spin": spin,
-        "max_steps": max_steps,
+    *SENDER.lock().unwrap() = Some(tx);
+    let worker = serde_json::json!({
+        "project_text": config.project_text,
+        "project_dir": config.project_dir.display().to_string(),
+        "spin": config.spin,
+        "max_steps": config.max_steps,
+        "snapshot": config.snapshot.as_ref().map(|p| p.display().to_string()),
         "scale": scale,
     });
-    start_worker(&config.to_string());
+    start_worker(&worker.to_string());
     rx
 }
 
@@ -121,6 +109,7 @@ struct WorkerConfig {
     project_dir: String,
     spin: String,
     max_steps: Option<usize>,
+    snapshot: Option<String>,
     scale: f64,
 }
 
@@ -145,7 +134,7 @@ pub fn worker_main(config_json: &str) {
             &cfg.project_text,
             PathBuf::from(&cfg.project_dir).as_path(),
             &cfg.spin,
-            None,
+            cfg.snapshot.as_deref().map(std::path::Path::new),
         )?;
         let initial = crate::app::snapshot::pack_initial(
             &prepared.state,
@@ -182,10 +171,8 @@ pub fn worker_main(config_json: &str) {
 
 /// The page received a worker message. Push it into the channel Bevy polls.
 pub fn deliver(kind: &str, payload: &str) {
-    let Some(slot) = SENDER.get() else {
-        return;
-    };
-    let Ok(tx) = slot.lock() else {
+    let slot = SENDER.lock().unwrap();
+    let Some(tx) = slot.as_ref() else {
         return;
     };
     let message = match kind {

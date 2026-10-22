@@ -132,6 +132,11 @@ pub struct Operators {
     /// the same geometry as the operators, so it lives as long as they do.
     pub class_rows: std::sync::OnceLock<super::basis::ResidentVelocity>,
     pub class_uses: std::sync::atomic::AtomicUsize,
+    /// Harmonic radius and normal at the vertex directions (the `X_Y` rays).
+    pub class_normals: std::sync::OnceLock<(Vec<f64>, Vec<DVec3>)>,
+    /// Gravity at the volume points. It does not depend on the spin, so a step that
+    /// keeps the geometry and the density keeps it too.
+    pub vol_field: std::sync::OnceLock<super::forward::PointFields>,
 }
 
 impl Operators {
@@ -224,6 +229,8 @@ impl Operators {
             lift_y: y,
             class_rows: std::sync::OnceLock::new(),
             class_uses: std::sync::atomic::AtomicUsize::new(0),
+            class_normals: std::sync::OnceLock::new(),
+            vol_field: std::sync::OnceLock::new(),
         })
     }
 }

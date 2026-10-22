@@ -1,6 +1,7 @@
 //! Tier 3 window. Tier 2 stays off the frame loop. Each accepted step becomes a
 //! playback snapshot; the shader morphs radii and colours the surface fields.
 
+pub mod bridge;
 pub mod material;
 pub mod pan_orbit_input;
 pub mod pipeline;
@@ -32,10 +33,13 @@ impl Plugin for AsteroidPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.config.clone())
             .init_resource::<Evolution>()
+            .init_resource::<bridge::DataRoot>()
+            .init_resource::<bridge::Notice>()
+            .init_resource::<ui::ShotDir>()
             .add_systems(Startup, load_scene);
         if self.windowed {
             bevy::asset::embedded_asset!(app, "shader/asteroid.wesl");
-            app.insert_resource(ClearColor(ui::theme::BACKGROUND))
+            app.insert_resource(ClearColor(ui::BACKGROUND))
                 .insert_resource(GlobalAmbientLight {
                     color: Color::WHITE,
                     brightness: 180.0,
@@ -52,16 +56,17 @@ impl Plugin for AsteroidPlugin {
                     WireframePlugin::default(),
                 ))
                 .add_systems(Startup, ui::spawn_scene.after(load_scene))
-                .add_systems(Startup, ui::begin_evolution.after(ui::spawn_scene))
+                .add_systems(First, bridge::forward_pointer)
                 .add_systems(
                     Update,
                     (
+                        bridge::apply_commands,
+                        ui::begin_evolution,
                         playback::poll_snapshot,
                         playback::advance_playback,
                         playback::sync_material,
-                        ui::control_keys,
                         ui::autoshot,
-                        ui::refresh_hud,
+                        bridge::publish_status,
                     )
                         .chain(),
                 )
@@ -70,21 +75,16 @@ impl Plugin for AsteroidPlugin {
     }
 }
 
-/// Open the same viewer the `asteroid-app view` binary opens.
-///
-/// Native builds keep `DefaultPlugins`. The wasm package calls this after the
-/// project bytes are in memory and points the window at the page canvas.
+/// Open the viewer on the page canvas, after the project bytes are in memory.
+#[cfg(target_arch = "wasm32")]
 pub fn run_viewer(config: AppConfig) {
-    let mut app = App::new();
-    #[cfg(not(target_arch = "wasm32"))]
-    app.add_plugins(DefaultPlugins);
-    #[cfg(target_arch = "wasm32")]
-    app.add_plugins(wasm_plugins());
-    app.add_plugins(AsteroidPlugin {
-        config,
-        windowed: true,
-    });
-    app.run();
+    App::new()
+        .add_plugins(wasm_plugins())
+        .add_plugins(AsteroidPlugin {
+            config,
+            windowed: true,
+        })
+        .run();
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -120,13 +120,18 @@ fn wasm_plugins() -> bevy::app::PluginGroupBuilder {
 }
 
 fn load_scene(mut commands: Commands, config: Res<AppConfig>) {
+    commands.insert_resource(scene_of(&config).unwrap_or_else(|err| panic!("{err}")));
+}
+
+/// The imported mesh of the project, fitted to the view.
+pub fn scene_of(config: &AppConfig) -> Result<Scene, String> {
     let project = Project::parse(&config.project_text, config.project_dir.clone())
-        .unwrap_or_else(|err| panic!("project: {err}"));
-    let fit = view_fit(&project).unwrap_or_else(|err| panic!("model: {err}"));
-    commands.insert_resource(Scene {
+        .map_err(|err| format!("project: {err}"))?;
+    let fit = view_fit(&project).map_err(|err| format!("model: {err}"))?;
+    Ok(Scene {
         vertices: fit.vertices,
         faces: fit.faces,
         center: fit.center,
         scale: fit.scale,
-    });
+    })
 }

@@ -7,7 +7,8 @@ use astroid_evolution::app::resources::{
     AppConfig, Evolution, Phase, Scene, display_imported, display_positions, lock_scale,
 };
 use astroid_evolution::app::snapshot::posed_positions;
-use astroid_evolution::app::ui::hud_lines;
+use astroid_evolution::app::bridge::{self, Command, RunRequest};
+use astroid_evolution::app::playback::VisMode;
 use astroid_evolution::common::density::CauchyKernel;
 use astroid_evolution::scf::body::{Body, Topology};
 use astroid_evolution::scf::timing;
@@ -86,9 +87,40 @@ fn scene() -> Scene {
     }
 }
 
+fn running() -> Evolution {
+    Evolution {
+        phase: Phase::Running,
+        status: "tier 2 running".into(),
+        stats: Some(astroid_evolution::app::resources::FrameStats {
+            step: 3,
+            time: 3.15576e13,
+            omega: 4.986655e-4,
+            mass: 1.0,
+            radius_min: 400.0,
+            radius_max: 500.0,
+            yielded_fraction: 0.25,
+            max_slack: 1.0e-3,
+            rho_s_total: 10.0,
+            max_displacement: 0.4,
+            eps_momentum: 2.0e-3,
+            eps_lambda: 1.0e-3,
+            eps_picard: 4.0e-2,
+            picard_iterations: 6,
+            tensile_fraction: 0.01,
+            inverse_ekman: 0.2,
+            mass_residual: 1.0e-5,
+            mobile_area_fraction: 0.4,
+            dt: 1.0e4,
+            dt_cfl: 2.0e4,
+            dt_bound: "mode_c",
+        }),
+        ..Evolution::default()
+    }
+}
+
 #[test]
-fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
-    let waiting = hud_lines(
+fn the_status_names_the_run_and_reads_back_the_slider_keys() {
+    let waiting = bridge::status(
         &config(),
         &scene(),
         &Evolution {
@@ -96,59 +128,70 @@ fn the_corner_label_names_the_project_the_mesh_and_the_constant_spin() {
             status: "computing the first tier 2 step".into(),
             ..Evolution::default()
         },
-        0.0,
-        "combined",
-    )
-    .join("\n");
-    assert!(waiting.contains("project  assets/projects/ryugu.toml"));
-    assert!(waiting.contains("mesh     assets/models/ryugu.glb  (km)"));
-    assert!(waiting.contains("spin     const:4.986655e-4@3.15576e13"));
-    assert!(waiting.contains("showing  imported glb"));
-    assert!(waiting.contains("file axes"));
-    assert!(waiting.contains("1 = 500.0 m"));
+        &VisMode::default(),
+        [0.0, 1.0],
+        false,
+    );
+    let json = serde_json::to_value(&waiting).unwrap();
+    assert_eq!(json["phase"], "preparing");
+    assert_eq!(json["project"], "assets/projects/ryugu.toml");
+    assert_eq!(json["mesh"], "assets/models/ryugu.glb");
+    assert_eq!(json["mesh_unit"], "km");
+    assert_eq!(json["spin"], "const:4.986655e-4@3.15576e13");
+    assert!(json["stats"].is_null());
+    assert_eq!(json["view_m"], 500.0);
+    assert_eq!(json["layer"], 4);
+    for key in bridge::PARAMS {
+        assert!(json["params"][key].is_number(), "{key}");
+    }
+    assert_eq!(json["params"]["material.cohesion_surface"], 0.5);
+    assert_eq!(json["params"]["body.level"], 5.0);
 
-    let shown = hud_lines(
+    let shown = serde_json::to_value(bridge::status(
         &config(),
         &scene(),
-        &Evolution {
-            phase: Phase::Running,
-            status: "tier 2 running".into(),
-            stats: Some(astroid_evolution::app::resources::FrameStats {
-                step: 3,
-                time: 1.0,
-                omega: 4.986655e-4,
-                mass: 1.0,
-                radius_min: 400.0,
-                radius_max: 500.0,
-                yielded_fraction: 0.25,
-                max_slack: 1.0e-3,
-                rho_s_total: 10.0,
-                max_displacement: 0.4,
-                eps_momentum: 2.0e-3,
-                eps_lambda: 1.0e-3,
-                eps_picard: 4.0e-2,
-                picard_iterations: 6,
-                tensile_fraction: 0.01,
-                inverse_ekman: 0.2,
-                mass_residual: 1.0e-5,
-                mobile_area_fraction: 0.4,
-                dt: 1.0e4,
-                dt_cfl: 2.0e4,
-                dt_bound: "mode_c",
-            }),
-            ..Evolution::default()
-        },
-        0.4,
-        "yield",
+        &running(),
+        &VisMode::default(),
+        [0.0, 1.0],
+        true,
+    ))
+    .unwrap();
+    assert_eq!(shown["phase"], "running");
+    assert_eq!(shown["stats"]["step"], 3);
+    assert_eq!(shown["stats"]["dt_bound"], "mode_c");
+    assert_eq!(shown["stats"]["picard_iterations"], 6);
+    assert!((shown["time_myr"].as_f64().unwrap() - 1.0).abs() < 1e-12);
+    assert!((shown["period_h"].as_f64().unwrap() - 3.5).abs() < 1e-3);
+    assert!(shown["orbit"].is_null());
+    assert_eq!(shown["wireframe"], true);
+}
+
+#[test]
+fn panel_commands_parse_and_overrides_rewrite_the_project() {
+    let restart: Command = serde_json::from_str(
+        r#"{"cmd":"restart","project":"assets/projects/phobos.toml","spin":"const:2e-4",
+            "overrides":{"material.cohesion":10,"body.level":4.4},"snapshot":null}"#,
     )
-    .join("\n");
-    assert!(shown.contains("showing  tier 2 step 3"));
-    assert!(shown.contains("tier 2 frame"));
-    assert!(shown.contains("balance  eps_mom 2.000e-3   eps_lam 1.000e-3   picard 6 (4.000e-2)"));
-    assert!(shown.contains(
-        "sheet    mobile 0.400   tensile 1.000e-2   Ek^-1 2.000e-1   mass residual 1.000e-5"
-    ));
-    assert!(shown.contains("cfl      bound mode_c   dt 1.000e4 s   dt_cfl 2.000e4 s"));
+    .unwrap();
+    let Command::Restart(RunRequest {
+        project, overrides, ..
+    }) = restart
+    else {
+        panic!("not a restart");
+    };
+    assert_eq!(project, "assets/projects/phobos.toml");
+    assert!(bridge::send(r#"{"cmd":"layer","mode":2}"#).is_ok());
+    assert!(bridge::send(r#"{"cmd":"pointer","x":1,"y":2,"button":2,"down":true}"#).is_ok());
+    assert!(bridge::send(r#"{"cmd":"warp"}"#).is_err());
+
+    let mut edited = config();
+    edited.apply_overrides(&overrides).unwrap();
+    let table: toml::Table = edited.project_text.parse().unwrap();
+    assert_eq!(table["material"]["cohesion"].as_float(), Some(10.0));
+    assert_eq!(table["body"]["level"].as_integer(), Some(4));
+    let mut bad = config();
+    let unknown = [("material.nothing".to_string(), 1.0)].into_iter().collect();
+    assert!(bad.apply_overrides(&unknown).is_err());
 }
 
 #[test]

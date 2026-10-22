@@ -13,8 +13,6 @@ pub struct SurfaceView;
 #[derive(Component)]
 pub struct RegolithView;
 
-#[derive(Component)]
-pub struct Hud;
 
 /// Project the desktop window and the browser page open when none is given.
 pub const DEFAULT_PROJECT: &str = "dist/.stage/assets/projects/ryugu.toml";
@@ -41,6 +39,76 @@ pub struct AppConfig {
     pub max_steps: Option<usize>,
     /// Snapshot to start from instead of the project body (desktop only).
     pub snapshot: Option<PathBuf>,
+}
+
+impl AppConfig {
+    /// Read the project and check the spin schedule. The mesh is only located here:
+    /// the scene and Tier 2 each read it once, when they need it.
+    pub fn load(
+        project: &std::path::Path,
+        spin: &str,
+        max_steps: Option<usize>,
+        snapshot: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        use crate::io::memfs::{normalize, read_to_string};
+        let text = read_to_string(project)?;
+        let dir = project
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
+        let parsed =
+            crate::scf::params::Project::parse(&text, dir.clone()).map_err(|e| e.to_string())?;
+        let mesh = parsed
+            .body
+            .mesh
+            .as_deref()
+            .ok_or("the project must use a mesh body")?;
+        crate::scf::spin::SpinSchedule::parse(spin)
+            .and_then(|s| s.validate())
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            project_text: text,
+            project_dir: dir,
+            project_path: normalize(project).display().to_string(),
+            mesh_path: normalize(&parsed.resolve(mesh)).display().to_string(),
+            mesh_unit: parsed.body.mesh_unit.clone().unwrap_or_else(|| "m".into()),
+            spin: spin.into(),
+            max_steps,
+            snapshot,
+        })
+    }
+}
+
+impl AppConfig {
+    /// Replace `section.key` values of the project text (the control layer's sliders).
+    /// An integer key keeps an integer value; every key must already exist.
+    pub fn apply_overrides(
+        &mut self,
+        overrides: &std::collections::BTreeMap<String, f64>,
+    ) -> Result<(), String> {
+        if overrides.is_empty() {
+            return Ok(());
+        }
+        let mut table: toml::Table = self.project_text.parse().map_err(|e| format!("project: {e}"))?;
+        for (path, value) in overrides {
+            let (section, key) = path
+                .split_once('.')
+                .ok_or_else(|| format!("override {path} is not section.key"))?;
+            let slot = table
+                .get_mut(section)
+                .and_then(|s| s.as_table_mut())
+                .and_then(|s| s.get_mut(key))
+                .ok_or_else(|| format!("override {path} names no project key"))?;
+            *slot = match slot {
+                toml::Value::Integer(_) => toml::Value::Integer(value.round() as i64),
+                _ => toml::Value::Float(*value),
+            };
+        }
+        self.project_text = toml::to_string(&table).map_err(|e| format!("project: {e}"))?;
+        crate::scf::params::Project::parse(&self.project_text, self.project_dir.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// The imported mesh and the scale that puts its bounding radius at 1.
@@ -92,7 +160,8 @@ pub fn display_positions(vertices: &[[f64; 3]], scale: f64) -> Vec<[f32; 3]> {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// The worker has not been started.
     Idle,
@@ -103,7 +172,7 @@ pub enum Phase {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct FrameStats {
     pub step: usize,
     pub time: f64,
