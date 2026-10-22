@@ -31,3 +31,5 @@
 .idea/
 .vscode/
 *.swp
+.gitignore
+Cargo.lock
