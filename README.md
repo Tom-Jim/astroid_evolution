@@ -16,9 +16,9 @@ Material and orbital constants come from the literature where a value exists (so
 
 ### What these results rest on
 
-- **Slope relief moves the surface.** In all three runs the regularized creep stays below the yield threshold (≈ 3 γ̇_ε), no surface vertex ever leaves the rigid core, and Mode C never erodes. Every change of shape comes from slope promotion: the loose-layer vertices of faces steeper than the angle-of-repose proxy are freed for the cone program and relieved (mathstrict §2.8c, hypothesis A-C4).
+- **Slope relief moves the surface.** The yield test is a stress-ratio test: a point yields when equilibrium needs more than 95 % of the local strength (mathstrict §2.8 B2). The Stokes solve resolves only the long wavelengths of the body and decides deep-seated and whole-body failure; it does not resolve the 1–5 m loose layer. In all three runs no surface vertex ever leaves the rigid core and Mode C never erodes. Every change of shape comes from slope promotion, the subgrid closure of shallow failure: the loose-layer vertices of faces that fail the infinite-slope balance at depth h_s (the angle-of-repose proxy) are freed for the cone program and relieved (mathstrict §2.8c, hypothesis A-C4).
 - **Slide timing is partly numerical.** The relief is instantaneous on the geological scale. The onset of a slide (the step its slope first exceeds the proxy) is physical; its duration and the displacement per step are set by the trust radius (`geometry.trust0`) and by `step.dt_max`. On Phobos the largest displacement per step equals the trust radius.
-- **The stress field is coarse.** The bundled projects solve the Stokes problem with spherical-harmonic degree 2 (64 unknowns) on 96 quadrature points; the reported rotational residual is 0.25–0.62. No resolution study has been made (mathstrict §8.4).
+- **The stress field is coarse.** The bundled projects solve the Stokes problem on a harmonic surface of degree 4 with a velocity basis of degree 2 (64 unknowns) on 96 quadrature points; the reported rotational residual is 0.25–0.62. No resolution study has been made (mathstrict §8.4).
 
 ## Architecture
 
