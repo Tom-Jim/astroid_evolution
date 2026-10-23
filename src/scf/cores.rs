@@ -289,18 +289,27 @@ fn kernel_jet(p: &[f64], alpha: f64, x: DVec3) -> (f64, [f64; NP]) {
     (rho, g)
 }
 
+/// Quadrature sums run over this many contiguous blocks, added in order: the result
+/// does not depend on how rayon splits the work, so runs repeat bit for bit.
+const SUM_BLOCKS: usize = 64;
+
+fn blocks(len: usize) -> impl IndexedParallelIterator<Item = std::ops::Range<usize>> {
+    let size = len.div_ceil(SUM_BLOCKS).max(1);
+    (0..len.div_ceil(size)).into_par_iter().map(move |b| b * size..((b + 1) * size).min(len))
+}
+
 /// `e_ρ` of §9.10.5 between a density and target values on a quadrature.
 pub fn misfit(density: &CauchyDensity, quad: &Quadrature, target: &[f64]) -> f64 {
-    let (num, den) = quad
-        .pts
-        .par_iter()
-        .zip(&quad.w)
-        .zip(target)
-        .map(|((x, w), t)| {
-            let r = density.rho(*x) - t;
-            (w * r * r, w * t * t)
+    let parts: Vec<(f64, f64)> = blocks(quad.pts.len())
+        .map(|range| {
+            range.fold((0.0, 0.0), |(num, den), i| {
+                let (w, t) = (quad.w[i], target[i]);
+                let r = density.rho(quad.pts[i]) - t;
+                (num + w * r * r, den + w * t * t)
+            })
         })
-        .reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+        .collect();
+    let (num, den) = parts.iter().fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
     (num / den.max(1e-300)).sqrt()
 }
 
@@ -323,25 +332,24 @@ pub fn refit(
     let mut theta: Vec<f64> = kernels.iter().flat_map(pack).collect();
     // Objective, normal matrix, gradient, mass and mass gradient over the points.
     let assemble = |theta: &[f64]| {
-        quad.pts
-            .par_iter()
-            .zip(&quad.w)
-            .zip(target)
-            .fold(
-                || {
-                    (
-                        0.0,
-                        DMatrix::<f64>::zeros(n, n),
-                        DVector::<f64>::zeros(n),
-                        0.0,
-                        DVector::<f64>::zeros(n),
-                        vec![0.0; n],
-                    )
-                },
-                |(mut f, mut h, mut g, mut m, mut gm, mut j), ((x, w), t)| {
+        let zero = || {
+            (
+                0.0,
+                DMatrix::<f64>::zeros(n, n),
+                DVector::<f64>::zeros(n),
+                0.0,
+                DVector::<f64>::zeros(n),
+            )
+        };
+        let parts: Vec<_> = blocks(quad.pts.len())
+            .map(|range| {
+                let (mut f, mut h, mut g, mut m, mut gm) = zero();
+                let mut j = vec![0.0; n];
+                for i in range {
+                    let (x, w, t) = (quad.pts[i], quad.w[i], target[i]);
                     let mut rho = bulk;
                     for k in 0..nk {
-                        let (r, d) = kernel_jet(&theta[NP * k..NP * (k + 1)], alphas[k], *x);
+                        let (r, d) = kernel_jet(&theta[NP * k..NP * (k + 1)], alphas[k], x);
                         rho += r;
                         j[NP * k..NP * (k + 1)].copy_from_slice(&d);
                     }
@@ -358,22 +366,13 @@ pub fn refit(
                             h[(a, b)] += w * j[a] * j[b];
                         }
                     }
-                    (f, h, g, m, gm, j)
-                },
-            )
-            .map(|(f, h, g, m, gm, _)| (f, h, g, m, gm))
-            .reduce(
-                || {
-                    (
-                        0.0,
-                        DMatrix::<f64>::zeros(n, n),
-                        DVector::<f64>::zeros(n),
-                        0.0,
-                        DVector::<f64>::zeros(n),
-                    )
-                },
-                |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4),
-            )
+                }
+                (f, h, g, m, gm)
+            })
+            .collect();
+        parts.into_iter().fold(zero(), |a, b| {
+            (a.0 + b.0, a.1 + b.1, a.2 + b.2, a.3 + b.3, a.4 + b.4)
+        })
     };
     let (mut f, mut h, mut g, m0, mut gm) = assemble(&theta);
     let mut mass = m0;

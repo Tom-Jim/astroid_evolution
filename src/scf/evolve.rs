@@ -991,6 +991,11 @@ pub fn run(
 /// `χ_Y` is read at the nearest point of the classification grid `X_Y`.
 fn advection(mech: &Mechanics, dirs: &[DVec3], index: &DirIndex, pts: &[DVec3]) -> Vec<DVec3> {
     let cl = &mech.class;
+    // Every point of X_Y in the rigid core: χ_Y = 0 everywhere and the result is zero,
+    // so the velocity basis is not evaluated.
+    if cl.in_core.iter().all(|c| *c) {
+        return vec![DVec3::ZERO; pts.len()];
+    }
     let v = contract_velocity_rays(&mech.surf, &mech.ops.lay, pts, 1, Want::V, &mech.sol.u).v;
     pts.iter()
         .enumerate()

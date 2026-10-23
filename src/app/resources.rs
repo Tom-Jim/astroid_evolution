@@ -13,6 +13,10 @@ pub struct SurfaceView;
 #[derive(Component)]
 pub struct RegolithView;
 
+/// The browser's wireframe: the surface edges as lines (`render::edge_mesh`).
+#[derive(Component)]
+pub struct WireView;
+
 
 /// Project the desktop window and the browser page open when none is given.
 pub const DEFAULT_PROJECT: &str = "dist/.stage/assets/projects/ryugu.toml";

@@ -211,6 +211,23 @@ fn pressure_poly0(k: usize) -> Vec<f64> {
     out
 }
 
+/// Size of the ζ-power arrays of the velocity jet kernels (`array<Jt_n, 12>` in
+/// `basis.wesl`). Each GPU thread holds one; Metal reserves that private memory for every
+/// thread in flight, so the arrays are sized to the velocity basis (l ≤ 8, K = 4), not
+/// to the pressure table.
+const VEL_POWS: usize = 12;
+
+/// Last ζ power of the velocity kernels, checked against [`VEL_POWS`].
+fn velocity_top_power(l_max: usize) -> Result<usize, String> {
+    let top = l_max + K - 1;
+    if top >= VEL_POWS {
+        return Err(format!(
+            "velocity radial degree l + k = {top} exceeds the GPU power table ({VEL_POWS})"
+        ));
+    }
+    Ok(top)
+}
+
 /// Highest power of ζ the kernels read for `pack_polys(l_max, k, pressure)`.
 fn top_power(l_max: usize, k_count: usize, pressure: bool) -> usize {
     if pressure {
@@ -397,7 +414,7 @@ pub(crate) fn velocity(
     let grouped = kernel.grouped;
     let n_per = if grouped { n_per } else { 1 };
     let n_rays = np / n_per;
-    let top = lay.l_max + K - 1;
+    let top = velocity_top_power(lay.l_max)?;
     if top > kernel.name_limit as usize {
         return Err(format!(
             "velocity power index {top} exceeds the {} kernel",
@@ -786,7 +803,7 @@ pub(crate) fn contract_velocity(
     let n_per = if grouped { n_per } else { 1 };
     let n_rays = np / n_per;
     let (polys, stride) = pack_polys(lay.l_max, K, false)?;
-    let top = lay.l_max + K - 1;
+    let top = velocity_top_power(lay.l_max)?;
     if top > kernel.name_limit as usize {
         return Err(format!(
             "velocity power index {top} exceeds the {} kernel",
@@ -881,7 +898,7 @@ pub(crate) fn resident_basis(
     }
     let kernel = velocity_kernel(want.order(), lay.l_max, false)?;
     let (polys, stride) = pack_polys(lay.l_max, K, false)?;
-    let top = lay.l_max + K - 1;
+    let top = velocity_top_power(lay.l_max)?;
     if top > kernel.name_limit as usize {
         return Err(format!(
             "velocity power index {top} exceeds the strain kernel"

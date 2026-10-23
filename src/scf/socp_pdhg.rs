@@ -18,6 +18,8 @@
 
 use crate::common::time::wall_seconds;
 
+mod cpu;
+
 /// Row residual, block stationarity, duality gap, and dual-cone feasibility.
 pub const KKT_TOL: f64 = 1.0e-3;
 /// Residual checks stay on this cadence. A longer batch changes when the
@@ -30,6 +32,12 @@ const GAP_ITERS_CAP: u32 = 80_000;
 /// Twenty residual checks. The gap extension ends when a window this long
 /// does not cut the gap by five percent.
 const GAP_WINDOW: u32 = 960;
+/// Batches one submission may run past the batch whose residuals are checked. A
+/// browser round trip costs milliseconds, a native one a fraction of that.
+#[cfg(target_arch = "wasm32")]
+const MAX_AHEAD: usize = 16;
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_AHEAD: usize = 8;
 
 /// Extra iterations `k (gap/tol − 1) · 2`, capped at `GAP_ITERS_CAP`.
 fn gap_extension(iter: u32, gap: f64) -> u32 {
@@ -146,6 +154,172 @@ struct Candidate {
     residuals: Residuals,
 }
 
+/// The CPU in f64 by default: faster than the GPU kernels on every cone program of
+/// the bundled bodies (a few hundred to several thousand rows), more precise than
+/// their double-single, and free of GPU round trips (milliseconds each in the browser).
+fn on_cpu() -> bool {
+    std::env::var("AE_PDHG").as_deref() != Ok("gpu")
+}
+
+/// Where the batches run: the GPU kernels in double-single, or the same iteration on
+/// the CPU in f64.
+enum Engine {
+    Gpu(gpu::Device),
+    Cpu(cpu::Device),
+}
+
+/// The iterates after a batch, as the engine holds them.
+#[derive(Clone)]
+enum Snapshot {
+    Gpu(gpu::Words),
+    Cpu(cpu::State),
+}
+
+impl Snapshot {
+    /// `(x, y, x_avg, y_avg)`.
+    fn iterates(&self) -> [Vec<f64>; 4] {
+        match self {
+            Self::Gpu(words) => words.each_ref().map(|w| gpu::undo(w)),
+            Self::Cpu(state) => state.clone(),
+        }
+    }
+}
+
+impl Engine {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        a: &Csr,
+        p: &[f64],
+        q: &[f64],
+        b: &[f64],
+        tau: &[f64],
+        sigma: &[f64],
+        n_eq: usize,
+        n_nn: usize,
+        n_soc: usize,
+        n_trust: usize,
+    ) -> Result<Self, PdhgError> {
+        Ok(if on_cpu() {
+            Self::Cpu(cpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust))
+        } else {
+            Self::Gpu(gpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust)?)
+        })
+    }
+
+    fn run(&mut self, plan: &[(u32, u32)], scale: f64) -> Result<Vec<Snapshot>, PdhgError> {
+        Ok(match self {
+            Self::Gpu(d) => d.run(plan, scale)?.into_iter().map(Snapshot::Gpu).collect(),
+            Self::Cpu(c) => c.run(plan, scale).into_iter().map(Snapshot::Cpu).collect(),
+        })
+    }
+
+    fn restore(&mut self, snap: &Snapshot) -> Result<(), PdhgError> {
+        match (self, snap) {
+            (Self::Gpu(d), Snapshot::Gpu(words)) => d.restore(words),
+            (Self::Cpu(c), Snapshot::Cpu(state)) => {
+                c.restore(state);
+                Ok(())
+            }
+            _ => Err(PdhgError::Gpu("PDHG snapshot from another engine".into())),
+        }
+    }
+
+    fn write_state(&mut self, x: &[f64], y: &[f64], xavg: &[f64], yavg: &[f64]) -> Result<(), PdhgError> {
+        match self {
+            Self::Gpu(d) => d.write_state(x, y, xavg, yavg),
+            Self::Cpu(c) => {
+                c.write_state(x, y, xavg, yavg);
+                Ok(())
+            }
+        }
+    }
+
+    /// Batches worth running ahead of the residual check: a GPU submission costs a
+    /// round trip, a CPU batch only its iterations.
+    fn ahead_limit(&self) -> usize {
+        match self {
+            Self::Gpu(_) => MAX_AHEAD,
+            Self::Cpu(_) => 1,
+        }
+    }
+}
+
+/// A batch the device ran before the loop asked for it, and the parameters it ran with.
+struct Planned {
+    iters: u32,
+    avg_count: u32,
+    scale: f64,
+    snap: Snapshot,
+}
+
+/// Batches run ahead of the residual check. The loop takes them in order while each
+/// is the batch it would have asked for (same length, average count and step scale,
+/// no rewritten state); otherwise the rest are dropped, the device goes back to the
+/// last batch taken, and the run continues from there. The iterates are therefore
+/// those of one batch per submission.
+#[derive(Default)]
+struct Ahead {
+    queue: std::collections::VecDeque<Planned>,
+    /// The batch taken last, while the device has run further.
+    taken: Option<Snapshot>,
+    len: usize,
+}
+
+impl Ahead {
+    fn next(
+        &mut self,
+        device: &mut Engine,
+        iters: u32,
+        avg_count: u32,
+        scale: f64,
+        iter: u32,
+        limit: u32,
+    ) -> Result<Snapshot, PdhgError> {
+        let hit = self.queue.front().is_some_and(|p| {
+            p.iters == iters && p.avg_count == avg_count && p.scale.to_bits() == scale.to_bits()
+        });
+        if !hit {
+            if self.queue.is_empty() {
+                self.len = (self.len * 2).clamp(1, device.ahead_limit());
+            } else {
+                if let Some(snap) = &self.taken {
+                    device.restore(snap)?;
+                }
+                self.queue.clear();
+                self.len = 1;
+            }
+            let mut plan = Vec::with_capacity(self.len);
+            let (mut at, mut count) = (iter, avg_count);
+            while plan.len() < self.len && at < limit {
+                let b = CHECK_ITERS.min(limit - at);
+                plan.push((b, count));
+                at += b;
+                count += b;
+            }
+            for (&(iters, avg_count), snap) in plan.iter().zip(device.run(&plan, scale)?) {
+                self.queue.push_back(Planned {
+                    iters,
+                    avg_count,
+                    scale,
+                    snap,
+                });
+            }
+        }
+        let planned = self
+            .queue
+            .pop_front()
+            .ok_or_else(|| PdhgError::Gpu("PDHG planned no batch".into()))?;
+        self.taken = (!self.queue.is_empty()).then(|| planned.snap.clone());
+        Ok(planned.snap)
+    }
+
+    /// The loop wrote the device state: nothing run ahead applies any more.
+    fn rewritten(&mut self) {
+        self.queue.clear();
+        self.taken = None;
+    }
+}
+
 pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
     let started = wall_seconds();
     let n = problem.p_diag.len();
@@ -194,7 +368,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
     );
     let mut step_scale = 1.0_f64;
 
-    let device = gpu::Device::new(
+    let mut device = Engine::new(
         &scaled,
         &p,
         &q,
@@ -254,6 +428,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
     let mut refines = 0u32;
     let mut held_step = false;
     let mut limit = MAX_ITERS;
+    let mut ahead = Ahead::default();
     let mut gap_phase = false;
     let mut gap_anchor = f64::INFINITY;
     let mut gap_anchor_iter = 0u32;
@@ -273,10 +448,11 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
 
     while iter < limit {
         let batch = CHECK_ITERS.min(limit - iter);
-        let (z, y, za, ya) = {
+        let words = {
             let _span = super::timing::span("pdhg_gpu");
-            device.step(batch, step_scale, step_scale, avg_count)?
+            ahead.next(&mut device, batch, avg_count, step_scale, iter, limit)?
         };
+        let [z, y, za, ya] = words.iterates();
         iter += batch;
         avg_count += batch;
         if !(finite(&z) && finite(&y) && finite(&za) && finite(&ya)) {
@@ -286,6 +462,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
             }
             step_scale *= 0.5;
             device.write_state(&best.z, &best.y, &best.z, &best.y)?;
+            ahead.rewritten();
             avg_count = 1;
             stall = 0;
             if log {
@@ -341,6 +518,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
                 step_scale = 1.0;
                 backoff = 0;
                 device.write_state(&best.z, &best.y, &best.z, &best.y)?;
+                ahead.rewritten();
                 avg_count = 1;
                 if log {
                     eprintln!("pdhg metric dropped; restore step");
@@ -419,6 +597,7 @@ pub fn solve(problem: Problem) -> Result<Solution, PdhgError> {
                 step_scale = 1.0;
                 stall = 0;
                 device.write_state(&best.z, &best.y, &best.z, &best.y)?;
+                ahead.rewritten();
                 avg_count = 1;
             }
         }
@@ -2184,27 +2363,27 @@ mod gpu {
         inv: [f32; 2],
     }
 
-    fn ds(values: &[f64]) -> Vec<[f32; 2]> {
+    pub(super) fn ds(values: &[f64]) -> Vec<[f32; 2]> {
         values
             .iter()
             .map(|&x| crate::common::math::ds_pair(x))
             .collect()
     }
 
-    fn undo(words: Vec<[f32; 2]>) -> Vec<f64> {
+    pub(super) fn undo(words: &[[f32; 2]]) -> Vec<f64> {
         words
             .iter()
             .map(|w| f64::from(w[0]) + f64::from(w[1]))
             .collect()
     }
 
-    struct Csc {
-        ptr: Vec<u32>,
-        row: Vec<u32>,
-        val: Vec<f64>,
+    pub(super) struct Csc {
+        pub(super) ptr: Vec<u32>,
+        pub(super) row: Vec<u32>,
+        pub(super) val: Vec<f64>,
     }
 
-    fn transpose(a: &Csr) -> Csc {
+    pub(super) fn transpose(a: &Csr) -> Csc {
         let mut ptr = vec![0u32; a.n + 1];
         for &c in &a.col {
             ptr[c as usize + 1] += 1;
@@ -2227,6 +2406,9 @@ mod gpu {
         Csc { ptr, row, val }
     }
 
+    /// Device words of `(x, y, x_avg, y_avg)`.
+    pub type Words = [Vec<[f32; 2]>; 4];
+
     pub struct Device {
         nx: usize,
         m: usize,
@@ -2244,6 +2426,24 @@ mod gpu {
         csr: [Res; 3],
         /// x, xbar, xavg, y, yavg, ax, (q, P, τ) per column, b, σ, step.
         state: [Res; 10],
+        /// `pdhg_batch` header and indices, and its constants, when the problem fits one
+        /// workgroup.
+        batch: Option<[Res; 2]>,
+    }
+
+    /// Words of the `pdhg_batch` header, before the index arrays.
+    const BATCH_HEADER: usize = 19;
+
+    /// Whether one 256-lane workgroup holds every column, row, cone job and long-row
+    /// chunk (the array sizes of `pdhg_batch`). `AE_PDHG_SPLIT=1` keeps one kernel per
+    /// phase.
+    pub(super) fn fits_batch(nx: usize, m: usize, n_jobs: usize, n_trust: usize, n_chunks: usize) -> bool {
+        std::env::var_os("AE_PDHG_SPLIT").is_none()
+            && nx <= 256
+            && m <= 256
+            && n_jobs <= 256
+            && n_trust <= 256
+            && n_chunks <= 16
     }
 
     impl Device {
@@ -2280,6 +2480,47 @@ mod gpu {
             }
             let n_chunks = (chunks.len() / 3) as u32;
             let zeros = |n: usize| Res::zeroed((n * 8) as u64).map_err(e);
+            let colc: Vec<f64> = (0..a.n).flat_map(|j| [q[j], p[j], tau[j]]).collect();
+            let batch = if fits_batch(a.n, a.m, n_eq + n_nn + n_soc, n_trust, n_chunks as usize)
+            {
+                let mut hdr = vec![0u32; BATCH_HEADER];
+                hdr[1..9].copy_from_slice(&[
+                    a.n as u32,
+                    a.m as u32,
+                    n_eq as u32,
+                    n_nn as u32,
+                    n_soc as u32,
+                    n_trust as u32,
+                    long_rows.len() as u32,
+                    n_chunks,
+                ]);
+                // The row indices follow the column pointers, as in `csc[0]`.
+                for (slot, part) in [
+                    (Some(9), &csc.ptr),
+                    (None, &csc.row),
+                    (Some(10), &a.row_ptr),
+                    (Some(11), &a.col),
+                    (Some(12), &chunks),
+                    (Some(13), &longs),
+                ] {
+                    if let Some(slot) = slot {
+                        hdr[slot] = hdr.len() as u32;
+                    }
+                    hdr.extend_from_slice(part);
+                }
+                let mut cst = Vec::new();
+                let values: [&[f64]; 5] = [&csc.val, &colc, &a.val, b, sigma];
+                for (slot, part) in values.into_iter().enumerate() {
+                    hdr[14 + slot] = cst.len() as u32;
+                    cst.extend(ds(part));
+                }
+                Some([
+                    Res::from_slice(&hdr).map_err(e)?,
+                    Res::from_slice(&cst).map_err(e)?,
+                ])
+            } else {
+                None
+            };
             Ok(Self {
                 nx: a.n,
                 m: a.m,
@@ -2306,14 +2547,12 @@ mod gpu {
                     zeros(a.m)?,
                     zeros(a.m)?,
                     zeros(a.m)?,
-                    Res::from_slice(&ds(&(0..a.n)
-                        .flat_map(|j| [q[j], p[j], tau[j]])
-                        .collect::<Vec<_>>()))
-                    .map_err(e)?,
+                    Res::from_slice(&ds(&colc)).map_err(e)?,
                     Res::from_slice(&ds(b)).map_err(e)?,
                     Res::from_slice(&ds(sigma)).map_err(e)?,
                     Res::zeroed(std::mem::size_of::<Step>() as u64).map_err(e)?,
                 ],
+                batch,
             })
         }
 
@@ -2340,22 +2579,49 @@ mod gpu {
             job.submit().map(|_| ()).map_err(PdhgError::Gpu)
         }
 
-        /// `iters` iterations, then the iterates `(x, y, x_avg, y_avg)`.
-        #[allow(clippy::type_complexity)]
-        pub fn step(
-            &self,
-            iters: u32,
-            tau: f64,
-            sigma: f64,
-            avg_count: u32,
-        ) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>), PdhgError> {
+        /// Batches of `(iterations, average count)` back to back at one step scale in
+        /// one submission, and the device words of `(x, y, x_avg, y_avg)` after each.
+        pub fn run(&self, plan: &[(u32, u32)], scale: f64) -> Result<Vec<Words>, PdhgError> {
+            let st = &self.state;
+            let [x, _, xavg, y, yavg, ..] = st.each_ref();
+            let mut job = Job::new();
+            let mut reads = Vec::with_capacity(plan.len());
+            for &(iters, avg_count) in plan {
+                self.encode(&mut job, iters, scale, scale, avg_count);
+                reads.push(
+                    [(x, self.nx), (y, self.m), (xavg, self.nx), (yavg, self.m)]
+                        .map(|(r, n)| job.read(r, 0, (n * 8) as u64)),
+                );
+            }
+            let out = job.submit().map_err(PdhgError::Gpu)?;
+            Ok(reads
+                .into_iter()
+                .map(|batch| batch.map(|i| out.get::<[f32; 2]>(i)))
+                .collect())
+        }
+
+        /// Put back the iterates of an earlier batch, word for word. Nothing else
+        /// carries over between batches: x̄ and Ax are rewritten before they are read,
+        /// and the step block is written with every batch.
+        pub fn restore(&self, words: &Words) -> Result<(), PdhgError> {
+            let st = &self.state;
+            let mut job = Job::new();
+            for (r, w) in [(&st[0], &words[0]), (&st[3], &words[1]), (&st[2], &words[2]), (&st[4], &words[3])] {
+                if !w.is_empty() {
+                    job.write(r, 0, w);
+                }
+            }
+            job.submit().map(|_| ()).map_err(PdhgError::Gpu)
+        }
+
+        /// Record `iters` iterations.
+        fn encode(&self, job: &mut Job, iters: u32, tau: f64, sigma: f64, avg_count: u32) {
             let [n_eq, n_nn, n_soc, n_trust] = self.counts;
             let n_jobs = (n_eq + n_nn + n_soc) as usize;
             let st = &self.state;
             let [x, xbar, xavg, y, yavg, ax, colc, b, sdiag, step] = st.each_ref();
             let [ci, cv] = self.csc.each_ref();
             let [rp, rc, rv] = self.csr.each_ref();
-            let mut job = Job::new();
             let s = Step {
                 nx: self.nx as u32,
                 m: self.m as u32,
@@ -2370,7 +2636,25 @@ mod gpu {
                 inv: ds(&[1.0 / (f64::from(avg_count) + 1.0)])[0],
             };
             job.write(step, 0, std::slice::from_ref(&s));
-            for _ in 0..iters {
+            if let Some([hdr, cst]) = &self.batch {
+                job.write(hdr, 0, &[iters]);
+                job.run(
+                    &kernels::PDHG_BATCH,
+                    [1, 1, 1],
+                    &[
+                        hdr.into(),
+                        cst.into(),
+                        x.into(),
+                        xavg.into(),
+                        y.into(),
+                        yavg.into(),
+                        step.into(),
+                    ],
+                );
+            }
+            // Without the fused kernel, one dispatch per phase and iteration.
+            let split = if self.batch.is_some() { 0 } else { iters };
+            for _ in 0..split {
                 if self.nx > 0 {
                     let k = &kernels::PDHG_PRIMAL;
                     job.run(
@@ -2467,11 +2751,6 @@ mod gpu {
                 let k = &kernels::PDHG_TICK;
                 job.run(k, [1, 1, 1], &[step.into()]);
             }
-            let reads = [(x, self.nx), (y, self.m), (xavg, self.nx), (yavg, self.m)]
-                .map(|(r, n)| job.read(r, 0, (n * 8) as u64));
-            let out = job.submit().map_err(PdhgError::Gpu)?;
-            let [a, bb, c, d] = reads.map(|i| undo(out.get::<[f32; 2]>(i)));
-            Ok((a, bb, c, d))
         }
     }
 }

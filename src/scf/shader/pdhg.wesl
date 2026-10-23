@@ -443,3 +443,271 @@ fn pdhg_tick() {
     tick.inv_lo = inv.lo;
 }
 // END ENTRY pdhg_tick
+
+// ENTRY pdhg_batch
+// A whole batch in one workgroup, for a problem whose columns, rows, cones and long-row
+// chunks fit the lanes and arrays below. Each phase is the arithmetic of pdhg_primal …
+// pdhg_tick in the same order, so the iterates are the same bits; x̄, Ax and the
+// partial sums stay in workgroup memory, and a barrier stands where a kernel ended.
+// One dispatch replaces up to eight per iteration.
+// `hdr`: iterations, nx, m, n_eq, n_nn, n_soc, n_trust, n_long, n_chunks; the offsets
+// in `hdr` of the column pointers and row indices, row_ptr, col_idx, chunks and longs;
+// the offsets in `cst` of the CSC values, (q, P, τ) per column, CSR values, b and σ.
+@group(0) @binding(0)
+var<storage, read> hdr: array<u32>;
+@group(0) @binding(1)
+var<storage, read> cst: array<vec2<f32>>;
+@group(0) @binding(2)
+var<storage, read_write> x: array<vec2<f32>>;
+@group(0) @binding(3)
+var<storage, read_write> xavg: array<vec2<f32>>;
+@group(0) @binding(4)
+var<storage, read_write> y: array<vec2<f32>>;
+@group(0) @binding(5)
+var<storage, read_write> yavg: array<vec2<f32>>;
+@group(0) @binding(6)
+var<storage, read_write> step: Step;
+var<workgroup> bxbar: array<vec2<f32>, 256>;
+var<workgroup> bax: array<vec2<f32>, 256>;
+var<workgroup> bred_hi: array<f32, 256>;
+var<workgroup> bred_lo: array<f32, 256>;
+var<workgroup> blpart: array<vec2<f32>, 16>;
+// Trust-cone partial of |w|² and the head t.
+var<workgroup> btpart: array<vec2<f32>, 2>;
+var<workgroup> bstep: Step;
+
+fn cds(i: u32) -> ds {
+    return ds(cst[i].x, cst[i].y);
+}
+
+// The tree of pdhg_ax_long and the trust kernels over bred_hi/bred_lo.
+fn batch_tree(lane: u32) {
+    workgroupBarrier();
+    for(var stride = 128u; stride > 0u; stride = stride >> 1u) {
+        if lane < stride {
+            let part = acc_add(
+                    dsacc(bred_hi[lane], bred_lo[lane]),
+                    ds(bred_hi[lane + stride], bred_lo[lane + stride]),
+                );
+            bred_hi[lane] = part.hi;
+            bred_lo[lane] = part.lo;
+        }
+        workgroupBarrier();
+    }
+}
+
+// y + σ(Ax − b) for one row.
+fn batch_pred(row: u32, sigma: ds, o_b: u32) -> ds {
+    return ds_addp(
+        ds(y[row].x, y[row].y),
+        ds_mul(sigma, ds_subp(ds(bax[row].x, bax[row].y), cds(o_b + row))),
+    );
+}
+
+@compute @workgroup_size(256)
+fn pdhg_batch(@builtin(local_invocation_id) lid3: vec3<u32>) {
+    let lane = lid3.x;
+    let iters = hdr[0];
+    let nx = hdr[1];
+    let m = hdr[2];
+    let n_eq = hdr[3];
+    let n_nn = hdr[4];
+    let n_soc = hdr[5];
+    let n_trust = hdr[6];
+    let n_long = hdr[7];
+    let n_chunks = hdr[8];
+    let o_cidx = hdr[9];
+    let o_rp = hdr[10];
+    let o_col = hdr[11];
+    let o_chunks = hdr[12];
+    let o_longs = hdr[13];
+    let o_cval = hdr[14];
+    let o_colc = hdr[15];
+    let o_rval = hdr[16];
+    let o_b = hdr[17];
+    let o_sig = hdr[18];
+    let n_lin = n_eq + n_nn;
+    let n_jobs = n_lin + n_soc;
+    if lane == 0u {
+        bstep = step;
+    }
+    workgroupBarrier();
+    for(var it = 0u; it < iters; it = it + 1u) {
+        let s = bstep;
+        // pdhg_primal
+        if lane < nx {
+            let rows = nx + 1u;
+            var acc: dsacc = acc_zero();
+            let end = hdr[o_cidx + lane + 1u];
+            for(var k: u32 = hdr[o_cidx + lane]; k < end; k = k + 1u) {
+                let yr = y[hdr[o_cidx + rows + k]];
+                acc = acc_fma(acc, cds(o_cval + k), ds(yr.x, yr.y));
+            }
+            let c = o_colc + 3u * lane;
+            let tau = ds_mul(cds(c + 2u), step_tau(s));
+            let x_old = ds(x[lane].x, x[lane].y);
+            let grad = ds_addp(acc_done(acc), cds(c));
+            let num = ds_subp(x_old, ds_mul(tau, grad));
+            let den = ds_addp(ds_f(1.0), ds_mul(tau, cds(c + 1u)));
+            let x_new = ds_div(num, den);
+            x[lane] = vec2<f32>(x_new.hi, x_new.lo);
+            let xb = ds_subp(ds_scale(x_new, 2.0), x_old);
+            bxbar[lane] = vec2<f32>(xb.hi, xb.lo);
+            let mixed = mix_avg(ds(xavg[lane].x, xavg[lane].y), x_new, s);
+            xavg[lane] = vec2<f32>(mixed.hi, mixed.lo);
+        }
+        workgroupBarrier();
+        // pdhg_ax
+        if lane < m {
+            let begin = hdr[o_rp + lane];
+            let end = hdr[o_rp + lane + 1u];
+            if end - begin <= 32u {
+                var acc: dsacc = acc_zero();
+                for(var k: u32 = begin; k < end; k = k + 1u) {
+                    let xv = bxbar[hdr[o_col + k]];
+                    acc = acc_fma(acc, cds(o_rval + k), ds(xv.x, xv.y));
+                }
+                bax[lane] = vec2<f32>((acc_done(acc)).hi, (acc_done(acc)).lo);
+            }
+        }
+        // pdhg_ax_long, pdhg_ax_long_sum
+        if n_long > 0u {
+            for(var c = 0u; c < n_chunks; c = c + 1u) {
+                let ch = o_chunks + 3u * c;
+                let end = hdr[ch + 2u];
+                var acc: dsacc = acc_zero();
+                for(var k = hdr[ch + 1u] + lane; k < end; k = k + 256u) {
+                    let xv = bxbar[hdr[o_col + k]];
+                    acc = acc_fma(acc, cds(o_rval + k), ds(xv.x, xv.y));
+                }
+                workgroupBarrier();
+                bred_hi[lane] = acc.hi;
+                bred_lo[lane] = acc.lo;
+                batch_tree(lane);
+                if lane == 0u {
+                    blpart[c] = vec2<f32>(bred_hi[0], bred_lo[0]);
+                }
+            }
+            workgroupBarrier();
+            if lane < n_long {
+                let r = o_longs + 3u * lane;
+                let first = hdr[r + 1u];
+                var acc: dsacc = acc_zero();
+                for(var c = first; c < first + hdr[r + 2u]; c = c + 1u) {
+                    acc = acc_add(acc, ds(blpart[c].x, blpart[c].y));
+                }
+                let v = acc_done(acc);
+                bax[hdr[r]] = vec2<f32>(v.hi, v.lo);
+            }
+        }
+        workgroupBarrier();
+        // pdhg_dual
+        if lane < n_lin {
+            let sigma = ds_mul(cds(o_sig + lane), step_sigma(s));
+            var pred = batch_pred(lane, sigma, o_b);
+            if lane >= n_eq {
+                pred = ds_max0(pred);
+            }
+            y[lane] = vec2<f32>((pred).hi, (pred).lo);
+            let mixed = mix_avg(ds(yavg[lane].x, yavg[lane].y), pred, s);
+            yavg[lane] = vec2<f32>(mixed.hi, mixed.lo);
+        } else if lane < n_jobs {
+            let row = n_lin + (lane - n_lin) * 4u;
+            let sigma = ds_mul(cds(o_sig + row), step_sigma(s));
+            let t0 = batch_pred(row, sigma, o_b);
+            let t1 = batch_pred(row + 1u, sigma, o_b);
+            let t2 = batch_pred(row + 2u, sigma, o_b);
+            let t3 = batch_pred(row + 3u, sigma, o_b);
+            let nrm = ds_sqrt(ds_addp(ds_addp(ds_sqr(t1), ds_sqr(t2)), ds_sqr(t3)));
+            if !ds_gt(nrm, t0) {
+                y[row] = vec2<f32>((t0).hi, (t0).lo);
+                y[row + 1u] = vec2<f32>((t1).hi, (t1).lo);
+                y[row + 2u] = vec2<f32>((t2).hi, (t2).lo);
+                y[row + 3u] = vec2<f32>((t3).hi, (t3).lo);
+            } else if !ds_gt(nrm, ds_neg(t0)) {
+                let z = ds_zero();
+                y[row] = vec2<f32>((z).hi, (z).lo);
+                y[row + 1u] = vec2<f32>((z).hi, (z).lo);
+                y[row + 2u] = vec2<f32>((z).hi, (z).lo);
+                y[row + 3u] = vec2<f32>((z).hi, (z).lo);
+            } else {
+                let a = ds_div(ds_addp(nrm, t0), ds_scale(nrm, 2.0));
+                y[row] = vec2<f32>((ds_mul(a, nrm)).hi, (ds_mul(a, nrm)).lo);
+                y[row + 1u] = vec2<f32>((ds_mul(a, t1)).hi, (ds_mul(a, t1)).lo);
+                y[row + 2u] = vec2<f32>((ds_mul(a, t2)).hi, (ds_mul(a, t2)).lo);
+                y[row + 3u] = vec2<f32>((ds_mul(a, t3)).hi, (ds_mul(a, t3)).lo);
+            }
+            for(var r = row; r < row + 4u; r = r + 1u) {
+                let mixed = mix_avg(ds(yavg[r].x, yavg[r].y), ds(y[r].x, y[r].y), s);
+                yavg[r] = vec2<f32>(mixed.hi, mixed.lo);
+            }
+        }
+        // pdhg_trust_pred, pdhg_trust_proj (one workgroup: at most 256 rows)
+        if n_trust > 0u {
+            let row0 = n_lin + n_soc * 4u;
+            var sq: dsacc = acc_zero();
+            if lane < n_trust {
+                let sigma = ds_mul(cds(o_sig + row0), step_sigma(s));
+                let row = row0 + lane;
+                let p = batch_pred(row, sigma, o_b);
+                y[row] = vec2<f32>(p.hi, p.lo);
+                if lane == 0u {
+                    btpart[1] = vec2<f32>(p.hi, p.lo);
+                } else {
+                    sq = acc_fma(sq, p, p);
+                }
+            }
+            workgroupBarrier();
+            bred_hi[lane] = sq.hi;
+            bred_lo[lane] = sq.lo;
+            batch_tree(lane);
+            if lane == 0u {
+                btpart[0] = vec2<f32>(bred_hi[0], bred_lo[0]);
+            }
+            workgroupBarrier();
+            var sum: dsacc = acc_zero();
+            if lane == 0u {
+                sum = acc_add(sum, ds(btpart[0].x, btpart[0].y));
+            }
+            bred_hi[lane] = sum.hi;
+            bred_lo[lane] = sum.lo;
+            batch_tree(lane);
+            if lane < n_trust {
+                let nrm = ds_sqrt(acc_done(dsacc(bred_hi[0], bred_lo[0])));
+                let t = ds(btpart[1].x, btpart[1].y);
+                let row = row0 + lane;
+                var v = ds(y[row].x, y[row].y);
+                if ds_gt(nrm, t) {
+                    if !ds_gt(nrm, ds_neg(t)) {
+                        v = ds_zero();
+                    } else {
+                        let a = ds_div(ds_addp(nrm, t), ds_scale(nrm, 2.0));
+                        if lane == 0u {
+                            v = ds_mul(a, nrm);
+                        } else {
+                            v = ds_mul(a, v);
+                        }
+                    }
+                    y[row] = vec2<f32>(v.hi, v.lo);
+                }
+                let mixed = mix_avg(ds(yavg[row].x, yavg[row].y), v, s);
+                yavg[row] = vec2<f32>(mixed.hi, mixed.lo);
+            }
+        }
+        // pdhg_tick; the next primal reads y rows other lanes wrote.
+        workgroupBarrier();
+        if lane == 0u {
+            let count = bstep.avg_count + 1u;
+            bstep.avg_count = count;
+            let inv = ds_div(ds_f(1.0), ds_f(f32(count + 1u)));
+            bstep.inv_hi = inv.hi;
+            bstep.inv_lo = inv.lo;
+        }
+        storageBarrier();
+        workgroupBarrier();
+    }
+    if lane == 0u {
+        step = bstep;
+    }
+}
+// END ENTRY pdhg_batch

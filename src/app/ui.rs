@@ -35,6 +35,32 @@ pub fn home_transform() -> Transform {
 
 /// Key light is a few thousand lux, not daylight, so it does not clip against the
 /// default photographic exposure. Ambient fills the night side.
+/// The wireframe in the browser, where WebGPU has no line polygon mode and Bevy's
+/// `WireframePlugin` does not load. `playback::sync_wire` shows it and keeps it on the
+/// surface.
+#[cfg(target_arch = "wasm32")]
+pub fn spawn_wire(
+    mut commands: Commands,
+    scene: Res<Scene>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    use crate::app::render::{edge_mesh, lifted};
+    let positions = display_imported(&scene.vertices, scene.center, scene.scale);
+    commands.spawn((
+        crate::app::resources::WireView,
+        NoFrustumCulling,
+        Pickable::IGNORE,
+        Visibility::Hidden,
+        Mesh3d(meshes.add(edge_mesh(lifted(&positions), &scene.faces))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: WIRE_COLOR,
+            unlit: true,
+            ..default()
+        })),
+    ));
+}
+
 pub fn spawn_scene(
     mut commands: Commands,
     scene: Res<Scene>,

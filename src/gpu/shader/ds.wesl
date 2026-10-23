@@ -211,8 +211,56 @@ fn mul_err(a: f32, b: f32) -> f32 {
     return ((ah * bh - p) + ah * bl + al * bh) + al * bl;
 }
 
+// Integer residuals. The common case (normal operands, a normal residual) takes a
+// short straight-line path; it yields the exact residual, which is what the general
+// fixed-point path below returns whenever that residual fits an f32. Anything else
+// (subnormals, overflow, a rounding that is not within one unit) goes to the
+// general path, so both give the same bits.
 @if(!native_fp)
 fn mul_err(a: f32, b: f32) -> f32 {
+    let p = a * b;
+    let ua = bitcast<u32>(a);
+    let ub = bitcast<u32>(b);
+    let up = bitcast<u32>(p);
+    let ea = (ua >> 23u) & 0xffu;
+    let eb = (ub >> 23u) & 0xffu;
+    let ep = (up >> 23u) & 0xffu;
+    // p at least 48 binades above the subnormals keeps the residual normal.
+    if ea - 1u < 254u && eb - 1u < 254u && ep >= 49u && ep < 255u {
+        let prod = mul_u24((ua & 0x7fffffu) | 0x800000u, (ub & 0x7fffffu) | 0x800000u);
+        // The 47- or 48-bit product: its top 24 bits t, the k bits below them.
+        let top = prod.y >> 15u;
+        let k = 23u + top;
+        let t = (prod.y << (32u - k)) | (prod.x >> k);
+        let low = prod.x & ((1u << k) - 1u);
+        let et = ea + eb - 127u + top;
+        let sp = (up & 0x7fffffu) | 0x800000u;
+        var diff = 0;
+        var fast = true;
+        if ep == et && sp == t {
+            diff = i32(low);
+        } else if (ep == et && sp == t + 1u) || (ep == et + 1u && t == 0xffffffu && sp == 0x800000u) {
+            diff = i32(low) - i32(1u << k);
+        } else {
+            fast = false;
+        }
+        if fast {
+            if diff == 0 {
+                return 0.0;
+            }
+            // diff · 2^(ea + eb − 300): |diff| ≤ 2^24, a power-of-two scale.
+            var e = f32(diff) * bitcast<f32>((ea + eb - 173u) << 23u);
+            if ((ua ^ ub) >> 31u) != 0u {
+                e = -e;
+            }
+            return e;
+        }
+    }
+    return mul_err_fix(a, b);
+}
+
+@if(!native_fp)
+fn mul_err_fix(a: f32, b: f32) -> f32 {
     let p = a * b;
     let ea = (bitcast<u32>(a) >> 23u) & 0xffu;
     let eb = (bitcast<u32>(b) >> 23u) & 0xffu;
@@ -246,6 +294,71 @@ fn add_err(a: f32, b: f32) -> vec2<f32> {
 
 @if(!native_fp)
 fn add_err(a: f32, b: f32) -> vec2<f32> {
+    let s = a + b;
+    let ua = bitcast<u32>(a);
+    let ub = bitcast<u32>(b);
+    let us = bitcast<u32>(s);
+    // x the operand of larger magnitude, y the other.
+    let swap = (ub & 0x7fffffffu) > (ua & 0x7fffffffu);
+    let ux = select(ua, ub, swap);
+    let uy = select(ub, ua, swap);
+    let ex = (ux >> 23u) & 0xffu;
+    let ey = (uy >> 23u) & 0xffu;
+    let es = (us >> 23u) & 0xffu;
+    let d = ex - ey;
+    // Normal operands at most 30 binades apart, s no smaller than y's binade, and y
+    // 23 binades above the subnormals so the residual is normal.
+    if ey >= 24u && ex < 255u && d <= 30u && es >= ey && es < 255u {
+        let sx = (ux & 0x7fffffu) | 0x800000u;
+        let sy = (uy & 0x7fffffu) | 0x800000u;
+        // |x| ± |y| and |s| in units of y's last place, as hi:lo words.
+        var mlo = sx << d;
+        var mhi = 0u;
+        if d > 0u {
+            mhi = sx >> (32u - d);
+        }
+        if ((ux ^ uy) >> 31u) == 0u {
+            let lo = mlo + sy;
+            if lo < mlo {
+                mhi = mhi + 1u;
+            }
+            mlo = lo;
+        } else {
+            if mlo < sy {
+                mhi = mhi - 1u;
+            }
+            mlo = mlo - sy;
+        }
+        let sh = es - ey;
+        let ss = (us & 0x7fffffu) | 0x800000u;
+        let slo = ss << sh;
+        var shi = 0u;
+        if sh > 0u {
+            shi = ss >> (32u - sh);
+        }
+        let dlo = mlo - slo;
+        let dhi = mhi - shi - select(0u, 1u, mlo < slo);
+        let fits = (dhi == 0u && dlo < 0x80000000u) || (dhi == 0xffffffffu && dlo >= 0x80000000u);
+        if fits {
+            let diff = bitcast<i32>(dlo);
+            if diff == 0 {
+                return vec2<f32>(s, 0.0);
+            }
+            let mag = u32(abs(diff));
+            if 32u - countLeadingZeros(mag) - countTrailingZeros(mag) <= 24u {
+                var e = f32(diff) * bitcast<f32>((ey - 23u) << 23u);
+                if (ux >> 31u) != 0u {
+                    e = -e;
+                }
+                return vec2<f32>(s, e);
+            }
+        }
+    }
+    return add_err_fix(a, b);
+}
+
+@if(!native_fp)
+fn add_err_fix(a: f32, b: f32) -> vec2<f32> {
     let s = a + b;
     let ea_bits = (bitcast<u32>(a) >> 23u) & 0xffu;
     let eb_bits = (bitcast<u32>(b) >> 23u) & 0xffu;

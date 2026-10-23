@@ -56,6 +56,12 @@ mod wasm_entry {
         crate::web::boot(config_json);
     }
 
+    /// Record module spans in this worker (the page's `?timing` query).
+    #[wasm_bindgen]
+    pub fn enable_timing() {
+        crate::scf::timing::ensure_enabled();
+    }
+
     #[wasm_bindgen]
     pub fn worker_main(config_json: &str) {
         crate::web::worker_main(config_json);

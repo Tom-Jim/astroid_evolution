@@ -104,7 +104,22 @@ pub fn surface_cauchy(node: &NodeResult, pressure: f64, tide: [f64; 6]) -> [f64;
 
 /// Harmonic fit of the radii (the Stokes domain and the `rheo_friction` surface).
 pub fn fit_surface(project: &Project, body: &Body) -> Result<(SurfaceFit, f64), SimError> {
+    // A spin-only step keeps the radii: the fit of the last body is reused.
+    static LAST: Mutex<Option<(u64, SurfaceFit, f64)>> = Mutex::new(None);
     let topo = &body.topo;
+    let mut h = DefaultHasher::new();
+    project.stokes.l_surface.hash(&mut h);
+    body.radius.iter().for_each(|r| r.to_bits().hash(&mut h));
+    topo.dirs
+        .iter()
+        .for_each(|d| d.to_array().iter().for_each(|v| v.to_bits().hash(&mut h)));
+    topo.vertex_solid.iter().for_each(|w| w.to_bits().hash(&mut h));
+    let key = h.finish();
+    if let Some((k, surf, err)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *k == key && *err <= project.geometry.sh_fit_tol {
+            return Ok((surf.clone(), *err));
+        }
+    }
     let surf = SurfaceFit::fit(
         project.stokes.l_surface,
         &topo.dirs,
@@ -112,6 +127,7 @@ pub fn fit_surface(project: &Project, body: &Body) -> Result<(SurfaceFit, f64), 
         &topo.vertex_solid,
     )?;
     let err = surf.max_relative_error(&topo.dirs, &body.radius);
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, surf.clone(), err));
     if err > project.geometry.sh_fit_tol {
         return Err(SimError::geometry(format!(
             "harmonic surface of degree {} misses the polyhedron by {err:.3e} > geometry.sh_fit_tol {:.3e}",

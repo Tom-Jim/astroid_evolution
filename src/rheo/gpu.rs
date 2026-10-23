@@ -245,7 +245,10 @@ impl RheoGpu {
                 stats: ChainStats::default(),
             });
         }
-        let t = tables(surface, velocity)?;
+        let t = {
+            let _span = crate::scf::timing::span("rheology_tables");
+            tables(surface, velocity)?
+        };
         let packed = pack_nodes(batch);
         let params = gpu_params(material, batch.len(), t.l_max);
         let started = crate::common::time::wall_seconds();

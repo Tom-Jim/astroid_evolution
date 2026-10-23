@@ -329,6 +329,54 @@ pub fn sync_material(
     }
 }
 
+/// The browser's wireframe follows the `Wireframe` marker the panel command puts on the
+/// surface, and the posed surface while it is shown.
+#[cfg(target_arch = "wasm32")]
+pub fn sync_wire(
+    playback: Res<Playback>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    surface: Query<(&Mesh3d, Has<bevy::pbr::wireframe::Wireframe>), With<SurfaceView>>,
+    mut wire: Query<
+        (&Mesh3d, &mut Visibility),
+        (With<crate::app::resources::WireView>, Without<SurfaceView>),
+    >,
+) {
+    use crate::app::render::{edge_mesh, lifted};
+    let (Ok((surface, on)), Ok((wire, mut shown))) = (surface.single(), wire.single_mut()) else {
+        return;
+    };
+    let want = if on {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if *shown != want {
+        *shown = want;
+    }
+    if !on {
+        return;
+    }
+    let Some(positions) = meshes
+        .get(&surface.0)
+        .and_then(|m| m.attribute(Mesh::ATTRIBUTE_POSITION))
+        .and_then(|a| a.as_float3())
+        .map(lifted)
+    else {
+        return;
+    };
+    if let Some(mut mesh) = meshes.get_mut(&wire.0) {
+        let count = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .map(|values| values.len())
+            .unwrap_or(0);
+        if count == positions.len() {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        } else if !playback.faces.is_empty() {
+            *mesh = edge_mesh(positions, &playback.faces);
+        }
+    }
+}
+
 fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
         a[0] + (b[0] - a[0]) * t,

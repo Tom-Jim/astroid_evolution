@@ -266,7 +266,9 @@ pub fn strain_grams(d: &DMatrix<f64>) -> Vec<f64> {
 /// with row scale \(\sqrt{2\eta_q w_q}\).
 pub fn stiffness_from_grams(grams: &[f64], eta: &[f64], weight: &[f64], nu: usize) -> DMatrix<f64> {
     let tri = nu * (nu + 1) / 2;
-    let mut k = DMatrix::zeros(nu, nu);
+    // The packed upper triangle takes one contiguous axpy per point; each entry sums
+    // the same terms in the same order as a full matrix would.
+    let mut packed = vec![0.0; tri];
     for p in 0..eta.len() {
         let sigma = 2.0 * eta[p] * weight[p];
         if sigma == 0.0 {
@@ -276,16 +278,17 @@ pub fn stiffness_from_grams(grams: &[f64], eta: &[f64], weight: &[f64], nu: usiz
             return DMatrix::from_element(nu, nu, f64::NAN);
         }
         let g = &grams[p * tri..(p + 1) * tri];
-        let mut t = 0;
-        for j in 0..nu {
-            for i in 0..=j {
-                let v = sigma * g[t];
-                k[(i, j)] += v;
-                if i != j {
-                    k[(j, i)] += v;
-                }
-                t += 1;
-            }
+        for (acc, &gt) in packed.iter_mut().zip(g) {
+            *acc += sigma * gt;
+        }
+    }
+    let mut k = DMatrix::zeros(nu, nu);
+    let mut t = 0;
+    for j in 0..nu {
+        for i in 0..=j {
+            k[(i, j)] = packed[t];
+            k[(j, i)] = packed[t];
+            t += 1;
         }
     }
     k

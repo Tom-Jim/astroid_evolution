@@ -1,11 +1,9 @@
 //! Tier 2 driver for the viewer.
 //!
-//! `evolve::run` stays on a one-thread Rayon pool. Packing a snapshot uses the
-//! global pool once, at the end of the step. The Bevy thread only receives the
+//! `evolve::run` runs on a thread of its own (`EvolutionPool`); its parallel loops
+//! and the packing of a snapshot use the global Rayon pool. The Bevy thread only receives the
 //! snapshot. A full channel blocks the solver, so a fast mesh does not drop steps.
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -283,7 +281,10 @@ pub fn run_prepared(
         let wall = crate::common::time::wall_seconds() - mark;
         gate().map_err(SimError::io)?;
         mark = crate::common::time::wall_seconds();
-        let snapshot = crate::app::snapshot::pack(record, state, fields, scale, slack_tol, wall);
+        let snapshot = {
+            let _span = crate::scf::timing::span("frame_pack");
+            crate::app::snapshot::pack(record, state, fields, scale, slack_tol, wall)
+        };
         sink(snapshot).map_err(SimError::io)
     };
     let result = evolve::run(
@@ -302,31 +303,34 @@ pub fn run_prepared(
     Ok(result.complete)
 }
 
-/// One Rayon thread for `evolve::run`.
+/// One thread for `evolve::run`, taking the runs in order.
 ///
-/// Dropping a Rayon pool waits for its thread. A window close must not join a
-/// Metal step, so the pool is left alive until the process exits. The wasm
-/// viewer has no Rayon pool; a Web Worker runs the same `prepare` and
-/// `run_prepared`.
+/// It is not a Rayon worker, so the parallel loops of a step use the global pool
+/// (every core); inside a one-thread pool they would all run on that thread. A window
+/// close must not join a Metal step, so the thread is never joined and lives until
+/// the process exits. The wasm viewer has no such thread; a Web Worker runs the same
+/// `prepare` and `run_prepared`.
 #[derive(Resource)]
 pub struct EvolutionPool {
     #[cfg(not(target_arch = "wasm32"))]
-    pool: ManuallyDrop<rayon::ThreadPool>,
+    jobs: std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>,
 }
 
 impl EvolutionPool {
     pub fn new() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(1)
+            let (jobs, queue) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            std::thread::Builder::new()
+                .name("tier2-evolution".into())
                 .stack_size(64 << 20)
-                .thread_name(|index| format!("tier2-evolution-{index}"))
-                .build()
-                .expect("1-thread rayon pool for tier 2");
-            Self {
-                pool: ManuallyDrop::new(pool),
-            }
+                .spawn(move || {
+                    for job in queue {
+                        job();
+                    }
+                })
+                .expect("tier 2 evolution thread");
+            Self { jobs }
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -339,7 +343,8 @@ impl EvolutionPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        self.pool.spawn(job);
+        // The thread outlives every sender, so the send cannot fail.
+        let _ = self.jobs.send(Box::new(job));
     }
 }
 

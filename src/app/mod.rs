@@ -73,6 +73,9 @@ impl Plugin for AsteroidPlugin {
                         .chain(),
                 )
                 .add_systems(Last, ui::stop_on_exit);
+            #[cfg(target_arch = "wasm32")]
+            app.add_systems(Startup, ui::spawn_wire.after(ui::spawn_scene))
+                .add_systems(Update, playback::sync_wire.after(playback::sync_material));
         }
     }
 }

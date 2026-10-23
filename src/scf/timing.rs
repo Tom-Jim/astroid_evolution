@@ -17,6 +17,11 @@ fn enabled() -> bool {
     *flag().get_or_init(|| std::env::var_os("SCF_TIMING").is_some())
 }
 
+/// Whether spans are recorded.
+pub fn active() -> bool {
+    enabled()
+}
+
 /// Turn spans on if nothing has read the flag yet.
 ///
 /// `SCF_TIMING` wins when it was already consulted. A later call cannot flip it.

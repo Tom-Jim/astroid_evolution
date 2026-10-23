@@ -21,6 +21,28 @@ pub fn write_surface(mesh: &mut Mesh, positions: Vec<[f32; 3]>, normals: Vec<[f3
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
 }
 
+/// Each edge of `faces` once, as lines: the wireframe where the GPU has no line
+/// polygon mode (WebGPU).
+pub fn edge_mesh(positions: Vec<[f32; 3]>, faces: &[[u32; 3]]) -> Mesh {
+    let mut edges: Vec<[u32; 2]> = faces
+        .iter()
+        .flat_map(|f| [[f[0], f[1]], [f[1], f[2]], [f[2], f[0]]])
+        .map(|[a, b]| [a.min(b), a.max(b)])
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    let mut mesh = Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_indices(Indices::U32(edges.as_flattened().to_vec()));
+    mesh
+}
+
+/// Positions 0.2 % further from the body centre, so lines traced on the surface pass
+/// the depth test against it.
+pub fn lifted(positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    positions.iter().map(|p| p.map(|v| v * 1.002)).collect()
+}
+
 /// Startup mesh, before the first snapshot. Normals are accumulated once, here.
 pub fn imported_mesh(positions: Vec<[f32; 3]>, faces: &[[u32; 3]]) -> Mesh {
     let normals = smooth_normals(&positions, faces);

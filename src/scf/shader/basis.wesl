@@ -1,5 +1,6 @@
 // #include "gpu/shader/ds.wesl"
 // SHARED
+// The ζ-power arrays of the velocity kernels hold 12 entries (VEL_POWS in basis_gpu.rs).
 struct Jt_0 {
     c: array<ds, 4>,
 }
@@ -863,14 +864,14 @@ fn sh_accumulate_3(
     }
 }
 
-fn fill_powers_3(pows: ptr<function, array<Jt_3, 33>>, zeta: Jt_3, top: u32, p: BasisParams) {
+fn fill_powers_3(pows: ptr<function, array<Jt_3, 12>>, zeta: Jt_3, top: u32, p: BasisParams) {
     j_const_3(&((*pows)[0]), ds_f(1.0));
     for(var n: u32 = 1; n <= top; n = n + 1u) {
         j_mul_3(&((*pows)[n]), (*pows)[n - 1], zeta, p);
     }
 }
 
-fn j_psi_3(s: ptr<function, Jt_3>, base: u32, len: u32, pows: ptr<function, array<Jt_3, 33>>) {
+fn j_psi_3(s: ptr<function, Jt_3>, base: u32, len: u32, pows: ptr<function, array<Jt_3, 12>>) {
     j_const_3(s, ds_zero());
     for(var j: u32 = 0; j < len; j = j + 1u) {
         var a: ds = ds_mk(polys[base + j].x, polys[base + j].y);
@@ -1160,7 +1161,7 @@ fn eval_cached_3_2__coef(ray: u32, prm: BasisParams) {
         j_recip_3(&inv, rad_s, prm);
         j_mul_3(&zeta, rs, inv, prm);
         j_mul_3(&r2, rad_s, rad_s, prm);
-        var pows: array<Jt_3, 33>;
+        var pows: array<Jt_3, 12>;
         fill_powers_3(&pows, zeta, prm.top_pow, prm);
         var alk: array<Jt_3, 8>;
         var blk: array<Jt_3, 8>;
@@ -1253,7 +1254,7 @@ fn eval_cached_3_4__coef(ray: u32, prm: BasisParams) {
         j_recip_3(&inv, rad_s, prm);
         j_mul_3(&zeta, rs, inv, prm);
         j_mul_3(&r2, rad_s, rad_s, prm);
-        var pows: array<Jt_3, 33>;
+        var pows: array<Jt_3, 12>;
         fill_powers_3(&pows, zeta, prm.top_pow, prm);
         var alk: array<Jt_3, 16>;
         var blk: array<Jt_3, 16>;
@@ -1582,14 +1583,14 @@ fn sh_accumulate_2__saved(
     }
 }
 
-fn fill_powers_2(pows: ptr<function, array<Jt_2, 33>>, zeta: Jt_2, top: u32, p: BasisParams) {
+fn fill_powers_2(pows: ptr<function, array<Jt_2, 12>>, zeta: Jt_2, top: u32, p: BasisParams) {
     j_const_2(&((*pows)[0]), ds_f(1.0));
     for(var n: u32 = 1; n <= top; n = n + 1u) {
         j_mul_2(&((*pows)[n]), (*pows)[n - 1], zeta, p);
     }
 }
 
-fn j_psi_2(s: ptr<function, Jt_2>, base: u32, len: u32, pows: ptr<function, array<Jt_2, 33>>) {
+fn j_psi_2(s: ptr<function, Jt_2>, base: u32, len: u32, pows: ptr<function, array<Jt_2, 12>>) {
     j_const_2(s, ds_zero());
     for(var j: u32 = 0; j < len; j = j + 1u) {
         var a: ds = ds_mk(polys[base + j].x, polys[base + j].y);
@@ -1823,7 +1824,7 @@ fn eval_point_2__coef(gid: u32, prm: BasisParams) {
     j_recip_2(&inv, rr, prm);
     j_mul_2(&zeta, radius, inv, prm);
     j_mul_2(&r2, rr, rr, prm);
-    var pows: array<Jt_2, 33>;
+    var pows: array<Jt_2, 12>;
     fill_powers_2(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_2;
     var cim: Jt_2;
@@ -1959,7 +1960,7 @@ fn eval_point_3__coef(gid: u32, prm: BasisParams) {
     j_recip_3(&inv, rr, prm);
     j_mul_3(&zeta, radius, inv, prm);
     j_mul_3(&r2, rr, rr, prm);
-    var pows: array<Jt_3, 33>;
+    var pows: array<Jt_3, 12>;
     fill_powers_3(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_3;
     var cim: Jt_3;
@@ -2316,14 +2317,14 @@ fn sh_accumulate_4__saved(
     }
 }
 
-fn fill_powers_4(pows: ptr<function, array<Jt_4, 33>>, zeta: Jt_4, top: u32, p: BasisParams) {
+fn fill_powers_4(pows: ptr<function, array<Jt_4, 12>>, zeta: Jt_4, top: u32, p: BasisParams) {
     j_const_4(&((*pows)[0]), ds_f(1.0));
     for(var n: u32 = 1; n <= top; n = n + 1u) {
         j_mul_4(&((*pows)[n]), (*pows)[n - 1], zeta, p);
     }
 }
 
-fn j_psi_4(s: ptr<function, Jt_4>, base: u32, len: u32, pows: ptr<function, array<Jt_4, 33>>) {
+fn j_psi_4(s: ptr<function, Jt_4>, base: u32, len: u32, pows: ptr<function, array<Jt_4, 12>>) {
     j_const_4(s, ds_zero());
     for(var j: u32 = 0; j < len; j = j + 1u) {
         var a: ds = ds_mk(polys[base + j].x, polys[base + j].y);
@@ -2574,7 +2575,7 @@ fn eval_point_4__coef(gid: u32, prm: BasisParams) {
     j_recip_4(&inv, rr, prm);
     j_mul_4(&zeta, radius, inv, prm);
     j_mul_4(&r2, rr, rr, prm);
-    var pows: array<Jt_4, 33>;
+    var pows: array<Jt_4, 12>;
     fill_powers_4(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_4;
     var cim: Jt_4;
@@ -2936,7 +2937,7 @@ fn eval_cached_3_2(ray: u32, prm: BasisParams) {
         j_recip_3(&inv, rad_s, prm);
         j_mul_3(&zeta, rs, inv, prm);
         j_mul_3(&r2, rad_s, rad_s, prm);
-        var pows: array<Jt_3, 33>;
+        var pows: array<Jt_3, 12>;
         fill_powers_3(&pows, zeta, prm.top_pow, prm);
         var alk: array<Jt_3, 8>;
         var blk: array<Jt_3, 8>;
@@ -3035,7 +3036,7 @@ fn eval_cached_3_4(ray: u32, prm: BasisParams) {
         j_recip_3(&inv, rad_s, prm);
         j_mul_3(&zeta, rs, inv, prm);
         j_mul_3(&r2, rad_s, rad_s, prm);
-        var pows: array<Jt_3, 33>;
+        var pows: array<Jt_3, 12>;
         fill_powers_3(&pows, zeta, prm.top_pow, prm);
         var alk: array<Jt_3, 16>;
         var blk: array<Jt_3, 16>;
@@ -3166,7 +3167,7 @@ fn eval_point_2(gid: u32, prm: BasisParams) {
     j_recip_2(&inv, rr, prm);
     j_mul_2(&zeta, radius, inv, prm);
     j_mul_2(&r2, rr, rr, prm);
-    var pows: array<Jt_2, 33>;
+    var pows: array<Jt_2, 12>;
     fill_powers_2(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_2;
     var cim: Jt_2;
@@ -3251,7 +3252,7 @@ fn eval_point_3(gid: u32, prm: BasisParams) {
     j_recip_3(&inv, rr, prm);
     j_mul_3(&zeta, radius, inv, prm);
     j_mul_3(&r2, rr, rr, prm);
-    var pows: array<Jt_3, 33>;
+    var pows: array<Jt_3, 12>;
     fill_powers_3(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_3;
     var cim: Jt_3;
@@ -3390,7 +3391,7 @@ fn eval_point_4(gid: u32, prm: BasisParams) {
     j_recip_4(&inv, rr, prm);
     j_mul_4(&zeta, radius, inv, prm);
     j_mul_4(&r2, rr, rr, prm);
-    var pows: array<Jt_4, 33>;
+    var pows: array<Jt_4, 12>;
     fill_powers_4(&pows, zeta, prm.top_pow, prm);
     var cre: Jt_4;
     var cim: Jt_4;

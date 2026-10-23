@@ -139,30 +139,31 @@ pub fn deposit(dirs: &[DVec3], area: &[f64], j_ero: &[f64], beta: &[f64]) -> Opt
 
 fn analyse(dirs: &[DVec3], weight: &[f64], l_max: usize) -> Vec<f64> {
     let ncoef = coeff_count(l_max);
-    dirs.par_iter()
-        .zip(weight.par_iter())
-        .fold(
-            || (vec![0.0; ncoef], vec![0.0; ncoef]),
-            |mut state, (dir, &weight)| {
+    // Fixed blocks added in order, so the coefficients do not depend on rayon's split.
+    let size = dirs.len().div_ceil(64).max(1);
+    let parts: Vec<Vec<f64>> = dirs
+        .par_chunks(size)
+        .zip(weight.par_chunks(size))
+        .map(|(dirs, weight)| {
+            let (mut sum, mut y) = (vec![0.0; ncoef], vec![0.0; ncoef]);
+            for (dir, &weight) in dirs.iter().zip(weight) {
                 if weight != 0.0 {
-                    sh_all_into(l_max, dir.to_array(), &mut state.1);
-                    for (slot, &harmonic) in state.0.iter_mut().zip(state.1.iter()) {
+                    sh_all_into(l_max, dir.to_array(), &mut y);
+                    for (slot, &harmonic) in sum.iter_mut().zip(y.iter()) {
                         *slot += harmonic * weight;
                     }
                 }
-                state
-            },
-        )
-        .reduce(
-            || (vec![0.0; ncoef], Vec::new()),
-            |mut left, right| {
-                for (slot, value) in left.0.iter_mut().zip(right.0) {
-                    *slot += value;
-                }
-                left
-            },
-        )
-        .0
+            }
+            sum
+        })
+        .collect();
+    let mut sum = vec![0.0; ncoef];
+    for part in parts {
+        for (slot, value) in sum.iter_mut().zip(part) {
+            *slot += value;
+        }
+    }
+    sum
 }
 
 fn synthesise(dirs: &[DVec3], coeff: &[f64], beta: &[f64]) -> Vec<f64> {
