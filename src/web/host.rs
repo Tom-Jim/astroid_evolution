@@ -122,6 +122,18 @@ fn emit_frame(snapshot: &StepSnapshot) -> Result<(), String> {
     Ok(())
 }
 
+/// The spans since the last frame, `[name, calls, seconds]` rows, when timing is on.
+fn emit_timing() {
+    use crate::scf::timing;
+    if timing::active() {
+        let rows: Vec<_> = timing::drain()
+            .into_iter()
+            .map(|a| serde_json::json!([a.name, a.calls, a.seconds]))
+            .collect();
+        emit("timing", &serde_json::Value::from(rows).to_string());
+    }
+}
+
 /// Evolution entry on the worker instance.
 pub fn worker_main(config_json: &str) {
     super::use_worker_mesh();
@@ -155,7 +167,14 @@ pub fn worker_main(config_json: &str) {
                     Ok(())
                 }
             },
-            |snapshot| emit_frame(&snapshot),
+            |snapshot| {
+                let sent = {
+                    let _span = crate::scf::timing::span("web_frame");
+                    emit_frame(&snapshot)
+                };
+                emit_timing();
+                sent
+            },
         )?;
         Ok(if complete {
             "schedule complete".into()

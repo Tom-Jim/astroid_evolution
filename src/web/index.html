@@ -37,6 +37,9 @@
   <div id="status">Loading the viewer…</div>
   <script type="module" src="ui/ui.js"></script>
   <script type="module" src="boot.js" data-trunk data-no-minify></script>
-  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="3" data-bindgen-target="web" />
+  <!-- wasm-opt validates against the MVP unless told otherwise; these are the features
+       rustc enables for wasm32-unknown-unknown (`rustc --print cfg`), plus SIMD128 from
+       .cargo/config.toml. -->
+  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="3" data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-multivalue --enable-mutable-globals --enable-nontrapping-float-to-int --enable-reference-types --enable-sign-ext --enable-simd" data-bindgen-target="web" />
 </body>
 </html>

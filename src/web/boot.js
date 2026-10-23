@@ -131,6 +131,16 @@ async function start() {
     if (!data || !run || (event.target !== run.worker && event.target !== run.gpu)) {
       return;
     }
+    if (data.kind === "timing") {
+      // `?timing`: module totals of this run, as `asteroid.timing[name] = [calls, seconds]`.
+      const totals = globalThis.asteroid.timing;
+      for (const [name, calls, seconds] of JSON.parse(data.payload)) {
+        const row = totals[name] || (totals[name] = [0, 0]);
+        row[0] += calls;
+        row[1] += seconds;
+      }
+      return;
+    }
     if (data.kind === "status" || data.kind === "frame" || data.kind === "finished" || data.kind === "failed") {
       deliver(data.kind, data.payload || "");
     }
@@ -155,6 +165,7 @@ async function start() {
     },
     // Status JSON for the panels (ui/src/host.ts).
     last: "",
+    timing: {},
     status(json) {
       globalThis.asteroid.last = json;
       dispatchEvent(new CustomEvent("asteroid-status", { detail: json }));
@@ -185,8 +196,9 @@ async function start() {
       worker.onmessage = onWorker;
       gpu.postMessage({ kind: "start", sab, module, wasm, port: channel.port2 }, [channel.port2]);
       const files = [...installed].map(([path, bytes]) => ({ path, bytes: bytes.slice().buffer }));
+      globalThis.asteroid.timing = {};
       worker.postMessage(
-        { kind: "start", config, sab, module, wasm, files, port: channel.port1 },
+        { kind: "start", config, sab, module, wasm, files, port: channel.port1, timing: query.has("timing") },
         [channel.port1, ...files.map((file) => file.bytes)],
       );
     },

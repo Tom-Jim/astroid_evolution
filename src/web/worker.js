@@ -68,8 +68,11 @@ self.onmessage = async (event) => {
   port = event.data.port;
   installBridge();
   try {
-    const { default: init, install_asset, worker_main } = await import(event.data.module);
+    const { default: init, install_asset, worker_main, enable_timing } = await import(event.data.module);
     await init({ module_or_path: event.data.wasm });
+    if (event.data.timing) {
+      enable_timing();
+    }
     for (const file of event.data.files) {
       install_asset(file.path, new Uint8Array(file.bytes));
     }

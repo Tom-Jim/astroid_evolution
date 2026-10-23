@@ -2,6 +2,12 @@
 target = "index.html"
 dist = "../../target/web-dist"
 
+# The same tool versions locally and in CI: wasm-bindgen must match Cargo.lock. The
+# wasm features wasm-opt accepts are listed on the rust link in index.html.
+[tools]
+wasm_bindgen = "0.2.129"
+wasm_opt = "version_133"
+
 [serve]
 addresses = ["127.0.0.1"]
 port = 8080
