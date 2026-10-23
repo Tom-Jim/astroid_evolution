@@ -3,4 +3,6 @@
 incremental = false
 
 [target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
+# SIMD128 lets LLVM vectorize element-wise loops. It has no fused multiply-add and LLVM
+# does not reassociate floating point, so the numbers are the same as without it.
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\"", "-C", "target-feature=+simd128"]

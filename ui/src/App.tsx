@@ -269,7 +269,9 @@ export function App({ host }: { host: Host }) {
         <div className="legend">
           <span>
             {interior && status
-              ? `Interior density ${fmt(status.rho_range[0])} → ${fmt(status.rho_range[1])} kg/m³ (indigo → yellow, one contour every ${fmt((status.rho_range[1] - status.rho_range[0]) / 10)})`
+              ? status.rho_range[1] - status.rho_range[0] > 1e-6 * Math.abs(status.rho_range[1])
+                ? `Interior density ${fmt(status.rho_range[0])} → ${fmt(status.rho_range[1])} kg/m³ (indigo → yellow, one contour every ${fmt((status.rho_range[1] - status.rho_range[0]) / 10)})`
+                : `Interior density uniform, ${fmt(status.rho_range[0])} kg/m³`
               : LAYERS.find((l) => l.value === layer)?.legend}
           </span>
           <span className="mouse">RMB ORBIT · LMB PAN · WHEEL ZOOM</span>
@@ -469,31 +471,40 @@ function useKeys(host: Host, status: Status | null) {
         return;
       }
       const s = ref.current;
-      if (!s || e.metaKey || e.ctrlKey || e.altKey) {
+      if (!s || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) {
         return;
       }
-      const key = e.key.toLowerCase();
-      if (key === " ") {
+      // Physical keys: a Chinese or Japanese input method turns "[" into "【" and
+      // other layouts move the punctuation, but `code` names the key itself.
+      const key = e.code;
+      if (key === "Space") {
         e.preventDefault();
         host.send({ cmd: "pause", paused: s.phase !== "paused" });
-      } else if ((key === "arrowleft" || key === "arrowright") && s.frames > 1) {
+        ref.current = { ...s, phase: s.phase === "paused" ? "running" : "paused" };
+      } else if ((key === "ArrowLeft" || key === "ArrowRight") && s.frames > 1) {
         e.preventDefault();
         const last = s.frames - 1;
-        const at = (s.view ?? last) + (key === "arrowright" ? 1 : -1);
-        host.send({ cmd: "seek", index: at >= last ? null : Math.max(0, at) });
-      } else if (key >= "1" && key <= "5") {
-        host.send({ cmd: "layer", mode: Number(key) });
-      } else if (key === "w") {
+        const at = (s.view ?? last) + (key === "ArrowRight" ? 1 : -1);
+        const index = at >= last ? null : Math.max(0, at);
+        host.send({ cmd: "seek", index });
+        // Status arrives every 0.1 s; a held key must count from the step it just asked for.
+        ref.current = { ...s, view: index };
+      } else if (/^(Digit|Numpad)[1-5]$/.test(key)) {
+        host.send({ cmd: "layer", mode: Number(key.slice(-1)) });
+      } else if (key === "KeyW") {
         host.send({ cmd: "wireframe", on: !s.wireframe });
-      } else if (key === "r") {
+        ref.current = { ...s, wireframe: !s.wireframe };
+      } else if (key === "KeyR") {
         host.send({ cmd: "reset_view" });
-      } else if (key === "p") {
+      } else if (key === "KeyP") {
         host.send({ cmd: "screenshot" });
-      } else if (key === "i") {
+      } else if (key === "KeyI") {
         host.send({ cmd: "interior", on: !s.interior, offset: 0 });
-      } else if ((key === "[" || key === "]") && s.interior) {
-        const offset = Math.max(-0.9, Math.min(0.9, s.cut + (key === "]" ? 0.05 : -0.05)));
+        ref.current = { ...s, interior: !s.interior, cut: 0 };
+      } else if ((key === "BracketLeft" || key === "BracketRight") && s.interior) {
+        const offset = Math.max(-0.9, Math.min(0.9, s.cut + (key === "BracketRight" ? 0.05 : -0.05)));
         host.send({ cmd: "interior", on: true, offset });
+        ref.current = { ...s, cut: offset };
       }
     };
     addEventListener("keydown", onKey);

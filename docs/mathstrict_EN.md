@@ -8597,7 +8597,7 @@ Every per-point and per-node array lives in device memory for the whole run: the
 | $b_k$, $d_k$, radial integrals | single precision; the $\alpha=1$ antiderivatives are evaluated in double-single from single-precision $b_k,d_k$ |
 | accumulation of $U,\nabla U,H$ | double-single per field point; the uniform part flushes single-precision partial sums every eight terms |
 | Stokes operator, pressure Poisson problem, range-space solve | double precision on the CPU, assembled densely and factored by Cholesky |
-| Metal-PDHG iteration | double-single on the GPU; the acceptance residuals are recomputed in double |
+| Metal-PDHG iteration | double precision on the CPU, the same primal, dual, cone and ergodic-average steps as the GPU kernels; `AE_PDHG=gpu` runs those kernels in double-single instead. The acceptance residuals are computed in double either way |
 | core parameters, $\mathbf F_k$, Gauss–Newton solve | double |
 
 The single-precision radial integrals limit the relative accuracy of the density-difference part of the field to about $10^{-6}$; a uniform body does not use them.

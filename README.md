@@ -1,6 +1,6 @@
 # Asteroid Evolution
 
-Long-term shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under spin change (YORP) and tides. At every geological step the body is solved as a quasi-static viscoplastic Stokes flow and classified into a rigid core and a movable set; supercritical faces of the loose surface layer are relieved toward their angle of repose by a cone program (slope promotion), and released material runs out over the rotating surface before it is deposited (Mode C and runout). Gravity is ray-traced on the GPU, the friction-angle chain and the cone program run on the GPU with double-single accumulation, and the Stokes solve runs in double precision on the CPU. The desktop app is built with Tauri 2, the browser version runs on WebGPU, and both share one set of React control panels.
+Long-term shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under spin change (YORP) and tides. At every geological step the body is solved as a quasi-static viscoplastic Stokes flow and classified into a rigid core and a movable set; supercritical faces of the loose surface layer are relieved toward their angle of repose by a cone program (slope promotion), and released material runs out over the rotating surface before it is deposited (Mode C and runout). Gravity is ray-traced on the GPU, the friction-angle chain runs on the GPU with double-single accumulation, and the Stokes solve and the cone program run in double precision on the CPU. The desktop app is built with Tauri 2, the browser version runs on WebGPU, and both share one set of React control panels.
 
 The mathematical model and every acceptance criterion are in [`docs/mathstrict_EN.md`](docs/mathstrict_EN.md); its Appendix A.6 lists where the implementation departs from the specification. The reconstruction, forward check and forecast for the three bodies are in [`docs/evolution_report.md`](docs/evolution_report.md).
 
@@ -76,6 +76,10 @@ cd src/web && trunk serve
 
 Then open <http://127.0.0.1:8080>. Release build: `trunk build --release --cargo-profile dist`, written to `target/web-dist`. A static host must also send `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
+`?timing=1` on the page URL records the time of every module of the run; the totals are in `asteroid.timing` (`[calls, seconds]` per module) in the browser console. The CLI does the same with `SCF_TIMING=1` (written to `timing.json` in the output directory).
+
+The cone program of each geometry step runs in double precision on the CPU; `AE_PDHG=gpu` runs the double-single GPU kernels instead.
+
 The desktop app and the page each load the GPU fully; do not run both at once.
 
 ### Controls
@@ -83,7 +87,7 @@ The desktop app and the page each load the GPU fully; do not run both at once.
 | Input | Action |
 |---|---|
 | Space | Pause / resume |
-| 1–4 | Layer: yield / slope / regolith / combined |
+| 1–5 | Layer: yield / slope / regolith / combined / principal tension |
 | I, [ ] | Interior density cutaway, move the cut plane |
 | W | Wireframe |
 | R | Reset the view |

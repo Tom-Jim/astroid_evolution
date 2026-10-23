@@ -6,6 +6,12 @@
       "runtimeExecutable": "sh",
       "runtimeArgs": ["-c", "cd src/web && trunk serve"],
       "port": 8080
+    },
+    {
+      "name": "web-release",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd src/web && trunk serve --release --cargo-profile dist"],
+      "port": 8080
     }
   ]
 }
