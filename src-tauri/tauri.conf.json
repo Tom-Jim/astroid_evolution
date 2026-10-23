@@ -59,6 +59,6 @@
       "../dist/.stage/output/deimos/history/initial.json": "output/deimos/history/initial.json",
       "../dist/.stage/output/deimos/history/present.json": "output/deimos/history/present.json"
     },
-    "longDescription": "Shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under YORP spin change and tides: quasi-static Stokes flow, Mode C regolith transport, GPU compute."
+    "longDescription": "Shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under YORP spin change and tides: quasi-static Stokes flow, slope relief of the loose layer, Mode C regolith transport and runout, GPU compute."
   }
 }

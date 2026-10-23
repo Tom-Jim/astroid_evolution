@@ -195,6 +195,63 @@ fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, SimError>
     Ok(next)
 }
 
+/// The inverse of the accumulated frame map: a body expressed in a realigned frame
+/// `x = R (x₀ − T)` is returned in the frame of `x₀`, with its radii re-sampled along the
+/// same fixed directions from the old origin. The cores move and turn back with the mesh
+/// (`c₀ = Rᵀ c + T`, `S₀ = Rᵀ S R`); `ρ_s` is interpolated barycentrically. The identity
+/// map returns the body unchanged.
+pub fn undo_frame(
+    body: &Body,
+    rotation: [[f64; 3]; 3],
+    translation: DVec3,
+) -> Result<Body, SimError> {
+    let r = rotation;
+    let q = Matrix3::new(
+        r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
+    );
+    if q == Matrix3::identity() && translation == DVec3::ZERO {
+        return Ok(body.clone());
+    }
+    let qt = q.transpose();
+    let t = v3(translation);
+    let back: Vec<DVec3> = body
+        .positions()
+        .iter()
+        .map(|x| d3(qt * v3(*x) + t))
+        .collect();
+    let faces = body.topo.faces.clone();
+    let mesh = match crate::common::geometry::TriMesh::try_new(back.clone(), faces.clone()) {
+        Ok(mesh) => mesh,
+        // A rigid image of a valid body; see `apply_once`.
+        Err(_) => crate::common::geometry::TriMesh::from_rigid_copy(back, faces)?,
+    };
+    let radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
+    let qtm = crate::common::math::DMat3::from_cols_array_2d(&[
+        [qt[(0, 0)], qt[(1, 0)], qt[(2, 0)]],
+        [qt[(0, 1)], qt[(1, 1)], qt[(2, 1)]],
+        [qt[(0, 2)], qt[(1, 2)], qt[(2, 2)]],
+    ]);
+    let kernels: Vec<CauchyKernel> = body
+        .kernels
+        .iter()
+        .map(|k| {
+            let centre = d3(qt * v3(k.center) + t);
+            let metric = crate::common::math::mat_sym(qtm * k.metric_mat() * qtm.transpose());
+            CauchyKernel::try_anisotropic(centre, k.weight, metric, k.alpha)
+        })
+        .collect::<Result<_, _>>()?;
+    let index = DirIndex::build(&body.topo.dirs);
+    let rho_s: Vec<f64> = (0..radius.len())
+        .map(|i| {
+            let x_back = v3(body.topo.dirs[i]) * radius[i];
+            let x_now = q * (x_back - t);
+            let dir = d3(x_now).try_normalize().unwrap_or(body.topo.dirs[i]);
+            interp_vertex_field(&body.topo, &index, &body.rho_s, dir)
+        })
+        .collect();
+    Body::new(body.topo.clone(), radius, body.bulk, kernels, rho_s)
+}
+
 /// Dual area of every vertex (`Σ_f A_f / 3`).
 pub fn vertex_areas(body: &Body) -> Vec<f64> {
     let geo = body.face_geometry();

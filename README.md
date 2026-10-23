@@ -1,18 +1,24 @@
 # Asteroid Evolution
 
-Long-term shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under spin change (YORP) and tides. The body is a quasi-static viscoplastic Stokes flow with Mode C regolith transport; gravity, rheology and geometry all run on the GPU in double-single arithmetic. The desktop app is built with Tauri 2, the browser version runs on WebGPU, and both share one set of React control panels.
+Long-term shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under spin change (YORP) and tides. At every geological step the body is solved as a quasi-static viscoplastic Stokes flow and classified into a rigid core and a movable set; supercritical faces of the loose surface layer are relieved toward their angle of repose by a cone program (slope promotion), and released material runs out over the rotating surface before it is deposited (Mode C and runout). Gravity is ray-traced on the GPU, the friction-angle chain and the cone program run on the GPU with double-single accumulation, and the Stokes solve runs in double precision on the CPU. The desktop app is built with Tauri 2, the browser version runs on WebGPU, and both share one set of React control panels.
 
-The mathematical model and every acceptance criterion are in [`docs/mathstrict_EN.md`](docs/mathstrict_EN.md). The reconstruction, forward check and forecast for the three bodies are in [`docs/evolution_report.md`](docs/evolution_report.md).
+The mathematical model and every acceptance criterion are in [`docs/mathstrict_EN.md`](docs/mathstrict_EN.md); its Appendix A.6 lists where the implementation departs from the specification. The reconstruction, forward check and forecast for the three bodies are in [`docs/evolution_report.md`](docs/evolution_report.md).
 
 ## Results at a glance
 
 | Body | Span | Main result |
 |---|---|---|
-| Ryugu | 9.41 Myr ago (spin 3.40 h, the fastest spin with the whole surface bound) → today (7.6326 h) → +5 Myr | Forward run vs. measured shape: RMS 0.026 m, max 1.9 m; mass and volume within 0.04 % |
-| Phobos | 30 Myr ago → today → +30 Myr | Surface landslides from 27.25 Myr ahead; largest displacement 246 m at 30 Myr; no interior yield |
+| Ryugu | 9.41 Myr ago (spin 3.40 h, the fastest spin with the whole surface bound) → today (7.6326 h) → +5 Myr | Forward run vs. measured shape: RMS 0.026 m, max 1.9 m; mass and volume within 0.04 %. The reconstruction is the best of 8 inversion iterations (0.026 m); it did not reach its 0.01 m tolerance |
+| Phobos | 30 Myr ago → today → +30 Myr | Surface landslides from 27.25 Myr ahead; largest displacement 246 m at 30 Myr; no interior yield (computed before the runout routing was added) |
 | Deimos | 30 Myr ago → +30 Myr | No yield; orbital period within −0.005 % |
 
-Every material and orbital constant comes from the literature (sources in the comments of each `dist/.stage/assets/projects/*.toml`); the quantities without a published value are listed separately in the report.
+Material and orbital constants come from the literature where a value exists (sources in the comments of each `dist/.stage/assets/projects/*.toml`). The others, such as the grain size, the contact force, the tidal back-stress factor, the active-layer thickness of Phobos and Deimos, and the numerical parameters (γ̇_ε, p_min, trust radius, Δt_max), are listed in the report or in the project files.
+
+### What these results rest on
+
+- **Slope relief moves the surface.** In all three runs the regularized creep stays below the yield threshold (≈ 3 γ̇_ε), no surface vertex ever leaves the rigid core, and Mode C never erodes. Every change of shape comes from slope promotion: the loose-layer vertices of faces steeper than the angle-of-repose proxy are freed for the cone program and relieved (mathstrict §2.8c, hypothesis A-C4).
+- **Slide timing is partly numerical.** The relief is instantaneous on the geological scale. The onset of a slide (the step its slope first exceeds the proxy) is physical; its duration and the displacement per step are set by the trust radius (`geometry.trust0`) and by `step.dt_max`. On Phobos the largest displacement per step equals the trust radius.
+- **The stress field is coarse.** The bundled projects solve the Stokes problem with spherical-harmonic degree 2 (64 unknowns) on 96 quadrature points; the reported rotational residual is 0.25–0.62. No resolution study has been made (mathstrict §8.4).
 
 ## Architecture
 
@@ -20,7 +26,7 @@ Every material and orbital constant comes from the literature (sources in the co
 src/
   rtfp/      Tier 1  RTFP gravity: ray integrals, Metal hardware ray tracing (software BVH on WebGPU)
   rheo/      μ(I) rheology and the friction-angle chain (GPU, double-single)
-  scf/       Tier 2  quasi-static Stokes / Picard, yield classification, SOCP slope relief, Mode C,
+  scf/       Tier 2  quasi-static Stokes / Picard, yield classification, slope promotion and SOCP relief, Mode C,
              rotating-frame runout of released regolith (Coriolis, μ(I), ballistic hops), inversion
   shsmooth/  spherical-harmonic mesh smoothing
   gpu/       wgpu compute executor (buffer pool, WESL shaders compiled by src/build.rs)
@@ -33,7 +39,7 @@ dist/.stage/ projects, models, scenario catalog scenarios.json, reconstruction s
 tests/       all tests (src holds no test code)
 ```
 
-Bevy draws all 3D. React draws only the panels around it: body and scenario choice, parameter sliders, timeline, telemetry and view toggles. The panels drive Bevy with JSON commands, and Bevy sends back a status object about ten times a second.
+Bevy draws all 3D. React draws only the panels around it: body and scenario choice, parameter sliders, timeline, telemetry and view toggles. The panels drive Bevy with JSON commands, and Bevy sends back a status object about ten times a second. A run request names its project and snapshot relative to the data root; absolute paths and paths that climb out of it are refused.
 
 ## Requirements
 
@@ -105,7 +111,7 @@ python3 dist/.stage/output/evaluate.py    # compare with measurements, write eva
 cargo test --features tier3
 ```
 
-156 tests (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, Tier 2 SCF, Tier 3 view and bridge). A working GPU is required.
+161 tests: 149 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required.
 
 ## Cargo features
 

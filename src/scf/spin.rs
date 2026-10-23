@@ -320,11 +320,12 @@ impl SpinSchedule {
             },
             Self::Table { times, omegas } => {
                 let last = times.len() - 1;
-                if t <= times[0] {
+                // Before the first node the spin is held at ω₀; the step ends at t₀.
+                if t < times[0] {
                     return SpinSample {
                         omega: omegas[0],
-                        omega_dot: (omegas[1] - omegas[0]) / (times[1] - times[0]),
-                        t_next: times[1],
+                        omega_dot: 0.0,
+                        t_next: times[0],
                     };
                 }
                 for k in 0..last {

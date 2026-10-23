@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This paper establishes a unified mathematical and computational framework for the granular body of a rotating small body [5][6]. The internal mass distribution is a spatially varying Cauchy density. A Feynman parametrization supplies a single integral representation of the potential, its gradient, and its Hessian. Complex free boundaries are treated by ray-traced finite-part (RTFP) ray geometry. A variable-density poloidal–toroidal double-potential flow, a $\mu(I)$-type rheology, semi-Lagrangian transport on the surface, and the geometric projection of frictional constraints are coupled inside one self-consistent-field (SCF) iteration. Exterior classical derivatives, interior finite parts, and surface contact terms are distinguished. Sufficient conditions are given under which the combined rheological model reduces to the classical $\mu(I)$ law. The error and the range of validity are stated for a finite radial Galerkin truncation, for GPU ray intersection, and for a sequential convex quadratic-objective quadratic program or second-order-cone program (QP/SOCP).
+This paper establishes a unified mathematical and computational framework for the granular body of a rotating small body [4][5]. The internal mass distribution is a spatially varying Cauchy density. A Feynman parametrization supplies a single integral representation of the potential, its gradient, and its Hessian. Complex free boundaries are treated by ray-traced finite-part (RTFP) ray geometry. A variable-density poloidal–toroidal double-potential flow, a $\mu(I)$-type rheology, semi-Lagrangian transport on the surface, and the geometric projection of frictional constraints are coupled inside one self-consistent-field (SCF) iteration. Exterior classical derivatives, interior finite parts, and surface contact terms are distinguished. Sufficient conditions are given under which the combined rheological model reduces to the classical $\mu(I)$ law. The error and the range of validity are stated for a finite radial Galerkin truncation, for GPU ray intersection, and for a sequential convex quadratic-objective quadratic program or second-order-cone program (QP/SOCP).
 
 The production default is the quasi-static viscoplastic granular body of Mode B. There is a single stress field,
 
@@ -10,7 +10,7 @@ $$
 \boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D,
 $$
 
-a $\mu(I)$ viscoplastic law regularized in the Bingham or Papanastasiou sense. At each geological step the quasi-static Stokes creep equilibrium is solved implicitly at the prescribed spin. Yield is then decided on that stress by the yield function $F$. Solid material connected to the unyielded rigid core is strictly locked ($d_i=0$). Only the yielded region, and those sliding blocks that are separated from the core by a yielded band, acquire a landslide displacement from the creep velocity relative to the core. Metal-PDHG corrects only this mechanically predicted increment, using the current shape as the reference, and never takes an equipotential as its target. The density cores move with the material: every Cauchy kernel is treated as a passively transported material component, its centre and its metric are carried along the same masked slip velocity that moves the surface (exact 2-jet transport), and the kernel set is then closed in mass and, when a misfit indicator requires it, refitted adaptively (Section 9.10). A dense core that is squeezed or sheared away therefore takes its gravity with it. The spin rate $\omega(t)$ is an exogenously prescribed piecewise constant, or an exogenously prescribed function of time. It is not coupled to the internal flow by angular-momentum feedback. The fluid mass level and the fluid equipotential of Mode A are retained only as an explicitly marked interface for later use. They do not enter the default granular closed loop.
+a $\mu(I)$ viscoplastic law regularized in the Bingham or Papanastasiou sense. At each geological step the quasi-static Stokes creep equilibrium is solved implicitly at the prescribed spin. Yield is then decided on that stress by the yield function $F$. Solid material connected to the unyielded rigid core receives no creep displacement. Only the yielded region, and those sliding blocks that are separated from the core by a yielded band, acquire a landslide displacement from the creep velocity relative to the core. In addition, the loose surface layer obeys an angle-of-repose proxy: the vertices of a face whose slope exceeds that proxy are admitted to the free set of the geometric subproblem even when the creep classification locks them (slope promotion, hypothesis A-C4, Section 2.8c). At geological strain rates the regularized creep stays below the yield threshold, so slope promotion is the mechanism that actually moves the surface in the production runs. Metal-PDHG corrects only these increments, using the current shape as the reference, and never takes an equipotential as its target. The density cores move with the material: every Cauchy kernel is treated as a passively transported material component, its centre and its metric are carried along the same masked slip velocity that moves the surface (exact 2-jet transport), and the kernel set is then closed in mass and, when a misfit indicator requires it, refitted adaptively (Section 9.10). A dense core that is squeezed or sheared away therefore takes its gravity with it. The spin rate $\omega(t)$ is an exogenously prescribed piecewise constant, or an exogenously prescribed function of time. It is not coupled to the internal flow by angular-momentum feedback. The fluid mass level and the fluid equipotential of Mode A are retained only as an explicitly marked interface for later use. They do not enter the default granular closed loop.
 
 Rigour, in this paper, means only that the formulae and the acceptance conditions have a determinate meaning under the continuity, regularity, discretization, boundary, and constitutive assumptions that are listed. It does not mean that an absolute error bound is obtained automatically for an arbitrary material, an arbitrary mesh, or an arbitrary finite-precision computation. Any numerical example whose constitutive parameters or boundary data are not supplied is judged **model not closed** and must not be reported as passed.
 
@@ -20,12 +20,14 @@ Given a rotation rate, a mass, Cauchy-density parameters, granular state variabl
 
 1. Inside a complex free boundary, $U$, $\nabla U$, and $\nabla^2U$ admit one integral representation that can be verified.
 2. Radial modal changes produced by semi-Lagrangian surface transport pass, conditionally, to the surface shear rate, the inertial number, and the nodal friction angle, under the assumptions of model hypothesis A-M, under compatibility of the recovery operator, and under the full definition of $D'$. A radial difference, when used, is marked explicitly as a local approximation.
-3. The core of the loop is the quasi-static viscoplastic Stokes equilibrium of Mode B, with a single stress field, together with the classification into a rigid core and a movable set by the yield function. Mode C, local yield-driven erosion and deposition, is auxiliary. Mechanically predicted increments are corrected, relative to the current shape, by sequential convex subproblems on frozen fields. The spin is prescribed exogenously. The fluid equipotential solve of Mode A is retained only as an interface and does not enter the granular closed loop.
+3. The core of the loop is the quasi-static viscoplastic Stokes equilibrium of Mode B, with a single stress field, together with the classification into a rigid core and a movable set by the yield function. Mode C, local yield-driven erosion and deposition, is auxiliary. The loose surface layer additionally obeys the angle-of-repose proxy of Section 10.3 through slope promotion (Section 2.8c). Mechanically predicted increments, and the slope relief of promoted vertices, are corrected relative to the current shape by sequential convex subproblems on frozen fields. The spin is prescribed exogenously. The fluid equipotential solve of Mode A is retained only as an interface and does not enter the granular closed loop.
 4. Every reduction, regularization, and degeneration is stated together with its hypotheses, its sources of error, and the boundary of its validity.
+
+**Normative text and implementation.** Several sections specify procedures that the present implementation realizes in a simpler form, or not at all (for example the orientation-based segment construction of Section 3.6, the incremental retracing of Section 3.15, the matrix-free PCG of Section 8.4, and Level 3 of Section 9.10). Where the implemented procedure differs from the specification, the text says so at the point of use, and Appendix A.6 lists every such item together with its status. A result produced by the implementation is governed by the implemented procedure.
 
 ## Notation and standing assumptions
 
-Unless otherwise stated, $V$ is a bounded polyhedral solid and $\rho_K$ is a nonnegative mass density. In the physical production configurations considered here, the spatial Cauchy density satisfies the global strict lower bound $\rho_K(\mathbf x)\ge\rho_{\min}>0$. This bound makes the kinetic-energy mass operator $\mathbf M_\Gamma$ symmetric positive definite on the subspace $\ell\ge 1$. Within a geological step the density is frozen; between steps its kernel parameters are advanced by the Lagrangian core transport of Section 9.10, and the bound $\rho_{\min}$ is rechecked after every such update. The constant $G$ is the gravitational constant. The scalar $\omega$ is the exogenously prescribed angular velocity about the body-frame $z$-axis, which is the principal axis of maximum inertia (step 8 of Section 10.4.4). Within each geological step it is frozen at the constant value $\omega_n=\omega(t_n)$ (Section 10.4.1). The effective potential is $W=U+U_c$. Star-shapedness is an additional assumption, used only in the sections on the radial Galerkin method and on the free-surface parametrization. Derivatives at exterior points are classical. The Hessian at interior points and at boundary points is defined by the spherical finite-part convention. The inertial rheology is used when the granular pressure satisfies $p>0$. When $p=0$ or $\dot\gamma=0$, the corresponding regularization, or the static-yield branch, is required.
+Unless otherwise stated, $V$ is a bounded polyhedral solid and $\rho_K$ is a nonnegative mass density. In the physical production configurations considered here, the spatial Cauchy density satisfies the global strict lower bound $\rho_K(\mathbf x)\ge\rho_{\min}>0$. This bound makes the kinetic-energy mass operator $\mathbf M_\Gamma$ symmetric positive definite on the subspace $\ell\ge 1$. Within a geological step the density is frozen; between steps its kernel parameters are advanced by the Lagrangian core transport of Section 9.10. (The specification asks for the bound $\rho_{\min}$ to be rechecked after every such update; the implementation does not perform this check, Appendix A.6.) The constant $G$ is the gravitational constant. The scalar $\omega$ is the exogenously prescribed angular velocity about the body-frame $z$-axis, which is the principal axis of maximum inertia (step 8 of Section 10.4.4). Within each geological step it is frozen at the constant value $\omega_n=\omega(t_n)$ (Section 10.4.1). The effective potential is $W=U+U_c$. Star-shapedness is an additional assumption, used only in the sections on the radial Galerkin method and on the free-surface parametrization. Derivatives at exterior points are classical. The Hessian at interior points and at boundary points is defined by the spherical finite-part convention. The inertial rheology is used when the granular pressure satisfies $p>0$. When $p=0$ or $\dot\gamma=0$, the corresponding regularization, or the static-yield branch, is required.
 
 The paper adopts the positive-potential convention for $U$, $U_c$, and $W$, and defines the conservative effective acceleration by
 
@@ -53,7 +55,7 @@ Every equality holds under the hypotheses stated in the adjacent text. An analyt
 
 **Objective of this section.** Give simultaneous and explicit conditions of applicability to ray-intersection segments, to the divergence theorem, and to the local tangent cone.
 
-Let $V\subset\mathbb R^3$ be a bounded polyhedral solid. Assume $V=\overline{\operatorname{int}V}$. The boundary consists of finitely many nondegenerate planar triangles. The triangles are consistently oriented and do not intersect themselves. Finitely many connected components, and internal cavities, are allowed. On the boundary of an interior-oriented cavity, the outward unit normal of the solid is used. If the input mesh does not determine such a solid, the theorems below that refer to a volume domain do not apply directly. Concrete examples of such meshes for small solar-system bodies are given by Hirata et al. [5].
+Let $V\subset\mathbb R^3$ be a bounded polyhedral solid. Assume $V=\overline{\operatorname{int}V}$. The boundary consists of finitely many nondegenerate planar triangles. The triangles are consistently oriented and do not intersect themselves. Finitely many connected components, and internal cavities, are allowed. On the boundary of an interior-oriented cavity, the outward unit normal of the solid is used. If the input mesh does not determine such a solid, the theorems below that refer to a volume domain do not apply directly. Concrete examples of such meshes for small solar-system bodies are given by Hirata et al. [4].
 
 Let $K$ be a positive integer. For each $k\in\{1,\ldots,K\}$, fix $w_k\in\mathbb R$, $\sigma_k>0$, $\alpha_k>0$, and $\mathbf c_k\in\mathbb R^3$. Define the smooth density extended to all of space by
 
@@ -68,6 +70,14 @@ w_k
 $$
 
 If this function is used as a physical mass density, one must check separately that $\rho_K(\mathbf y)\ge 0$ for almost every $\mathbf y\in V$. The mathematical identities allow signed weights.
+
+**Constant matrix term.** The implementation adds a constant matrix density $\rho_b\ge 0$ (the configuration key `density.bulk`),
+
+$$
+\rho_K(\mathbf y)=\rho_b+\sum_{k=1}^{K}w_k\left[1+\sigma_k^2\|\mathbf y-\mathbf c_k\|^2\right]^{-\alpha_k},
+$$
+
+with $K=0$ allowed (a uniform body). A constant is not a Cauchy kernel with $\alpha_k>0$, but it needs none of the machinery below: its potential, gradient, and Hessian are the closed-form field $\rho_b\Phi_V$ of the uniform polyhedron (Section 3.9), and every statement of this chapter holds for it with $\nabla\rho_b=\mathbf 0$. The kernels then describe the departure from the matrix, and their weights may be negative (a light core), provided that $\rho_K\ge 0$ on $V$.
 
 **Anisotropic (sheared) cores.** The Lagrangian core transport of Section 9.10 deforms a kernel by the local deformation gradient of the flow, which in general destroys isotropy. The admissible kernel class is therefore the generalized Cauchy kernel with a symmetric positive-definite metric $\mathbf S_k$ (dimension $\mathrm L^{-2}$):
 
@@ -1061,7 +1071,7 @@ $$
 
 The second term of $m^2$ is the parallel sum of the two quadratic forms $u\mathbf I$ and $(1-u)\widehat{\mathbf S}$; $\mathbf M_u^{-1}\widehat{\mathbf S}$ is symmetric positive definite because the two matrices commute. Hence $m^2\ge(1-u)a^2>0$ for $u<1$. The linear map $\mathbf y\mapsto\mathbf M_u^{1/2}\mathbf y$ sends a polyhedron to a polyhedron, so $S_p$ of Section 1.8 becomes $\det(\mathbf M_u)^{-1/2}\,S_p(\mathbf M_u^{1/2}\mathbf z,m;\mathbf M_u^{1/2}V)$, and the face reduction of Section 1.8 applies to the transformed polyhedron at each $u$. For $\widehat{\mathbf S}=\mathbf I$ all of this reduces to the formulae above.
 
-**Conclusion of this section.** The parameter mass is $m^2(u)$ above; it has the dimension of an inverse squared length, as the combination with $|\mathbf x-\mathbf y|^2$ requires. The Feynman parametrization is an identity, not an approximation.
+**Conclusion of this section.** The parameter mass is $m^2(u)$ above; since $a=1/\sigma$ is a length, it has the dimension of a squared length, as the combination with $|\mathbf y-\mathbf z|^2$ requires. The Feynman parametrization is an identity, not an approximation.
 
 ## 1.8 Parametric integral, dimensional reduction, and Hessian of the Feynman potential
 
@@ -1829,7 +1839,7 @@ d_k(\mathbf u)^{-2\alpha_k}
 {\left[t+\beta_k(\mathbf u)\right](1+t^2)^{\alpha_k}}.
 $$
 
-*Scale count.* The factor $\sigma_k^{-2\alpha_k}$ comes from the Cauchy normalization. The substitution contributes $d_k\cdot d_k^{-2\alpha_k}$ from $dR$ and from the denominator, hence one overall factor $d_k^{-2\alpha_k}$, together with the dimensionless denominator $(t+\beta_k)(1+t^2)^{\alpha_k}$.
+*Scale count.* The factor $\sigma_k^{-2\alpha_k}$ comes from the Cauchy normalization. The substitution contributes $d_k$ from $dR$, $d_k^{-2\alpha_k}$ from the quadratic factor, and $d_k^{-1}$ from $1/R=1/[d_k(t+\beta_k)]$; the product is $d_k^{-2\alpha_k}$, together with the dimensionless denominator $(t+\beta_k)(1+t^2)^{\alpha_k}$.
 
 After the factorization
 
@@ -2026,7 +2036,7 @@ $$
 \tau=X+iY,
 $$
 
-where $X=X^T$ and $Y=Y^T>0$, and let
+where $X=X^T$ and $Y=Y^T>0$ (in this paragraph $Y$ is the imaginary part of the period matrix, not the curve variable $Y$ above), and let
 
 $$
 \mathbf z=\mathbf a+i\mathbf b.
@@ -2637,7 +2647,7 @@ $$
 \end{aligned}
 $$
 
-The cancellation uses $z_k-u(1-u)(x-c_k)$ rearranged as follows:
+The cancellation, written out with $z_k=ux+(1-u)c_k$, is
 
 $$
 -(y-z_k)+(1-u)(x-c_k)
@@ -2901,7 +2911,7 @@ $$
 
 The first term uses $\int_\Gamma\hat\xi_i\hat\xi_j\,d\Omega=\tfrac{4\pi\vartheta}{3}\delta_{ij}$ (which is $C_{ij}=0$), the identity $\partial_i\partial_j\kappa=\kappa''\hat\xi_i\hat\xi_j+\kappa'\xi^{-1}(\delta_{ij}-\hat\xi_i\hat\xi_j)$ away from the origin, and $\xi^2\kappa'\to-1$ at the origin. Hence the missing part contributes nothing in the limit, and **the $\delta$-limit of the Feynman Hessian already contains the contact term**: it equals the classical Hessian $\mathrm{p.v.}-\tfrac{4\pi G}{3}\rho_K\mathbf I$ at an interior point, and $H^{\mathrm{FP}}$ at a point where $C_{ij}=0$. The contact term must therefore **never be added a second time** to a Feynman value. Where $C_{ij}\ne 0$ (edges, vertices), the same computation leaves the divergent term $C_{ij}\int\xi^{-1}\,d\xi$, which is the logarithm of Section 1.3, and only that logarithm is the counterterm in the display above.
 
-*Example.* Unit ball, one kernel $\mathbf c=\mathbf 0$, $\sigma=1$, $\alpha=1$, $G=1$. At the interior point $\mathbf x=(0.3,0,0)$ the truncated Feynman trace is $-11.15270,\,-11.52494,\,-11.52874,\,-11.52878$ for $\delta=10^{-2},10^{-4},10^{-6},10^{-8}$, against $-4\pi\rho(\mathbf x)=-11.52878$. At the surface point $(1,0,0)$, $H_{xx}$ tends to $2.245$, against the average $2.2505$ of the exterior value $2M=5.3921$ and the interior value $-0.8911$ (the residual difference is the quadrature error of that check).
+*Example.* Unit ball, one kernel $\mathbf c=\mathbf 0$, $\sigma=1$, $\alpha=1$, $G=1$. At the interior point $\mathbf x=(0.3,0,0)$ the truncated Feynman trace is $-11.15270,\,-11.52494,\,-11.52874,\,-11.52878$ for $\delta=10^{-2},10^{-4},10^{-6},10^{-8}$, against $-4\pi\rho(\mathbf x)=-11.52878$. At the surface point $(1,0,0)$, $H_{xx}$ tends to $2.245$ in that numerical check. The exact value is the average $2.25194$ of the exterior value $2M=5.39353$ and the interior value $2M-4\pi\rho(1)=-0.88965$, with $M=4\pi-\pi^2=2.69677$ the mass of the ball; the remaining difference of $0.3\%$ is the quadrature error of the check.
 
 The strict conclusion, once the representations have been identified, is
 
@@ -3151,7 +3161,7 @@ $$
 
 Multiplication by the prefactor $m^{-2\alpha}$ produces a contribution $O(1)$, uniformly as $m\downarrow 0$. This is the Feynman form of the statement $C_{ij}(x_\star)=0$: had the hemispherical moment been nonzero, the cap flux would have been logarithmic in $R_m$ and the prefactor $m^{-2\alpha}$ would not have cancelled it.
 
-The displacement $\eta$ is estimated by the mean-value theorem. Differentiating $(|\xi-t\eta|^2+1)^{-q}$ in the shift produces a factor of order $|\xi|(|\xi|^2+1)^{-q-1}$. In polar coordinates the radial integrand is of order $r^{1-2q}$. For every exponent $q\in\{p+1,p+2\}$ one has $q=\alpha+\tfrac32$ or $q=\alpha+\tfrac52$, hence $q>1$, and $\int_1^\infty r^{1-2q}\,dr$ converges. The resulting dominant is integrable on the half-space for every $\alpha>0$, with no restriction $\alpha>\tfrac12$. Therefore, for $|\eta|\le 1$,
+The displacement $\eta$ is estimated by the mean-value theorem. Differentiating $(|\xi-t\eta|^2+1)^{-q}$ in the shift produces a factor of order $|\xi|(|\xi|^2+1)^{-q-1}$. For the $\delta_{ij}$ term ($q=p+1$) the radial integrand in polar coordinates is of order $r^2\cdot r^{-2q-1}=r^{1-2q}$; for the $\xi_i\xi_j$ term ($q=p+2$) the extra factor $|\xi|^2$ gives $r^{3-2q}$. Both equal $r^{-2\alpha-2}$, and $\int_1^\infty r^{-2\alpha-2}\,dr$ converges for every $\alpha>0$. The resulting dominant is integrable on the half-space for every $\alpha>0$, with no restriction $\alpha>\tfrac12$. Therefore, for $|\eta|\le 1$,
 
 $$
 \int_{\Pi_-}\bigl|\Lambda_{ij}(\xi;\eta,u)-\Lambda_{ij}^0(\xi)\bigr|\,d\xi
@@ -3289,7 +3299,7 @@ $$
 \sin^2\theta_i\le\sin^2\phi_i^{(n)},
 $$
 
-where $\theta_i$ is the angle between $-g_i^{(n)}$ and the outward normal, equivalently the slope angle of the surface relative to the local effective horizontal [7]. The normalized constraint requires $|g_i^{(n)}|>0$. If $|g_i^{(n)}|=0$ at a node, the displayed formula is undefined. One must then use the un-normalized contact or yield constraint, or mark the node as degenerate. The implementation must not divide by $|g_i^{(n)}|^2$.
+where $\theta_i$ is the angle between $-g_i^{(n)}$ and the outward normal, equivalently the slope angle of the surface relative to the local effective horizontal [6]. The normalized constraint requires $|g_i^{(n)}|>0$. If $|g_i^{(n)}|=0$ at a node, the displayed formula is undefined. One must then use the un-normalized contact or yield constraint, or mark the node as degenerate. The implementation must not divide by $|g_i^{(n)}|^2$.
 
 **Mode B: quasi-static viscoplastic Stokes creep and physical yield classification (a single stress field).** The mechanical route of this paper has **one** stress field, the viscoplastic fluid stress of Definition 5.1 in Section 5.1:
 
@@ -3389,7 +3399,7 @@ $$
 \frac{x}{\sqrt{1+x^2}}>1-\delta_Y,\qquad x=\dot\gamma/\dot\gamma_\varepsilon,
 $$
 
-hence $x>(1-\delta_Y)/\sqrt{1-(1-\delta_Y)^2}=(1-\delta_Y)/\sqrt{2\delta_Y-\delta_Y^2}$. *Papanastasiou threshold.* The inequality $1-e^{-x}>1-\delta_Y$ is $e^{-x}<\delta_Y$, hence $x>\ln(1/\delta_Y)$. At $\delta_Y=0.05$ both thresholds are approximately $3\dot\gamma_\varepsilon$. This is a **criterion on the stress, or equivalently on an invariant of the strain rate, not a criterion on the magnitude of the velocity**. A rigid translation or rotation, for which $\mathbf D=\mathbf 0$, satisfies $F_\delta=-(1-\delta_Y)\tau_y<0$ however large the velocity may be. Convergence of the yield surface of the regularized solution, at fixed $\delta_Y$, to the yield surface of the unregularized Bingham or $\mu(I)$ law as $\dot\gamma_\varepsilon\to 0$ is proof obligation PO-12.
+hence $x>(1-\delta_Y)/\sqrt{1-(1-\delta_Y)^2}=(1-\delta_Y)/\sqrt{2\delta_Y-\delta_Y^2}$. *Papanastasiou threshold.* The inequality $1-e^{-x}>1-\delta_Y$ is $e^{-x}<\delta_Y$, hence $x>\ln(1/\delta_Y)$. At $\delta_Y=0.05$ both thresholds are approximately $3\dot\gamma_\varepsilon$. This is a **criterion on the stress, or equivalently on an invariant of the strain rate, not a criterion on the magnitude of the velocity**. A rigid translation or rotation, for which $\mathbf D=\mathbf 0$, satisfies $F_\delta=-(1-\delta_Y)\tau_y<0$ however large the velocity may be. Convergence of the yield surface of the regularized solution, at fixed $\delta_Y$, to the yield surface of the unregularized Bingham or $\mu(I)$ law as $\dot\gamma_\varepsilon\to 0$ is proof obligation PO-12. *Consequence for the production runs.* The test compares the creep shear rate with the numerical rate $\dot\gamma_Y\approx 3\dot\gamma_\varepsilon$, so the yielded set depends on the configured $\dot\gamma_\varepsilon$ and not only on the material. With $\dot\gamma_\varepsilon=10^{-9}\,\mathrm{s^{-1}}$ (the bundled projects), the creep driven by geological loads stays below $\dot\gamma_Y$ almost everywhere; in the runs of Ryugu, Phobos, and Deimos at most $0.6\%$ of the interior quadrature mass yields, and no surface node ever leaves the rigid core. The movable set of (B3) is then empty, and the surface moves only through slope promotion (Section 2.8c).
 
 **(B3) Rigid core and movable set (the physical definition of the dead zone).** Evaluate $F_\delta$ on the classification mesh
 
@@ -3429,11 +3439,16 @@ $$
 \rho_{\mathrm{bulk}}=\rho_p\nu_0,
 $$
 
-where $\Delta t_n$ is the geological step of Section 10.4.1. Surface nodes then fall into three classes.
+where $\Delta t_n$ is the geological step of Section 10.4.1. The creep term carries $\chi_{Y,i}$, the classification of (B3). The node classes carry the *geometric* movability
 
-- The **locked set** $\mathcal L^{(n)}=\{i:\chi_{Y,i}=0,\ \Delta h_{C,i}=0\}$ is the solid substrate, with $d_i=0$.
-- The **pure-deposition set** $\mathcal D^{(n)}=\{i:\chi_{Y,i}=0,\ \Delta h_{C,i}\ne 0\}$ has an immobile substrate and only an external accumulation of material, with $d_i=d_{\mathrm{pred},i}$ held fixed.
-- The **movable set** $\mathcal A^{(n)}=\{i:\chi_{Y,i}=1\}$ is the only set of free variables of Metal-PDHG.
+$$
+\tilde\chi_{i}:=\max(\chi_{Y,i},\pi_i),
+$$
+where $\pi_i\in\{0,1\}$ is the slope-promotion indicator of Section 2.8c ($\pi\equiv 0$ when hypothesis A-C4 is not applied). A promoted node keeps $\chi_{Y,i}=0$, so its predictor contains no creep. Surface nodes then fall into three classes.
+
+- The **locked set** $\mathcal L^{(n)}=\{i:\tilde\chi_{i}=0,\ \Delta h_{C,i}=0\}$ is the solid substrate, with $d_i=0$.
+- The **pure-deposition set** $\mathcal D^{(n)}=\{i:\tilde\chi_{i}=0,\ \Delta h_{C,i}\ne 0\}$ has an immobile substrate and only an external accumulation of material, with $d_i=d_{\mathrm{pred},i}$ held fixed.
+- The **movable set** $\mathcal A^{(n)}=\{i:\tilde\chi_{i}=1\}$ is the only set of free variables of Metal-PDHG. It is the union of the yielded or sliding nodes ($\chi_{Y,i}=1$) and the promoted nodes ($\pi_i=1$).
 
 “Locked in the unyielded region” means that the solid substrate undergoes no flow displacement. Deposition is the accumulation of landslide material upon that substrate. It is not a motion of the substrate. Locking the deposition increment as well would destroy conservation of mass.
 
@@ -3453,7 +3468,7 @@ $$
 
 In the Metal-PDHG mass row $D\mathcal M^{(n)}d+s_M=M-\mathcal M^{(n)}$, every geometric increment that comes from a flux uses $\Delta h_C^*$. Otherwise, even if $\int J_{\mathrm{dep}}=\int J_{\mathrm{ero}}$, the inequality $\rho_{\mathrm{bulk}}\ne\rho_K|_\Gamma$ produces a spurious mass drift $s_M\ne 0$.
 
-The unknown $d$ is a radial increment, whereas $\mathbf v_{\rm sl}\cdot n$ and $\Delta h_C^*$ are normal increments. The first-order geometric relation $\delta R\,(n\cdot e_r)=\delta_n$ requires the surface to be star-shaped with respect to the origin and non-grazing, $n\cdot e_r\ge c_0>0$. Otherwise that node must not be parametrized radially. The fluxes $J_{\mathrm{dep}}$ and $J_{\mathrm{ero}}$ are areal mass fluxes, in $\mathrm{kg\,m^{-2}\,s^{-1}}$, so $\Delta h_C$ has the dimension of length. The increment $\Delta R_C$ can come only from the material flux of Mode C. The same flow displacement must not be added a second time. A solid free surface does not in general satisfy $W=\mathrm{const}$. The slope surrogate is used only at those movable nodes of the loose surface layer for which its applicability has been declared, and one must check separately that $g_{\mathrm{eff}}\cdot n<0$. Locked nodes do not receive the slope surrogate. Solid material connected to the core may be steeper than the angle of repose. That is the mechanism that retains real topography.
+The unknown $d$ is a radial increment, whereas $\mathbf v_{\rm sl}\cdot n$ and $\Delta h_C^*$ are normal increments. The first-order geometric relation $\delta R\,(n\cdot e_r)=\delta_n$ requires the surface to be star-shaped with respect to the origin and non-grazing, $n\cdot e_r\ge c_0>0$. Otherwise that node must not be parametrized radially. (Implementation: a node with $|n\cdot e_r|<0.05$ receives no radial increment from a normal displacement, and is left out of the CFL speed of Section 10.4.1; the configured $c_0$ is validated but not enforced as an acceptance test, and the smallest $n\cdot e_r$ of the accepted body is reported instead.) The fluxes $J_{\mathrm{dep}}$ and $J_{\mathrm{ero}}$ are areal mass fluxes, in $\mathrm{kg\,m^{-2}\,s^{-1}}$, so $\Delta h_C$ has the dimension of length. The increment $\Delta R_C$ can come only from the material flux of Mode C. The same flow displacement must not be added a second time. A solid free surface does not in general satisfy $W=\mathrm{const}$. The slope surrogate is used only at those movable nodes of the loose surface layer for which its applicability has been declared, and one must check separately that $g_{\mathrm{eff}}\cdot n<0$. Nodes that are locked after promotion ($\tilde\chi_i=0$) do not receive the slope surrogate. Solid material connected to the core and not covered by loose material ($\rho_s=0$) may be steeper than the angle of repose; that is the mechanism that retains real topography. A node that carries loose material and lies on a supercritical face is promoted by A-C4 (Section 2.8c), and its slope is relieved even though the creep classification locks it.
 
 **(B5) Tensile truncation.** The pressure Poisson problem of Section 8.7 carries no pointwise inequality constraint. The pressure used by the rheology and by the yield test is the truncated regularized value $\tilde p=\max([p]_+,p_{\min})$. The truncated tensile part $\|[p]_-\|$ must be reported at each step as the diagnostic **tensile fraction**. One must not claim that the truncated pressure still satisfies the Poisson equation. In a tensile region the strength degenerates to $\tau_y=c+\mu_y p_{\min}$, the Drucker–Prager tensile truncation. In the absence of cohesion, that region is ordinarily yielded according to $F_\delta$.
 
@@ -3518,7 +3533,7 @@ the restriction to the active set of the surface parameter velocity $\mathbf c=\
 
 ## 2.8b Rotating-frame runout of eroded regolith (hypothesis A-C3)
 
-*Motivation.* The equatorial ridge of Ryugu is attributed to a fast-spin phase, at a period near 3.5 h, in which the equator was the low of the rotating geopotential and loose material from the mid-latitudes migrated to it and accumulated there (Watanabe et al., 2019). The isotropic kernel of Section 2.8 cannot represent that migration: it returns eroded mass symmetrically about its source, and the tangential geopotential gradient and the Coriolis acceleration act on the surface only through the creep of Mode B. Hypothesis A-C3 replaces the isotropic kernel by a transport kernel. Each eroded parcel first runs out over $\Gamma$ in the rotating body frame, and only then is the spread of Section 2.8 applied.
+*Motivation.* The equatorial ridge of Ryugu is attributed to a fast-spin phase, at a period near 3.5 h, in which the equator was the low of the rotating geopotential and loose material from the mid-latitudes migrated to it and accumulated there (Watanabe et al., 2019 [5]). The isotropic kernel of Section 2.8 cannot represent that migration: it returns eroded mass symmetrically about its source, and the tangential geopotential gradient and the Coriolis acceleration act on the surface only through the creep of Mode B. Hypothesis A-C3 replaces the isotropic kernel by a transport kernel. Each eroded parcel first runs out over $\Gamma$ in the rotating body frame, and only then is the spread of Section 2.8 applied.
 
 **Hypothesis A-C3 (runout of eroded regolith).**
 
@@ -3592,7 +3607,7 @@ The normalization is that of $G_w$ about the point $X(a')$, so the balance $\int
 
 $\kappa_v$ is the turning, over the substep, of the smooth normal (the area-weighted vertex normals blended barycentrically inside the face) divided by the distance moved; the face normals would read the facet edges as kinks. $N$ uses its last value. In flight the velocity is turned about $\mathbf e_z$ by $-2\omega_n\tau$ (exact for $-2\boldsymbol\Omega\times\mathbf v$) and then receives $\tau\,\mathbf g_{\rm eff}(\mathbf x)$. The flight drift is trapezoidal as well. The substep is $\tau=\theta_r\min\big(\ell/|\mathbf v|,\sqrt{\ell/|\dot{\mathbf v}|},|\mathbf v|/|\dot{\mathbf v}|,1/(2\omega_n)\big)$ with the local edge length $\ell$ and $\theta_r=0.2$, and the last substep ends at $T_{\rm run}$. The third bound, absent at rest, resolves a decelerating packet; the fourth resolves the Coriolis turn, which the rotation integrates exactly in velocity but not in position. Packets are independent and are traced in parallel; only nodes with $J_{\rm ero}>0$ are traced.
 
-**Routing of the slope relief (A-C3, second part).** At geological strain rates the creep of Mode B stays far below the regularization rate $\dot\gamma_\varepsilon$, so $F_\delta\le0$ at the surface and Mode C does not erode. The landslides of a fast-spinning body are then carried by the slope relief of the geometric subproblem (Section 10.4.3), which lowers every supercritical face of $\mathcal S_{\rm slope}$ to the angle of repose. Without routing, the mass it removes is returned by the least-change correction of the mass row, spread over the movable set without regard to where a slide would go. Hypothesis A-C3 sends that mass along the same runout. With $d^{1}$ the solution of the subproblem and $\mathcal V_{\rm slope}$ the vertices of $\mathcal S_{\rm slope}$, the relief removes from vertex $i\in\mathcal V_{\rm slope}$ the radial thickness and the mass
+**Routing of the slope relief (A-C3, second part).** At geological strain rates the creep of Mode B stays below the yield threshold $\dot\gamma_Y\approx 3\dot\gamma_\varepsilon$ of (B2), so $F_\delta\le0$ at the surface and Mode C does not erode. The landslides of a fast-spinning body are then carried by the slope relief of the geometric subproblem (Section 10.4.3) on the vertices promoted by A-C4 (Section 2.8c), which lowers every supercritical face of $\mathcal S_{\rm slope}$ toward the angle of repose. Without routing, the mass it removes is returned by the least-change correction of the mass row, spread over the movable set without regard to where a slide would go. Hypothesis A-C3 sends that mass along the same runout. With $d^{1}$ the solution of the subproblem and $\mathcal V_{\rm slope}$ the vertices of $\mathcal S_{\rm slope}$, the relief removes from vertex $i\in\mathcal V_{\rm slope}$ the radial thickness and the mass
 
 $$
 \boxed{
@@ -3619,6 +3634,51 @@ the equality being the normalization of $K$. The subproblem is solved a second t
 **Report.** Per step, over the eroded and the routed packets together: the number of traced packets, the routed relief mass and the routing gap, the mass-weighted mean and the largest runout distance, the mass-weighted mean change of $|\text{latitude}|$ (negative values are equatorward), the number of hops and the largest hop height, and the numbers of escaped and timed-out packets. The viewer draws a subset of the paths.
 
 The hypothesis is labelled **A-C3**. It is a kinematic closure of the erosion–deposition interface. It does not change the stress field, the yield classification, or any acceptance criterion of Mode B.
+
+## 2.8c Slope promotion of the loose layer (hypothesis A-C4)
+
+*Motivation.* The yield test (B2) compares the creep shear rate with the numerical threshold $\dot\gamma_Y\approx 3\dot\gamma_\varepsilon$. At geological loads the regularized creep stays below it, the movable set of (B3) is empty, and (B4) alone would never move the surface, even where the friction-angle chain of Section 10.3 reports that the loose layer stands steeper than its angle of repose. The angle of repose is a statement about the static stability of the loose layer itself, not about the creep of the body beneath it. Hypothesis A-C4 lets the loose layer fail on its own criterion.
+
+**Hypothesis A-C4 (slope promotion).** The repose slack of face $f$ at geological step $n$ is
+
+$$
+s_f:=\Big[\frac{|\mathbf g_f\times\mathbf n_f|}{|\mathbf g_f|}-\sin\phi_f\Big]_+ .
+$$
+
+1. A face $f$ is *supercritical* when $s_f$ exceeds the configured tolerance $\tau_s$ (`relief.tol_slack`). Here $\mathbf g_f$, $\mathbf n_f$, and $\phi_f$ are the effective gravity, the normal, and the nominal projection angle of Section 10.3 at the face centre, evaluated on the converged quasi-static Stokes state of the step.
+2. A vertex $i$ is *promoted*, $\pi_i=1$, when it is a vertex of at least one supercritical face, it is not already movable ($\chi_{Y,i}=0$), and it carries loose material ($\rho_{s,i}>0$). Otherwise $\pi_i=0$.
+3. A promoted vertex is a free variable of the geometric subproblem of Section 10.4.3. Its predictor contains no creep: by (B4), $d_{{\rm pred},i}=\Delta h^*_{C,i}/(\mathbf n_i\cdot\mathbf e_r)$, which is zero unless Mode C deposits at that node.
+4. Promotion changes neither the stress field, nor $\chi_Y$ and $F_\delta$, nor the Mode C fluxes ($\chi_A=\chi_Y\mathbf 1_{\{\rho_s>0\}}$ excludes promoted vertices), nor the runout sources of Section 2.8b, nor the core advection $\mathbf v_{\rm adv}=\chi_Y\mathbf v_{\rm sl}$ of Section 9.10.2, nor the CFL bound of Section 10.4.1. All of these keep the classification of (B3).
+
+The rule is local: a yielded vertex elsewhere on the body does not switch it off. (An earlier implementation promoted vertices only when no surface vertex was movable at all. The two rules coincide whenever $\chi_Y\equiv 0$ on the surface, which holds at every step of the bundled runs, so their results are unaffected.)
+
+**Slope rows.** The slope set of Section 10.4.3 is
+
+$$
+\mathcal S^{(n)}_{\rm slope}=\Big\{f:\ s_f>\tau_s,\ \sin\phi_f\ \text{finite},\ \text{all three vertices of }f\text{ in }\mathcal A^{(n)},\ \textstyle\sum_{i\in f}\rho_{s,i}>0\Big\},
+$$
+with $\mathcal A^{(n)}=\{\tilde\chi=1\}$ of (B4). Each face of $\mathcal S_{\rm slope}$ carries the second-order-cone slope row and the anti-overhang row at its centre. Thus $\mathcal S_{\rm slope}\subseteq\mathcal A$ holds, with $\mathcal A$ containing the promoted vertices.
+
+**What the relief does.** On promoted vertices $d_{\rm pred}=0$, so the subproblem is the least-change projection of the current shape onto the repose cone,
+
+$$
+\min_d\ \tfrac12\sum_{i\in\mathcal A}w_i(d_i-d_{{\rm pred},i})^2+\varrho\sum_{f}t_f
+\quad\text{s.t. the slope rows, the anti-overhang rows, the mass row, and the trust box.}
+$$
+It removes material from supercritical faces and, through the mass row or through the routed deposit of Section 2.8b, places it elsewhere in $\mathcal A$ or on the pure-deposition set. The same program, with additional crater-protection weights and without the Stokes solve, is the stand-alone relaxation of `scf-cli relax`.
+
+**Time scale.** Like the runout of A-C3, the failure is instantaneous on the geological time scale: a supercritical face is relieved in the step in which it becomes supercritical. The amount of relief per step is limited only by the trust box $|d_i|\le\Delta=\texttt{trust0}\,\bar R$ and by the KKT tolerance of the cone program. Promoted vertices have no creep speed and do not enter $\Delta t_{\rm CFL}$, so the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. Consequently:
+
+- the *onset* of a landslide (the first step with $s_f>\tau_s$) is physical, to within one step;
+- its *duration* in model time, and the displacement per step, are numerical: a slide that needs $N$ trust-limited steps lasts about $N\,\Delta t_n$. In the bundled Ryugu run the relief took 11 steps of $\Delta t_{\max}=3\times10^{11}$ s; in the Phobos forecast the largest displacement per step equals the trust radius ($220$ m), and a slope slack of up to $0.19$ remains on some faces at the end of a step.
+
+Reports: the number of movable vertices (`n_mobile`, promoted ones included), the number of supercritical faces, the largest slack, the slope slack $\sum t_f$ left by the cone, the largest displacement, and the trust radius.
+
+**Stage equilibrium.** Criterion (c) of Section 2.15 is taken with $\mathcal A^{(n)}$ after promotion. A stage is therefore equilibrated only when, in addition to (B3), no loose face is supercritical.
+
+**Reduction.** If $\tau_s\to\infty$, or $\rho_s\equiv 0$, then $\pi\equiv 0$ and (B3)–(B4) apply unchanged.
+
+The hypothesis is labelled **A-C4** and registered as PO-17. It is a kinematic closure of the loose layer. Its open questions are the instantaneous-failure assumption and the dependence of the reported slide durations and per-step displacements on $\Delta$ and $\Delta t_{\max}$.
 
 ---
 
@@ -3715,7 +3775,7 @@ This step produces only a fluid reference shape. It is not a solid target of Mod
 
 Freeze $g^{(n)}$ and $H_W^{(n)}$. First obtain the flow prediction relative to the rigid core from the quasi-static Stokes creep solution of Mode B and from the physical yield classification (B1–B4 of Section 2.8). Only yielded surface points in the movable set are passed to Mode C for conservative erosion and deposition. The hand-off must be explicit. The same flow displacement, or the same material flux, must not be counted twice. Write $d_{\mathrm{pred}}^{(n)}$ for the predicted radial increment, and set $R_{\mathrm{pred}}=R^{(n)}+d_{\mathrm{pred}}^{(n)}$. This prediction contains neither $R_{\mathrm{eq}}$ nor a global equipotential blending term.
 
-**Geometric reference: the current shape is held.** The reference of the subproblem is the **current geometry** $R^{(n)}$ itself. The only change that is allowed is the mechanically predicted increment $d_{\rm pred}^{(n)}$, which vanishes identically on the locked set. Partition the nodes, by (B4) of Section 2.8, into the locked set $\mathcal L^{(n)}$, the pure-deposition set $\mathcal D^{(n)}$, and the movable set $\mathcal A^{(n)}$. The protected region is $\mathcal P^{(n)}:=\mathcal L^{(n)}$. Given weights $w_i>0$, the Metal-PDHG subproblem has the objective
+**Geometric reference: the current shape is held.** The reference of the subproblem is the **current geometry** $R^{(n)}$ itself. The only changes that are allowed are the mechanically predicted increment $d_{\rm pred}^{(n)}$, which vanishes identically on the locked set, and the slope relief of the vertices promoted by A-C4 (Section 2.8c). Partition the nodes, by (B4) of Section 2.8, into the locked set $\mathcal L^{(n)}$, the pure-deposition set $\mathcal D^{(n)}$, and the movable set $\mathcal A^{(n)}$. The protected region is $\mathcal P^{(n)}:=\mathcal L^{(n)}$. Given weights $w_i>0$, the Metal-PDHG subproblem has the objective
 
 $$
 d_*^{(n)}=\arg\min_d\frac12\sum_{i\in\mathcal A^{(n)}}w_i
@@ -3743,7 +3803,7 @@ $$
 \le \sin^2\phi_i^{(n)},
 $$
 
-only at those nodes of the movable set $\mathcal A^{(n)}$ for which the loose-layer surrogate has been declared applicable. Locked nodes are not constrained by the slope surrogate. It also uses
+only at those nodes of the movable set $\mathcal A^{(n)}$ (including the vertices promoted by A-C4, Section 2.8c) for which the loose-layer surrogate has been declared applicable. Nodes that stay locked after promotion are not constrained by the slope surrogate. It also uses
 
 $$
 \mathcal M(R^{(n)}+d,\rho_{\mathrm{cand}})=M.
@@ -3778,13 +3838,24 @@ $$
 
 where the exact-penalty factor $\varrho>0$ is taken large enough. *Scale of “large enough”.* The penalty is exact when $\varrho$ exceeds the multipliers of the slack rows, $\varrho>\max_f|y_{t,f}|$. Relieving a slope excess on a face moves its nodes by a distance of the order of the node spacing $\bar h_\Gamma$, and the multiplier is the marginal fidelity cost of that move, $|y_t|\sim w\,\bar h_\Gamma^2$ (with $d$ in metres). A configuration therefore takes $\varrho\ge 10\,w\,\bar h_\Gamma^2$; a smaller value lets the program keep a supercritical slope and pay the penalty instead, and the slope slack $\sum_i t_i$ of the report then stays positive although the geometry could relieve it.
 
+*Units of the mass penalty.* With $d$ in metres and dimensionless weights $w_i$, the fidelity term has the dimension $\mathrm L^2$, $t$ is dimensionless, and $\varrho$ carries $\mathrm L^2$. The term $\varrho|s_M|$ with $s_M$ in kilograms is therefore not dimensionally consistent, and the bound $\varrho\ge 10w\bar h_\Gamma^2$ concerns the slope rows only. The consistent form uses the relative slack $\sigma_M:=s_M/M$ with its own factor, $\varrho_M|\sigma_M|$, $\varrho_M$ in $\mathrm L^2$. The implementation takes $\varrho_M=\varrho\,\hat M$, where $\hat M$ is the numerical value of $M$ in kilograms ($10^{11}$–$10^{16}$ for the bundled bodies). This is a deliberate overweighting that makes the mass row effectively a hard constraint: $\sigma_M\ne 0$ only when the linearized row cannot be met inside the trust box.
+
+**Implementation of the subproblem.** The program actually assembled differs from the display above in the following points.
+
+1. The slope row and the anti-overhang row are imposed per *face* of $\mathcal S_{\rm slope}$, at the face centre, with the face-centre effective gravity and the linearized face normal $\widehat{\mathbf n}_f(d)=\mathbf n_f+\sum_{k\in f}\partial_{R_k}\mathbf n_f\,d_k$ (Section 10.3 evaluates $\phi$ there as well). The slack $t_f$ belongs to the face.
+2. The anti-overhang row is imposed only on faces that satisfy it at $d=0$. A face that already violates it is not repaired; its row and its slope cone are dropped and the face is counted (`dropped_overhang`).
+3. The trust region is the box $|d_i|\le\Delta$ on the free nodes, not a Euclidean ball: the linearization error of Section 2.13 is per node, and a ball of the same radius would force the root-mean-square displacement of a large patch down by $\sqrt{|\mathcal A|}$.
+4. When the relative mass target $|b_M|$ exceeds $10^{-4}$, the program first assumes that $\sigma_M$ has the sign of $b_M$ and folds $\varrho_M|b_M-a\cdot x|$ into the linear term (the exact penalty of a sign-definite slack). If the solution changes that sign, the hard equality row is solved instead.
+5. Metal-PDHG accepts a point when the largest row violation, the per-variable stationarity, the duality gap, and the dual-cone residual are each below $10^{-3}$ in the scaled variables ($x=d/\bar R$, relative mass). A point that misses this tolerance is a failed solve; the outer level then halves $\Delta$ (see the trust-region policy below and Section 10.4.3).
+6. The outer acceptance test checks a positive volume, the absence of self-intersection and the validity of the closed mesh (the mesh validation of the gravity solver), and the mass. Star-shapedness $\mathbf n\cdot\mathbf e_r\ge c_0$ is reported, not enforced.
+
 If the anti-overhang row holds at $d=0$, that is, if $g_i\cdot n_i<-\epsilon_n|g_i|$, then $d=0$, $s_M=M-\mathcal M^{(n)}$, and $t_i=\max(0,\cdot)$ give a feasible point. This point does not automatically provide a Slater strictly feasible interior point, because the positive-part construction may place a second-order-cone constraint on its boundary. If a Slater certificate is required, every second-order-cone slack must be given an additional prescribed positive margin $\delta_t>0$, one must take $t_i=\max(0,\cdot)+\delta_t$, and every linear constraint that has not been relaxed must be checked at the same time. The anti-overhang row has no slack variable. If $d=0$ violates that row, then $d=0$ is infeasible. The point must be repaired, along a geometrically verifiable direction, or removed, in the outer geometric preprocessing, before the SOCP is entered. The statement $t_i=s_M=0$ means only that the slack variables vanish. The outer acceptance test must still check the true constraints.
 
 These are genuine second-order-cone constraints. They become a quadratic program only if the norm constraints are linearized further. The vector $\widehat n$ is not treated as a unit normal. Shrinking its norm is not a way to satisfy the physical constraint. A candidate solution must have its true normal renormalized, and it must be checked again against the outer nonlinear constraints. The original normal $n(R+d)$, the true mass, and the true yield condition belong only to the outer acceptance test. This geometric correction does not replace the solution of stress balance and of the constitutive law. A tensorial yield certificate must change with the candidate mechanical state. Passage or rejection at a frozen constant tensor cannot be called a geometrically coupled yield constraint.
 
 Fields are frozen inside the subproblem. After the outer update, the candidate geometry, density, and stress are re-evaluated by a forward gravitational solve and checked again. If the current state is already balanced, satisfies the constraints, and has $d_{\mathrm{pred}}=0$, then $d=0$ is the unique minimizer of a strictly positive-weight objective. Topography therefore does not drift in the absence of an external cause.
 
-Because the elastic form above is always feasible on an overhang-free geometry after preprocessing, the logic “if infeasible, shrink the trust region and retry” is not used. When the current point itself violates a constraint, $d=0$ is infeasible, and as $\Delta\to 0$ the feasible set tends to empty, so that strategy necessarily fails. **Unified trust-region policy.** The inner SOCP never shrinks $\Delta^{(n)}$. The outer level shrinks $\Delta^{(n)}$, and regenerates the subproblem, only when the outer nonlinear geometric acceptance test finds an overhang or a self-intersection of the mesh. Every flux increment in the mass row is taken to be $\Delta h_C^*=(\rho_{\mathrm{bulk}}/\rho_K|_\Gamma)\Delta h_C$ (Section 2.8). If the optimal $t_i$ or $s_M$ is nonzero, the linearized model can satisfy the constraints only partially. The outer level decides acceptance by a filter or a merit function, and it may recompute the mechanical prediction. It must not release the protected region or fall back to a fluid target. If the protected region completely surrounds a violating node, or if a signed $\rho_K$ makes $D\mathcal M$ degenerate, then $s_M\neq 0$ is unavoidable and must be reported as such.
+Because the elastic form above is always feasible on an overhang-free geometry after preprocessing, the logic “if infeasible, shrink the trust region and retry” is not used. When the current point itself violates a constraint, $d=0$ is infeasible, and as $\Delta\to 0$ the feasible set tends to empty, so that strategy necessarily fails. **Unified trust-region policy.** The inner SOCP never shrinks $\Delta^{(n)}$. The outer level shrinks $\Delta^{(n)}$ by the factor `trust_shrink`, and regenerates the subproblem, when the outer geometric acceptance test rejects the candidate (non-positive volume, self-intersection, an invalid mesh) or when the cone program misses its KKT tolerance (item 5 above). A smaller box is a better-conditioned program. It is not shrunk for a mass miss (Section 2.14). Every flux increment in the mass row is taken to be $\Delta h_C^*=(\rho_{\mathrm{bulk}}/\rho_K|_\Gamma)\Delta h_C$ (Section 2.8). If the optimal $t_i$ or $s_M$ is nonzero, the linearized model can satisfy the constraints only partially. The outer level decides acceptance by a filter or a merit function, and it may recompute the mechanical prediction. It must not release the protected region or fall back to a fluid target. If the protected region completely surrounds a violating node, or if a signed $\rho_K$ makes $D\mathcal M$ degenerate, then $s_M\neq 0$ is unavoidable and must be reported as such.
 
 Freezing $g$ ignores $Dg\cdot d$. The iteration is therefore of sequential-convex (Picard) type, not a strict SQP iteration, and local superlinear convergence is not claimed. The linearization error is $O(\Delta^2)$, and the outer acceptance test must set a tolerance. The derivative $Dn_i^{(n)}$ in $\widehat n_i$ must be the Jacobian of the **normalized** unit normal. Then $n\cdot Dn\,d=0$ and $|\widehat n|\ge 1$.
 
@@ -3802,7 +3873,12 @@ R_i^{(n+1)}
 \lambda R_{*,i}^{(n)}.
 $$
 
-Rebuild the new polyhedron $V^{(n+1)}$ from $R^{(n+1)}$. On the locked set, $d_{*,i}=0$, so under-relaxation does not move a locked node. The physical time advanced by under-relaxation is $\lambda\Delta t_n$ (Section 10.4.1). After under-relaxation one must recompute gravity on the new geometry and resolve the quasi-static Stokes problem and the pressure. Stress is an instantaneous equilibrium quantity; there is no material history to update. The loose-layer density $\rho_s$ is updated by the conservation law of Mode C. Nonlinear mass and yield constraints are not guaranteed to hold along the line segment. Mass must not be repaired by a global scaling of the radius, or by a uniform increment, in such a way that the protected region moves. The conservation correction is performed inside the movable set. If it fails, the step is rejected and $\Delta t_n$ is reduced. The trust region is reduced, according to Section 2.13, only when the outer geometric acceptance test finds an overhang or a self-intersection.
+Rebuild the new polyhedron $V^{(n+1)}$ from $R^{(n+1)}$. On the locked set, $d_{*,i}=0$, so under-relaxation does not move a locked node. The physical time advanced by under-relaxation is $\lambda\Delta t_n$ (Section 10.4.1). After under-relaxation one must recompute gravity on the new geometry and resolve the quasi-static Stokes problem and the pressure. Stress is an instantaneous equilibrium quantity; there is no material history to update. The loose-layer density $\rho_s$ is updated by the conservation law of Mode C. Nonlinear mass and yield constraints are not guaranteed to hold along the line segment. Mass must not be repaired by a global scaling of the radius, or by a uniform increment, in such a way that the protected region moves. The conservation correction is performed inside the movable set. *Implementation.* If the candidate misses $|\mathcal M-M|\le\varepsilon_M M$, one correction along the mass gradient is applied on the movable set,
+$$
+R_i\leftarrow R_i+\alpha\,(D\mathcal M)_i\quad(i\in\mathcal A),\qquad
+\alpha=\operatorname{clip}\Big(\frac{M-\mathcal M}{\sum_{i\in\mathcal A}(D\mathcal M)_i^2},\,-\Delta,\,\Delta\Big),
+$$
+and the corrected candidate is accepted if it passes the geometric test. A relative mass residual that remains above $\varepsilon_M$ is not a rejection: the step is accepted and the residual is recorded (`mass_residual`). Neither $\Delta t_n$ nor the trust region is reduced for a mass miss. The trust region is reduced, according to Section 2.13, only when the geometric test or the cone program fails.
 
 ---
 
@@ -3828,13 +3904,15 @@ $$
 
 The first quantity is the Galerkin momentum residual of the true fluid system, with its unique stress field. The second measures incompatibility of the external load with the rigid-body modes, caused by a misaligned frame or by a missing discrete rigid mode (Section A.3). The relative norm $\|\mathbf r_{\rm rot}\|_{L^2}/\max\{\|\rho_K\mathbf g_{\rm eff}\|_{L^2},\varepsilon_f\}$ of the strong residual $\mathbf r_{\rm rot}=\mathbf f-\nabla p$, and the tangential traction deviation $\delta_{na}$, are indicators of discrete resolution. They converge as $K$ and $L_{\max}$ increase, and they must be reported at each step. If they exceed a configured threshold, the step is marked **insufficient resolution**. That mark does not rewrite the decision (b).
 
+*Implementation.* The denominator of both quantities is not $\|\mathbf F\|_2$ but the load scale $\|\mathbf F^{\rm abs}\|_2$, with $F^{\rm abs}_\alpha=\int_{\mathcal V}\big(\rho_K|\mathbf g_{\rm eff}|\,|\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\,\|\mathbf D(\mathbf B_\alpha)\|_F\big)\,dV$: a load that cancels exactly (a uniform sphere in its own gravity) would otherwise make the relative residual meaningless. Both are compared with the single tolerance `stokes.tol_momentum`; a failure of either terminates the step. The rotational residual is reported as `eps_rot`; $\delta_{na}$ is not computed, and no insufficient-resolution threshold is configured. In the bundled runs `eps_rot` lies between $0.25$ (Phobos) and $0.62$ (Ryugu) at every step: the stress field of the coarse production discretization (Section 8.4) is resolution-limited, although it meets (b).
+
 **(c) Stage equilibrium (when the exogenous spin is constant on a stage).** During a stage of constant $\omega_j$, the geometry has reached static equilibrium if and only if
 
 $$
-\boxed{\ \mathcal A^{(n)}=\varnothing\quad(\text{every surface point belongs to the rigid core }\mathcal U_{\rm core}),\qquad\text{and (b) holds}. \ }
+\boxed{\ \mathcal A^{(n)}=\varnothing\quad(\text{every surface point belongs to the rigid core }\mathcal U_{\rm core}\text{ and no vertex is promoted}),\qquad\text{and (b) holds}. \ }
 $$
 
-Then $F_\delta\le 0$ at every surface point, so $J_{\rm ero}=0$, $J_{\rm dep}=0$, $\mathcal D^{(n)}=\varnothing$, and $d_{\rm pred}=0$. Moreover $\mathbf v_{\rm adv}\equiv\mathbf 0$, so the density cores do not move ($\theta^{(n+1)}=\theta^{(n)}$, $\xi_n=0$; Section 9.10.2), and no ray is retraced (Section 3.15.2). The SOCP has no free variable, and $d_*=0$ holds exactly. This state is independent of $\Delta t_n$ and of $\lambda$. Because no state variable integrates $\mathbf D$, the state is a genuine fixed point, not a slowly drifting creep state. Regularized creep still exists inside the core, but it is removed exactly by $\chi_Y=0$. When $\mathcal A^{(n)}\ne\varnothing$, so that a genuine yielded flow exists, the size of $d_*$ is not a meaningful convergence test: the adaptive step $\Delta t_n$ makes the geometric displacement of each step about $\theta_{\rm CFL}h_\Gamma$. If the stage duration $T_j$ is exhausted while $\mathcal A^{(n)}\ne\varnothing$, the stage ends as **not equilibrated**, and the movable area fraction
+Here $\mathcal A^{(n)}$ is the movable set after slope promotion (Section 2.8c), so an equilibrated stage also has no supercritical loose face. Then $F_\delta\le 0$ at every surface point, so $J_{\rm ero}=0$, $J_{\rm dep}=0$, $\mathcal D^{(n)}=\varnothing$, and $d_{\rm pred}=0$. Moreover $\mathbf v_{\rm adv}\equiv\mathbf 0$, so the density cores do not move ($\theta^{(n+1)}=\theta^{(n)}$, $\xi_n=0$; Section 9.10.2), and no ray is retraced (Section 3.15.2). The SOCP has no free variable, and $d_*=0$ holds exactly. This state is independent of $\Delta t_n$ and of $\lambda$. Because no state variable integrates $\mathbf D$, the state is a genuine fixed point, not a slowly drifting creep state. Regularized creep still exists inside the core, but it is removed exactly by $\chi_Y=0$. When $\mathcal A^{(n)}\ne\varnothing$, so that a genuine yielded flow exists, the size of $d_*$ is not a meaningful convergence test: the adaptive step $\Delta t_n$ makes the geometric displacement of each step about $\theta_{\rm CFL}h_\Gamma$. If the stage duration $T_j$ is exhausted while $\mathcal A^{(n)}\ne\varnothing$, the stage ends as **not equilibrated**, and the movable area fraction
 
 $$
 \sum_{i\in\mathcal A}j_iw_i\Big/\sum_ij_iw_i
@@ -3935,7 +4013,7 @@ $$
 }
 $$
 
-The slope inequality in this box holds only at those nodes of the loose surface layer that lie in the movable set and for which the surrogate has been declared applicable. It is not a sufficient condition for balance of the solid body. Together with the quasi-static Stokes balance of (B1) in Section 2.8 — the unique stress $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$ — with the free-surface traction, and with the yield classification and the locking of the rigid core in (B2–B3), it forms the coupled system solved in Mode B. The spin $\omega$ is an exogenous datum (Section 10.4.1), not an unknown. Mode C supplies the local conservative flow prediction. The Mode A interface does not enter this loop.
+The slope inequality in this box holds only at those faces of the loose surface layer whose vertices lie in the movable set, including the vertices promoted by A-C4 (Section 2.8c), and for which the surrogate has been declared applicable. It is not a sufficient condition for balance of the solid body. Together with the quasi-static Stokes balance of (B1) in Section 2.8 — the unique stress $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$ — with the free-surface traction, with the yield classification and the locking of the rigid core in (B2–B3), and with the slope promotion of the loose layer, it forms the coupled system solved in Mode B. The spin $\omega$ is an exogenous datum (Section 10.4.1), not an unknown. Mode C supplies the local conservative flow prediction. The Mode A interface does not enter this loop.
 
 A fast algorithm aimed at the GPU, at RayBackend, and at batches of field points is given below. Its central idea is the following.
 
@@ -4214,7 +4292,7 @@ I_g=d^{1-2\alpha}\int_{\theta^-}^{\theta^+}\cos^{2\alpha-2}\theta\,d\theta,
 I_H=d^{1-2\alpha}\int_{\theta^-}^{\theta^+}\frac{\cos^{2\alpha-1}\theta}{b\cos\theta+d\sin\theta}\,d\theta,
 $$
 
-where $b\cos\theta+d\sin\theta=R\cos\theta>0$ on a segment with $R^->0$. The integrands **no longer contain the scales $d$ or $\sigma_k$**: the Lorentzian peak of width $d$ at $R=b$, which a fixed Gauss rule in $R$ cannot resolve when $d\ll R^+-R^-$ (a narrow, dense core), is mapped onto a smooth function of $\theta$. Apply an $n_r$-point Gauss–Legendre rule in $\theta$, and evaluate $I_g$ and $I_H$ on the same nodes, because they share $\cos^{2\alpha-2}\theta_j$. For $\alpha\ge 1$ the integrand of $I_g$ is bounded and smooth on $[-\tfrac\pi2,\tfrac\pi2]$. For $\alpha<1$ it has an integrable singularity at $\theta=\pm\tfrac\pi2$, which is close to the interval when $|R^\pm-b|\gg d$. The robust **composite rule**, valid for every $\alpha>0$, splits the segment at $R=b\pm\kappa d$ (default $\kappa=4$): the inner part $|R-b|\le\kappa d$ uses the tangent rule, whose $\theta$-interval then stays inside $[-\arctan\kappa,\arctan\kappa]$, away from $\pm\tfrac\pi2$; each outer part, where $D$ has no peak, uses Gauss–Legendre in $\log|R-b|$. There $D^{-\alpha}$ behaves as a power of $|R-b|$, which the logarithmic variable maps to a smooth exponential, and the variable stays regular when the segment starts at small $R$. With $16$ nodes per part, the same test case gives relative errors $1.1\times10^{-8}$, $2.3\times10^{-9}$, $1.1\times10^{-10}$ in $I_g$ and $7.7\times10^{-8}$, $3.4\times10^{-8}$, $1.2\times10^{-8}$ in $I_H$ for $\alpha=0.3,0.6,0.9$. *Measured accuracy of the pure tangent rule* ($n_r=16$, $b=0.7$, $d=0.05$, $[R^-,R^+]=[0.2,3]$): plain Gauss–Legendre in $R$ gives relative errors of $6.8\times10^{-2}$, $2.1\times10^{-1}$, $1.7\times10^{-1}$ in $I_g$ for $\alpha=0.6,1.3,2.5$. The tangent rule gives $1.2\times10^{-3}$, $1.6\times10^{-6}$, $1\times10^{-15}$ in $I_g$, and $9.4\times10^{-4}$, $6.2\times10^{-5}$, $1.9\times10^{-7}$ in $I_H$. These numbers are a-posteriori observations, not certificates (Section 1.12).
+where $b\cos\theta+d\sin\theta=R\cos\theta>0$ on a segment with $R^->0$. The integrand of $I_g$ **no longer contains the scales $d$ or $\sigma_k$**, and that of $I_H$ contains them only through the factor $1/(b\cos\theta+d\sin\theta)=\cos\theta/R$, which is smooth away from $R=0$: the Lorentzian peak of width $d$ at $R=b$, which a fixed Gauss rule in $R$ cannot resolve when $d\ll R^+-R^-$ (a narrow, dense core), is mapped onto a smooth function of $\theta$. Apply an $n_r$-point Gauss–Legendre rule in $\theta$, and evaluate $I_g$ and $I_H$ on the same nodes, because they share $\cos^{2\alpha-2}\theta_j$. For $\alpha\ge 1$ the integrand of $I_g$ is bounded and smooth on $[-\tfrac\pi2,\tfrac\pi2]$. For $\alpha<1$ it has an integrable singularity at $\theta=\pm\tfrac\pi2$, which is close to the interval when $|R^\pm-b|\gg d$. The robust **composite rule**, valid for every $\alpha>0$, splits the segment at $R=b\pm\kappa d$ (default $\kappa=4$): the inner part $|R-b|\le\kappa d$ uses the tangent rule, whose $\theta$-interval then stays inside $[-\arctan\kappa,\arctan\kappa]$, away from $\pm\tfrac\pi2$; each outer part, where $D$ has no peak, uses Gauss–Legendre in $\log|R-b|$. There $D^{-\alpha}$ behaves as a power of $|R-b|$, which the logarithmic variable maps to a smooth exponential, and the variable stays regular when the segment starts at small $R$. With $16$ nodes per part, the same test case gives relative errors $1.1\times10^{-8}$, $2.3\times10^{-9}$, $1.1\times10^{-10}$ in $I_g$ and $7.7\times10^{-8}$, $3.4\times10^{-8}$, $1.2\times10^{-8}$ in $I_H$ for $\alpha=0.3,0.6,0.9$. *Measured accuracy of the pure tangent rule* ($n_r=16$, $b=0.7$, $d=0.05$, $[R^-,R^+]=[0.2,3]$): plain Gauss–Legendre in $R$ gives relative errors of $6.8\times10^{-2}$, $2.1\times10^{-1}$, $1.7\times10^{-1}$ in $I_g$ for $\alpha=0.6,1.3,2.5$. The tangent rule gives $1.2\times10^{-3}$, $1.6\times10^{-6}$, $1\times10^{-15}$ in $I_g$, and $9.4\times10^{-4}$, $6.2\times10^{-5}$, $1.9\times10^{-7}$ in $I_H$. These numbers are a-posteriori observations, not certificates (Section 1.12).
 
 The cost per (segment, kernel) is therefore one $\arctan$ pair, $n_r$ evaluations of $\cos^{2\alpha-2}$ and one division each, and a closed-form $I_U$. That is about two thirds of the arithmetic of three independent quadratures, and the accuracy is independent of the core width.
 
@@ -4292,6 +4370,8 @@ A boundary point must first be fixed to the spherical representative convention 
 4. if two consecutive signs are equal after merging, a hit has been lost: re-trace that ray in the software BVH in double precision, and count the event in the diagnostics.
 
 On a closed, consistently oriented, watertight mesh, the alternation in step 3 is an invariant (the winding number along the ray changes by $\pm1$ at each transversal crossing), so step 4 detects every inconsistency instead of silently mispairing segments.
+
+**Implemented construction (parity after merging).** The implementation does not record orientation signs. Every crossing of the ray with the mesh is collected in single precision in the unit frame of the body (lengths divided by the bounding radius), sorted, and merged when two distances differ by at most $10^{-6}(1+R_j)$; crossings closer than $10^{-6}$ to the launch point are dropped. Because a ray ends outside a bounded body, the parity of the merged count fixes the occupancy at $R=0$: an odd count means the ray starts inside, $[0,R_1],[R_2,R_3],\dots$; an even count gives $[R_1,R_2],\dots$. This replaces the separate interior/exterior classification of step 3 and is correct whenever every transversal crossing is reported once. A crossing that is lost (a watertightness miss at an edge or a vertex) is not detected and mispairs the rest of that ray; the orientation-based steps 1–4 are the remedy and are not implemented (Appendix A.6). The impact is limited to the density-difference rays of Section 3.9: a uniform body casts no rays at all. Each ray holds at most 64 crossings in registers; a ray with more is an error, so the count–scan–write scheme below is not needed.
 
 Do not let each thread allocate memory dynamically. The recommended scheme has two stages, followed by a write.
 
@@ -4436,13 +4516,13 @@ $$
 U(x)=G\rho(x)\,\Phi_V(x)+G\int_V\frac{\rho(y)-\rho(x)}{|x-y|}\,dy,
 $$
 
-and likewise for $\nabla U$ and $H$, differentiating in $x$ only the kernel. The constant part carries the whole singular structure at $x$: the contact term $-\tfrac{4\pi}{3}\vartheta_x\rho(x)\mathbf I$, the logarithm $C(x)\log$ at an edge or a vertex, and the jump across a face. $\Phi_V$, $\nabla\Phi_V$ and $\nabla\nabla\Phi_V$ are evaluated in closed form (Werner and Scheeres 1997): a sum over faces of the solid angle $\omega_f$ and over edges of $L_e=\ln\frac{a+b+e}{a+b-e}$. For a point in the interior of face $f$ the convention of Section 1.3 takes the mean of the two one-sided limits, which sets $\omega_f=0$ for that face, and $\sum_f\omega_f=-\operatorname{tr}\nabla\nabla\Phi_V$ equals $4\pi\vartheta_x$. The remainder has the integrand $(\rho(x-Ru)-\rho(x))/R^{k}$, which vanishes at $R=0$; its ray integrals of Section 3.1 need neither the finite part, nor the contact term, nor the logarithm, and the radial rules of Section 3.3 apply on every segment. The angular rule then sees only the smooth variation of $\rho$ and no longer the kinks of the chord lengths of a constant density. (With $\rho\equiv\rho(x)$ a Lebedev rule of degree 29 alone leaves a relative error of about $2\times10^{-2}$ in $H$ at the centre of a cube; the split removes it exactly.) Nothing is cast for a uniform density.
+and likewise for $\nabla U$ and $H$, differentiating in $x$ only the kernel. The constant part carries the whole singular structure at $x$: the contact term $-\tfrac{4\pi}{3}\vartheta_x\rho(x)\mathbf I$, the logarithm $C(x)\log$ at an edge or a vertex, and the jump across a face. $\Phi_V$, $\nabla\Phi_V$ and $\nabla\nabla\Phi_V$ are evaluated in closed form (Werner and Scheeres 1997 [7]): a sum over faces of the solid angle $\omega_f$ and over edges of $L_e=\ln\frac{a+b+e}{a+b-e}$. For a point in the interior of face $f$ the convention of Section 1.3 takes the mean of the two one-sided limits, which sets $\omega_f=0$ for that face, and $\sum_f\omega_f=-\operatorname{tr}\nabla\nabla\Phi_V$ equals $4\pi\vartheta_x$. The remainder has the integrands $(\rho(x-Ru)-\rho(x))R$, $\rho(x-Ru)-\rho(x)$, and $(\rho(x-Ru)-\rho(x))/R$; the first two vanish at $R=0$ and the third tends to the finite limit $-\nabla\rho(x)\cdot u$ (step 3 above). Its ray integrals of Section 3.1 need neither the finite part, nor the contact term, nor the logarithm, and the radial rules of Section 3.3 apply on every segment. The angular rule then sees only the smooth variation of $\rho$ and no longer the kinks of the chord lengths of a constant density. (With $\rho\equiv\rho(x)$ a Lebedev rule of degree 29 alone leaves a relative error of about $2\times10^{-2}$ in $H$ at the centre of a cube; the split removes it exactly.) Nothing is cast for a uniform density.
 
 ---
 
 ## 3.10 Far-field multipole acceleration
 
-The rays of Section 3.1 cost $O(N_{\rm ray})$ per field point independently of the number $F$ of faces. The closed-form uniform part of Section 3.9 costs $O(F)$ per point, and it is the part that a tree accelerates.
+The rays of Section 3.1 cost $O(N_{\rm ray})$ per field point independently of the number $F$ of faces. The closed-form uniform part of Section 3.9 costs $O(F)$ per point, and it is the part that a tree accelerates, in the spirit of the fast multipole method [2] (here a Barnes–Hut-type traversal with octupole expansions, without local expansions).
 
 **Surface charges.** By the divergence theorem, $\nabla_y\cdot\big((y-x)/|y-x|\big)=2/|y-x|$, so
 
@@ -4602,6 +4682,8 @@ RayBackend is responsible for geometric intersection. The WGSL compute kernel is
 
 This section is normative for efficiency only. It changes no value computed by Sections 3.1–3.9; every rule below either reuses an exactly unchanged intermediate result or reorganizes the same arithmetic.
 
+*Implementation status.* The segment table, the dirty-ray test, the refit of the acceleration structure, the antipodal pairing, and the wavefront passes W1–W4 are not implemented. A geometric update rebuilds the acceleration structure and the face tree of Section 3.10, and every ray is cast again. What is reused is coarser: the face-centre fields are kept while the face centres, the mesh, and the density are unchanged (a spin-only step), the Stokes operators and the interior gravity of Section 8.4 are cached under a hash of the geometry and the density, and a uniform body casts no rays at all (Section 3.9). Hits are taken in single precision and not refined (compare Section 3.15.4).
+
 ### 3.15.1 Factorization of the field evaluation
 
 The evaluation of $U$, $\nabla U$, $H$ at a field-point set $\mathcal X$ factorizes into two stages with disjoint inputs.
@@ -4743,7 +4825,7 @@ The conventions in force are $\tau_{\mathrm{eq}}=\sqrt{\tfrac12\tau:\tau}$ and $
 
 *Range of application.* The $\mu(I)$ law of this chapter, and the argument that it is recovered in the limit, concern the flow (deviatoric) stress and an incompressible flow velocity ($\nabla\cdot v=0$). The production model (Section 2.8) uses only the viscoplastic stress given in this chapter. It introduces neither an elastic strain nor an equation of state. Pressure is the Lagrange multiplier of the incompressibility constraint, and it is determined by the Poisson problem of Section 8.7.
 
-The classical inertial rheology defines
+The classical inertial rheology [1][11] defines
 
 $$
 \dot\gamma=\sqrt{2D':D'},
@@ -4837,7 +4919,7 @@ $$
 
 ## 4.3a Two-layer strength: the fragile surface regolith
 
-The macroscopic cohesion $c$ of Sections 2.8 and 4.1 is not uniform in a rubble pile. Spacecraft data separate a weak loose layer from a stronger interior: the Hayabusa2 impact crater on Ryugu grew in the gravity-dominated regime, which bounds the surface strength to below about one pascal (Arakawa et al., 2020; a tensile strength of about 0.5 Pa, Sugimura et al., 2026), whereas the rotational deformation that formed Ryugu's western bulge requires an interior cohesion of 4–10 Pa (Hirabayashi et al., 2019). The cohesion is therefore a field of the depth below the free surface,
+The macroscopic cohesion $c$ of Sections 2.8 and 4.1 is not uniform in a rubble pile. Spacecraft data separate a weak loose layer from a stronger interior: the Hayabusa2 impact crater on Ryugu grew in the gravity-dominated regime, which bounds the surface strength to below about one pascal (Arakawa et al., 2020 [9]; a tensile strength of about 0.5 Pa, Sugimura et al., 2026 [12]), whereas the rotational deformation that formed Ryugu's western bulge requires an interior cohesion of 4–10 Pa (Hirabayashi et al., 2019 [10]). The cohesion is therefore a field of the depth below the free surface,
 
 $$
 \boxed{
@@ -5595,7 +5677,7 @@ $$
 
 in $L^1(K)$, by Vitali's theorem: almost-everywhere convergence together with uniform integrability. Hence $\nabla\cdot\sigma^{(n)}\to\nabla\cdot\sigma_{\mathrm{cl}}$ in $\mathcal D'(K)$. The convective term converges by the strong $L^2$ convergence alone ($v^{(n)}\otimes v^{(n)}\to v\otimes v$ in $L^1(K)$, with $\rho=\rho_0$ fixed as in Section 4.18), and $\nabla\cdot v=0$ is preserved.
 
-**Limitations.** (a) Almost-everywhere convergence is a hypothesis, not a conclusion. The stress–strain-rate relation of $\mu(I)$ is in general **not monotone** — there is a region of ill-posedness at small Froude number (Barker et al., 2015) — so the Minty monotonicity argument is unavailable, and the limit cannot be identified from weak convergence alone. (b) The conclusion is restricted to the interior of a compact set $K\Subset\{p>0\}$. It does not cover the free-surface boundary condition or a plug region where $\dot\gamma=0$. (c) Mode B, which is quasi-static and formally sits at $\dot\gamma=0$, lies outside the hypothesis $\dot\gamma_{\min}>0$. The theorem is therefore vacuous for the production default. It applies only to the active flow region of Mode C.
+**Limitations.** (a) Almost-everywhere convergence is a hypothesis, not a conclusion. The stress–strain-rate relation of $\mu(I)$ is in general **not monotone** — there is a region of ill-posedness at small Froude number (Barker et al., 2015 [8]) — so the Minty monotonicity argument is unavailable, and the limit cannot be identified from weak convergence alone. (b) The conclusion is restricted to the interior of a compact set $K\Subset\{p>0\}$. It does not cover the free-surface boundary condition or a plug region where $\dot\gamma=0$. (c) Mode B, which is quasi-static and formally sits at $\dot\gamma=0$, lies outside the hypothesis $\dot\gamma_{\min}>0$. The theorem is therefore vacuous for the production default. It applies only to the active flow region of Mode C.
 
 ---
 
@@ -5629,6 +5711,8 @@ $$
 $$
 
 the combined model does not reduce to the classical $\mu(I)$ law. Condition B fails, and $T_{\mathrm{tide}}$ remains of the same order as the pressure scale that multiplies $\mu$.
+
+*Magnitude in the bundled configurations.* With $d=d_p$ the grain diameter, the prefactor is $C_T\rho_p\nu_0 d_p^2=3.3\ \mathrm{kg\,m^{-1}}$ ($C_T=1$, $\rho_p=2420\ \mathrm{kg\,m^{-3}}$, $\nu_0=0.54$, $d_p=5$ cm), and $\|\operatorname{dev}H_W\|$ is of the order of $GM/R^3+\omega^2\lesssim 10^{-6}\ \mathrm{s^{-2}}$ on Ryugu, Phobos, and Deimos. Hence $\|\mathbf T_{\rm tide}\|\sim 10^{-6}$ Pa, against interior pressures of tens of pascals and a surface reference pressure $p_{\rm ref}\sim 0.2$–$40$ Pa (Section 10.3). Condition B holds with a margin of at least five orders of magnitude, and the situation of this section does not arise for these bodies. Moreover the yield function uses $s-\mathbf T_{\rm tide}\equiv\boldsymbol\tau_{\rm flow}$ (Section 4.16), so the backstress never enters the yield test directly. The tidal field acts on these bodies through the body force $\mathbf g_{\rm ext}$ in $\mathbf g_{\rm eff}$ (Section 10.4.1, `orbit`), not through $\mathbf T_{\rm tide}$.
 
 ## 4.24 The state variables are still evolving
 
@@ -6086,7 +6170,28 @@ The tangent viscosity $\eta_t$ and the secant viscosity $\eta_0=\bar\mu\bar p/\b
 
 The tangent of the combined model is obtained in the same way from the derivatives of $\eta(p,\mathbf D)$. The pressure $p_*$ enters only through $I_c$. If pressure regularization is enabled, the same regularized pressure must be used in every corresponding denominator. Every term is assembled from one and the same differentiation.
 
-**Proposition 5.8 (A local short-wave stability criterion).** For a uniform base state and a plane wave $\delta\mathbf v=\hat{\mathbf v}\,e^{\lambda t+i\mathbf k\cdot\mathbf x}$ with $\mathbf k\cdot\hat{\mathbf v}=0$, let the tangential acoustic tensor be $\mathsf A(\mathbf k)=k_j\mathbb C_{ijkl}k_l$, where $\mathbb C=\partial\boldsymbol\tau/\partial\nabla\mathbf v$. Under incompressibility the pressure disturbance is determined by the momentum equation contracted with $\mathbf k$, and it is not an independent unknown. Then $\lambda$ equals $-1/\rho$ times an eigenvalue of $\mathbb P(\mathbf k)\mathsf A(\mathbf k)$ on $\operatorname{Ran}\mathbb P(\mathbf k)$, where $\mathbb P=\mathbf I-\mathbf k\mathbf k^{\!\top}/|\mathbf k|^2$. A Newtonian fluid, for which $\mathbb C$ is the constant viscosity $\eta_0$, gives $\lambda=-\eta_0|\mathbf k|^2/\rho<0$. On a non-Newtonian base state, $\operatorname{Ran}\mathbb P$ is two-dimensional and the characteristic equation is of degree at most two. The criterion holds only in the local plane-wave approximation. A spherical-shell boundary and the curvature of the surface change the spectrum.
+**Proposition 5.8 (A local short-wave stability criterion, with the pressure coupling).** Take a uniform base state and linearize the deviatoric law in both arguments,
+$$
+\delta\boldsymbol\tau=\mathbb C:\nabla\delta\mathbf v+\mathbb K_p\,\delta p,\qquad
+\mathbb C=\frac{\partial\boldsymbol\tau}{\partial\nabla\mathbf v},\qquad
+\mathbb K_p=\frac{\partial\boldsymbol\tau}{\partial p}
+$$
+($\mathbb K_p=\tfrac{2\bar{\mathbf D}}{\bar{\dot\gamma}}\big(\bar\mu-\tfrac12\mu'(\bar I)\bar I\big)$ on the classical branch, Section 5.3; a symmetric tensor). For a plane wave $(\delta\mathbf v,\delta p)=(\hat{\mathbf v},\hat p)\,e^{\lambda t+i\mathbf k\cdot\mathbf x}$ with $\mathbf k\cdot\hat{\mathbf v}=0$, let $\mathsf A(\mathbf k)=k_j\mathbb C_{ijkl}k_l$ be the acoustic tensor. The linearized momentum equation is
+$$
+\rho\lambda\hat{\mathbf v}=-\mathsf A\hat{\mathbf v}+i\,(\mathbb K_p\mathbf k-\mathbf k)\,\hat p .
+$$
+Contracting with $\mathbf k$ and using $\mathbf k\cdot\hat{\mathbf v}=0$ gives $\hat p=i\,(\mathbf k\cdot\mathsf A\hat{\mathbf v})/(|\mathbf k|^2-\mathbf k\cdot\mathbb K_p\mathbf k)$, provided the denominator does not vanish; the pressure is not an independent unknown. Substitution yields
+$$
+\boxed{\ \rho\lambda\hat{\mathbf v}=-\mathsf Q(\mathbf k)\mathsf A(\mathbf k)\hat{\mathbf v},\qquad
+\mathsf Q(\mathbf k)=\mathbf I-\frac{(\mathbf k-\mathbb K_p\mathbf k)\,\mathbf k^{\!\top}}{|\mathbf k|^2-\mathbf k\cdot\mathbb K_p\mathbf k}.\ }
+$$
+One checks $\mathbf k^{\!\top}\mathsf Q=\mathbf 0$ and $\mathsf Q\mathbf w=\mathbf w$ for $\mathbf w\perp\mathbf k$: $\mathsf Q$ is the projector onto $\mathbf k^\perp$ *along* $(\mathbf I-\mathbb K_p)\mathbf k$. Hence $\lambda$ equals $-1/\rho$ times an eigenvalue of $\mathsf Q\mathsf A$ on the two-dimensional space $\mathbf k^\perp$, and the characteristic equation is of degree at most two.
+
+1. Without pressure dependence, $\mathbb K_p=\mathbf 0$ and $\mathsf Q$ is the orthogonal projector $\mathbb P=\mathbf I-\mathbf k\mathbf k^{\!\top}/|\mathbf k|^2$. A Newtonian fluid, $\mathbb C$ the constant viscosity $\eta_0$, gives $\lambda=-\eta_0|\mathbf k|^2/\rho<0$.
+2. With $\mathbb K_p\ne\mathbf 0$ the projector is oblique. Then $\mathsf Q\mathsf A|_{\mathbf k^\perp}$ need not be similar to a symmetric operator even when $\mathsf A$ is symmetric positive definite, and an eigenvalue with negative real part, that is $\operatorname{Re}\lambda>0$, can occur. This pressure-sensitivity term is the mechanism of the short-wave ill-posedness of $\mu(I)$ identified by Barker et al. (2015) [8]. A criterion built on $\mathbb P\mathsf A$ alone cannot detect it.
+3. Where $|\mathbf k|^2=\mathbf k\cdot\mathbb K_p\mathbf k$ the pressure is not determined by the wave, and the linearized problem degenerates. On the classical branch the eigenvalues of the traceless $\bar{\mathbf D}$ are bounded by $\bar{\dot\gamma}/\sqrt3$, so $|\hat{\mathbf k}\cdot\mathbb K_p\hat{\mathbf k}|\le\tfrac{2}{\sqrt3}\big|\bar\mu-\tfrac12\mu'(\bar I)\bar I\big|$, and the denominator stays positive whenever that bound is below one.
+
+The criterion holds only in the local plane-wave approximation. A spherical-shell boundary and the curvature of the surface change the spectrum. Its analysis on the regularized production law is proof obligation PO-10.
 
 ---
 
@@ -6429,7 +6534,7 @@ $$
 \cos\theta\,Y_{\ell m}=a_{\ell+1,m}Y_{\ell+1,m}+a_{\ell m}Y_{\ell-1,m}
 $$
 
-project onto $Y_{\ell\pm 1,m}$ and give the boxed coefficient. The second recurrence is consistent with the gradient formula for the solid harmonic $r^\ell Y_{\ell m}$: if $h=r^\ell$, then $\mathcal L^{+}_\ell h=\ell r^{\ell-1}-\ell r^{\ell-1}=0$. ∎
+project onto $Y_{\ell\pm 1,m}$ and give the boxed coefficient. The first recurrence is consistent with the gradient formula for the solid harmonic $r^\ell Y_{\ell m}$: if $h=r^\ell$, then $\mathcal L^{+}_\ell h=\ell r^{\ell-1}-\ell r^{\ell-1}=0$, so $\partial_z(r^\ell Y_{\ell m})$ has no component of degree $\ell+1$. ∎
 
 **Example.** Take $\rho=1+r^2$, $R=1$, and $m=0$.
 
@@ -6842,7 +6947,14 @@ $$
 
 Solve with $\mathbf K_\gamma$ for **seven right-hand sides**, $\mathbf F$ and the six columns of $\mathbf B_{\rm rb}^{\!\top}$, by PCG preconditioned with the block-diagonal inverse $\mathbf K_{\gamma,B1}^{-1}$ (the inverse of one $8\times 8$ principal sub-block for each $(\ell,m)$; Appendix A.4). The seven solves are run as one block (multi-right-hand-side) PCG, so that each application of $\mathbf K_\gamma$ advances all seven vectors at once. ("Seven" counts right-hand sides, not iterations; the number of iterations is set by the tolerance.) This produces $\mathbf y_0=\mathbf K_\gamma^{-1}\mathbf F$ and $\mathbf Y=\mathbf K_\gamma^{-1}\mathbf B_{\rm rb}^{\!\top}\in\mathbb R^{N_u\times 6}$. Solve the $6\times 6$ symmetric positive-definite system $(\mathbf B_{\rm rb}\mathbf Y)\boldsymbol\lambda=\mathbf B_{\rm rb}\mathbf y_0$, and set $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$. The spatial contrast $\eta_{\rm hi}/\eta_{\rm lo}$ determines the number of PCG iterations and must be reported together with that number. Newton acceleration, using the tangent of Section 5.3, is optional. The default is Picard.
 
-**Matrix-free application of $\mathbf K(\eta)$ (efficient realization).** The viscosity changes at every Picard round and is far from spherically symmetric (it jumps across yield surfaces), so the angular bandwidth of $\mathbf K(\eta)$ is in practice the full $L_{\max}$, and an assembled $\mathbf K$ costs $O(N_qN_u^2)$ per Picard round and $O(N_u^2)$ memory, with $N_u=8L_{\max}(L_{\max}+2)$ and $N_q=O(N_rL_{\max}^2)$. PCG needs only the product
+**Implementation and production resolution.** The implementation realizes (8.4′) directly, without PCG.
+
+- *Domain.* The Stokes domain is the star domain $r<R_{\rm SH}(\hat{\boldsymbol\omega})$ of the spherical-harmonic fit of degree `stokes.l_surface` to the vertex radii of the polyhedron. A fit whose largest relative misfit exceeds `geometry.sh_fit_tol` rejects the step.
+- *Quadrature.* The volume points are a product rule: `n_theta` Gauss–Legendre nodes in $\cos\theta$, `n_phi` equally spaced azimuths, and `n_radial` Gauss–Jacobi nodes with weight $\zeta^2$ along each ray, at $\mathbf x=\zeta R_{\rm SH}(\hat{\boldsymbol\omega})\hat{\boldsymbol\omega}$. The same points carry the loads, the viscosity, the rigid-body rows, and the pressure Poisson problem of Section 8.7.
+- *Solve.* $\mathbf K(\eta)$ is assembled densely from per-point Gram matrices of the strain rows, which are computed once per geometry. With $\gamma_{\rm AL}$ as above, $\mathbf K_\gamma$ and the $6\times6$ Schur complement are factored by dense Cholesky, and $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$ is formed exactly. The pressure stiffness is factored once per geometry.
+- *Bundled projects.* $L_{\max}=2$ ($N_u=64$), $4\times8$ directions $\times\,3$ radial nodes ($96$ points), `l_surface` $=4$ with `sh_fit_tol` $=0.25$, and a pressure space with $L_p=3$, $K_p=3$. A 3-point Gauss–Jacobi rule is exact only up to degree $5$ in $\zeta$, and the $4\times8$ rule up to degree $7$ in each angle, whereas the strain products of the basis with the factors of $R_{\rm SH}$ exceed both. The matrices of (8.4′) and of Section 8.7 are therefore integrated inexactly. The implementation does not tie the quadrature to $L_{\max}$ or `l_surface`, and no refinement study ($E_{4\to8}$, $L_{\max}$) has been made. The rotational residual of Section 2.15(b) is $0.25$–$0.62$ in these runs. The stress field, the yield classification of (B2)–(B3), and the friction-angle chain of Section 10.3 are correspondingly coarse: a degree-2 global flow cannot represent a localized shear band.
+
+**Matrix-free application of $\mathbf K(\eta)$ (efficient realization; not implemented).** The viscosity changes at every Picard round and is far from spherically symmetric (it jumps across yield surfaces), so the angular bandwidth of $\mathbf K(\eta)$ is in practice the full $L_{\max}$, and an assembled $\mathbf K$ costs $O(N_qN_u^2)$ per Picard round and $O(N_u^2)$ memory, with $N_u=8L_{\max}(L_{\max}+2)$ and $N_q=O(N_rL_{\max}^2)$. PCG needs only the product
 
 $$
 (\mathbf K\mathbf u)_\alpha=\sum_{q}w_q\,2\eta(\mathbf x_q)\,\mathbf D(\mathbf B_\alpha)(\mathbf x_q):\mathbf D(\mathbf v)(\mathbf x_q),
@@ -7111,6 +7223,8 @@ The radial Jacobi truncation ($K=4$) and the angular spherical-harmonic truncati
 6. The RTFP gravitational error.
 7. When Track B is used (Appendix A.4), the quantities $\varepsilon_B$ and $\mathbf r_B$.
 
+*Implementation.* Each step record carries $\eta_{\rm lo}$, $\eta_{\rm hi}$, the number of Picard sweeps, the achieved Picard change, $\varepsilon^{\rm weak}_{\rm mom}$, $\varepsilon_\lambda$, and the rotational residual (items 2–4; there are no PCG iterations, since the solve is direct). The smallest normalized singular value of $\mathbf B_{\rm rb}$ is checked against `stokes.rigid_sigma_min` when the operators are built, and a smaller value stops the run; it is not recorded. Items 1, 5, and 6 are not produced, and Track B is not used on the quasi-static route.
+
 The resulting mixed two-dimensional and three-dimensional discrete system is a reduced model subject to stated hypotheses and to error control. It is not an unconditional, zero-error reduction of the original three-dimensional free-boundary problem.
 
 ---
@@ -7235,7 +7349,7 @@ the basis-deformation term $\int_{\mathcal V}\rho\,(\partial_t\mathbf B_\alpha\c
 
 ## 9.2 Semi-Lagrangian backtracking
 
-For a grid point $\hat{\boldsymbol\omega}_a$, integrate the backward characteristic $\dot{\hat{\boldsymbol\omega}}=\mathbf c(\hat{\boldsymbol\omega},t)$ on the sphere, with $\hat{\boldsymbol\omega}(t^{n+1})=\hat{\boldsymbol\omega}_a$, preserving $|\hat{\boldsymbol\omega}|=1$:
+Semi-Lagrangian schemes [3] follow the characteristics backward from the grid. For a grid point $\hat{\boldsymbol\omega}_a$, integrate the backward characteristic $\dot{\hat{\boldsymbol\omega}}=\mathbf c(\hat{\boldsymbol\omega},t)$ on the sphere, with $\hat{\boldsymbol\omega}(t^{n+1})=\hat{\boldsymbol\omega}_a$, preserving $|\hat{\boldsymbol\omega}|=1$:
 
 $$
 \hat{\boldsymbol\omega}_m
@@ -7263,6 +7377,8 @@ with the determinant taken on the tangent space of $S^2$. A determinant of the e
 $$
 j^{n+1}_a\,m^{n+1,*}_a=\mathcal J_a\,j^{n}_d\,m^d.
 $$
+
+**Implementation for $\rho_s$ (quasi-static route).** The surface density is advanced with the first-order departure point $\hat{\boldsymbol\omega}_d=\mathcal N[\hat{\boldsymbol\omega}_a-\tau_n\mathbf c(\hat{\boldsymbol\omega}_a)]$, $\tau_n=\lambda\Delta t_n$, since only the velocity of step $n$ is available. The vertex values of $j\rho_s$ are interpolated barycentrically in the spherical triangle that contains the foot point, and the Jacobian is the truncated expansion $\mathcal J_a\approx 1-\tau_n\nabla_{S^2}\!\cdot\mathbf c+\tau_n^2\det(\nabla_{S^2}\mathbf c)$, with $\nabla_{S^2}\mathbf c$ fitted by least squares on the vertex ring. Because both the interpolation and the truncated Jacobian lose a little mass, one global factor restores $\sum_a j_a\Omega_a\rho_{s,a}$ exactly; its relative size is reported (`transport_fix`). This global factor redistributes a local transport error over the whole layer, and it is a departure from a strictly local conservation. The Mode C source is added after the transport, and $\rho_s$ is clipped at zero.
 
 ---
 
@@ -7535,7 +7651,7 @@ At fixed $K=4$ and $L_{\max}$, one may say only that the discrete solution conve
 | Time variable | physical time $t$; the step is limited by inertia and by the explicit source of Section 9.3 | geological time $t_n$, with $t_{n+1}=t_n+\lambda\Delta t_n$; $\Delta t_n$ is limited only by the geometric CFL of the movable region, by the erosional flux, and by the resolution of the spin table (Section 10.4.1) |
 | Velocity | recovered from the transported modal momentum $\mathbf m$ (Section 9.4) | the instantaneous Stokes creep velocity, computed implicitly at each step by (8.4′) and Section 8.7; not carried across steps |
 | Inertial terms | retained | omitted entirely ($\mathbf M=\mathbf N=\mathbf C=\mathbf 0$) |
-| Evolution of $R$ | $\partial_t R+\mathbf c\cdot\nabla_{S^2}R=v_r$ (Proposition 9.1) | $\partial_t R=\chi_Y\,\mathbf v_{\rm sl}\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$ plus the Mode C flux, discretized over $\Delta t_n$ as $d_{\rm pred}$, then corrected by the SOCP |
+| Evolution of $R$ | $\partial_t R+\mathbf c\cdot\nabla_{S^2}R=v_r$ (Proposition 9.1) | $\partial_t R=\chi_Y\,\mathbf v_{\rm sl}\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$ plus the Mode C flux, discretized over $\Delta t_n$ as $d_{\rm pred}$, then corrected by the SOCP, which also relieves the promoted vertices (Section 2.8c) |
 | Update of $R$ | integrated with $\partial_t R$ | $R^{(n+1)}=R^{(n)}+\lambda\mathbf d_*$ (on the locked set, $d_*=0$) |
 | Transport | eight modal fields $\mathbf m$ | the surface density $\rho_s$ only (Section 9.2) |
 | Density $\rho_K$ | transported with the flow | frozen within a step; cores advanced between steps by 2-jet transport along $\chi_Y\mathbf v_{\rm sl}$, mass closure, and adaptive refit (Section 9.10) |
@@ -7643,6 +7759,12 @@ $$
 
 Then $\mathcal M(V^{(n+1)},\theta'')=\mathsf M_{\rm tot}^{n+1}$ exactly (it is linear in the weights). By Proposition 3.15.1(b), every gravitational field scales by $1+\xi_n$ at no cost. The total mass $\mathsf M_{\rm tot}^{n+1}$ changes only through $J_{\rm ext}$ (Section 2.8). The quantity $|\xi_n|$ is a diagnostic. Sources of a nonzero $\xi_n$ are the mask at the core boundary, the tail defect of Level 0, the $O(\tau_n^2)$ splitting between the jet update and the geometric update, and the slack $s_{M*}$ of the SOCP. If $|\xi_n|>\varepsilon_\xi$ (configured, for example $10^{-3}$), Level 2 is triggered.
 
+*Implementation with a matrix density.* With the constant term $\rho_b$ of Section 1.1, the implementation keeps $\rho_b$ as a material constant and closes the mass on the cores alone:
+$$
+\xi_n:=\frac{\mathsf M_{\rm tot}^{n+1}-\rho_b|V^{(n+1)}|}{\mathcal M(V^{(n+1)},\theta')-\rho_b|V^{(n+1)}|}-1,\qquad w_k''=(1+\xi_n)w_k'.
+$$
+Two consequences follow. First, $\xi_n$ is relative to the core mass, not to the total mass, so a total-mass discrepancy is amplified by the ratio of the total mass to the core mass, and a core whose mass is a small fraction of the body absorbs a large relative change (the closure is skipped only when the core mass falls below $10^{-12}$ of the total). Second, since $\rho_b$ is not scaled, the fields do not scale by $1+\xi_n$, and Proposition 3.15.1(b) does not apply: the fields are re-evaluated. In the bundled Phobos forecast $|\xi_n|\le 2.3\times10^{-4}$. After a Level 2 refit, which holds the quadrature mass, the closure is applied once more to restore the exact mass.
+
 ### 9.10.5 Level 2: adaptive least-squares refit (triggered)
 
 *Target.* On the volume quadrature points $\mathbf x_q\in\mathcal V^{(n+1)}$ of Section 9.4 (weights $\omega_q$), the transported density is evaluated semi-Lagrangian-wise and **exactly in space**:
@@ -7682,7 +7804,9 @@ $$
 
 where $\delta_n$ is the per-step projection defect measured by $e_{\rho,n}$. The density error therefore accumulates at most additively. It does not grow exponentially, and it does not grow secularly when no material moves. (The hypotheses — exact trajectories and a material domain — are idealizations; the departures from them are the trajectory error, the mask at the core boundary, and Mode C, which are reported through $\xi_n$.)
 
-### 9.10.6 Level 3: change of the number of cores (optional, `core_adapt = on`)
+### 9.10.6 Level 3: change of the number of cores (optional, `core_adapt = on`; not implemented)
+
+*Implementation status.* Level 3 and its configuration items (`core_adapt`, $\varepsilon_{\rm split}$, $\varepsilon_{\rm merge}$, $K_{\max}$) are not implemented; the number of cores is fixed for a run. The rules below are the specification.
 
 A sum of $K$ Cauchy kernels cannot represent a core that is stretched into a long tongue, however its parameters are chosen. Let $\psi_k=|\rho_k|/\sum_j|\rho_j|$ be the partition of unity of the cores, and $e_k=\|\psi_k(\rho_K-\tilde\rho)\|/\|\psi_k\tilde\rho\|$ the misfit attributed to core $k$ after Level 2.
 
@@ -7789,7 +7913,7 @@ $$
 
 (The toroidal block at $\ell=2$ is $6\rho_0 R_0^5\operatorname{diag}(\tfrac17,\tfrac19,\tfrac1{11},\tfrac1{13})$. The poloidal matrix is computed from the same integral definition.)
 
-**Condition numbers ($4\times 4$ blocks).** The table below gives $2$-norm condition numbers computed from the exact rational Gram matrix after conversion to float64. The “monomial comparison basis” is used only for the condition-number comparison (the powers $\zeta^2,\ldots,\zeta^5$, passed through the same formulae). It takes part in no assembly.
+**Condition numbers ($4\times 4$ blocks).** The table below gives $2$-norm condition numbers computed from the exact rational Gram matrix after conversion to float64. The two monomial comparison bases are used only for the condition-number comparison, passed through the same formulae, and take part in no assembly: the fixed powers $\zeta^2,\ldots,\zeta^5$ for every $\ell$, and the powers $\zeta^{\ell},\ldots,\zeta^{\ell+3}$ that span the same space as $\psi_{\ell0},\ldots,\psi_{\ell3}$.
 
 $$
 \begin{array}{c|ccccc}
@@ -7797,11 +7921,12 @@ $$
 \operatorname{cond}(\mathbf M^P_\ell),\ \text{Jacobi}&30.1&27.3&26.1&25.1&24.5\\
 \operatorname{cond}(\mathbf M^P_\ell),\ \text{after diagonal scaling}&6.6&8.6&10.2&12.5&15.8\\
 \operatorname{cond}(\mathbf M^T_\ell),\ \text{Jacobi}&2.2&1.86&1.67&1.46&1.26\\
-\operatorname{cond}(\mathbf M^P_\ell),\ \text{monomial comparison basis}&4.0\times 10^5&3.4\times 10^5&3.2\times 10^5&3.2\times 10^5&3.8\times 10^5
+\operatorname{cond}(\mathbf M^P_\ell),\ \text{monomials }\zeta^{2..5}&4.0\times 10^5&3.4\times 10^5&3.2\times 10^5&3.2\times 10^5&3.8\times 10^5\\
+\operatorname{cond}(\mathbf M^P_\ell),\ \text{monomials }\zeta^{\ell..\ell+3}&6.6\times 10^4&3.4\times 10^5&1.3\times 10^6&9.1\times 10^6&2.2\times 10^8
 \end{array}
 $$
 
-In the monomial basis $\zeta^{\ell+i}$ the $L^2$ mass matrix $\big(1/(i+j+5)\big)_{i,j=1}^4$ has condition number $2.35\times 10^6$. In the Jacobi basis the corresponding $L^2$ mass matrix $\int\psi_i\psi_j\zeta^2\,d\zeta$ is diagonal, with condition number $(2\ell+9)/(2\ell+3)\le 11/5$. The condition number of the kinetic-energy mass block falls from about $10^5$ to about $25$–$30$ (and to at most $16$ after diagonal scaling), a reduction of about four orders of magnitude.
+In the fixed monomial basis $\zeta^{1+i}$, $i=1,\dots,4$, the $L^2$ mass matrix $\int\zeta^{1+i}\zeta^{1+j}\zeta^2\,d\zeta=\big(1/(i+j+5)\big)_{i,j=1}^4$ has condition number $2.35\times 10^6$. In the Jacobi basis the corresponding $L^2$ mass matrix $\int\psi_i\psi_j\zeta^2\,d\zeta$ is diagonal, with condition number $(2\ell+9)/(2\ell+3)\le 11/5$. Against the fixed monomials the condition number of the kinetic-energy mass block falls from about $10^5$ to about $25$–$30$ (and to at most $16$ after diagonal scaling), about four orders of magnitude; against the monomials $\zeta^{\ell},\dots,\zeta^{\ell+3}$ of the same span the gain grows with $\ell$, to seven orders at $\ell=10$.
 
 The improvement is **inside a block**. The eigenvalue scale of blocks at different $\ell$ grows like $\Lambda_\ell^2\sim\ell^4$, so the global condition number $\operatorname{cond}(\mathbf M_\Gamma|_{\ell\ge 1})$ still grows with $L_{\max}$. That growth is handled by the block-diagonal preconditioner of Section 9.4, whose preconditioner is $\mathbf M_{B1}^{-1}$, the inverse of each $(\ell,m)$ block.
 
@@ -8035,7 +8160,7 @@ In this case $\dot\gamma_\Gamma^2=2\big[D_{rr}^2+D_{SS}:D_{SS}\big]$. The whole 
 
 Remark. The pressure $p_{\rm ref}=\rho_{\rm bulk}|\mathbf g\cdot\mathbf n|h_s$ is a representative reference pressure of the shallow flowing layer. The coefficient $\mu_{\rm eff}$ constructed from it is a nominal geometric projection angle based on that representative surface pressure $p_{\rm ref}$. (A nominal geometric projection angle is monotone in pressure when there is no cohesion, or at high confining pressure. In general it is not guaranteed to be conservative. The true multiaxial yield is checked separately by the outer acceptance test.) The physical effective pressure $p_{*,\mathrm{phys}}=p+p_c$ is used only for the dynamic rheology $\mu_d$. The reference effective pressure $p_{*,\mathrm{ref}}=p_{\mathrm{ref}}+p_c$ is used only for the geometric projection angle $\mu_{\rm eff}$. This section does not use an unsubscripted $p_*$. Every quantity of this section lives on the free surface, $d=0$, so the cohesion $c$ below is the surface value $c_s$ of the two-layer strength (Section 4.3a).
 
-**Material constants are frozen.** The solid fraction $\nu=\nu_0$ (for example $\nu_0=0.6$ for a standard rubble pile [6][7]) and the coordination number $Z=Z_0$ (for example $Z_0=6$) are **material constants given by the configuration**. They are not updated with the SCF iteration or with the relaxation, and they have no evolution law. Consequently $\rho_{\rm bulk}=\rho_p\nu_0$, $c=c(\nu_0,Z_0)$, $\mu_s=\mu_s(\nu_0,Z_0)$, $\mu_2$, $I_0$, $\mu_y\equiv\mu_s$ (Section 2.8, B2), and $F_H$ are all constants. The symbols below keep their original form and no longer carry a nodal or an iteration subscript. The superscript $(n)$ on $\nu^{(n)}$ and $Z^{(n)}$ in Sections 4.7–4.20 is the **index of a parameter sequence** in the reduction theorem. It has nothing to do with the SCF iteration. The density $\rho_{\rm bulk}$ is the packing density of the loose surface layer. The density $\rho_K$ is the internal Cauchy continuum density. They are two independent configuration quantities, linked only through the density weight $\rho_{\rm bulk}/\rho_K|_\Gamma$ (Section 2.8). The range of the ratio $\rho_{\rm bulk}/\rho_K|_\Gamma$ should be reported at each step.
+**Material constants are frozen.** The solid fraction $\nu=\nu_0$ (for example $\nu_0=0.6$ for a standard rubble pile [5][6]) and the coordination number $Z=Z_0$ (for example $Z_0=6$) are **material constants given by the configuration**. They are not updated with the SCF iteration or with the relaxation, and they have no evolution law. Consequently $\rho_{\rm bulk}=\rho_p\nu_0$, $c=c(\nu_0,Z_0)$, $\mu_s=\mu_s(\nu_0,Z_0)$, $\mu_2$, $I_0$, $\mu_y\equiv\mu_s$ (Section 2.8, B2), and $F_H$ are all constants. The symbols below keep their original form and no longer carry a nodal or an iteration subscript. The superscript $(n)$ on $\nu^{(n)}$ and $Z^{(n)}$ in Sections 4.7–4.20 is the **index of a parameter sequence** in the reduction theorem. It has nothing to do with the SCF iteration. The density $\rho_{\rm bulk}$ is the packing density of the loose surface layer. The density $\rho_K$ is the internal Cauchy continuum density. They are two independent configuration quantities, linked only through the density weight $\rho_{\rm bulk}/\rho_K|_\Gamma$ (Section 2.8). The range of the ratio $\rho_{\rm bulk}/\rho_K|_\Gamma$ should be reported at each step.
 
 Every quantity below is evaluated on the frozen geometry $R^{(n)}$ of geological step $n$, on the frozen effective gravity $g_i^{(n)}$, and on the converged pressure $p_i^{(n)}$ of Section 8.7, taken at its regularized value $\tilde p_i^{(n)}=\max([p_i^{(n)}]_+,p_{\min})$ (Section 2.8). Define first
 
@@ -8167,7 +8292,7 @@ $$
 
 with $\theta_C<1$ and the instantaneous fluxes at $t_n$, so that the change of layer thickness in one step does not exceed $\theta_C h_s$. Positivity of $\rho_s$ needs no bound, because the erosion is integrated exactly over the step (Section 2.8). On a full layer, $\rho_s=\rho_{\rm bulk}h_s$, the bound equals $\theta_C\sigma_0/(k_e[F_\delta]_+)$; on a depleting layer it relaxes with $\rho_s$. If there is no flux, the value is $+\infty$.
 - Single-valuedness of the $\rho_s$ characteristics: $\Delta t_{\rm char}=\theta_{\rm ch}/\|\nabla_{S^2}\mathbf c\|_\infty$, with $\theta_{\rm ch}<1$ and $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$ (Section 9.2).
-- Validity of the core jet transport (Section 9.10.3): $\Delta t_{\rm core}=\theta_{\rm ch}\big/\max_{k\ \text{not anchored}}\|\nabla\mathbf v_{\rm adv}(\mathbf c_k)\|_2$, so that the deformation $\mathbf F_k$ of one step stays close to the identity and the backtracking of Level 2 is single-valued. If every core is anchored, the value is $+\infty$. (Since $\lambda\le 1$, the bound also holds for $\tau_n=\lambda\Delta t_n$.)
+- Validity of the core jet transport (Section 9.10.3): $\Delta t_{\rm core}=\theta_{\rm ch}\big/\big(\lambda\max_{k\ \text{not anchored}}\|\operatorname{dev}\nabla\mathbf v_{\rm adv}(\mathbf c_k^{\rm mid})\|_F\big)$, so that the transport step satisfies $\tau_n\|\operatorname{dev}\nabla\mathbf v_{\rm adv}\|_F\le\theta_{\rm ch}$, the deformation $\mathbf F_k$ of one step stays close to the identity, and the backtracking of Level 2 is single-valued. The bound is placed on $\tau_n=\lambda\Delta t_n$, the step the cores actually take; the Frobenius norm bounds the spectral norm from above, and the gradient is a central difference of $\mathbf v_{\rm adv}$ at the RK2 midpoint. If every core is anchored, the value is $+\infty$.
 - Resolution of the spin table: under `stages` there is no separate restriction (the quantity $t_{\rm next}$ handles it). Under `linear` or `table`,
 
 $$
@@ -8178,7 +8303,7 @@ $$
 so that the relative change of spin in one step does not exceed $\varepsilon_\omega$.
 - The quantity $\Delta t_{\max}$ is a configured upper bound. The time $t_{\rm next}$ is the next stage boundary, table node, or $T_{\rm end}$.
 
-**Why there is no viscous stiffness catastrophe.** The velocity is computed implicitly from (8.4′). The step $\Delta t_n$ does not appear in the velocity equation, and it is independent of $\eta_{\rm hi}=(c+\mu_2\tilde p)/\dot\gamma_\varepsilon$. Regularized creep inside the rigid core is removed by $\chi_Y=0$ and does not enter $\Delta t_{\rm CFL}$. The number of steps required is therefore about $T\cdot\max_{\mathcal A}|\mathbf v_{\rm sl}\cdot\mathbf n|/(\theta_{\rm CFL}h_{\Gamma,\min})$. It is fixed by the true landslide speed. There is no CFL restriction of viscous-diffusion type. An equilibrated stage whose movable set is empty needs only one step, which jumps to the end of the stage. The factor $\lambda\in(0,1]$ defaults to $1$ and is reduced only when the outer geometric acceptance test is difficult. Accumulated time is measured by $\lambda\Delta t_n$. A step that is recomputed after the trust region has been shrunk because of an overhang or a self-intersection does not advance time. Stage equilibrium and the termination condition are criterion (c) of Section 2.15. Stability of that criterion (sufficiency of the step-size rule), and the conditions under which stage equilibrium is reached in finitely many steps, belong to PO-12.
+**Why there is no viscous stiffness catastrophe.** The velocity is computed implicitly from (8.4′). The step $\Delta t_n$ does not appear in the velocity equation, and it is independent of $\eta_{\rm hi}=(c+\mu_2\tilde p)/\dot\gamma_\varepsilon$. Regularized creep inside the rigid core is removed by $\chi_Y=0$ and does not enter $\Delta t_{\rm CFL}$. The number of steps required is therefore about $T\cdot\max_{\mathcal A}|\mathbf v_{\rm sl}\cdot\mathbf n|/(\theta_{\rm CFL}h_{\Gamma,\min})$. It is fixed by the true landslide speed. There is no CFL restriction of viscous-diffusion type. The relief of promoted vertices (Section 2.8c) has no speed and does not enter this bound: while only promoted vertices are movable, the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. An equilibrated stage whose movable set is empty needs only one step, which jumps to the end of the stage. The factor $\lambda\in(0,1]$ defaults to $1$ and is reduced only when the outer geometric acceptance test is difficult. Accumulated time is measured by $\lambda\Delta t_n$. A step that is recomputed after the trust region has been shrunk because of an overhang or a self-intersection does not advance time. Stage equilibrium and the termination condition are criterion (c) of Section 2.15. Stability of that criterion (sufficiency of the step-size rule), and the conditions under which stage equilibrium is reached in finitely many steps, belong to PO-12.
 
 ### 10.4.2 Quasi-static Stokes–pressure solution at fixed geometry and fixed $\omega_n$
 
@@ -8187,8 +8312,8 @@ Geological step $n$ is executed on the frozen data $R^{(n)}$, $\rho_K$, $\omega_
 ```text
 Input: initial value u^0 (the converged coefficients of the previous geological step,
        reused without change; u^0 = 0 on the first step, or immediately after an 8b realignment),
-       p~^0 (the converged pressure coefficients of the previous geological step, synthesized
-       on the new geometry and replaced by max([.]_+, p_min); p_min on the first step).
+       p~^0 = p_min at every point (the implementation does not carry the pressure
+       across steps; only the number of sweeps depends on this start).
 for k = 0, 1, ..., k_max-1:
   (P1) Pressure: from the frozen pair (u^k, p~^k), compute
        f = rho_K g_eff + div T_tide + div tau_flow
@@ -8207,9 +8332,11 @@ for k = 0, 1, ..., k_max-1:
   (P3) Velocity: assemble K(eta^{k+1/2}) and F, and solve (8.4')
        by the range-space method of Section 8.4, obtaining (u^{k+1}, lambda^{k+1}).
   (P4) Stop if criterion (a) of Section 2.15 holds.
-If the iteration has not converged within k_max: continue in gd_eps
-(first solve at 10 gd_eps, then reduce level by level to the target value,
-each level starting from the solution of the previous level) and retry with a smaller theta_eta.
+The target gd_eps is solved first. If it has not converged within k_max
+(stokes.picard_max):
+  - with stokes.continuation = c > 0, restart from the incoming u^0 on the ladder
+    10^c gd_eps, ..., 10 gd_eps, gd_eps, each level starting from the previous one;
+  - on the target level, halve theta_eta (not below 1/4, at most three times) and retry.
 If the retry still fails, terminate and report "rheology not converged".
 A passing status must not be emitted.
 Output: u^(n), p^(n), lambda^(n), eta^(n); then apply criterion (b) of Section 2.15.
@@ -8261,23 +8388,24 @@ $$
 
 Under hypothesis A-C3 (Section 2.8b) the subproblem is solved twice: the mass that the first solution removes from the vertices of $\mathcal S_{\rm slope}^{(n)}$ is routed by the runout and returned as the deposit $\delta$, and the second solve uses $d_{\rm pred}+\delta$, with every locked vertex that receives a deposit moved to $\mathcal D^{(n)}$. Its solution is $d_*^{(n)}$. Both solves are the same convex program; only the data change.
 
-The set $\mathcal S_{\rm slope}^{(n)}\subseteq\mathcal A^{(n)}$ contains only those nodes of the movable set that belong to the loose surface layer to which the angle-of-repose proxy applies. The vector $d_{\mathcal A}$ is the restriction of $d$ to the movable set. The trust region constrains only the free variables. The objective **does not** contain $R_{\rm eq}$, $W_0$, or any equipotential term. If $\mathcal A^{(n)}=\varnothing$, the subproblem has no free variable, $d_*=d_{\rm pred}$ (zero on the locked set, and equal to the deposited amount on the deposition set), and Metal-PDHG is not called.
+The set $\mathcal S_{\rm slope}^{(n)}\subseteq\mathcal A^{(n)}$ contains only those nodes of the movable set that belong to the loose surface layer to which the angle-of-repose proxy applies. In the implementation it is the set of supercritical faces of Section 2.8c, whose three vertices are movable after slope promotion; the rows are imposed at the face centres (Section 2.13, implementation item 1). The vector $d_{\mathcal A}$ is the restriction of $d$ to the movable set. The trust region constrains only the free variables. The objective **does not** contain $R_{\rm eq}$, $W_0$, or any equipotential term. If $\mathcal A^{(n)}=\varnothing$, the subproblem has no free variable, $d_*=d_{\rm pred}$ (zero on the locked set, and equal to the deposited amount on the deposition set), and Metal-PDHG is not called.
 
 The mass row is equivalent to $\widehat{\mathcal M}(d)=M-s_M$. A feasible point is constructed by taking $d_{\mathcal L}=0$, $d_{\mathcal D}=d_{\rm pred,\mathcal D}$, $d_{\mathcal A}=0$, $s_M=M-\widehat{\mathcal M}(d)$, and $t_i=\big[\|g_i\times\widehat n_i(d)\|/|g_i|-\sin\phi_i\big]_+$. If the anti-overhang row is satisfied at that point, the point is feasible. The anti-overhang row has no slack. If it is violated, the outer level must repair the point by a geometric preprocessing in the direction $-g$, or the point must be removed when $\mathcal S_{\rm slope}$ is defined. This construction is only a feasibility construction. It is not a Slater certificate of a strict interior point. A strict interior point, if one is required, must be given a positive margin in the second-order cone and must satisfy every unrelaxed linear constraint strictly, as stated in Section 2.13. The objective is strictly convex in $d_{\mathcal A}$ (because $w_i>0$) plus an $\ell_1$ term, so a solution exists and $d_{\mathcal A*}$ is unique. The second-order-cone constraints, the affine constraints, and the trust ball make the problem a convex SOCP. Whether the constraints are truly satisfied is decided by whether $t_*$ and $s_{M*}$ vanish, and by the outer nonlinear geometric acceptance test.
 
-The set $\mathcal A_{\mathrm{lin}}^{(n)}$ contains only the affine or conic interior approximations of nodal order, positive volume, and the trust region. True positive volume and the topological conditions are not convex constraints of Metal-PDHG. They are checked by the outer acceptance test. If they fail, the trust region is reduced and the subproblem is resolved. **Unified trust-region policy.** The inner Metal-PDHG SOCP is convex-feasible because of the elastic slack variables $t_i$ and $s_M$. The inner level never reduces the trust region. Only when the outer nonlinear geometric acceptance test finds a mesh overhang or a self-intersection, including a failure of positive volume or of a topological condition, does the outer level reduce the trust-region radius $\Delta^{(n)}$ and regenerate the subproblem; see Section 2.13. If the constraint on the normal norm is retained, the problem is an SOCP with a quadratic objective. It may be called a pure QP only after every constraint has been affinely approximated.
+The set $\mathcal A_{\mathrm{lin}}^{(n)}$ contains only the affine or conic interior approximations of nodal order, positive volume, and the trust region. True positive volume and the topological conditions are not convex constraints of Metal-PDHG. They are checked by the outer acceptance test. If they fail, the trust region is reduced and the subproblem is resolved. **Unified trust-region policy.** The inner Metal-PDHG SOCP is convex-feasible because of the elastic slack variables $t_i$ and $s_M$. The inner level never reduces the trust region. The outer level reduces the trust-region radius $\Delta^{(n)}$ and regenerates the subproblem when the outer geometric acceptance test rejects the candidate (a self-intersection, a non-positive volume, an invalid mesh) or when the cone program misses its KKT tolerance; see Section 2.13. A mass miss does not reduce it (Section 2.14). If the constraint on the normal norm is retained, the problem is an SOCP with a quadratic objective. It may be called a pure QP only after every constraint has been affinely approximated.
 
-**Place of the tidal backstress and of yield inside the subproblem.** The quantity $\sin\phi_i^{(n)}$ in the subproblem comes from the nominal geometric projection proxy of Section 10.3, based on $p_{\rm ref}$. It constrains only the geometry of the movable loose surface layer. Vanishing of $t_*$ says only that the proxy constraint holds. A nonzero $t_*$ is not, by itself, an assertion of tensorial yield. True tensorial yield is not a constraint of the geometric acceptance test. It is the physical state that drives the flow. On the next geological step, $F_\delta$ is recomputed and the classification is repeated, on the new geometry, the new $\mathbf T_{\rm tide}$, and the new Stokes solution (Section 2.8). The outer geometric acceptance test checks only positive volume, absence of self-intersection, star-shapedness $n\cdot e_r\ge c_0$, and the mass residual. If no feasible candidate exists, the trust region is reduced. A fluid equipotential is not used as a fallback target. The trust region stops at the floor $\Delta_{\min}=\texttt{trust\_min}\cdot\bar R$. A geometric rejection that persists at the floor ends the run as `GeometryInvalid`. If instead the cone program itself misses the KKT tolerance at every radius down to the floor, the step keeps $d_*=\mathbf 0$: the geometry, and with it the supercritical faces of that step, are carried unchanged to the next step, time advances by $\lambda\Delta t_n$, and the step is flagged `cone_unresolved` and counted in the report. Such a step leaves the slope inequality unrelieved, exactly as protected relief does (Section 2.8, B4); it does not move the body.
+**Place of the tidal backstress and of yield inside the subproblem.** The quantity $\sin\phi_i^{(n)}$ in the subproblem comes from the nominal geometric projection proxy of Section 10.3, based on $p_{\rm ref}$. It constrains only the geometry of the movable loose surface layer. Vanishing of $t_*$ says only that the proxy constraint holds. A nonzero $t_*$ is not, by itself, an assertion of tensorial yield. True tensorial yield is not a constraint of the geometric acceptance test. It is the physical state that drives the flow. On the next geological step, $F_\delta$ is recomputed and the classification is repeated, on the new geometry, the new $\mathbf T_{\rm tide}$, and the new Stokes solution (Section 2.8). The outer geometric acceptance test checks only positive volume, absence of self-intersection, and the mass residual (which is corrected once and then recorded, Section 2.14); star-shapedness $n\cdot e_r\ge c_0$ is reported, not enforced. If no acceptable candidate exists, the trust region is reduced. A fluid equipotential is not used as a fallback target. The trust region stops at the floor $\Delta_{\min}=\texttt{trust\_min}\cdot\bar R$. A geometric rejection that persists at the floor ends the run as `GeometryInvalid`. If instead the cone program itself misses the KKT tolerance at every radius down to the floor, the step keeps $d_*=\mathbf 0$: the geometry, and with it the supercritical faces of that step, are carried unchanged to the next step, time advances by $\lambda\Delta t_n$, and the step is flagged `cone_unresolved` and counted in the report. The transport of $\rho_s$ and the core closure of Section 9.10 still run on the kept geometry. Such a step leaves the slope inequality unrelieved, exactly as protected relief does (Section 2.8, B4); it does not move the body.
 
 ### 10.4.4 The main loop of the quasi-static evolution
 
 ```text
-0. Initialization: read the star-shaped polyhedron R^(0), the Cauchy density parameters
-   (w_k, c_k, S_k or sigma_k, alpha_k; density_mode, core_shape, core_adapt and the tolerances
-   eps_xi, eps_rho, eps_split, eps_merge, K_max of Section 9.10), the material constants
+0. Initialization: read the star-shaped polyhedron R^(0), the density (rho_b and the
+   Cauchy cores w_k, c_k, S_k or sigma_k, alpha_k; density_mode, core_shape and the
+   tolerances eps_xi, eps_rho, gn_max of Section 9.10; core_adapt, eps_split, eps_merge,
+   K_max belong to the unimplemented Level 3), the material constants
    (nu_0, Z_0, c_b, c_s, h_c, mu_s, mu_2, I_0, d_p, rho_p, C_c, F_H, C_T, gd_eps, delta_Y, p_min),
    the Mode C parameters (k_e, sigma_0, kernel K, h_s, runout, runout_time, runout_stop),
-   spin_schedule, and every tolerance.
+   the slope-promotion tolerance tau_s (relief.tol_slack), spin_schedule, and every tolerance.
    If any item is missing -> ModelNotClosed, and refuse to run.
    rho_s^0 = rho_bulk h_s, eps_p_bar = 0, t_0 = 0.
    Perform the frame alignment of step 8b once (mandatory; the trigger condition is ignored).
@@ -8286,10 +8414,11 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    RTFP/Feynman representation the face-centre Hessian (Section 10.3), the nodal fields
    g_i and H_W,i, and grad U and Hess U at the interior quadrature points X_vol
    (the assembly points of (8.4')) and on the classification mesh X_Y (Section 2.8, B3).
-   Interior points converge classically. Reuse the segment table of the previous step and
-   retrace only the dirty rays (Section 3.15.2); after a realignment 8b, rebuild and retrace all.
-   g_eff = grad U + omega_n^2 x_perp,
-   H_W = Hess U + omega_n^2 diag(1,1,0),
+   Interior points converge classically. (Specified: reuse the segment table and retrace
+   only the dirty rays, Section 3.15.2. Implemented: a geometric update rebuilds the
+   acceleration structure and casts every ray again; a spin-only step reuses the fields.)
+   g_eff = grad U + omega_n^2 x_perp + g_ext,
+   H_W = Hess U + omega_n^2 diag(1,1,0) + Hess U_tide   (g_ext, U_tide only under `orbit`),
    T_tide = C_T rho_p nu_0 d_p^2 dev H_W.
 2. Quasi-static Stokes–pressure Picard iteration (Section 10.4.2), producing
    (u^(n), p^(n), lambda^(n), eta^(n)).
@@ -8301,11 +8430,15 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    of largest mass as the rigid core U_core. This produces chi_Y,i.
    Fit the rigid motion (a_c, theta_c) of the core by least squares, and set
    v_sl = v - a_c - theta_c x x.
-   Update the diagnostics eps_p_bar and Phi_p.
-   Report the movable area fraction, the fraction in tension, Ek^{-1}, and eps_Euler.
+   Update the diagnostic Phi_p (eps_p_bar of (B6) is not implemented).
+   Report the movable area fraction, the fraction in tension, and Ek^{-1}
+   (eps_Euler is not reported).
 4. Friction-angle chain (Section 10.3): from u^(n), synthesize the surface velocity
-   by Proposition 10.2, compute gd_i by Section 10.2.3, and obtain mu_d,i, mu_proj,i,
-   and phi_i (required only at movable nodes in S_slope).
+   by Proposition 10.2, compute gd at every face centre by Section 10.2.3, and obtain
+   mu_d, mu_proj, phi, and the repose slack s_f of every face.
+4b. Slope promotion (Section 2.8c, A-C4): pi_i = 1 for every vertex of a face with
+   s_f > tau_s that has chi_Y,i = 0 and rho_s,i > 0. The geometric movability is
+   max(chi_Y, pi); chi_Y itself is unchanged and governs steps 5, 5b, and the CFL bound.
 5. Mode C (Section 2.8): chi_A = chi_Y * 1[rho_s > 0], and J_ero.
    Runout (Section 2.8b, A-C3): trace each node with J_ero > 0 over Gamma in the rotating
    frame (sliding with mu(I) and Coriolis; ballistic hops where N <= 0) to its arrival X;
@@ -8318,34 +8451,39 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    rho_cand = rho_K(.; theta^pred). Steps 5 and 5b and step 4 read the same converged
    Stokes solution and write disjoint data, so they may run concurrently (Section 10.5).
 6. Step size (Section 10.4.1): Delta t_n.
+   A^(n) below is the movable set after promotion.
    If spin_schedule = stages and A^(n) is empty and J_ero = 0 (hence J_dep = 0):
      stage equilibrium (criterion (c) of Section 2.15) -> emit the terminal state of the stage,
      set t_{n+1} to the end s_j of the current stage, set R^(n+1) = R^(n), and go to step 1.
    If A^(n) is empty and the schedule is not stages:
      Delta t_n = min(Delta t_omega, Delta t_max, t_next - t_n),
      d_pred = 0, and go directly to step 8 (the geometry is unchanged; only omega advances).
-7. Form d_pred (Section 2.8, B4) and the nodal classes L / D / A.
-   Solve the Metal-PDHG SOCP of Section 10.4.3; its mass row and D M use rho_cand.
+7. Form d_pred (Section 2.8, B4; no creep term on promoted vertices) and the nodal
+   classes L / D / A. Solve the Metal-PDHG SOCP of Section 10.4.3; its mass row and
+   D M use rho_cand.
    Relief routing (Section 2.8b, A-C3): r_i = [d_pred,i - d_i]_+ on the vertices of S_slope,
    m_i = (D M)_i r_i; run each such vertex out to X(a_i); spread m by K;
    delta_j = (K m)_j A_j / (D M)_j; d_pred <- d_pred + delta, a locked vertex with
    delta_j > 0 joins D; solve again, warm-started, for d_*^(n). Report the routing gap.
 8. Geometric update and frame realignment:
    8a. R^(n+1) = R^(n) + lambda d_*^(n) (on the locked set, d_* = 0). Rebuild the polyhedron.
-       Outer geometric acceptance: positive volume, no self-intersection, n.e_r >= c_0,
-       and |M(V^(n+1), rho_cand) - M| <= eps_M. On failure, reduce Delta^(n), resolve step 7,
-       and do not advance time.
+       Outer geometric acceptance: positive volume and no self-intersection. On failure,
+       or when the cone solve of step 7 failed, reduce Delta^(n), resolve step 7, and do
+       not advance time. A miss of |M(V^(n+1), rho_cand) - M| <= eps_M M is corrected once
+       on the movable set and then recorded (Section 2.14). n.e_r is reported.
        For rho_s: transport the single field by the semi-Lagrangian scheme of Section 9.2,
        along c = chi_A v_sl,S / R, with step lambda Delta t_n, including the Jacobian
        correction, then add lambda Delta t_n (J_dep - J_ero).
-   8c. Core closure on V^(n+1) (Section 9.10.4-9.10.6): Level 1 mass closure
-       (w <- (1+xi_n) w), misfit e_rho against the semi-Lagrangian transported density,
-       Level 2 Gauss-Newton refit if e_rho > eps_rho or |xi_n| > eps_xi, Level 3 split/merge
-       if core_adapt = on. Check rho_K >= rho_min. The mesh is not changed here, so no ray
-       is retraced for this update (Section 3.15.1).
+   8c. Core closure on V^(n+1) (Section 9.10.4-9.10.5): Level 1 mass closure on the cores
+       (w <- (1+xi_n) w, rho_b fixed), misfit e_rho against the semi-Lagrangian transported
+       density, Level 2 Gauss-Newton refit if e_rho > eps_rho or |xi_n| > eps_xi, then
+       Level 1 once more. (Level 3 and the check rho_K >= rho_min are not implemented.)
+       8c runs before 8b because the realignment needs the updated density.
    8b. Standard frame realignment. Trigger: |x_cm| > eps_frame R_ref / 2, or
-       max(|I_xz|, |I_yz|) > eps_frame I_1 / 2. If the trigger is not met, skip 8b,
-       so that repeated resampling does not cause numerical diffusion.
+       max(|I_xz|, |I_yz|) > eps_frame I_1 / 2, or a violated ordering
+       I_zz >= I_yy >= I_xx beyond eps_deg I_1. If the trigger is not met, skip 8b,
+       so that repeated resampling does not cause numerical diffusion. At most three
+       passes are made; each is followed by a new gravity binding.
        (i)   Centre of mass, with the density updated in 8c: x_cm = (1/M_V) int_{V(R^(n+1))} rho_K x dV,
              with M_V = int rho_K dV.
        (ii)  Translation: every mesh point x <- x - x_cm; every kernel centre c_k <- c_k - x_cm.
@@ -8365,17 +8503,22 @@ For n = 0, 1, 2, ... until t_n >= T_end:
              Then x <- Q x, c_k <- Q c_k, and S_k <- Q S_k Q^T. The kernel centres and
              metrics must rotate with the mesh; otherwise the physical density field changes.
        (v)   From the new origin, cast a ray along each fixed nodal direction w_i,
-             intersect the transformed polyhedron, and resample R'(w_i) (RayBackend).
-             One must have n.e_r >= c_0; otherwise reject the step, reduce Delta^(n),
-             and repeat.
-       (vi)  Scalar barycentric interpolation of the surface density rho_s and of the
-             diagnostic eps_p_bar on the classification mesh. Velocity is not carried
+             intersect the transformed polyhedron, and resample R'(w_i) (RayBackend),
+             keeping the outermost crossing. (Specified: n.e_r >= c_0, else reject and
+             reduce Delta^(n). Implemented: a ray that does not leave the body is an error.)
+       (vi)  Scalar barycentric interpolation of the surface density rho_s (no global
+             rescaling; its error is part of the reported mass change). Velocity is not carried
              across the step. The next Picard iteration takes u^0 = 0. The spin omega
              is not changed by the realignment, because it is prescribed exogenously.
              In the new frame, Omega = omega e_z'.
-       (vii) Recheck |x_cm'| <= eps_frame R_ref and max(|I_xz'|, |I_yz'|) <= eps_frame I_1.
-             After this check passes, the rigid-body compatibility conditions of
-             Appendix A.3 hold by construction. The resampling error is entered in E_frame.
+       (vii) Recheck |x_cm'| <= eps_frame R_ref and max(|I_xz'|, |I_yz'|) <= eps_frame I_1;
+             a failure stops the run (incompatible). After this check passes, the
+             rigid-body compatibility conditions of Appendix A.3 hold by construction.
+             The resampling error is reported as the relative mass and volume change
+             of the realignment (frame_mass_change); E_frame itself is not computed.
+       (viii) The mass target M of the following steps is reset to the mass of the
+             realigned body, so the resampling change of (v)-(vi) is accepted and not
+             corrected later. The total mass over a run is the recorded `mass`.
 9. Set t_{n+1} = t_n + lambda Delta t_n. Record R^(n+1), rho_s, theta^(n+1), the diagnostics, and the
    error budget of Section 9.8. Return to step 1.
 ```
@@ -8393,8 +8536,8 @@ $$
 (\mathbf g_{\rm eff},\mathbf T_{\rm tide})
 \xrightarrow{\text{Stokes–Poisson Picard}}
 (\mathbf u,p;\ \boldsymbol\sigma)
-\xrightarrow{F_\delta,\ \mathcal U_{\rm core}}
-(\chi_Y,\mathbf v_{\rm sl},J)
+\xrightarrow{F_\delta,\ \mathcal U_{\rm core},\ s_f}
+(\chi_Y,\pi,\mathbf v_{\rm sl},J)
 \xrightarrow{\Delta t_n}
 \big(d_{\mathrm{pred}},\ \theta^{\rm pred}\big)
 \xrightarrow{\mathrm{Metal-PDHG}\ \text{elastic SOCP}\ (\rho_{\rm cand})}
@@ -8404,7 +8547,7 @@ d_*^{(n)}
 }
 $$
 
-The loop contains only one stress field $\boldsymbol\sigma$. The velocity is resolved implicitly at every step. The spin is prescribed exogenously. The geometry changes only on the movable set, and the density cores move only with the movable material (Section 9.10). The interface $W_0/R_{\mathrm{eq}}$ of Mode A does not enter this loop. Its interface comments must be retained, so that a future explicit fluid simulation can call them. They must not be deleted by mistake in an implementation.
+The loop contains only one stress field $\boldsymbol\sigma$. The velocity is resolved implicitly at every step. The spin is prescribed exogenously. The geometry changes only on the movable set (yielded, sliding, or promoted vertices), and the density cores move only with the yielded or sliding material (Section 9.10). The interface $W_0/R_{\mathrm{eq}}$ of Mode A does not enter this loop. Its interface comments must be retained, so that a future explicit fluid simulation can call them. They must not be deleted by mistake in an implementation.
 
 ---
 
@@ -8446,6 +8589,19 @@ Every per-point and per-node array lives in device memory for the whole run: the
 | PCG vectors, residuals of criteria (a)(b), $\boldsymbol\lambda$ | double | acceptance decisions |
 | core parameters, $\mathbf F_k$, Gauss–Newton solve | double | $K$ is small |
 
+*Implemented precision.* The implementation departs from the table in the gravity kernels and in the Stokes solve:
+
+| Quantity | Implemented arithmetic |
+|---|---|
+| traversal and hit distances | single precision, unit frame of the body, no hit refinement |
+| $b_k$, $d_k$, radial integrals | single precision; the $\alpha=1$ antiderivatives are evaluated in double-single from single-precision $b_k,d_k$ |
+| accumulation of $U,\nabla U,H$ | double-single per field point; the uniform part flushes single-precision partial sums every eight terms |
+| Stokes operator, pressure Poisson problem, range-space solve | double precision on the CPU, assembled densely and factored by Cholesky |
+| Metal-PDHG iteration | double-single on the GPU; the acceptance residuals are recomputed in double |
+| core parameters, $\mathbf F_k$, Gauss–Newton solve | double |
+
+The single-precision radial integrals limit the relative accuracy of the density-difference part of the field to about $10^{-6}$; a uniform body does not use them.
+
 ### 10.5.4 Organization in an entity–component–system architecture
 
 The loop maps onto an ECS with the following rules. The rules concern data layout and scheduling only.
@@ -8476,9 +8632,9 @@ Compared with an implementation that rebuilds the hierarchy, retraces every ray,
 
 # 11. Conclusion
 
-This paper gives a closed loop whose core is the quasi-static viscoplastic Stokes equilibrium of Mode B, with local yield-driven erosion and deposition of Mode C as an auxiliary process. The loop couples the gravity of a Cauchy density, a variable-density poloidal–toroidal double-potential flow, conservative transport on the surface, and an incremental SOCP. Exterior fields are cross-checked by a Feynman parametrization and by the Newtonian representation. Interior and boundary Hessians are defined explicitly by the finite-part and contact conventions. Mechanically there is only one stress field, $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$. At each geological step, under the exogenously prescribed spin $\omega(t_n)$, the quasi-static Stokes system (8.4′) is solved implicitly in an exactly divergence-free shifted Jacobi–spherical-harmonic double-potential basis. The pressure is given by an independent scalar Poisson problem. The two are closed by a Picard iteration. On that same stress, the yield function $F_\delta$ with its tolerance, together with connectivity of the unyielded region, partitions the body into a rigid core and a movable set. Topography on the core is strictly locked. Only the yielded region and the sliding blocks produce a geometric prediction, from the slip velocity relative to the core. Metal-PDHG corrects only that predicted increment, with the current shape as the reference, and never takes an equipotential as its target. The geological step is limited only by the geometric CFL of the true landslide speed and by the erosional flux. There is no viscous-diffusion stiffness. Track A (a global solve) is the reference. Track B (a spherical-harmonic block-diagonal surrogate) is used only as a preconditioner, or as an approximation that carries an a-posteriori residual. Mode A is retained only as an explicitly marked interface for a future fluid simulation. The density obeys the material transport implied by incompressibility: every Cauchy core is a material component whose centre, value, and metric are transported exactly to second order by the masked slip velocity, followed by an exact mass closure and an adaptive least-squares refit with an a-posteriori misfit $e_\rho$ that bounds the resulting gravity defect. Gravity is re-evaluated by reusing ray-segment tables and retracing only the rays that a geometric update can affect, and the Stokes operator is applied matrix-free.
+This paper gives a closed loop whose core is the quasi-static viscoplastic Stokes equilibrium of Mode B, with local yield-driven erosion and deposition of Mode C as an auxiliary process. The loop couples the gravity of a Cauchy density, a variable-density poloidal–toroidal double-potential flow, conservative transport on the surface, and an incremental SOCP. Exterior fields are cross-checked by a Feynman parametrization and by the Newtonian representation. Interior and boundary Hessians are defined explicitly by the finite-part and contact conventions. Mechanically there is only one stress field, $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$. At each geological step, under the exogenously prescribed spin $\omega(t_n)$, the quasi-static Stokes system (8.4′) is solved implicitly in an exactly divergence-free shifted Jacobi–spherical-harmonic double-potential basis. The pressure is given by an independent scalar Poisson problem. The two are closed by a Picard iteration. On that same stress, the yield function $F_\delta$ with its tolerance, together with connectivity of the unyielded region, partitions the body into a rigid core and a movable set. Topography on the core receives no creep displacement. Only the yielded region and the sliding blocks produce a creep prediction, from the slip velocity relative to the core. The loose layer is in addition relieved toward its angle of repose by slope promotion (hypothesis A-C4); in the bundled runs of Ryugu, Phobos, and Deimos it is the only mechanism that moves the surface, because the regularized creep never crosses the yield threshold. Metal-PDHG corrects only that predicted increment, with the current shape as the reference, and never takes an equipotential as its target. The geological step is limited only by the geometric CFL of the true landslide speed and by the erosional flux. There is no viscous-diffusion stiffness. Track A (a global solve) is the reference. Track B (a spherical-harmonic block-diagonal surrogate) is used only as a preconditioner, or as an approximation that carries an a-posteriori residual. Mode A is retained only as an explicitly marked interface for a future fluid simulation. The density obeys the material transport implied by incompressibility: every Cauchy core is a material component whose centre, value, and metric are transported exactly to second order by the masked slip velocity, followed by an exact mass closure and an adaptive least-squares refit with an a-posteriori misfit $e_\rho$ that bounds the resulting gravity defect. Gravity is re-evaluated by reusing ray-segment tables and retracing only the rays that a geometric update can affect, and the Stokes operator is applied matrix-free.
 
-The rigour of the model depends on positive pressure, on integrability, on the finite-part convention, on the radial modal truncation, and on constitutive regularization. Numerical results at $K=4$ should be checked for convergence against a higher-order radial basis and against a three-dimensional reference solution. The framework therefore provides an implementable reduced model whose error budget can be built term by term. It is not an unconditional closed-form equivalent of the three-dimensional problem.
+The rigour of the model depends on positive pressure, on integrability, on the finite-part convention, on the radial modal truncation, and on constitutive regularization. Numerical results at $K=4$ should be checked for convergence against a higher-order radial basis and against a three-dimensional reference solution. The bundled configurations use $L_{\max}=2$ and 96 volume points (Section 8.4), so their stress fields are resolution-limited, and their slide durations depend on the trust radius and on $\Delta t_{\max}$ (Section 2.8c). The framework therefore provides an implementable reduced model whose error budget can be built term by term. It is not an unconditional closed-form equivalent of the three-dimensional problem.
 
 # Appendix A. Normative conventions and the register of proof obligations (single source of truth)
 
@@ -8510,6 +8666,8 @@ The basic unknowns of the quasi-static route are $(\mathbf v,p,R)$, together wit
 | $c(\mathbf x)$; $c_b,\ c_s,\ h_c$; $d$ | two-layer cohesion; interior and surface cohesion and transition depth; depth $R(\hat{\boldsymbol\omega})-r$ below $\Gamma$ (Section 4.3a, hypothesis A-C2) | M L⁻¹ T⁻²; L |
 | $\tau_y,\ F,\ F_\delta,\ \delta_Y$ | static strength $c(\mathbf x)+\mu_y\tilde p$, yield function, yield function with tolerance, and the tolerance (Section 2.8, B2) | M L⁻¹ T⁻²; $\delta_Y$ dimensionless |
 | $\mathcal U_{\rm core}$, $\chi_{Y,i}$, $\mathcal L,\mathcal D,\mathcal A$ | rigid core, movability indicator, and the locked, pure-deposition, and movable nodal sets (Section 2.8, B3–B4) | — |
+| $\pi_i$, $\tilde\chi_i$, $s_f$, $\tau_s$ | slope-promotion indicator, geometric movability $\max(\chi_{Y,i},\pi_i)$, repose slack of face $f$, and its tolerance `relief.tol_slack` (Section 2.8c, hypothesis A-C4) | —; 1 |
+| $\rho_b$ | constant matrix density `density.bulk` (Section 1.1) | M L⁻³ |
 | $\mathbf v_{\rm sl}$ | slip velocity relative to the rigid core, $\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x$ | L T⁻¹ |
 | $\omega(t)$, $\omega_n$ | exogenously prescribed spin table, and the value frozen at step $n$ (Section 10.4.1) | T⁻¹ |
 | $\theta=\{w_k,\mathbf c_k,\mathbf S_k,\alpha_k\}$ | parameters of the Cauchy cores: weight, centre, metric ($\mathbf S_k=\sigma_k^2\mathbf I$ if isotropic), exponent (Sections 1.1, 9.10) | M L⁻³, L, L⁻², 1 |
@@ -8582,28 +8740,65 @@ $$
 | PO-7 | Assembly formulae for every term of the velocity equation in the basis | conditionally closed: Propositions 6.2, 6.4, 7.3, and 7.4 (Coriolis block only for a spherically symmetric radial density) |
 | PO-8 | The abolished B2 (a nodally local model that freezes $\Lambda_\star$: numerical observation shows that the spectral radius of its iteration matrix $\mathbf I-\widetilde{\mathbf M}_{B2}^{-1}\mathbf M_\Gamma$ is much larger than $1$ on high modes, so the iteration diverges or converges spuriously). Track B means only the B1 block-diagonal surrogate. What remains unproved is the a-priori dependence of $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$ on the degree of asphericity, and an a-priori upper bound for $\varepsilon_B$ | B2 abolished; the a-priori bound for B1 is not proved |
 | PO-9 | Consistency and stability, as $\Delta t_n\to 0$, of the geological geometric update, which is an RTFP–Stokes–SOCP sequence explicit in the geometry; an upper bound for the SOCP projection departure $E_{\rm proj}$ | not proved (depends on the CFL restriction, on under-relaxation, and on the trust region) |
-| PO-10 | Short-wave ill-posedness of $\mu(I)$ viscoplasticity at high inertial number (Proposition 5.8), and the strain localization and mesh dependence of that ill-posedness under the regularizations $\dot\gamma_\varepsilon$ and $p_{\min}$ | not proved |
+| PO-10 | Short-wave ill-posedness of $\mu(I)$ viscoplasticity at high inertial number (Proposition 5.8, which includes the pressure coupling $\mathbb K_p$ that drives it), and the strain localization and mesh dependence of that ill-posedness under the regularizations $\dot\gamma_\varepsilon$ and $p_{\min}$ | not proved |
 | PO-11 | Convergence of the Picard iteration that couples the pressure Poisson problem (Section 8.7) to the quasi-static Stokes problem (8.4′); stability of $\nabla\cdot\boldsymbol\tau_{\rm flow}$ with respect to the frozen pair $(\mathbf u^k,\tilde p^k)$ | not proved (failure to converge is judged by criterion (a) of Section 2.15) |
 | PO-12 | Convergence, as $\dot\gamma_\varepsilon\to 0$, of the regularized yield surface ($F_\delta=0$ at fixed $\delta_Y$) and of the rigid core and the movable set, toward the yielded region and the sliding blocks of the unregularized Bingham or $\mu(I)$ model; sufficiency of the step-size rule in Section 10.4.1; conditions under which, at constant $\omega_j$, the movable set becomes empty in finitely many steps (stage equilibrium is attainable) | not proved (if it is not attained, report “stage not equilibrated”, criterion (c) of Section 2.15) |
 | PO-13 | A bound $E_{\rm frame}$ on the resampling error of the frame realignment, and preservation of star-shapedness about the new origin. Evolution of the spin is not a proof obligation: $\omega(t)$ is prescribed exogenously, and spin about a principal axis is the explicit model hypothesis A-S (Section 10.4.1) | partially closed (the error bound is not proved) |
-| PO-14 | Hypothesis A-ρL: the density is a finite sum of (anisotropic) Cauchy cores, frozen within a geological step and transported between steps by 2-jet transport, mass closure, and refit (Section 9.10). Proved: exactness of the jet update for affine flows, preservation of $\det\mathbf S_k$ and of positive definiteness, the stage fixed point, the gravity bounds of Proposition 9.10.1, and the additive (non-amplifying) accumulation of projection defects under the stated idealizations. Not proved: an a-priori bound on the per-step projection defect $\delta_n$ for a general flow, and the effect of the mask at the core boundary | partially closed; reported at each step through $e_{\rho,n}$, $|\xi_n|$, $s_{M*}$, the range of $\rho_{\rm bulk}/\rho_K\rvert_\Gamma$, and $\min\rho_K/\rho_{\min}$. Hypothesis A-ρ (frozen density) is available only as `density_mode = frozen`, and runs in that mode do not measure the ghost-gravity defect |
-| PO-15 | Well-posedness of the Level 2 refit (rank of $\mathbf J^{\!\top}\mathbf W\mathbf J$ for cores that overlap strongly or lie mostly outside $V$) and termination of the Level 3 split/merge rules | not proved; rank deficiency is detected by the Levenberg–Marquardt solve and reported, and Level 3 is bounded by $K_{\max}$ and by monotone decrease of $e_\rho$ |
+| PO-14 | Hypothesis A-ρL: the density is a finite sum of (anisotropic) Cauchy cores, frozen within a geological step and transported between steps by 2-jet transport, mass closure, and refit (Section 9.10). Proved: exactness of the jet update for affine flows, preservation of $\det\mathbf S_k$ and of positive definiteness, the stage fixed point, the gravity bounds of Proposition 9.10.1, and the additive (non-amplifying) accumulation of projection defects under the stated idealizations. Not proved: an a-priori bound on the per-step projection defect $\delta_n$ for a general flow, and the effect of the mask at the core boundary | partially closed; reported at each step through $e_{\rho,n}$, $|\xi_n|$, and $s_{M*}$ (the range of $\rho_{\rm bulk}/\rho_K\rvert_\Gamma$ and $\min\rho_K/\rho_{\min}$ are specified but not reported, Appendix A.6). Hypothesis A-ρ (frozen density) is available only as `density_mode = frozen`, and runs in that mode do not measure the ghost-gravity defect |
+| PO-15 | Well-posedness of the Level 2 refit (rank of $\mathbf J^{\!\top}\mathbf W\mathbf J$ for cores that overlap strongly or lie mostly outside $V$) and termination of the Level 3 split/merge rules | not proved; rank deficiency is detected by the Levenberg–Marquardt solve and reported. Level 3 is not implemented |
 | PO-16 | Hypothesis A-C3 (Section 2.8b): convergence of the arrival points $X(a')$ as $\theta_r\to0$, the size of the near-surface gravity error of a hop, and convergence of the relief routing (one correction pass is made; the routing gap measures its defect). Proved: exact mass balance of the runout kernel and of the routed relief in the linearized mass row, the reductions to the isotropic kernel, and unconditional stability of the exact Coriolis rotation | partially closed; the counts of escaped and timed-out packets and the largest hop height are reported at every step, and the arrival points are checked against halved substeps in the tests |
+| PO-17 | Hypothesis A-C4 (Section 2.8c): slope promotion of the loose layer. Open: the instantaneous-failure assumption, the dependence of slide durations and per-step displacements on the trust radius and on $\Delta t_{\max}$, and convergence of the relieved shape as the trust radius and the step tend to zero. Proved: reduction to (B3)–(B4) for $\tau_s\to\infty$ or $\rho_s\equiv0$, and that promotion leaves the stress, the yield classification, and the Mode C fluxes unchanged | open; the numbers of movable vertices and of supercritical faces, the slope slack left by the cone, the largest displacement, and the trust radius are reported at every step |
+
+
+## A.6 Implementation status of the normative procedures
+
+Every item of Chapters 2–10 that the implementation realizes differently, or not at all, is listed here, with the place where the text describes the implemented form. Items not listed are implemented as specified. "Reported" means present in the per-step record of `scf-cli run-sim`.
+
+| Item | Specified | Implemented |
+|---|---|---|
+| Density | Cauchy sum (Section 1.1) | constant matrix $\rho_b$ plus the Cauchy sum (Section 1.1) |
+| Slope promotion | — | hypothesis A-C4, Section 2.8c |
+| Geometric subproblem | per-node rows, ball trust region, $\varrho\lvert s_M\rvert$ | per-face rows, box trust region, $\varrho\hat M\lvert\sigma_M\rvert$ with folding (Section 2.13, implementation items 1–6) |
+| Mass miss | reject, reduce $\Delta t_n$ | one movable-set correction, residual recorded (Section 2.14) |
+| Star-shapedness $n\cdot e_r\ge c_0$ | acceptance test | reported only; $\lvert n\cdot e_r\rvert<0.05$ gives no radial increment (Section 2.8, B4) |
+| Criterion (b) | normalized by $\lVert\mathbf F\rVert$, flag for insufficient resolution | normalized by the absolute load scale, one tolerance, no resolution flag (Section 2.15) |
+| $\delta_{na}$, $E_{4\to8}$, $E_{\rm frame}$, $\varepsilon_{\rm Euler}$, $\bar\varepsilon_p$, $\sigma_{\min}(\mathbf B_{\rm rb})$ in the record | reported | not computed or not recorded (Sections 2.15, 8.9, 10.4.4) |
+| RTFP segments | orientation-based construction with re-trace | parity after merging (Section 3.6) |
+| RTFP precision | double after hit refinement | single-precision hits and radial rules, double-single sums (Section 10.5.3) |
+| Data reuse (Section 3.15) | segment table, dirty rays, refit | rebuild after each geometric update; field and operator caches (Section 3.15) |
+| Stokes solve (Section 8.4) | block PCG, matrix-free operator | dense assembly and Cholesky; coarse production quadrature (Section 8.4) |
+| Picard start and continuation | previous pressure, ladder from $10\dot\gamma_\varepsilon$ | $\tilde p^0=p_{\min}$, target first, optional ladder (Section 10.4.2) |
+| $\rho_s$ transport | second-order characteristics, local conservation | first-order foot point, one global conservation factor (Section 9.2) |
+| Level 1 core closure | all weights scaled | cores only, $\rho_b$ fixed (Section 9.10.4) |
+| Level 3, check $\rho_K\ge\rho_{\min}$ | split/merge, recheck | not implemented (Sections 9.10.6, 10.4.4) |
+| $\Delta t_{\rm core}$ | $\theta_{\rm ch}/\lVert\nabla\mathbf v_{\rm adv}\rVert_2$ | $\theta_{\rm ch}/(\lambda\lVert\operatorname{dev}\nabla\mathbf v_{\rm adv}\rVert_F)$ (Section 10.4.1) |
+| Frame realignment | $M$ fixed | mass target reset to the realigned mass; failure of (vii) stops the run (Section 10.4.4, 8b) |
+| Dynamic free-surface mode (Chapter 9 except Sections 9.0, 9.2, 9.10), Track B, Mode A interface (Sections 2.11–2.12) | specified | not implemented; the code contains the quasi-static route only |
 
 ---
 
 # References
 
-[1] Forterre, Y., & Pouliquen, O. (2008). An experimental study of quasi-static granular flows. *Journal of Fluid Mechanics*, 616, 163–188. https://doi.org/10.1017/S0022112008000491
+[1] Forterre, Y., & Pouliquen, O. (2008). Flows of dense granular media. *Annual Review of Fluid Mechanics*, 40, 1–24. https://doi.org/10.1146/annurev.fluid.40.111406.102142
 
-[2] Gidaspow, D. (1994). *Multiphase Flow and Fluidization: Continuum and Kinetic Theory Descriptions*. Academic Press.
+[2] Greengard, L., & Rokhlin, V. (1987). A fast algorithm for particle simulations. *Journal of Computational Physics*, 73(2), 325–348. https://doi.org/10.1016/0021-9991(87)90140-9
 
-[3] Greengard, L., & Rokhlin, V. (1987). A fast algorithm for particle simulations. *Journal of Computational Physics*, 73(2), 325–348. https://doi.org/10.1016/0021-9991(87)90140-9
+[3] Staniforth, A., & Côté, J. (1991). Semi-Lagrangian integration schemes for atmospheric models—A review. *Monthly Weather Review*, 119(9), 2206–2223. https://doi.org/10.1175/1520-0493(1991)119<2206:SLISFA>2.0.CO;2
 
-[4] Staniforth, A., & Côté, J. (1991). Semi-Lagrangian integration schemes for atmospheric models—A review. *Monthly Weather Review*, 119(9), 2206–2223. https://doi.org/10.1175/1520-0493(1991)119<2206:SLISFA>2.0.CO;2
+[4] Hirata, N., Abe, S., Ueno, M., Barnouin-Jha, O. S., Gaskell, R. W., & Miyamoto, H. (2009). Pole and global shape of 25143 Itokawa. *Icarus*, 200(2), 480–497. https://doi.org/10.1016/j.icarus.2008.10.018
 
-[5] Hirata, N., Abe, S., Ueno, M., Barnouin-Jha, O. S., Gaskell, R. W., & Miyamoto, H. (2009). Pole and global shape of 25143 Itokawa. *Icarus*, 200(2), 480–497. https://doi.org/10.1016/j.icarus.2008.10.018
+[5] Watanabe, S., Hirabayashi, M., Hirata, N., et al. (2019). Hayabusa2 arrives at the carbonaceous asteroid 162173 Ryugu—A spinning top–shaped rubble pile. *Science*, 364(6437), 268–272. https://doi.org/10.1126/science.aav8032
 
-[6] Watanabe, S., Hirabayashi, M., Hirata, N., et al. (2019). Hayabusa2 arrives at the carbonaceous asteroid 162173 Ryugu—A spinning top–shaped rubble pile. *Science*, 364(6437), 268–272. https://doi.org/10.1126/science.aav8032
+[6] Miyamoto, H., Yano, H., Scheeres, D. J., Abe, S., Barnouin-Jha, O. S., Cheng, A. F., Demura, H., Gaskell, R. W., Hirata, N., et al. (2007). Regolith migration and sorting on asteroid Itokawa. *Science*, 316(5827), 1011–1014. https://doi.org/10.1126/science.1134390
 
-[7] Miyamoto, H., Yano, H., Scheeres, D. J., Abe, S., Barnouin-Jha, O. S., Cheng, A. F., Demura, H., Gaskell, R. W., Hirata, N., et al. (2007). Regolith migration and sorting on asteroid Itokawa. *Science*, 316(5827), 1011–1014. https://doi.org/10.1126/science.1134390
+[7] Werner, R. A., & Scheeres, D. J. (1997). Exterior gravitation of a polyhedron derived and compared with harmonic and mascon gravitation representations of asteroid 4769 Castalia. *Celestial Mechanics and Dynamical Astronomy*, 65(3), 313–344. https://doi.org/10.1007/BF00053511
+
+[8] Barker, T., Schaeffer, D. G., Bohórquez, P., & Gray, J. M. N. T. (2015). Well-posed and ill-posed behaviour of the μ(I)-rheology for granular flow. *Journal of Fluid Mechanics*, 779, 794–818. https://doi.org/10.1017/jfm.2015.412
+
+[9] Arakawa, M., Saiki, T., Wada, K., et al. (2020). An artificial impact on the asteroid (162173) Ryugu formed a crater in the gravity-dominated regime. *Science*, 368(6486), 67–71. https://doi.org/10.1126/science.aaz1701
+
+[10] Hirabayashi, M., Tatsumi, E., Miyamoto, H., et al. (2019). The western bulge of 162173 Ryugu formed as a result of a rotationally driven deformation process. *The Astrophysical Journal Letters*, 874(1), L10. https://doi.org/10.3847/2041-8213/ab0e8b
+
+[11] Jop, P., Forterre, Y., & Pouliquen, O. (2006). A constitutive law for dense granular flows. *Nature*, 441(7094), 727–730. https://doi.org/10.1038/nature04801
+
+[12] Sugimura, R., Arakawa, M., & Yasui, M. (2026). Crater size scaling in the strength-dominated regime for weak porous targets: Implications for the tensile strength of asteroid surfaces. *Icarus*, in press (available online 27 May 2026).

@@ -280,10 +280,11 @@ pub fn classify(
         }
     }
     let core_mass = core_root.and_then(|r| mass.get(&r)).map_or(0.0, |m| m.0);
+    // A fold from +0: the empty `f64` sum is −0, which the records would print.
     let mobile_area: f64 = (0..nv)
         .filter(|&i| movable[i])
         .map(|i| topo.vertex_solid[i])
-        .sum::<f64>();
+        .fold(0.0, |a, b| a + b);
     let f_delta: Vec<f64> = (0..nv).map(|i| fdelta[i * layers + layers - 1]).collect();
     Classification {
         movable,

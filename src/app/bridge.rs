@@ -380,11 +380,16 @@ pub fn apply_commands(
 }
 
 fn restart(root: &std::path::Path, request: &RunRequest) -> Result<(AppConfig, Scene), String> {
+    use crate::io::memfs::relative_inside;
+    let snapshot = match &request.snapshot {
+        Some(s) => Some(root.join(relative_inside(s)?)),
+        None => None,
+    };
     let mut next = AppConfig::load(
-        &root.join(&request.project),
+        &root.join(relative_inside(&request.project)?),
         &request.spin,
         request.max_steps,
-        request.snapshot.as_ref().map(|s| root.join(s)),
+        snapshot,
     )?;
     next.apply_overrides(&request.overrides)?;
     let scene = crate::app::scene_of(&next)?;

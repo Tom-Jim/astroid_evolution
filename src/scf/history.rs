@@ -19,6 +19,7 @@ use super::body::Body;
 use super::evolve::{self, RunOptions, State, StepFields, StepRecord};
 use super::forward::Forward;
 use super::forward::Moments;
+use super::frame::undo_frame;
 use super::params::Project;
 use super::spin::SpinSchedule;
 use crate::common::density::CauchyKernel;
@@ -218,7 +219,15 @@ pub fn invert(
             },
             &mut |r, s, f| observer(k, r, s, f),
         )?;
-        let fin = &res.state.body;
+        // A frame re-alignment during the run (§10.4.4 step 8b) leaves the final body in a
+        // turned and shifted frame; the misfit and the update are taken in the frame of
+        // the initial and present bodies.
+        let fin_body = undo_frame(
+            &res.state.body,
+            res.state.frame_rotation,
+            res.state.frame_translation,
+        )?;
+        let fin = &fin_body;
         if fin.radius.len() != n {
             return Err(SimError::geometry(
                 "the forward run changed the vertex count",

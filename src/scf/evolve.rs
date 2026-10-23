@@ -272,28 +272,17 @@ pub fn run(
             vertex_areas(&state.body)
         };
         // χ_Y from the unyielded core is authoritative for creep and mode C (§2.8 B3).
-        // A separate case: the whole surface sits in that core, but the loose-layer
-        // friction chain still reports slack above `relief.tol_slack`. The regularised
-        // creep is then below γ̇_Y, so F_δ never opens A, and the slope SOCP of §10.4.3
-        // would be skipped even though the rheology proxy says the sheet is supercritical.
-        // Those vertices are admitted to the geometric mobile set only. Their v_sl is
-        // core creep and must not enter d_pred (§2.8: χ_Y = 0 drops that creep).
+        // Slope promotion (§2.8c, A-C4) admits the loose-layer vertices of supercritical
+        // faces to the geometric mobile set only.
         let yielded = cl.movable.clone();
-        let mut movable = yielded.clone();
-        let mut slope_promoted = vec![false; nv];
-        if yielded.iter().all(|m| !*m) {
-            for (f, node) in mech.rheo.iter().enumerate() {
-                if node.slack > project.relief.tol_slack {
-                    for &v in &topo.faces[f] {
-                        let i = v as usize;
-                        if state.body.rho_s[i] > 0.0 {
-                            movable[i] = true;
-                            slope_promoted[i] = true;
-                        }
-                    }
-                }
-            }
-        }
+        let slack: Vec<f64> = mech.rheo.iter().map(|node| node.slack).collect();
+        let (movable, slope_promoted) = slope_promotion(
+            &topo.faces,
+            &yielded,
+            &slack,
+            &state.body.rho_s,
+            project.relief.tol_slack,
+        );
         let n_mobile = movable.iter().filter(|m| **m).count();
         let chi_a: Vec<bool> = (0..nv)
             .map(|i| yielded[i] && state.body.rho_s[i] > 0.0)
@@ -339,7 +328,6 @@ pub fn run(
         };
         let eroded = runout::eroded_masses(&area, &mc.j_ero, &arrivals, 1.0);
         let paths = runout::paths(&eroded, &arrivals, RUNOUT_PATHS);
-        let slack: Vec<f64> = mech.rheo.iter().map(|node| node.slack).collect();
 
         let mut rec = StepRecord {
             runout: RunoutReport::default(),
@@ -420,23 +408,12 @@ pub fn run(
         };
         rec.dt_omega = omega_bound;
         if n_mobile == 0 && spin.is_stages() {
-            let dt = if spin.is_stages() {
-                t_next - state.t
-            } else {
-                omega_bound.min(st.dt_max).min(t_next - state.t)
-            };
-            rec.kind = if spin.is_stages() {
-                "stage-equilibrium"
-            } else {
-                "spin-only"
-            };
+            // Stage equilibrium (criterion (c) of §2.15): jump to the end of the stage.
+            let dt = t_next - state.t;
+            rec.kind = "stage-equilibrium";
             rec.dt = dt;
             rec.advance = dt;
-            rec.dt_bound = if spin.is_stages() {
-                "t_next"
-            } else {
-                "omega/max/t_next"
-            };
+            rec.dt_bound = "t_next";
             rec.n_locked = nv;
             advance_time(&mut state, spin, dt, t_next, snap_tol);
             state.step += 1;
@@ -1089,6 +1066,37 @@ fn advance_time(state: &mut State, spin: &SpinSchedule, dt: f64, t_next: f64, to
         state.t = t_next;
     }
     state.omega = spin.sample(state.t).omega;
+}
+
+/// Slope promotion (§2.8c, hypothesis A-C4): the geometric mobile set and the promoted flags.
+///
+/// `yielded` is `χ_Y` of the classifier. Every vertex of a face whose repose slack exceeds
+/// `tol` that is not already yielded and carries loose material (`ρ_s > 0`) is promoted.
+/// The rule is local: a yielded vertex elsewhere on the body does not switch it off.
+/// A promoted vertex stays in the rigid core for creep, mode C, runout sources and the
+/// core advection; it only becomes a free variable of the slope cone, with `d_pred = 0`.
+pub fn slope_promotion(
+    faces: &[[u32; 3]],
+    yielded: &[bool],
+    slack: &[f64],
+    rho_s: &[f64],
+    tol: f64,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut movable = yielded.to_vec();
+    let mut promoted = vec![false; yielded.len()];
+    for (tri, s) in faces.iter().zip(slack) {
+        if !(*s > tol) {
+            continue;
+        }
+        for &v in tri {
+            let i = v as usize;
+            if !yielded[i] && rho_s[i] > 0.0 {
+                movable[i] = true;
+                promoted[i] = true;
+            }
+        }
+    }
+    (movable, promoted)
 }
 
 /// `|n·ê|` below this is left unconverted. The vertex takes no radial step from

@@ -47,3 +47,16 @@ fn orbit_is_synchronous_and_decays() {
     assert!(s.semi_major_axis(1e7 * yr) < 9.376e6);
     assert!((s.tide(0.0) - n0 * n0).abs() < 1e-20);
 }
+
+#[test]
+fn a_table_that_starts_late_holds_its_first_spin_until_the_first_node() {
+    let t = SpinSchedule::parse("table:100@1e-4,200@3e-4").unwrap();
+    let early = t.sample(10.0);
+    assert_eq!(
+        (early.omega, early.omega_dot, early.t_next),
+        (1e-4, 0.0, 100.0)
+    );
+    let first = t.sample(100.0);
+    assert!((first.omega_dot - 2e-6).abs() < 1e-18);
+    assert_eq!(first.t_next, 200.0);
+}

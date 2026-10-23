@@ -81,3 +81,33 @@ fn kernel_centres_follow_the_mesh() {
     let got = out.kernels[0].center;
     assert!((got - expect).length() < 1e-9, "{got:?} vs {expect:?}");
 }
+
+#[test]
+fn undo_frame_returns_a_realigned_body_to_its_original_frame() {
+    let topo = Arc::new(Topology::icosphere(4));
+    let nv = topo.n_vertices();
+    // A wrong frame: the short axis is e_x, so e_z' = e_x after the re-alignment.
+    let radius = Body::ellipsoid(topo.clone(), [0.6, 1.0, 0.8]);
+    let k = CauchyKernel::try_new(DVec3::new(0.2, -0.1, 0.15), 500.0, 0.4, 2.0).unwrap();
+    let rho_s: Vec<f64> = topo.dirs.iter().map(|d| 1.0 + 0.5 * d.x).collect();
+    let body = Body::new(topo.clone(), radius.clone(), 1000.0, vec![k], rho_s.clone()).unwrap();
+    let (moved, rep, _) = realign(&body, None, 1.0e-9, &prm(), false).unwrap();
+    assert!(rep.applied && rep.angle_deg > 45.0, "{}", rep.angle_deg);
+    let back = undo_frame(&moved, rep.rotation, rep.translation).unwrap();
+    // Two ray re-samplings of the same polyhedron: the error is the facet interpolation.
+    let worst = (0..nv)
+        .map(|i| (back.radius[i] - radius[i]).abs())
+        .fold(0.0, f64::max);
+    assert!(worst < 1e-2, "radius error {worst}");
+    assert!((back.kernels[0].center - k.center).length() < 1e-9);
+    let s0 = k.metric_mat();
+    let s1 = back.kernels[0].metric_mat();
+    assert!((s1 - s0).to_cols_array().iter().all(|v| v.abs() < 1e-9));
+    let rho_err = (0..nv)
+        .map(|i| (back.rho_s[i] - rho_s[i]).abs())
+        .fold(0.0, f64::max);
+    assert!(rho_err < 2e-2, "rho_s error {rho_err}");
+    // The identity map is a no-op.
+    let same = undo_frame(&body, astroid_evolution::scf::evolve::IDENTITY, DVec3::ZERO).unwrap();
+    assert_eq!(same.radius, body.radius);
+}

@@ -32,6 +32,22 @@ pub fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// A path that stays inside the directory it is joined to: relative, and no `..` that
+/// climbs above that directory once `.` and `..` are collapsed. The viewer's run requests
+/// name the project and the snapshot this way, relative to the data root.
+pub fn relative_inside(path: &str) -> Result<PathBuf, String> {
+    let raw = Path::new(path);
+    if raw.is_absolute() || raw.has_root() {
+        return Err(format!("path {path} must be relative to the data root"));
+    }
+    let norm = normalize(raw);
+    match norm.components().next() {
+        Some(Component::ParentDir) => Err(format!("path {path} leaves the data root")),
+        Some(_) => Ok(norm),
+        None => Err("empty path".to_string()),
+    }
+}
+
 /// Replace the bytes stored for `path`. Later reads see this copy.
 pub fn install(path: &Path, bytes: Vec<u8>) {
     let key = normalize(path);

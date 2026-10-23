@@ -5,6 +5,8 @@
 mod app_snapshot;
 mod common_density;
 mod common_geometry_tri_mesh;
+#[cfg(feature = "tier1")]
+mod io_memfs;
 #[cfg(feature = "rheo")]
 mod rheo_basis;
 #[cfg(feature = "rheo")]
