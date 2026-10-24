@@ -49,9 +49,11 @@
       "../dist/.stage/assets/projects/ryugu.toml": "assets/projects/ryugu.toml",
       "../dist/.stage/assets/projects/phobos.toml": "assets/projects/phobos.toml",
       "../dist/.stage/assets/projects/deimos.toml": "assets/projects/deimos.toml",
+      "../dist/.stage/assets/projects/itokawa.toml": "assets/projects/itokawa.toml",
       "../dist/.stage/assets/models/ryugu.glb": "assets/models/ryugu.glb",
       "../dist/.stage/assets/models/Phobos.glb": "assets/models/Phobos.glb",
       "../dist/.stage/assets/models/Deimos.glb": "assets/models/Deimos.glb",
+      "../dist/.stage/assets/models/Itokawa_1_1.glb": "assets/models/Itokawa_1_1.glb",
       "../dist/.stage/output/ryugu/history/initial.json": "output/ryugu/history/initial.json",
       "../dist/.stage/output/ryugu/history/present.json": "output/ryugu/history/present.json",
       "../dist/.stage/output/phobos/history/initial.json": "output/phobos/history/initial.json",
@@ -59,6 +61,6 @@
       "../dist/.stage/output/deimos/history/initial.json": "output/deimos/history/initial.json",
       "../dist/.stage/output/deimos/history/present.json": "output/deimos/history/present.json"
     },
-    "longDescription": "Shape evolution of rubble-pile bodies (Ryugu, Phobos, Deimos) under YORP spin change and tides: quasi-static Stokes flow, slope relief of the loose layer, Mode C regolith transport and runout, GPU compute."
+    "longDescription": "Shape evolution of rubble-pile bodies (Ryugu, Itokawa, Phobos, Deimos) under YORP spin change and tides: quasi-static Stokes flow, slope relief of the loose layer, Mode C regolith transport and runout, GPU compute."
   }
 }

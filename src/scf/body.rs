@@ -13,7 +13,6 @@ use std::sync::Arc;
 use crate::common::density::{CauchyDensity, CauchyKernel};
 use crate::common::geometry::TriMesh;
 use crate::common::math::DVec3;
-use crate::rtfp::mesh::BodyMesh;
 
 use crate::common::error::SimError;
 
@@ -200,29 +199,23 @@ impl Body {
         vertices: &[DVec3],
         faces: &[[u32; 3]],
     ) -> Result<(Arc<Topology>, Vec<DVec3>, DVec3), SimError> {
-        let mesh = TriMesh::try_new(vertices.to_vec(), faces.to_vec())?;
+        TriMesh::try_new(vertices.to_vec(), faces.to_vec())?;
         let origin = volume_centroid(vertices, faces);
         let (topo, dirs) = Topology::icosphere(level);
-        let hw = BodyMesh::build(&mesh)?;
-        let mut batch = hw.new_batch();
-        for d in &dirs {
-            batch.push(origin, *d, None);
-        }
-        let hits = hw.trace(&batch, false)?;
-        let mut buf = Vec::new();
-        let mut out = Vec::with_capacity(dirs.len());
-        for (i, d) in dirs.iter().enumerate() {
-            buf.clear();
-            hits.distances_into(i, &mut buf);
-            match buf.last() {
-                Some(r) if *r > 0.0 => out.push(*d * *r),
-                _ => {
-                    return Err(SimError::geometry(format!(
-                        "ray {i} from the volume centroid misses the mesh"
-                    )));
-                }
-            }
-        }
+        // The outermost crossing of each ray, found inward from beyond the body in f64 on
+        // the CPU: the same radii on every platform, which a grazing ray needs.
+        let index = super::surface::SurfaceIndex::build(vertices, faces);
+        let far = 2.0 * vertices.iter().map(|v| (*v - origin).length()).fold(0.0, f64::max);
+        let out = dirs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| match index.first_hit(origin + *d * far, *d * -far, 0.0, 1.0) {
+                Some((t, _)) if t < 1.0 => Ok(*d * (far * (1.0 - t))),
+                _ => Err(SimError::geometry(format!(
+                    "ray {i} from the volume centroid misses the mesh"
+                ))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((Arc::new(topo), out, origin))
     }
 

@@ -237,13 +237,15 @@ pub struct RelaxReport {
     pub sweeps: Vec<SweepRecord>,
 }
 
-struct SlopeState {
-    sin_phi: Vec<f64>,
-    slack: Vec<f64>,
-    gravity: Vec<DVec3>,
+/// The static repose state of every face: `sin φ`, the slack, and `g_eff`.
+pub struct SlopeState {
+    pub sin_phi: Vec<f64>,
+    pub slack: Vec<f64>,
+    pub gravity: Vec<DVec3>,
 }
 
-fn slope_state(
+/// Face gravity of the current shape and the friction chain at rest (`v = 0`, `D = 0`).
+pub fn slope_state(
     project: &Project,
     body: &Body,
     fwd: &mut Forward,

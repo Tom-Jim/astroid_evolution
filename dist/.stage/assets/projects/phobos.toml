@@ -23,10 +23,11 @@ mesh = "../models/Phobos.glb"
 mesh_unit = "950.45"
 
 [density]
-# Fitted by scf-cli history: mass 1.0603e16 kg, C20 -0.1030 at 11100 m (homogeneous -0.0965).
-bulk = 2163.071
+# Fitted by scf-cli history: mass 1.0603e16 kg, C20 -0.1030 at 11100 m (homogeneous -0.0965);
+# rescaled to that mass on the double-precision ray resampling of the shape.
+bulk = 2161.344
 kernels = [
-  { center = [-383.790, -5.955, -447.359], weight = -744.307, sigma = 9e-5, alpha = 2.0 },
+  { center = [-383.790, -5.955, -447.359], weight = -743.713, sigma = 9e-5, alpha = 2.0 },
 ]
 
 [material]
@@ -110,7 +111,9 @@ eps_frame = 1.0e-2
 eps_deg = 1.0e-6
 
 [relief]
-max_sweeps = 1
+# Sweeps of the surface settling per step (and of `scf-cli relax`); settling stops earlier
+# once no loose face is supercritical and nothing erodes.
+max_sweeps = 8
 tol_slack = 1.0e-3
 radius_anomaly = 0.03
 curvature_quantile = 0.9

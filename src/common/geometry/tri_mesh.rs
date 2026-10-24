@@ -290,12 +290,13 @@ fn validate_no_self_intersection(mesh: &TriMesh, scale: f64) -> Result<(), SimEr
                         if lo == hi || !pair_owned_by(here, boxes[lo].0, boxes[hi].0) {
                             continue;
                         }
-                        if share_edge(mesh.faces[lo], mesh.faces[hi]) {
-                            continue;
-                        }
-                        if let Some(found) =
-                            intersection_gap(mesh.triangle(lo), mesh.triangle(hi), eps)
-                        {
+                        let (fa, fb) = (mesh.faces[lo], mesh.faces[hi]);
+                        let found = match shared_vertex_count(fa, fb) {
+                            0 => intersection_gap(mesh.triangle(lo), mesh.triangle(hi), eps),
+                            1 => fan_gap(fa, fb, mesh.triangle(lo), mesh.triangle(hi), eps),
+                            _ => None,
+                        };
+                        if let Some(found) = found {
                             let cand = (lo, hi, found.gap);
                             if best.is_none_or(|kept| (cand.0, cand.1) < (kept.0, kept.1)) {
                                 best = Some(cand);
@@ -321,10 +322,6 @@ fn pair_owned_by(cell: [i32; 3], a: [i32; 3], b: [i32; 3]) -> bool {
     cell[0] == a[0].max(b[0]) && cell[1] == a[1].max(b[1]) && cell[2] == a[2].max(b[2])
 }
 
-fn share_edge(a: [u32; 3], b: [u32; 3]) -> bool {
-    shared_vertex_count(a, b) >= 2
-}
-
 fn shared_vertex_count(a: [u32; 3], b: [u32; 3]) -> usize {
     let mut shared = 0;
     for vertex in a {
@@ -337,6 +334,29 @@ fn shared_vertex_count(a: [u32; 3], b: [u32; 3]) -> usize {
 
 struct InteriorHit {
     gap: f64,
+}
+
+/// Two triangles that share exactly one vertex `v`. They overlap beyond `v` iff the edge
+/// opposite `v` in one of them crosses the other triangle; the edges at `v` meet the other
+/// triangle at `v` itself, and testing them would report that touch, or round-off near it,
+/// as a crossing (a flat fan, or a hinge just off flat).
+fn fan_gap(fa: [u32; 3], fb: [u32; 3], a: [DVec3; 3], b: [DVec3; 3], eps: f64) -> Option<InteriorHit> {
+    let ia = (0..3).find(|&i| fb.contains(&fa[i]))?;
+    let ib = (0..3).find(|&i| fb[i] == fa[ia])?;
+    let opposite = |t: [DVec3; 3], i: usize| (t[(i + 1) % 3], t[(i + 2) % 3]);
+    let (p, q) = opposite(a, ia);
+    let (r, s) = opposite(b, ib);
+    let hits = [segment_interior_gap(p, q, b, eps), segment_interior_gap(r, s, a, eps)];
+    let coplanar = hits.iter().all(Option::is_none)
+        && (point_in_triangle_strict(p, b, eps)
+            || point_in_triangle_strict(q, b, eps)
+            || point_in_triangle_strict(r, a, eps)
+            || point_in_triangle_strict(s, a, eps))
+        && [p, q].iter().all(|x| (b[1] - b[0]).cross(b[2] - b[0]).normalize_or_zero().dot(*x - b[0]).abs() <= eps);
+    hits.into_iter()
+        .flatten()
+        .min_by(|x, y| x.gap.total_cmp(&y.gap))
+        .or(coplanar.then_some(InteriorHit { gap: 0.0 }))
 }
 
 /// Distance from an interior intersection point to the triangle boundary, in metres.

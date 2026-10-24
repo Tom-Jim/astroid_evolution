@@ -2,7 +2,7 @@
 
 #[test]
 fn slope_promotion_is_local_to_the_supercritical_faces() {
-    use astroid_evolution::scf::evolve::slope_promotion;
+    use astroid_evolution::scf::settle::slope_promotion;
     // Two faces sharing the edge 1–2; face 0 is supercritical, face 1 is not.
     let faces = [[0u32, 1, 2], [1, 2, 3]];
     let slack = [0.05, 0.0];

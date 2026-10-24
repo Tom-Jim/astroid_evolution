@@ -327,6 +327,18 @@ pub struct ModeC {
     pub eroded_rate: f64,
 }
 
+impl ModeC {
+    /// No erosion and no deposit.
+    pub fn zero(nv: usize) -> Self {
+        Self {
+            j_ero: vec![0.0; nv],
+            j_dep: vec![0.0; nv],
+            max_excess: 0.0,
+            eroded_rate: 0.0,
+        }
+    }
+}
+
 /// `J_ero = χ_A k_e ρ_s [F_δ]_+ / σ₀`; `J_dep(a) = ∫ K(a, a') J_ero(a') dΓ(a')` with
 /// `∫ K(a, a') dΓ(a) = 1` for every source, so that `∫ J_dep dΓ = ∫ J_ero dΓ`.
 ///

@@ -1392,7 +1392,7 @@ $$
 =\int_{\Gamma}J_{\mathrm{ero}}\,dS .
 $$
 
-An external source must be explicit, $J_{\rm ext}$, with $M^{n+1}=M^n+\Delta t_n\int_\Gamma J_{\rm ext}\,dS$, and never hidden in the deposit. The transport velocity is the active tangential slip $\mathbf v_T$ relative to the core; the unprojected 3-D velocity must not be used. $\rho_s$ is an accounting density: its tangential transport does not move the surface, which changes only through $J_{\rm dep}-J_{\rm ero}$ via $\Delta h_C^*$. Transport is the semi-Lagrangian scheme of Section 8.0 (G5) with the Jacobian correction. Positivity holds for every step. Let $\beta_i=\chi_{A,i}k_e[F_{\delta,i}]_+/\sigma_0$ be the frozen erosion rate, so $J_{\rm ero}=\beta\rho_s$, and $\tau_n=\lambda\Delta t_n$ the time the step advances (Section 10.4.1). $J_{\rm ero}$ is integrated exactly over $\tau_n$ through its step average $\bar J_{{\rm ero},i}=\rho_{s,i}(1-e^{-\beta_i\tau_n})/\tau_n$, and $\bar J_{\rm dep}$ is the routed and spread $\bar J_{\rm ero}$. The source update is $\rho_s\leftarrow\rho_s+\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$, whose erosion part is exactly $\rho_s\mapsto\rho_se^{-\beta_i\tau_n}$, and $\Delta h^*_C$ is formed from the same averages. The average and the update must use the same interval: an average over $\Delta t_n$ applied for $\tau_n$ would give the factor $1-\lambda+\lambda e^{-\beta_i\Delta t_n}$, which is not the exponential for $\lambda<1$. The exponential is this update, not a second factor: applying both would remove the eroded mass twice. Forward Euler would need $\tau_n\beta_i<1$ even on an exhausted layer. The remaining bound is $\Delta t_C$ of Section 10.4.1. *Star-shaped special case:* with $a=\hat{\boldsymbol\omega}\in S^2$ and $dS=j\,d\Omega$ (Section 9.0) the law reads $\partial_t(j\rho_s)+\nabla_{S^2}\!\cdot(j\rho_s\mathbf c)=j(J_{\rm dep}-J_{\rm ero})$ with $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$ (Proposition 9.1); writing it with $j\,d\Omega$ rather than $J_\Gamma\,d\theta\,d\varphi$ avoids the pole singularity.
+An external source must be explicit, $J_{\rm ext}$, with $M^{n+1}=M^n+\Delta t_n\int_\Gamma J_{\rm ext}\,dS$, and never hidden in the deposit. The transport velocity is the active tangential slip $\mathbf v_T$ relative to the core; the unprojected 3-D velocity must not be used. $\rho_s$ is an accounting density: its tangential transport does not move the surface, which changes only through $J_{\rm dep}-J_{\rm ero}$ via $\Delta h_C^*$. Transport is the semi-Lagrangian scheme of Section 8.0 (G5) with the Jacobian correction. Positivity holds for every step. Let $\beta_i=\chi_{A,i}k_e[F_{\delta,i}]_+/\sigma_0$ be the frozen erosion rate, so $J_{\rm ero}=\beta\rho_s$, and $\tau_n=\lambda\Delta t_n$ the time the step advances (Section 10.4.1). $J_{\rm ero}$ is integrated exactly over $\tau_n$ through its step average $\bar J_{{\rm ero},i}=\rho_{s,i}(1-e^{-\beta_i\tau_n})/\tau_n$, and $\bar J_{\rm dep}$ is the routed and spread $\bar J_{\rm ero}$. The source update is $\rho_s\leftarrow\rho_s+\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$, whose erosion part is exactly $\rho_s\mapsto\rho_se^{-\beta_i\tau_n}$, and $\Delta h^*_C$ is formed from the same averages. The average and the update must use the same interval: an average over $\Delta t_n$ applied for $\tau_n$ would give the factor $1-\lambda+\lambda e^{-\beta_i\Delta t_n}$, which is not the exponential for $\lambda<1$. The exponential is this update, not a second factor: applying both would remove the eroded mass twice. Forward Euler would need $\tau_n\beta_i<1$ even on an exhausted layer. Under hypothesis A-T1 (Section 10.4.1) the update is applied once per step, in the settling of step S (Section 10.4.4), with the $\tau_n$ of that step; for $\tau_n\gg1/\beta_i$ the layer of the eroding vertex is stripped and laid down where its packets come to rest. The remaining bound is $\Delta t_C$ of Section 10.4.1. *Star-shaped special case:* with $a=\hat{\boldsymbol\omega}\in S^2$ and $dS=j\,d\Omega$ (Section 9.0) the law reads $\partial_t(j\rho_s)+\nabla_{S^2}\!\cdot(j\rho_s\mathbf c)=j(J_{\rm dep}-J_{\rm ero})$ with $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$ (Proposition 9.1); writing it with $j\,d\Omega$ rather than $J_\Gamma\,d\theta\,d\varphi$ avoids the pole singularity.
 
 ## 2.8b Rotating-frame runout of eroded regolith (hypothesis A-C3)
 
@@ -1565,7 +1565,7 @@ $$
 
 It removes material from supercritical faces and places it elsewhere in $\mathcal A$ or on $\mathcal D$, through the mass row or the routed deposit of Section 2.8b. The same program without the Stokes solve, with weights that protect selected regions (e.g. craters), is a stand-alone static relaxation of a given shape.
 
-**Time scale.** Failure is instantaneous geologically: a face is relieved in the step in which it becomes supercritical. The relief per step is limited by the trust box $|d_i|\le\Delta=\Delta_0\bar R$ (configured fraction $\Delta_0$ of the mean radius $\bar R$), by the loose mass of each promoted vertex (item 3), and by the KKT tolerance. The second bound keeps the closure shallow: a promoted vertex never loses more than the layer it carries, and an exhausted layer ($\rho_{s,i}=0$) is not promoted again (item 2), so a shallow failure cannot excavate the body. Promoted vertices have no creep speed and do not enter $\Delta t_{\rm CFL}$, so the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. The onset of a landslide is physical to within one step. Its model duration and per-step displacement are numerical: a relief that needs $N$ trust-limited steps lasts about $N\Delta t_n$ of model time, and a step whose displacement reaches $\Delta$ may leave positive slack on some faces.
+**Time scale.** Failure is instantaneous geologically. Under hypothesis A-T1 (Section 10.4.1) the relief is part of the fast operator: after the creep step, the surface settles in sweeps on the current shape (step S of Section 10.4.4), and settling advances no time. Each sweep re-evaluates the face gravity, promotes the vertices of the faces that are then supercritical, and solves the routed cone program. A sweep's relief is limited by the trust box $|d_i|\le\Delta=\Delta_0\bar R$ (configured fraction $\Delta_0$ of the mean radius $\bar R$), by the loose mass of each promoted vertex (item 3), and by the KKT tolerance. The second bound keeps the closure shallow: a promoted vertex never loses more than the layer it carries, and an exhausted layer ($\rho_{s,i}=0$) is not promoted again (item 2), so a shallow failure cannot excavate the body. Settling stops when no loose face is supercritical; when a sweep no longer removes a fixed fraction of the supercritical faces and does not lower the largest slack, the rest is unrelievable; and when no increment is admissible down to the trust floor. A configured number of sweeps bounds it, and what remains continues in the next step. Promoted vertices have no creep speed and do not enter $\Delta t_{\rm CFL}$. The onset of a landslide is physical to within one step; its duration is not modelled (instantaneous on the scale of $\Delta t_n$).
 
 **Reports:**
 
@@ -1574,7 +1574,7 @@ It removes material from supercritical faces and places it elsewhere in $\mathca
 - the cone's residual slope slack $\sum t_f$;
 - the largest displacement and the trust radius.
 
-**Stage equilibrium.** Criterion (c) of Section 2.15 is a fixed-point test. With the whole body in the rigid core ($\chi_Y\equiv0$ on $\mathcal X_Y$) and no erosion ($J_{\rm ero}\equiv0$), a stage is equilibrated when no loose face is supercritical ($\mathcal A=\varnothing$), or when the cone program, converged within its KKT tolerance, leaves every promoted vertex in place ($d_*=0$). The zero of a *cone unresolved* step (Section 10.4.3) does not count. The step that reaches the fixed point ends the stage. The second case covers faces that the relief cannot flatten (for instance a face whose locked edge is itself steeper than repose); their slack is reported as unrelievable. **Reduction.** $\tau_s\to\infty$ or $\rho_s\equiv0$ gives $\pi\equiv0$ and plain (B3)–(B4).
+**Stage equilibrium.** Criterion (c) of Section 2.15 is a fixed-point test. With the whole body in the rigid core ($\chi_Y\equiv0$ on $\mathcal X_Y$) and no erosion ($J_{\rm ero}\equiv0$), a stage is equilibrated when the settling of step S leaves the surface unchanged: no loose face is supercritical, or the relief, converged within its KKT tolerance, cannot reduce the faces that are (for instance a face whose locked edge is itself steeper than repose). A *cone unresolved* sweep (Section 10.4.3) does not count. The step that reaches the fixed point ends the stage, and the remaining slack is reported as unrelievable. **Reduction.** $\tau_s\to\infty$ or $\rho_s\equiv0$ gives $\pi\equiv0$ and plain (B3)–(B4).
 
 A-C4 is registered as PO-17. Its open questions:
 
@@ -1721,14 +1721,14 @@ with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}
 **(c) Stage equilibrium (constant spin on a stage).** The geometry is in static equilibrium iff
 
 $$
-\boxed{\ \chi_Y\equiv0\ \text{on }\mathcal X_Y,\quad J_{\rm ero}\equiv0,\quad\big(\mathcal A^{(n)}=\varnothing\ \text{ or the converged cone program returns }d_*=0\big),\quad\text{and (b) holds}. \ }
+\boxed{\ \chi_Y\equiv0\ \text{on }\mathcal X_Y,\quad J_{\rm ero}\equiv0,\quad\text{the settling of step S leaves the surface unchanged},\quad\text{and (b) holds}. \ }
 $$
 
 The first condition says that the whole body, not only its surface, belongs to the rigid core: an interior yielded pocket would move the cores even with a locked surface. Then:
 
 - $J_{\rm ero}=J_{\rm dep}=0$, $\mathcal D=\varnothing$, and $d_{\rm pred}=0$ (promoted vertices have no creep);
 - $\mathbf v_{\rm adv}\equiv\mathbf 0$, so the cores do not move ($\xi_n=0$, Section 9.10.2) and nothing is retraced (Section 3.15.2);
-- $d_*=0$ exactly: either the SOCP has no free variable, or its converged solution is zero. A zero from a cone solve that missed its KKT tolerance (*cone unresolved*, Section 10.4.3) does not count.
+- the creep step has no free variable, and settling finds no promotable supercritical face, or its converged relief is zero. A zero from a cone solve that missed its KKT tolerance (*cone unresolved*, Section 10.4.3) does not count.
 
 Positive slope slack may remain only on faces that the relief cannot reduce; it is reported as unrelievable slack.
 
@@ -4656,15 +4656,23 @@ $$
 
 and hence $\mathbf T_{\rm tide}$; $\mathbf g_{\rm ext}=\mathbf 0$ except under the orbit form. **Hypothesis A-S (spin about a principal axis):** the spin axis is the body $z$-axis, the current axis of maximum inertia, as maintained by the realignment of step 8. Nutation damping is instantaneous relative to $\Delta t_n$. $\omega$ is never updated from the inertia or the angular momentum; that is the definition of an exogenous prescription.
 
-**Geological step.**
+**Hypothesis A-T1 (time-scale separation).** Two groups of processes act on disjoint time scales. The slow operator $\mathcal S_{\rm creep}(\Delta t)$ is the creep of the yielded region ((B3)–(B4) with $\chi_Y$ alone), the transport of $\rho_s$ along its slip, and the core transport of Section 9.10. The fast operator $\mathcal S_{\rm surf}$ is the Mode C erosion of the yielded surface (e-folding time $\tau_C=\sigma_0/(k_e\max_i[F_{\delta,i}]_+)$), its runout ($T_{\rm run}$), and the shallow failure of A-C4. A-T1 assumes $\tau_C,\ T_{\rm run}\ll\tau_n=\lambda\Delta t_n$. Each step is then the Lie product
+
+$$
+\mathcal S_{\rm surf}\circ\mathcal S_{\rm creep}(\Delta t_n):
+$$
+
+the creep step on the deep state of $t_n$, followed by the quasi-static settling of the surface (step S of Section 10.4.4) on that state, frozen ($\chi_Y$ and $F_\delta$ per vertex), with the face gravity of the current shape. Settling advances no time. The split is first order in $\Delta t_n$; its defect is that the deep state seen by settling lags the settled shape by one step, and material laid on yielding ground leaves with the next step. The ratio $\tau_C/\tau_n$ is reported each step; where it is not small, A-T1 fails, and the coupled scheme (the surface processes inside the step, with the bound $\Delta t_C$ below) must be used.
+
+**Geological step.** Under A-T1,
 
 $$
 \Delta t_n
-=\min\{\Delta t_{\rm CFL},\ \Delta t_C,\ \Delta t_{\rm char},\ \Delta t_{\rm core},\ \Delta t_\omega,\ \Delta t_{\max},\ t_{\rm next}-t_n\}.
+=\min\{\Delta t_{\rm CFL},\ \Delta t_{\rm char},\ \Delta t_{\rm core},\ \Delta t_\omega,\ \Delta t_{\max},\ t_{\rm next}-t_n\}.
 $$
 
 - **CFL of the movable region:** $\Delta t_{\rm CFL}=\theta_{\rm CFL}h_{\Gamma,\min}/\max_{\{i:\chi_{Y,i}=1\}}|\mathbf v_{{\rm sl},i}\cdot\mathbf N_i|$, with $\theta_{\rm CFL}\le0.5$; promoted vertices have no creep and do not enter (Section 8.0, G10). The value is $+\infty$ if $\chi_Y\equiv0$ on the surface.
-- **Erosional flux:** $\Delta t_C=\theta_C\rho_{\rm bulk}h_s/\max_i|J_{\rm dep}-J_{\rm ero}|_i$, with $\theta_C<1$ and fluxes at $t_n$, so the layer thickness changes by at most $\theta_Ch_s$. Positivity needs no bound, since erosion is integrated exactly. On a full layer this bound is $\theta_C\sigma_0/(k_e[F_\delta]_+)$, and it relaxes as the layer depletes. The value is $+\infty$ without flux.
+- **Erosional flux (coupled scheme only):** $\Delta t_C=\theta_C\rho_{\rm bulk}h_s/\max_i|J_{\rm dep}-J_{\rm ero}|_i$, with $\theta_C<1$ and fluxes at $t_n$, so the layer thickness changes by at most $\theta_Ch_s$. Positivity needs no bound, since erosion is integrated exactly. On a full layer this bound is $\theta_C\sigma_0/(k_e[F_\delta]_+)=\theta_C\tau_C$, and it relaxes as the layer depletes. Under A-T1 it is not a bound: its scale $\tau_C$ is what A-T1 requires to be small.
 - **$\rho_s$ characteristics:** $\Delta t_{\rm char}=\theta_{\rm ch}/\|\nabla_\Gamma\mathbf v_T\|_\infty$, with $\theta_{\rm ch}<1$ (Section 8.0, G5, G10).
 - **Core jet transport:** $\Delta t_{\rm core}=\theta_{\rm ch}/(\lambda\max_{k\ \text{not anchored}}\|\operatorname{dev}\nabla\mathbf v_{\rm adv}(\mathbf c_k)\|_F)$, evaluated at the current centres, since the RK2 midpoint $\mathbf c_k^{\rm mid}$ itself depends on $\tau_n=\lambda\Delta t_n$. Step 6b then checks the same bound at $\mathbf c_k^{\rm mid}$ and, if it is violated, shortens $\Delta t_n$ by the violation ratio and repeats the $O(K)$ prediction; the bound is a smooth function of $\Delta t_n$ through $\mathbf c_k^{\rm mid}$, so a few repetitions suffice. This keeps $\mathbf F_k$ near the identity and the Level 2 backtracking single-valued. The Frobenius norm bounds the spectral norm. The value is $+\infty$ if every core is anchored.
 - **Spin table:** none under the stage form (handled by $t_{\rm next}$). Under the linear or table form, $\Delta t_\omega=\varepsilon_\omega\max\{\omega(t_n),\omega_{\rm ref}\}/\max\{|\dot\omega(t_n)|,\epsilon\}$.
@@ -4827,34 +4835,22 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    Ek^{-1}, and eps_Euler.
 4. Friction chain (Section 10.3): surface velocity and strain rate at vertices and face centres
    (Section 10.2), gd (Section 10.2.3), then mu_d, mu_proj, phi, and the repose slack s_f of every face.
-4b. Slope promotion (Section 2.8c): pi_i = 1 on vertices of faces with s_f > tau_s, chi_Y,i = 0,
-   rho_s,i > 0. Geometric movability max(chi_Y, pi); chi_Y itself governs 5, 6b, and the CFL bound.
-5. Mode C (Section 2.8): chi_A = chi_Y 1[rho_s > 0], J_ero. Runout (A-C3): trace each node with
-   J_ero > 0 over Gamma in the rotating frame (mu(I) sliding, Coriolis, hops where N <= 0) to X;
-   move J_ero A to X by barycentric weights; J_dep = G_w * (moved source) (normalized; strict
-   conservation). Report the runout statistics. Steps 4 and 5 read the same solution and write
-   disjoint data (Section 10.5).
-6. Step size (Section 10.4.1), with Delta t_core from the gradients at the current centres c_k;
-   A^(n) is the movable set after promotion.
-   If the spin table has stages, chi_Y = 0 on all of X_Y, A^(n) is empty, and J_ero = 0:
-     stage equilibrium (2.15(c)) -> emit the stage's terminal state, set t_{n+1} to the stage end,
-     X^(n+1) = X^(n), go to step 1.
-   If A^(n) is empty otherwise: Delta t_n = min(Delta t_omega, Delta t_core, Delta t_max, t_next - t_n),
-     d_pred = 0; run 6b, then go to step 8 (surface unchanged).
+5. (Mode C, runout and slope promotion are the fast operator of A-T1: step S.)
+6. Step size of the slow operator (Section 10.4.1, under A-T1), with Delta t_core from the gradients
+   at the current centres c_k; A^(n) = {chi_Y = 1} on the surface.
+   If the spin table has stages and chi_Y = 0 on all of X_Y: run step S on V^(n); if it leaves the
+     surface unchanged, stage equilibrium (2.15(c)) -> emit the stage's terminal state, set t_{n+1}
+     to the stage end, X^(n+1) = X^(n), go to step 1.
+   If A^(n) is empty: Delta t_n = min(Delta t_omega, Delta t_core, Delta t_max, t_next - t_n),
+     d_pred = 0; run 6b, then go to step 8 (no creep of the surface).
 6b. Core prediction (Section 9.10.3, Level 0; skipped in the frozen-density variant A-rho):
    v_adv = chi_Y v_sl, tau_n = lambda Delta t_n; for each non-anchored core, RK2 for c_k,
    F_k = exp(tau_n dev grad v_adv(c_k^mid)), S_k' = F_k^{-T} S_k F_k^{-1}, w_k' = w_k.
    If tau_n ||dev grad v_adv(c_k^mid)||_F > theta_ch for some core, reduce Delta t_n by that ratio
    and repeat 6b (cost O(K)). -> theta^pred, rho_cand (recomputed whenever lambda or Delta t_n changes).
-7. Form the normal increments d_pred (B4; no creep on promoted vertices) and the classes L / D / A;
-   solve the SOCP of Section 10.4.3 with rho_cand. Relief routing (A-C3): r_i = [d_pred,i - d_i]_+ on
-   the movable vertices of the faces of S_slope, m_rel_i = (D M)_i r_i, run out to X(a_i), spread by K,
-   delta_j = (K m_rel)_j A_j / (D M)_j; d_pred <- d_pred + delta (depositing locked vertices join D);
-   solve again, warm-started, for d_*^(n). Report the routing gap.
-   If the spin table has stages, chi_Y = 0 on all of X_Y, J_ero = 0, D is empty, and the cone
-   program, converged within its KKT tolerance (not cone unresolved), returns d_* = 0, the step is a
-   fixed point: stage equilibrium (2.15(c)) -> report the remaining slope slack as unrelievable,
-   emit the stage's terminal state, set t_{n+1} to the stage end, X^(n+1) = X^(n), go to step 1.
+7. Creep increments: d_pred,i = Delta t_n v_sl,i . N_i on A^(n), the classes L / A (every other vertex
+   locked); solve the SOCP of Section 10.4.3 with rho_cand, with the repose rows of the loose faces of
+   A^(n), for d_*^(n).
 8. Geometric update and frame realignment:
    8a. X_i <- X_i + lambda d_*,i N_i (Section 8.0, G4), with d_* = 0 on the locked set.
        Rebuild the polyhedron. Outer acceptance: positive volume, no self-intersection, a closed,
@@ -4865,10 +4861,7 @@ For n = 0, 1, 2, ... until t_n >= T_end:
        rho_s update and 8c, advancing time by lambda Delta t_n (Section 10.4.3). A miss of |M(V^(n+1), rho_cand) - M| <= eps_M M
        is corrected once on the movable set, then recorded (Section 2.14).
        rho_s: semi-Lagrangian transport along v_T on Gamma (Section 8.0, G5; Section 9.2), step
-       lambda Delta t_n, with the Jacobian correction and rho_s,i = m_i / A_i^new;
-       then add tau_n (J_dep - J_ero) with the step averages over tau_n = lambda Delta t_n of
-       Section 2.8 (the exact exponential erosion over tau_n, applied once) and the relief ledger
-       of Section 2.8c (debit lambda (D M)_i [d'_pred,i - d_*,i]_+, credited along the routed runout).
+       lambda Delta t_n, with the Jacobian correction and rho_s,i = m_i / A_i^new.
    8c. Core closure on V^(n+1) (Sections 9.10.4-9.10.6): Level 1 on the cores (rho_b fixed), the
        misfit e_rho, Level 2 Gauss-Newton refit if e_rho > eps_rho or |xi_n| > eps_xi, Level 3 if
        used, then Level 1 again; recheck rho_K >= rho_min at the volume nodes. 8c precedes 8b,
@@ -4892,6 +4885,30 @@ For n = 0, 1, 2, ... until t_n >= T_end:
              omega is unchanged (exogenous); Omega = omega e_z'.
        (vi)  Recheck |x_cm'| <= eps_frame R_ref and max(|I_xz'|,|I_yz'|) <= eps_frame I_1; failure
              stops the run. After it passes, the compatibility conditions of Appendix A.3 hold.
+S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y and F_delta of step 3
+   frozen per vertex and tau_n = lambda Delta t_n. Time does not advance. For sweeps k = 0, 1, ...:
+   S1. Face gravity of the current shape (RTFP) and the friction chain at rest (v = 0, D = 0):
+       g_eff,f, sin phi_f, repose slack s_f.
+   S2. On sweep 0 only, Mode C (Section 2.8): chi_A = chi_Y 1[rho_s > 0]; trace each node with
+       J_ero > 0 in the rotating frame (A-C3, Section 2.8b) to X; J_ero and J_dep = G_w * (moved
+       source) as step averages over tau_n (the exact exponential); Delta h*_C = tau_n (J_dep - J_ero)
+       / rho_K. Later sweeps: no erosion (material laid on yielding ground leaves with the next step).
+   S3. Slope promotion (Section 2.8c): pi_i = 1 on vertices of faces with s_f > tau_s, chi_Y,i = 0,
+       rho_s,i > 0. Stop if no vertex is promoted and nothing erodes (settled).
+   S4. Classes: A = {pi = 1} with d_pred = Delta h*_C; D = other vertices with Delta h*_C != 0;
+       L the rest. Solve the SOCP of Section 10.4.3 with the loose-mass bound of the promoted
+       vertices; relief routing (A-C3): r_i = [d_pred,i - d_i]_+ on the movable vertices of the
+       faces of S_slope, m_rel_i = (D M)_i r_i, run out to X(a_i), spread by K,
+       delta_j = (K m_rel)_j A_j / (D M)_j; d_pred <- d_pred + delta; solve again, warm-started, for
+       d_*. Outer acceptance as in 8a; when no increment is admissible down to Delta_min, stop and
+       keep the last shape.
+   S5. X_i <- X_i + d_*,i N_i; rho_s,i <- rho_s,i A_i / A_i^new + tau_n (J_dep - J_ero)_i + the relief
+       ledger of Section 2.8c (debit (D M)_i [d'_pred,i - d_*,i]_+, credited along the routed
+       runout) / A_i^new; clip at zero.
+   S6. Stop when a sweep no longer removes a fixed fraction of the supercritical faces and does not
+       lower the largest slack (the rest is unrelievable), or after the configured number of sweeps.
+   Report the sweeps, the eroded and relieved masses, the slack before and after, tau_C / tau_n,
+   and whether settling converged, stalled, or was limited by the geometry.
 9. t_{n+1} = t_n + lambda Delta t_n. Record X^(n+1), rho_s, theta^(n+1), the diagnostics,
    and the error budget of Section 9.8. Return to step 1.
 ```
@@ -4908,13 +4925,15 @@ $$
 \xrightarrow{\text{Stokes–Poisson primal–dual}}
 (\mathbf u,p;\ \boldsymbol\sigma)
 \xrightarrow{F_\delta,\ \mathcal U_{\rm core},\ s_f}
-(\chi_Y,\pi,\mathbf v_{\rm sl},J)
+(\chi_Y,\mathbf v_{\rm sl})
 \xrightarrow{\Delta t_n}
 \big(d_{\mathrm{pred}},\ \theta^{\rm pred}\big)
 \xrightarrow{\mathrm{PDHG}\ \text{elastic SOCP}\ (\rho_{\rm cand})}
 d_*^{(n)}
 \xrightarrow{\text{update}+\text{core closure}+\text{realignment}}
-\big(\mathbf X^{(n+1)},\theta^{(n+1)}\big).
+\big(\mathbf X^{(n+1)},\theta^{(n+1)}\big)
+\xrightarrow{\text{settling (A-T1)}}
+\mathbf X^{(n+1)}.
 }
 $$
 
@@ -5228,11 +5247,12 @@ So $\mathbf u_B=\mathbf u_0$ iff $\mathbf E\mathbf u_0=\mathbf 0$, and Track B i
 | PO-14 | Hypothesis A-ρL (Section 9.10). Proved: exactness of the jet update for affine flows, preservation of $\det\mathbf S_k$ and definiteness, the stage fixed point, Proposition 9.10.1, and additive accumulation of projection defects under the stated idealizations. Not proved: an a-priori bound on $\delta_n$ for a general flow, and the effect of the mask at the core boundary | partially closed; reported through $e_{\rho,n}$, $|\xi_n|$, $s_{M*}$, the range of $\rho_{\rm bulk}/\rho_K\rvert_\Gamma$, and $\min\rho_K/\rho_{\min}$. In the frozen-density variant A-ρ the ghost gravity is not measured |
 | PO-15 | Well-posedness of the Level 2 refit (rank of $\mathbf J^{\!\top}\mathbf W\mathbf J$ for strongly overlapping cores or cores mostly outside $V$) and termination of the Level 3 rules | not proved; rank deficiency is detected by the LM solve and reported; termination of Level 3 is open |
 | PO-16 | Hypothesis A-C3: convergence of $X(a')$ as $\theta_r\to0$, the near-surface gravity error of a hop, and convergence of the relief routing (one pass; the routing gap measures its defect). Proved: exact mass balance of the runout kernel and of the routed relief in the linear mass row, the reductions to the isotropic kernel, and unconditional stability of the exact Coriolis rotation | partially closed; escaped and timed-out counts and the largest hop are reported each step; arrival points are checked against halved substeps |
-| PO-17 | Hypothesis A-C4. Open: instantaneous failure, the dependence of slide durations and per-step displacements on the trust radius and $\Delta t_{\max}$, convergence of the relieved shape as both shrink, and agreement with a solve resolving the layer. Proved: reduction to (B3)–(B4) for $\tau_s\to\infty$ or $\rho_s\equiv0$, and that promotion leaves the stress, the classification, and the Mode C fluxes unchanged | open; movable vertices, supercritical faces, residual slope slack, largest displacement, and trust radius are reported each step |
+| PO-17 | Hypothesis A-C4. Open: instantaneous failure, the dependence of the settled shape on the trust radius and the number of sweeps, convergence of the relieved shape as the trust radius shrinks, and agreement with a solve resolving the layer. Proved: reduction to (B3)–(B4) for $\tau_s\to\infty$ or $\rho_s\equiv0$, and that promotion leaves the stress, the classification, and the Mode C fluxes unchanged | open; movable vertices, supercritical faces, residual slope slack, largest displacement, and trust radius are reported each step |
 | PO-18 | The general route of Section 8.0 and the ray structure of Section 8.10. Proved: Proposition 8.0.1; independence and the rigid modes of the enclosing-ball basis, with the cavity flux modes (Propositions 8.0.3, 8.0.4, Section 8.2); discrete Nitsche coercivity (Proposition 8.0.6); the vertex-area identity and normal kinematics (G4, Proposition 8.0.7); Lemma 8.13, Propositions 8.14–8.16; Proposition 2.17.1. Sketched: density of the restricted basis with cavity flux modes (Proposition 8.0.5). Open: a rate for the conditioning growth with $L_{\max}$; convergence of the ray-segment rule across silhouettes; sufficiency of the clearance rows for embeddedness; forward stability of the moment recurrence of Proposition 8.14 | partially closed |
 | PO-19 | Convergence of the primal–dual iteration of Section 10.4.2 when the pressure is updated inexactly every $N_p$ iterations, and the choice of $N_p$ | not proved (judged by criterion (a) of Section 2.15) |
 | PO-20 | The fused variant of Section 10.4.5: its relation to the closure (B3)–(B4), and the limit $\kappa_i\to\infty$ | not proved; optional variant, not in the reference loop |
 | PO-21 | Conjecture A.2 (Appendix A.6): the two associated cone programs bracket the frozen-pressure fixed point and $L^*$ | open |
+| PO-22 | Hypothesis A-T1: the error of the Lie split (first order in $\Delta t_n$; the deep state lags the settled shape by one step) as $\tau_C/\tau_n\to0$, and its agreement with the coupled scheme bounded by $\Delta t_C$ | open; $\tau_C/\tau_n$, the settling sweeps, and the settled slack are reported each step |
 
 ## A.6 Conjectures
 

@@ -705,6 +705,7 @@ fn intern(text: &str) -> &'static str {
         "geometry" => "geometry",
         "stage-equilibrium" => "stage-equilibrium",
         "spin-only" => "spin-only",
+        "settle" => "settle",
         "cfl" => "cfl",
         "mode_c" => "mode_c",
         "characteristic" => "characteristic",

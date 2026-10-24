@@ -1,7 +1,10 @@
 # Deimos. Shape: Deimos.glb rescaled to the measured 1033 km^3 (Ernst et al. 2023): the model
 # is 17 % undersized, so one file unit is 1065.97 m. Resampled on the level-5 icosphere (~210 m).
-# Density: uniform, M/V with M = 1.51e15 kg (Jacobson 2010): 1462 kg/m^3 (Ernst et al. 2023:
-# 1465 +/- 51). No gravity harmonics are measured.
+# Density: mean M/V with M = 1.51e15 kg (Jacobson 2010): 1462 kg/m^3 (Ernst et al. 2023:
+# 1465 +/- 51). No gravity harmonics are measured. The surface is a thick ejecta blanket, a few
+# hundred metres (Thomas 1996) or up to ~200 m (2026 impact models). Model assumption: a centrally
+# symmetric compaction profile, density 1.2 times higher at the centre than at the mean radius
+# r = 6163 m (looser blanket over a compacted interior), scaled to the mass.
 # Strength: interior 25 Pa (Sanchez & Scheeres 2014); surface 0.5 Pa (Ryugu analogue);
 # transition 10 m (regolith 5-10 m, Thomas et al. / Mars atlas). h_s = 5 m (assumed).
 # Spin: synchronous, 30.312 h, slowly receding orbit (k2/Q of Mars = 1.816e-3).
@@ -21,8 +24,10 @@ mesh = "../models/Deimos.glb"
 mesh_unit = "1065.97"
 
 [density]
-bulk = 1463.9
-kernels = []
+bulk = 1310.46
+kernels = [
+  { center = [13.98, -182.58, -355.99], weight = 374.45, sigma = 1.6226e-4, alpha = 2.0 },
+]
 
 [material]
 nu0 = 0.54
@@ -105,7 +110,9 @@ eps_frame = 1.0e-2
 eps_deg = 1.0e-6
 
 [relief]
-max_sweeps = 1
+# Sweeps of the surface settling per step (and of `scf-cli relax`); settling stops earlier
+# once no loose face is supercritical and nothing erodes.
+max_sweeps = 8
 tol_slack = 1.0e-3
 radius_anomaly = 0.03
 curvature_quantile = 0.9

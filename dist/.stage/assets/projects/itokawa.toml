@@ -1,0 +1,134 @@
+# 25143 Itokawa (Hayabusa). Shape: Itokawa_1_1.glb (metres, 1325 vertices), resampled on the
+# level-5 icosphere (~5 m spacing); the file is star-shaped about its centroid. Its volume is
+# 1.535e7 m^3, 17 % under the measured (1.84 +/- 0.09)e7 m^3 (Fujiwara et al. 2006), so one
+# file unit is 1.062211 m (long axis 569 m against the measured 535 m).
+# Mass: (3.58 +/- 0.18)e10 kg (Abe et al. 2006), mean density 1946 kg/m^3.
+# Density: two lobes. The "head" is denser than the "body": best fit 2440 and 1930 kg/m^3 at a
+# mean of 2020 kg/m^3, i.e. a centre-of-mass offset of 9.7 m toward the head (Kanamaru, Sasaki
+# & Wieczorek 2019, smooth-terrain geopotential; Lowry et al. 2014 found 21 +/- 12 m from the
+# YORP spin-up). The block below is a body matrix plus one Cauchy kernel on the head centroid,
+# fitted to the mass and the 9.7 m offset: mean head 2321, body 1872 kg/m^3 (ratio 1.24;
+# Kanamaru et al. rescaled to this mean: 2350 / 1859).
+# Strength: interior 25 Pa (rubble-pile population, Sanchez & Scheeres 2014; Itokawa needs more
+# than 0.1 Pa to avoid neck failure at 12.1 h, Hirabayashi & Scheeres 2015); surface 0.5 Pa
+# (Ryugu analogue, no Itokawa measurement). Active loose layer h_s = 2.3 m, the lowland regolith
+# depth 2.3 +/- 0.4 m (Barnouin-Jha et al. 2008); the strength transition at the same depth.
+# Spin: 12.1324 h (Fujiwara et al. 2006); YORP spin-up (3.54 +/- 0.38)e-8 rad/day^2 (Lowry et
+# al. 2014) in the run command, not here.
+# Regolith: LL-chondrite grains, rho_p = 3400 kg/m^3 (returned particles, Tsuchiyama et al. 2011);
+# cm-sized gravel, d_p = 2 cm (thermal inertia ~750, Gundlach & Blum 2013 relation; Yano et al.
+# 2006); loose-layer porosity 0.40 (the bulk macroporosity, Abe et al. 2006), rho_bulk = 2040.
+# Friction angle 35 deg (mu_s = tan 35 deg) with mu_2 - mu_s = 0.26 and I_0 = 0.279 from the
+# mu(I) law (Jop et al. 2006); no Itokawa measurement.
+
+[gravity]
+g = 6.6743e-11
+
+[body]
+level = 5
+shape = "mesh_rays"
+mesh = "../models/Itokawa_1_1.glb"
+mesh_unit = "1.062211"
+
+[density]
+bulk = 1856.25
+kernels = [
+  { center = [219.9, -21.0, -1.1], weight = 1642.6, sigma = 1.105e-2, alpha = 3.0 },
+]
+
+[material]
+nu0 = 0.60
+z0 = 6.0
+d_p = 0.02
+rho_p = 3400.0
+mu_s = 0.70
+mu_2 = 0.96
+i_0 = 0.279
+cohesion = 25.0
+cohesion_surface = 0.5
+cohesion_depth = 2.3
+c_c = 1.0
+f_h = 1.0e-4
+c_t = 1.0
+gamma_eps = 1.0e-9
+p_min = 1.0e-6
+h_s = 2.3
+eps_overhang = 0.01
+mu_proj_mode = "dynamic"
+
+[solver]
+max_iter = 40
+tol = 1.0e-10
+
+[stokes]
+l_surface = 4
+l_velocity = 5
+l_pressure = 7
+k_pressure = 5
+n_theta = 28
+n_phi = 56
+n_radial = 8
+p_ext = 0.0
+picard_max = 30
+tol_picard = 5.0e-2
+tol_momentum = 1.0e-2
+theta_eta = 1.0
+continuation = 0
+rigid_sigma_min = 1.0e-6
+
+[yielding]
+delta_y = 0.05
+
+[mode_c]
+# k_e = sqrt(g/h_s) (inverse avalanche time) and sigma_0 = rho_bulk g h_s (stress at the
+# base of the loose layer), with g = GM/r^2 = 8.905e-05 m/s^2 at the volume-equivalent
+# radius r = 163.8 m.
+k_e = 6.222e-03
+sigma_0 = 4.178e-01
+kernel_width = 0.2
+# Runout of eroded packets in the rotating frame (mathstrict §2.8b, A-C3): mu(I) sliding,
+# Coriolis, ballistic hops. T_run = 1e6 s is far above a runout (~1e3-1e4 s) and far
+# below a geological step; packets stop below 1e-3 sqrt(g h_s).
+runout = true
+runout_time = 1.0e6
+runout_stop = 1.0e-3
+
+[step]
+theta_cfl = 0.5
+theta_c = 0.5
+theta_char = 0.5
+eps_omega = 0.01
+omega_ref = 1.438569e-04
+dt_max = 3.0e+11
+lambda = 1.0
+eps_inertia = 1.0e-2
+max_steps = 100000
+
+[geometry]
+c0 = 0.005
+eps_n = 0.01
+eps_mass = 1.0e-4
+trust0 = 0.02
+trust_min = 1.0e-5
+trust_shrink = 0.5
+# Exact penalty: varrho >= 10 h^2 with mean node spacing h = 5.2 m (mathstrict §2.13).
+varrho = 2.70e+02
+sh_fit_tol = 0.25
+eps_frame = 1.0e-2
+eps_deg = 1.0e-6
+
+[relief]
+# Sweeps of the surface settling per step (and of `scf-cli relax`); settling stops earlier
+# once no loose face is supercritical and nothing erodes.
+max_sweeps = 8
+tol_slack = 1.0e-3
+radius_anomaly = 0.03
+curvature_quantile = 0.9
+lock_weight = 0.999999999
+
+[cores]
+density_mode = "lagrangian_cores"
+core_shape = "anisotropic"
+eps_xi = 1.0e-3
+eps_rho = 1.0e-2
+gn_max = 20

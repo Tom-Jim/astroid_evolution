@@ -268,8 +268,11 @@ fn cauchy_meshes_evolve_past_relax() {
         assert!(rec.rheo_seconds.is_finite(), "{name} rheo");
         if rec.n_supercritical_faces > 0 {
             any_geometry = true;
-            assert_eq!(rec.kind, "geometry", "{name} stayed at {}", rec.kind);
-            assert!(rec.n_mobile > 0, "{name} supercritical but n_mobile=0");
+            // Supercritical loose faces are the surface's: they settle after the creep step.
+            assert!(
+                rec.settle.sweeps > 0 || rec.settle.converged,
+                "{name} supercritical but the surface did not settle"
+            );
             assert!(
                 rec.max_displacement.is_finite(),
                 "{name} displacement is not finite"

@@ -75,6 +75,22 @@
           "snapshot": "output/deimos/history/present.json"
         }
       ]
+    },
+    {
+      "id": "itokawa",
+      "name": "Itokawa",
+      "designation": "25143",
+      "project": "assets/projects/itokawa.toml",
+      "note": "YORP spin-up (3.54 ± 0.38)×10⁻⁸ rad/day² (Lowry 2014): 12.13 h → 5.95 h",
+      "scenarios": [
+        {
+          "id": "future",
+          "label": "Measured shape → future",
+          "span": "0 → +1 Myr",
+          "spin": "linear:1.438569e-4,4.742155e-18,3.155760e13",
+          "snapshot": null
+        }
+      ]
     }
   ]
 }

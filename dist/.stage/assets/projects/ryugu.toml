@@ -1,6 +1,11 @@
 # 162173 Ryugu (Hayabusa2). Shape: SHAPE model ryugu.glb (km), resampled on the level-5
 # icosphere (10242 rays, ~15 m spacing); volume 0.377 km^3 (Watanabe et al. 2019).
-# Density: uniform, M/V with GM = 30.0 m^3/s^2 (Watanabe et al. 2019): 1193 kg/m^3.
+# Density: mean M/V = 1192 kg/m^3 with GM = 30.0 m^3/s^2 (Watanabe et al. 2019). The interior
+# profile is not measured; the centre of mass matches the centre of figure within error, which
+# rules out a large lateral contrast (Watanabe et al. 2019), and the gravity field shows only
+# shallow heterogeneity (Gao et al. 2026). Model assumption: a centrally symmetric compaction
+# profile (overburden and the downward sieving of fines in a reaccumulated rubble pile), density
+# 1.2 times higher at the centre than at the mean radius r = 446 m, scaled to the mass.
 # Strength: interior 4 Pa (lower end of 4-10 Pa, Hirabayashi et al. 2019, western-bulge
 # deformation at 3.0-3.5 h); surface 0.5 Pa (Arakawa et al. 2020, gravity-regime SCI crater;
 # tensile ~0.5 Pa, Sugimura et al.); transition 1 m (SCI ejecta from a ~1 m subsurface layer,
@@ -22,8 +27,10 @@ mesh = "../models/ryugu.glb"
 mesh_unit = "km"
 
 [density]
-bulk = 1192.7
-kernels = []
+bulk = 1063.56
+kernels = [
+  { center = [0.37, 0.16, 0.01], weight = 303.85, sigma = 2.242e-3, alpha = 2.0 },
+]
 
 [material]
 nu0 = 0.54
@@ -106,7 +113,9 @@ eps_frame = 1.0e-2
 eps_deg = 1.0e-6
 
 [relief]
-max_sweeps = 1
+# Sweeps of the surface settling per step (and of `scf-cli relax`); settling stops earlier
+# once no loose face is supercritical and nothing erodes.
+max_sweeps = 8
 tol_slack = 1.0e-3
 radius_anomaly = 0.03
 curvature_quantile = 0.9
