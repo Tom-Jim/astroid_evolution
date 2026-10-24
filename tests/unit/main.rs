@@ -34,7 +34,7 @@ mod scf_harmonics;
 #[cfg(feature = "tier2")]
 mod scf_jets;
 #[cfg(feature = "tier2")]
-mod scf_mode_c_spectral;
+mod scf_domain;
 #[cfg(feature = "tier2")]
 mod scf_quad;
 #[cfg(feature = "tier2")]

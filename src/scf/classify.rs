@@ -1,35 +1,145 @@
-//! Yield classification, rigid core and sliding velocity (§2.8 B2–B4, B6).
+//! Yield classification, rigid core and sliding velocity (§2.8 B2–B4, B6) on the
+//! classification mesh `X_Y` of (G7).
 //!
-//! The single stress field of the Picard solution is evaluated on the classification grid
-//! `X_Y` (vertex directions × radial Gauss–Jacobi nodes × the surface layer). `F_δ > 0`
-//! marks yield; the unyielded points are connected through the graph `G_Y` and the heaviest
+//! The single stress field of the converged solution is evaluated on `X_Y`: the volume
+//! nodes, probes along the inward vertex normals, and the vertices. `F_δ > 0` marks
+//! yield; the unyielded points are connected through the graph `G_Y` and the heaviest
 //! component is the rigid core. Everything else is mobile.
 
 use disjoint_sets::UnionFind;
 use nalgebra::{DMatrix, DVector};
 use rayon::prelude::*;
 
+use crate::common::error::SimError;
 use crate::common::math::DVec3;
 use crate::rheo::Material;
+use crate::rtfp::mesh::BodyMesh;
 
 use super::basis::{ResidentVelocity, Want, contract_pressure, contract_velocity_rays};
-use super::body::Topology;
-use super::harmonics::SurfaceFit;
+use super::body::Body;
+use super::domain::{VolumeSet, depth};
 use super::quad::gauss_jacobi_zeta2;
 use super::stokes::{Operators, StokesSolution, eta_eval};
+use super::surface::{PointGrid, SurfaceIndex};
+
+/// Volume nodes each point of `X_Y` is joined to, along segments inside `𝒱`.
+const K_NEAR: usize = 3;
+
+/// `X_Y` and its graph `G_Y` (G7). Points are vertex-major probes (`layers` per vertex,
+/// deepest first, the vertex itself last), then the volume nodes.
+pub struct ClassMesh {
+    pub pts: Vec<DVec3>,
+    layers: usize,
+    /// Quadrature weight `w` of each point (zero on probes and vertices).
+    weight: Vec<f64>,
+    depth: Vec<f64>,
+    edges: Vec<(u32, u32)>,
+    grid: PointGrid,
+}
+
+impl ClassMesh {
+    /// Probes `X_i − ξ_q t_i⁻ N_i`, with `t_i⁻` the distance to the next crossing of `Γ`
+    /// along `−N_i` and `ξ_q = (1 − ζ_q)/2` for the Gauss–Jacobi nodes `ζ_q`: on a sphere
+    /// these are the radial probes of (B3).
+    pub fn build(
+        body: &Body,
+        normals: &[DVec3],
+        vol: &VolumeSet,
+        mesh: &BodyMesh,
+        index: &SurfaceIndex,
+        n_radial: usize,
+    ) -> Result<Self, SimError> {
+        let nv = body.positions.len();
+        let layers = n_radial + 1;
+        let x = &body.positions;
+        let eps = 1e-7 * body.r_mean();
+        let mut batch = mesh.new_batch();
+        for i in 0..nv {
+            batch.push(x[i] - normals[i] * eps, -normals[i], None);
+        }
+        let hits = mesh.trace(&batch, true)?;
+        let mut buf = Vec::new();
+        let (zeta, _) = gauss_jacobi_zeta2(n_radial);
+        let mut pts = Vec::with_capacity(nv * layers + vol.pts.len());
+        for i in 0..nv {
+            buf.clear();
+            hits.distances_into(i, &mut buf);
+            let t = buf.first().copied().unwrap_or(2.0 * body.r_mean()) + eps;
+            for z in &zeta {
+                pts.push(x[i] - normals[i] * (0.5 * (1.0 - z) * t));
+            }
+            pts.push(x[i]);
+        }
+        let n_probe = pts.len();
+        let (probe_depth, _) = depth(index, &pts);
+        pts.extend_from_slice(&vol.pts);
+        let mut weight = vec![0.0; n_probe];
+        weight.extend_from_slice(&vol.w);
+        let mut dep = probe_depth;
+        dep.extend_from_slice(&vol.depth);
+
+        let mut edges = Vec::new();
+        for i in 0..nv {
+            for q in 0..layers {
+                let p = (i * layers + q) as u32;
+                if q + 1 < layers {
+                    edges.push((p, p + 1));
+                }
+                for &j in &body.topo.vertex_neighbors[i] {
+                    if j > i {
+                        edges.push((p, (j * layers + q) as u32));
+                    }
+                }
+            }
+        }
+        // Each point to its K_NEAR nearest volume nodes, kept when the segment stays in 𝒱.
+        let vgrid = PointGrid::build(&vol.pts);
+        let near: Vec<Vec<(u32, u32)>> = (0..pts.len())
+            .into_par_iter()
+            .map(|p| {
+                vgrid
+                    .k_nearest(pts[p], K_NEAR, |k| n_probe + k == p)
+                    .iter()
+                    .map(|(_, j)| (p as u32, (n_probe + j) as u32))
+                    .collect()
+            })
+            .collect();
+        let candidates: Vec<(u32, u32)> = near.into_iter().flatten().collect();
+        let mut batch = mesh.new_batch();
+        for &(a, b) in &candidates {
+            let (pa, pb) = (pts[a as usize], pts[b as usize]);
+            batch.push(pa, (pb - pa).normalize_or_zero(), None);
+        }
+        let hits = mesh.trace(&batch, true)?;
+        for (k, &(a, b)) in candidates.iter().enumerate() {
+            buf.clear();
+            hits.distances_into(k, &mut buf);
+            let len = (pts[b as usize] - pts[a as usize]).length();
+            if buf.first().is_none_or(|t| *t >= len * (1.0 - 1e-6)) {
+                edges.push((a, b));
+            }
+        }
+        Ok(Self {
+            grid: PointGrid::build(&pts),
+            pts,
+            layers,
+            weight,
+            depth: dep,
+            edges,
+        })
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Classification {
     /// `χ_Y`: the vertex is not part of the rigid core.
     pub movable: Vec<bool>,
-    /// `F_δ` at the surface nodes.
+    /// `F_δ` at the vertices.
     pub f_delta: Vec<f64>,
-    /// Velocity relative to the rigid core, at the surface nodes.
+    /// Velocity relative to the rigid core, at the vertices.
     pub v_sl: Vec<DVec3>,
-    /// Unit surface normal of the harmonic surface at the vertex directions.
+    /// Vertex normals `N_i` (G4).
     pub normal: Vec<DVec3>,
-    /// Harmonic-surface radius at the vertex directions.
-    pub radius: Vec<f64>,
     pub core_a: DVec3,
     pub core_theta: DVec3,
     pub core_degenerate: bool,
@@ -41,18 +151,17 @@ pub struct Classification {
     pub core_creep: f64,
     /// `Φ_p = ∫ 1{F_δ>0} τ:D dV`.
     pub plastic_dissipation: f64,
-    /// `Ek⁻¹ = max_Y ρ ω R² / η` over the yielded set.
+    /// `Ek⁻¹ = max_Y ρ ω R_*² / η` over the yielded set.
     pub inverse_ekman: f64,
-    /// Radial nodes `ζ` of `X_Y` (interior Gauss–Jacobi nodes, then the surface 1).
-    pub zeta: Vec<f64>,
-    /// Membership of each `X_Y` point (vertex-major, `zeta.len()` per vertex) in the rigid core.
+    /// Membership of each point of `X_Y` in the rigid core.
     pub in_core: Vec<bool>,
+    grid: PointGrid,
 }
 
 impl Classification {
-    /// `χ_Y` at layer `q` of vertex `i`: the point is outside the rigid core.
-    pub fn movable_at(&self, i: usize, q: usize) -> bool {
-        !self.in_core[i * self.zeta.len() + q]
+    /// `χ_Y` at `x`, read at the nearest point of `X_Y` (§9.10.2).
+    pub fn movable_near(&self, x: DVec3) -> bool {
+        !self.in_core[self.grid.nearest(x)]
     }
 }
 
@@ -60,251 +169,172 @@ impl Classification {
 pub fn classify(
     ops: &Operators,
     sol: &StokesSolution,
-    surf: &SurfaceFit,
-    topo: &Topology,
+    body: &Body,
+    mesh: &BodyMesh,
+    index: &SurfaceIndex,
     material: &Material,
     delta_y: f64,
     n_radial: usize,
-    rho_of: &dyn Fn(DVec3) -> f64,
     omega: f64,
-    p_min: f64,
-) -> Classification {
-    let nv = topo.n_vertices();
-    let (zeta, wr) = gauss_jacobi_zeta2(n_radial);
-    let layers = n_radial + 1;
-    // Grid X_Y: layer q < n_radial is interior, layer n_radial the surface.
-    let (radius, normal) = ops
-        .class_normals
-        .get_or_init(|| surf.normals(&topo.dirs).into_iter().unzip());
-    let (radius, normal) = (radius.clone(), normal.clone());
-    let mut pts = Vec::with_capacity(nv * layers);
-    let mut wgt = Vec::with_capacity(nv * layers);
-    let mut depth = Vec::with_capacity(nv * layers);
-    for i in 0..nv {
-        for q in 0..layers {
-            let z = if q < n_radial { zeta[q] } else { 1.0 };
-            pts.push(topo.dirs[i] * (z * radius[i]));
-            depth.push((1.0 - z) * radius[i]);
-            wgt.push(if q < n_radial {
-                wr[q] * radius[i].powi(3) * topo.vertex_solid[i]
-            } else {
-                0.0
-            });
+) -> Result<Classification, SimError> {
+    let nv = body.positions.len();
+    let normal = body.vertex_normals();
+    let cm = match ops.class_mesh.get() {
+        Some(cm) => cm,
+        None => {
+            let cm = ClassMesh::build(body, &normal, &ops.vol, mesh, index, n_radial)?;
+            ops.class_mesh.get_or_init(|| cm)
         }
-    }
+    };
+    let (pts, layers) = (&cm.pts, cm.layers);
+    let surf = &ops.surf;
     let (v, d, pvals) = {
         let span = super::timing::span("classify_contract");
         let uses = ops
             .class_uses
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let field = if uses == 0 {
-            contract_velocity_rays(surf, &ops.lay, &pts, layers, Want::VD, &sol.u)
+            contract_velocity_rays(surf, &ops.lay, pts, 1, Want::VD, &sol.u)
         } else {
             let rows = ops.class_rows.get_or_init(|| {
-                ResidentVelocity::new(surf, &ops.lay, &pts)
+                ResidentVelocity::new(surf, &ops.lay, pts)
                     .unwrap_or_else(|err| panic!("classification basis GPU: {err}"))
             });
-            rows.contract(&sol.u)
-                .unwrap_or_else(|err| panic!("classification contraction GPU: {err}"))
+            rows.contract(&sol.u).map_err(SimError::gpu)?
         };
         drop(span);
         let _span = super::timing::span("classify_pressure");
-        let pvals = contract_pressure(surf, &ops.play, &pts, &sol.pres_c, &sol.lift);
+        let pvals = contract_pressure(surf, &ops.play, pts, &sol.pres_c, &sol.lift);
         (field.v, field.d, pvals)
     };
     let _graph = super::timing::span("classify_graph");
     let np = pts.len();
+    let p_min = material.spec.p_min;
     let rows: Vec<(f64, f64, f64)> = (0..np)
         .into_par_iter()
         .map(|p| {
             let d6 = &d[6 * p..6 * p + 6];
             let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
             let ptil = pvals[p].max(p_min);
-            let c = material.cohesion_at(depth[p]);
+            let c = material.cohesion_at(cm.depth[p]);
             let ev = eta_eval(material, c, sh, ptil, sol.gamma_eps);
             let tau_y = c + material.mu_y * ptil;
             (sh, ev.eta, ev.eta * sh - (1.0 - delta_y) * tau_y)
         })
         .collect();
-    let mut shear = Vec::with_capacity(np);
-    let mut eta = Vec::with_capacity(np);
-    let mut fdelta = Vec::with_capacity(np);
-    for (sh, et, fd) in rows {
-        shear.push(sh);
-        eta.push(et);
-        fdelta.push(fd);
-    }
-    // Graph G_Y on the unyielded points.
-    let virt = np;
-    let mut dsu = UnionFind::new(np + 1);
+    let fdelta: Vec<f64> = rows.iter().map(|r| r.2).collect();
     let ok = |p: usize| fdelta[p] <= 0.0;
-    for i in 0..nv {
-        for q in 0..layers {
-            let p = i * layers + q;
-            if !ok(p) {
-                continue;
-            }
-            if q + 1 < layers && ok(p + 1) {
-                dsu.union(p, p + 1);
-            }
-            for &j in &topo.vertex_neighbors[i] {
-                let o = j * layers + q;
-                if j > i && ok(o) {
-                    dsu.union(p, o);
-                }
-            }
-            if q == 0 {
-                dsu.union(p, virt);
-            }
+    let mut dsu = UnionFind::new(np);
+    for &(a, b) in &cm.edges {
+        if ok(a as usize) && ok(b as usize) {
+            dsu.union(a as usize, b as usize);
         }
     }
-    // Heaviest component: ρ w mass, ties broken by the number of ζ₁ points.
+    let rho: Vec<f64> = (0..np)
+        .map(|p| if cm.weight[p] > 0.0 { ops.vol.rho[p - nv * layers] } else { 0.0 })
+        .collect();
+    // Heaviest unyielded component: ρ w mass, ties broken by the number of volume nodes.
     let mut mass = std::collections::HashMap::<usize, (f64, usize)>::new();
-    for i in 0..nv {
-        for q in 0..layers {
-            let p = i * layers + q;
-            if !ok(p) {
-                continue;
-            }
-            let root = dsu.find(p);
-            let e = mass.entry(root).or_insert((0.0, 0));
-            e.0 += wgt[p] * rho_of(pts[p]);
-            if q == 0 {
-                e.1 += 1;
-            }
-        }
+    for p in (0..np).filter(|&p| ok(p)) {
+        let e = mass.entry(dsu.find(p)).or_insert((0.0, 0));
+        e.0 += cm.weight[p] * rho[p];
+        e.1 += usize::from(cm.weight[p] > 0.0);
     }
-    let total_mass: f64 = (0..np).map(|p| wgt[p] * rho_of(pts[p])).sum();
+    let total_mass: f64 = (0..np).map(|p| cm.weight[p] * rho[p]).sum();
     let core_root = mass
         .iter()
         .max_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.1.1.cmp(&b.1.1)))
         .map(|(r, _)| *r);
-    let in_core = |p: usize| -> bool {
-        match core_root {
-            Some(r) => ok(p) && dsu.find(p) == r,
-            None => false,
-        }
-    };
-    let mut movable = vec![true; nv];
-    let mut core_pts = Vec::new();
-    for i in 0..nv {
-        for q in 0..layers {
-            let p = i * layers + q;
-            if in_core(p) {
-                core_pts.push(p);
-                if q == layers - 1 {
-                    movable[i] = false;
-                }
-            }
-        }
-    }
-    // Least-squares rigid motion of the core: min Σ w ρ |v − a − θ × x|².
-    let mut a_mat = DMatrix::<f64>::zeros(6, 6);
-    let mut b_vec = DVector::<f64>::zeros(6);
-    for &p in &core_pts {
-        let w = wgt[p] * rho_of(pts[p]);
-        if w <= 0.0 {
-            continue;
-        }
-        let x = pts[p];
-        // columns: a_x a_y a_z θ_x θ_y θ_z; (θ × x) = (θ_y z − θ_z y, θ_z x − θ_x z, θ_x y − θ_y x)
-        let g = [
-            [1.0, 0.0, 0.0, 0.0, x.z, -x.y],
-            [0.0, 1.0, 0.0, -x.z, 0.0, x.x],
-            [0.0, 0.0, 1.0, x.y, -x.x, 0.0],
-        ];
-        let vv = [v[3 * p], v[3 * p + 1], v[3 * p + 2]];
-        for r in 0..3 {
-            for c in 0..6 {
-                b_vec[c] += w * g[r][c] * vv[r];
-                for c2 in 0..6 {
-                    a_mat[(c, c2)] += w * g[r][c] * g[r][c2];
-                }
-            }
+    let in_core: Vec<bool> = (0..np)
+        .map(|p| core_root.is_some_and(|r| ok(p) && dsu.find(p) == r))
+        .collect();
+    let surface = |i: usize| i * layers + layers - 1;
+    let movable: Vec<bool> = (0..nv).map(|i| !in_core[surface(i)]).collect();
+    let vel = |p: usize| DVec3::new(v[3 * p], v[3 * p + 1], v[3 * p + 2]);
+    let (motion, degenerate) = rigid_fit(
+        (0..np).filter(|&p| in_core[p] && cm.weight[p] > 0.0),
+        |p| (pts[p], vel(p), cm.weight[p] * rho[p]),
+    );
+    let degenerate = degenerate && core_root.is_some();
+    let (a_c, th) = motion;
+    let v_sl: Vec<DVec3> = (0..nv)
+        .map(|i| vel(surface(i)) - a_c - th.cross(pts[surface(i)]))
+        .collect();
+    let core_creep = (0..np)
+        .filter(|&p| in_core[p])
+        .map(|p| (vel(p) - a_c - th.cross(pts[p])).length())
+        .fold(0.0, f64::max);
+    // Diagnostics on the volume quadrature.
+    let r_star = surf.coeff[0] / (4.0 * std::f64::consts::PI).sqrt();
+    let (mut yielded, mut diss, mut wtot, mut ek_inv) = (0.0, 0.0, 0.0, 0.0_f64);
+    for p in (0..np).filter(|&p| cm.weight[p] > 0.0) {
+        let (sh, eta, fd) = rows[p];
+        wtot += cm.weight[p];
+        if fd > 0.0 {
+            yielded += cm.weight[p];
+            diss += cm.weight[p] * eta * sh * sh;
+            ek_inv = ek_inv.max(rho[p] * omega * r_star * r_star / eta);
         }
     }
-    let mut degenerate = false;
-    let mut motion = [0.0; 6];
-    let scale = (0..6).map(|i| a_mat[(i, i)]).fold(0.0, f64::max);
-    if scale > 0.0 && core_root.is_some() {
-        // Collinear point sets leave the rotation about their axis undetermined: the
-        // normal matrix is then singular and the core is declared degenerate.
-        let eig = a_mat.clone().symmetric_eigen();
-        let lo = eig
-            .eigenvalues
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        if lo > 1e-12 * scale {
-            if let Some(ch) = nalgebra::Cholesky::new(a_mat) {
-                let s = ch.solve(&b_vec);
-                for i in 0..6 {
-                    motion[i] = s[i];
-                }
-            } else {
-                degenerate = true;
-            }
-        } else {
-            degenerate = true;
-        }
-    } else {
-        degenerate = core_root.is_some();
-    }
-    let a_c = DVec3::new(motion[0], motion[1], motion[2]);
-    let th = DVec3::new(motion[3], motion[4], motion[5]);
-    let mut v_sl = Vec::with_capacity(nv);
-    let mut core_creep = 0.0_f64;
-    for i in 0..nv {
-        let p = i * layers + layers - 1;
-        let vi = DVec3::new(v[3 * p], v[3 * p + 1], v[3 * p + 2]);
-        v_sl.push(vi - a_c - th.cross(pts[p]));
-    }
-    for &p in &core_pts {
-        let vi = DVec3::new(v[3 * p], v[3 * p + 1], v[3 * p + 2]);
-        core_creep = core_creep.max((vi - a_c - th.cross(pts[p])).length());
-    }
-    // Diagnostics.
-    let mut yielded = 0.0;
-    let mut diss = 0.0;
-    let mut wtot = 0.0;
-    let mut ek_inv = 0.0_f64;
-    let r_max = radius.iter().copied().fold(0.0, f64::max);
-    for p in 0..np {
-        if wgt[p] > 0.0 {
-            wtot += wgt[p];
-            if fdelta[p] > 0.0 {
-                yielded += wgt[p];
-                diss += wgt[p] * eta[p] * shear[p] * shear[p];
-                ek_inv = ek_inv.max(rho_of(pts[p]) * omega * r_max * r_max / eta[p]);
-            }
-        }
-    }
-    let core_mass = core_root.and_then(|r| mass.get(&r)).map_or(0.0, |m| m.0);
+    let area = body.vertex_areas();
     // A fold from +0: the empty `f64` sum is −0, which the records would print.
-    let mobile_area: f64 = (0..nv)
-        .filter(|&i| movable[i])
-        .map(|i| topo.vertex_solid[i])
-        .fold(0.0, |a, b| a + b);
-    let f_delta: Vec<f64> = (0..nv).map(|i| fdelta[i * layers + layers - 1]).collect();
-    Classification {
+    let mobile_area = (0..nv).filter(|&i| movable[i]).map(|i| area[i]).fold(0.0, |a, b| a + b);
+    let core_mass = core_root.and_then(|r| mass.get(&r)).map_or(0.0, |m| m.0);
+    Ok(Classification {
+        f_delta: (0..nv).map(|i| fdelta[surface(i)]).collect(),
         movable,
-        f_delta,
         v_sl,
         normal,
-        radius,
         core_a: a_c,
         core_theta: th,
         core_degenerate: degenerate,
         core_empty: core_root.is_none(),
         yielded_fraction: yielded / wtot.max(1e-300),
         core_mass_fraction: core_mass / total_mass.max(1e-300),
-        mobile_area_fraction: mobile_area / (4.0 * std::f64::consts::PI),
+        mobile_area_fraction: mobile_area / area.iter().sum::<f64>().max(1e-300),
         core_creep,
         plastic_dissipation: diss,
         inverse_ekman: ek_inv,
-        zeta: (0..layers)
-            .map(|q| if q < n_radial { zeta[q] } else { 1.0 })
-            .collect(),
-        in_core: (0..np).map(in_core).collect(),
+        in_core,
+        grid: cm.grid.clone(),
+    })
+}
+
+/// Least-squares rigid motion `min Σ w |v − a − θ × x|²` over `points`; `true` when the
+/// normal matrix is singular (collinear points leave a rotation undetermined).
+fn rigid_fit(
+    points: impl Iterator<Item = usize>,
+    at: impl Fn(usize) -> (DVec3, DVec3, f64),
+) -> ((DVec3, DVec3), bool) {
+    let mut a_mat = DMatrix::<f64>::zeros(6, 6);
+    let mut b_vec = DVector::<f64>::zeros(6);
+    for p in points {
+        let (x, v, w) = at(p);
+        // Columns a_x a_y a_z θ_x θ_y θ_z of v = a + θ × x.
+        let g = [
+            [1.0, 0.0, 0.0, 0.0, x.z, -x.y],
+            [0.0, 1.0, 0.0, -x.z, 0.0, x.x],
+            [0.0, 0.0, 1.0, x.y, -x.x, 0.0],
+        ];
+        for r in 0..3 {
+            for c in 0..6 {
+                b_vec[c] += w * g[r][c] * v[r];
+                for c2 in 0..6 {
+                    a_mat[(c, c2)] += w * g[r][c] * g[r][c2];
+                }
+            }
+        }
+    }
+    let scale = (0..6).map(|i| a_mat[(i, i)]).fold(0.0, f64::max);
+    let lo = a_mat.clone().symmetric_eigen().eigenvalues.min();
+    if !(scale > 0.0 && lo > 1e-12 * scale) {
+        return ((DVec3::ZERO, DVec3::ZERO), true);
+    }
+    match nalgebra::Cholesky::new(a_mat) {
+        Some(ch) => {
+            let s = ch.solve(&b_vec);
+            ((DVec3::new(s[0], s[1], s[2]), DVec3::new(s[3], s[4], s[5])), false)
+        }
+        None => ((DVec3::ZERO, DVec3::ZERO), true),
     }
 }

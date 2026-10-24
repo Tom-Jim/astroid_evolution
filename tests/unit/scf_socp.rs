@@ -1,19 +1,32 @@
-//! Unit tests of `scf::socp`, moved out of `src/scf/socp.rs`.
+//! Unit tests of `scf::socp` (§2.13, §10.4.3) in normal increments (G4).
 
-mod ctx {
-    pub use astroid_evolution::common::density::CauchyDensity;
-    pub use astroid_evolution::common::error::SimError;
-    pub use astroid_evolution::common::math::DVec3;
-    pub use astroid_evolution::scf::body::Body;
-    pub use astroid_evolution::scf::socp_gpu::{FaceFrame, face_frames};
-    pub use rayon::prelude::*;
-}
-use ctx::*;
+use astroid_evolution::common::math::DVec3;
+use astroid_evolution::scf::body::Body;
 
 use astroid_evolution::scf::socp::*;
 use std::sync::Arc;
 
 use astroid_evolution::scf::body::Topology;
+
+/// A sphere of `level` with the vertex radii `r(i)`, and its unit directions.
+fn star(level: usize, r: impl Fn(usize) -> f64) -> (Arc<Topology>, Vec<DVec3>, Body) {
+    let (topo, dirs) = Topology::icosphere(level);
+    let topo = Arc::new(topo);
+    let nv = dirs.len();
+    let x = (0..nv).map(|i| dirs[i] * r(i)).collect();
+    let body = Body::new(topo.clone(), x, 1000.0, vec![], vec![0.0; nv]).unwrap();
+    (topo, dirs, body)
+}
+
+/// `body` moved by `d_i` along its vertex normals.
+fn moved(body: &Body, d: &[f64]) -> Body {
+    let n = body.vertex_normals();
+    let mut next = body.clone();
+    for i in 0..d.len() {
+        next.positions[i] += n[i] * d[i];
+    }
+    next
+}
 
 fn max_slope(body: &Body, g: &[DVec3]) -> f64 {
     body.face_geometry()
@@ -25,11 +38,8 @@ fn max_slope(body: &Body, g: &[DVec3]) -> f64 {
 
 #[test]
 fn spike_is_relaxed_with_mass_conserved() {
-    let topo = Arc::new(Topology::icosphere(2));
+    let (topo, _, body) = star(2, |i| if i == 0 { 1.25 } else { 1.0 });
     let nv = topo.n_vertices();
-    let mut radius = vec![1.0; nv];
-    radius[0] = 1.25;
-    let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![0.0; nv]).unwrap();
     let dens = body.density().unwrap();
     let geo = body.face_geometry();
     let gravity: Vec<DVec3> = geo
@@ -49,16 +59,15 @@ fn spike_is_relaxed_with_mass_conserved() {
         mass_jac: &jac,
         mass_residual: 0.0,
         mass: 4.0e3,
-        trust: 0.1,
+        trust: 0.05,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho: 1e3,
         warm: None,
     };
     let out = solve(&inp).unwrap();
-    let mut next = body.clone();
-    for i in 0..nv {
-        next.radius[i] += out.d[i];
-    }
+    let next = moved(&body, &out.d);
     let before = max_slope(&body, &gravity);
     let after = max_slope(&next, &gravity);
     assert!(out.d[0] < -0.01, "spike moved by {}", out.d[0]);
@@ -72,11 +81,9 @@ fn spike_is_relaxed_with_mass_conserved() {
 /// in kilograms, so this is the scale the equilibration has to carry.
 #[test]
 fn spike_at_ryugu_scale_still_meets_kkt() {
-    let topo = Arc::new(Topology::icosphere(2));
+    let (topo, _, mut body) = star(2, |i| if i == 0 { 500.0 } else { 400.0 });
+    body.bulk = 2000.0;
     let nv = topo.n_vertices();
-    let mut radius = vec![400.0; nv];
-    radius[0] = 500.0;
-    let body = Body::new(topo.clone(), radius, 2000.0, vec![], vec![0.0; nv]).unwrap();
     let dens = body.density().unwrap();
     let geo = body.face_geometry();
     let gravity: Vec<DVec3> = geo
@@ -99,6 +106,8 @@ fn spike_at_ryugu_scale_still_meets_kkt() {
         mass,
         trust: 8.0,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho: 1e3,
         warm: None,
     };
@@ -112,13 +121,12 @@ fn spike_at_ryugu_scale_still_meets_kkt() {
 /// σ is ϱ M, which is ϱ |s_M|.
 #[test]
 fn ryugu_patch_meets_kkt_with_relative_mass_slack() {
-    let topo = Arc::new(Topology::icosphere(5));
+    let (topo, dirs, mut body) = star(5, |_| 400.0);
+    body.bulk = 2000.0;
     let nv = topo.n_vertices();
     let nf = topo.n_faces();
-    let body = Body::new(topo.clone(), vec![400.0; nv], 2000.0, vec![], vec![0.0; nv]).unwrap();
-    let area = astroid_evolution::scf::frame::vertex_areas(&body);
-    let kind: Vec<Kind> = topo
-        .dirs
+    let area = body.vertex_areas();
+    let kind: Vec<Kind> = dirs
         .iter()
         .map(|d| {
             if d.z > 0.0 {
@@ -181,6 +189,8 @@ fn ryugu_patch_meets_kkt_with_relative_mass_slack() {
         mass,
         trust,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho,
         warm: None,
     })
@@ -214,59 +224,33 @@ fn ryugu_patch_meets_kkt_with_relative_mass_slack() {
     );
 }
 
-/// f64 oracle for the face frame. Production assembly does not call this.
-fn reference_frame(pa: DVec3, pb: DVec3, pc: DVec3, w: [DVec3; 3]) -> (DVec3, [DVec3; 3]) {
-    let area_vec = (pb - pa).cross(pc - pa);
-    let len = area_vec.length();
-    let n = area_vec * (1.0 / len);
-    let da = [
-        w[0].cross(pb - pc),
-        w[1].cross(pc - pa),
-        w[2].cross(pa - pb),
-    ];
-    let proj = |v: DVec3| (v - n * v.dot(n)) * (1.0 / len);
-    (n, [proj(da[0]), proj(da[1]), proj(da[2])])
-}
-
-fn relative(a: DVec3, b: DVec3) -> f64 {
-    (a - b).length() / a.length().max(b.length()).max(1e-30)
-}
-
+/// `∂n̂/∂x_k` of the CPU face frame against central differences of the normal of the
+/// face whose vertex `k` moves along its vertex normal.
 #[test]
-fn gpu_face_frames_match_f64() {
-    let topo = Topology::icosphere(4);
-    let nv = topo.n_vertices();
-    let radius: Vec<f64> = (0..nv)
-        .map(|i| 1.0 + 0.08 * ((i * 17) % 11) as f64 / 11.0)
-        .collect();
-    let r0 = radius.iter().sum::<f64>() / nv as f64;
-    let ps: Vec<DVec3> = topo
-        .dirs
-        .iter()
-        .zip(&radius)
-        .map(|(d, r)| *d * (*r / r0))
-        .collect();
-    let gpu = astroid_evolution::scf::socp_gpu::face_frames(&ps, &topo.dirs, &topo.faces)
-        .expect("Metal face-frame kernel");
-    let mut worst_n = 0.0_f64;
-    let mut worst_j = 0.0_f64;
-    for (f, tri) in topo.faces.iter().enumerate() {
-        let v = tri.map(|i| i as usize);
-        let (n, nj) = reference_frame(ps[v[0]], ps[v[1]], ps[v[2]], v.map(|i| topo.dirs[i]));
-        worst_n = worst_n.max(relative(n, gpu[f].n));
+fn face_frames_match_finite_differences() {
+    let (topo, _, body) = star(3, |i| 1.0 + 0.08 * ((i * 17) % 11) as f64 / 11.0);
+    let r0 = body.r_mean();
+    let ps: Vec<DVec3> = body.positions.iter().map(|p| *p / r0).collect();
+    let normals = body.vertex_normals();
+    let unit = |p: &[DVec3], t: [u32; 3]| {
+        let [a, b, c] = t.map(|v| p[v as usize]);
+        (b - a).cross(c - a).normalize()
+    };
+    let h = 1e-6;
+    let mut worst = 0.0_f64;
+    for t in topo.faces.iter().take(200) {
+        let frame = face_frame(&ps, &normals, *t);
+        assert!((frame.n - unit(&ps, *t)).length() < 1e-14);
         for k in 0..3 {
-            worst_j = worst_j.max(relative(nj[k], gpu[f].nj[k]));
+            let v = t[k] as usize;
+            let (mut a, mut b) = (ps.clone(), ps.clone());
+            a[v] += normals[v] * h;
+            b[v] -= normals[v] * h;
+            let fd = (unit(&a, *t) - unit(&b, *t)) / (2.0 * h);
+            worst = worst.max((fd - frame.nj[k]).length() / fd.length().max(1e-12));
         }
     }
-    eprintln!("face-frame ds error: normal {worst_n:.3e}, sensitivity {worst_j:.3e}");
-    assert!(
-        worst_n < 1e-6,
-        "unit normal left the f64 oracle by {worst_n:.3e}"
-    );
-    assert!(
-        worst_j < 1e-6,
-        "normal sensitivity left the f64 oracle by {worst_j:.3e}"
-    );
+    assert!(worst < 1e-6, "normal sensitivity off by {worst:.3e}");
 }
 
 #[test]
@@ -274,10 +258,9 @@ fn supercritical_patch_socp_finishes_quickly() {
     // Icosphere level 7 is 327680 faces, past the 196k mesh that made the
     // full-sphere cone program take more than an hour. Only a polar cap
     // (about three percent of the faces) is mobile.
-    let topo = Arc::new(Topology::icosphere(7));
+    let (topo, dirs, body) = star(7, |_| 1.0);
     let nv = topo.n_vertices();
     let nf = topo.n_faces();
-    let radius = vec![1.0; nv];
     let axis = DVec3::new(0.0, 0.0, 1.0);
     let mut score: Vec<(usize, f64)> = topo
         .faces
@@ -286,7 +269,7 @@ fn supercritical_patch_socp_finishes_quickly() {
         .map(|(f, tri)| {
             let mean = tri
                 .iter()
-                .map(|v| topo.dirs[*v as usize])
+                .map(|v| dirs[*v as usize])
                 .fold(DVec3::ZERO, |acc, d| acc + d);
             (f, mean.try_normalize().unwrap().dot(axis))
         })
@@ -306,7 +289,6 @@ fn supercritical_patch_socp_finishes_quickly() {
         .iter()
         .map(|on| if *on { Kind::Mobile } else { Kind::Locked })
         .collect();
-    let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![0.0; nv]).unwrap();
     let dens = body.density().unwrap();
     let geo = body.face_geometry();
     let gravity: Vec<DVec3> = geo
@@ -327,6 +309,8 @@ fn supercritical_patch_socp_finishes_quickly() {
         mass: 4.0e3,
         trust: 0.05,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho: 1e3,
         warm: None,
     };
@@ -361,12 +345,9 @@ struct Spike {
 
 impl Spike {
     fn new() -> Self {
-        let topo = Arc::new(Topology::icosphere(2));
+        let (topo, _, body) = star(2, |i| if i == 0 { 1.25 } else { 1.0 });
         let nv = topo.n_vertices();
         let nf = topo.n_faces();
-        let mut radius = vec![1.0; nv];
-        radius[0] = 1.25;
-        let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![0.0; nv]).unwrap();
         let dens = body.density().unwrap();
         let gravity: Vec<DVec3> = body
             .face_geometry()
@@ -400,6 +381,8 @@ impl Spike {
             mass: 4.0e3,
             trust,
             eps_n: 0.01,
+            lower: &[],
+            upper: &[],
             varrho: 1e3,
             warm,
         }
@@ -409,8 +392,8 @@ impl Spike {
 #[test]
 fn the_same_cone_program_accepts_its_own_multipliers() {
     let spike = Spike::new();
-    let first = solve(&spike.input(0.1, None)).expect("cold SOCP");
-    let second = solve(&spike.input(0.1, Some(&first.seed))).expect("warm SOCP");
+    let first = solve(&spike.input(0.05, None)).expect("cold SOCP");
+    let second = solve(&spike.input(0.05, Some(&first.seed))).expect("warm SOCP");
     assert_eq!(
         second.iterations, 0,
         "warm start took {}",
@@ -449,7 +432,7 @@ fn a_tighter_trust_region_starts_closer_than_the_origin() {
 #[test]
 fn dropping_one_slope_face_keeps_the_other_multipliers() {
     let mut spike = Spike::new();
-    let full = solve(&spike.input(0.1, None)).expect("full cones");
+    let full = solve(&spike.input(0.05, None)).expect("full cones");
     let face = full
         .seed
         .y_soc
@@ -462,8 +445,8 @@ fn dropping_one_slope_face_keeps_the_other_multipliers() {
         "remaining cone multiplier is not finite"
     );
     spike.slope_row[face] = false;
-    let cold = solve(&spike.input(0.1, None)).expect("cold reduced");
-    let hot = solve(&spike.input(0.1, Some(&full.seed))).expect("warm reduced");
+    let cold = solve(&spike.input(0.05, None)).expect("cold reduced");
+    let hot = solve(&spike.input(0.05, Some(&full.seed))).expect("warm reduced");
     // Dropping the cone removes the multiplier that was balancing one node,
     // so the reloaded point is not closer than the origin on the per-variable
     // stationarity test. Both solves still have to agree.
@@ -477,38 +460,20 @@ fn dropping_one_slope_face_keeps_the_other_multipliers() {
     }
 }
 
-fn tetrahedron(invert: Option<usize>, radius: f64) -> Body {
-    let s = 1.0 / 3.0_f64.sqrt();
-    let dirs = vec![
+/// A regular tetrahedron of circumradius `radius`, outward faces.
+fn tetrahedron(radius: f64) -> Body {
+    let s = radius / 3.0_f64.sqrt();
+    let x = vec![
         DVec3::new(s, s, s),
         DVec3::new(s, -s, -s),
         DVec3::new(-s, s, -s),
         DVec3::new(-s, -s, s),
     ];
-    let mut faces = vec![[0u32, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
-    let build = |faces: Vec<[u32; 3]>| {
-        let topo = Arc::new(Topology::new(dirs.clone(), faces));
-        Body::new(topo, vec![radius; 4], 1000.0, vec![], vec![0.0; 4]).unwrap()
-    };
-    let trial = build(faces.clone());
-    let geo = trial.face_geometry();
-    for (f, (_, n, _)) in geo.iter().enumerate() {
-        if n.dot(trial.topo.face_dirs[f]) < 0.0 {
-            faces[f].swap(1, 2);
-        }
-    }
-    if let Some(f) = invert {
-        faces[f].swap(1, 2);
-    }
-    build(faces)
-}
-
-fn face_radial(body: &Body) -> Vec<f64> {
-    body.face_geometry()
-        .iter()
-        .enumerate()
-        .map(|(f, (_, n, _))| n.dot(body.topo.face_dirs[f]))
-        .collect()
+    let faces = vec![[0u32, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
+    let topo = Arc::new(Topology::new(4, faces));
+    let body = Body::new(topo, x, 1000.0, vec![], vec![0.0; 4]).unwrap();
+    assert!(body.mesh().unwrap().signed_volume() > 0.0);
+    body
 }
 
 #[test]
@@ -517,10 +482,10 @@ fn one_vertex_uses_the_documented_weight_and_varrho() {
     // x = d/R₀ and the mass slack is σ = s_M/M, so the stored coefficients
     // are w R₀², −w R₀ d_pred, ϱ on each slope slack, and ϱ M on σ.
     let radius = 2.0;
-    let body = tetrahedron(None, radius);
+    let body = tetrahedron(radius);
     let nv = body.topo.n_vertices();
     let nf = body.topo.n_faces();
-    let r0 = body.radius.iter().sum::<f64>() / nv as f64;
+    let r0 = body.r_mean();
     let mut kind = vec![Kind::Locked; nv];
     kind[0] = Kind::Mobile;
     let mut d_pred = vec![0.0; nv];
@@ -558,6 +523,8 @@ fn one_vertex_uses_the_documented_weight_and_varrho() {
         mass,
         trust: 0.1,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho,
         warm: None,
     })
@@ -579,7 +546,7 @@ fn one_vertex_uses_the_documented_weight_and_varrho() {
 
 #[test]
 fn two_mobile_vertices_have_one_trust_ball() {
-    let body = tetrahedron(None, 1.0);
+    let body = tetrahedron(1.0);
     let nv = body.topo.n_vertices();
     let nf = body.topo.n_faces();
     let mut kind = vec![Kind::Locked; nv];
@@ -604,6 +571,8 @@ fn two_mobile_vertices_have_one_trust_ball() {
         mass: 4.0e3,
         trust: 0.2,
         eps_n: 0.01,
+        lower: &[],
+        upper: &[],
         varrho: 1.0e3,
         warm: None,
     })
@@ -614,50 +583,8 @@ fn two_mobile_vertices_have_one_trust_ball() {
     );
     assert_eq!(out.n_soc, 0);
     assert_eq!(
-        out.n_nn, 6,
-        "s⁺, s⁻, and two box rows on each of two vertices"
+        out.n_nn, 10,
+        "s⁺, s⁻, two box rows on each of two vertices, and the anti-overhang row of \
+         each of the four faces with a free vertex (§2.8c)"
     );
-}
-
-#[test]
-fn an_inward_face_adds_no_normal_floor() {
-    let body = tetrahedron(Some(3), 1.0);
-    let radial = face_radial(&body);
-    assert!(
-        radial[3] < -0.25,
-        "face 3 should sit below the old floor, n·ê = {}",
-        radial[3]
-    );
-    assert_eq!(radial.iter().filter(|c| **c > -0.25).count(), 3);
-    let nv = body.topo.n_vertices();
-    let nf = body.topo.n_faces();
-    let jac = mass_jacobian(&body, &body.density().unwrap());
-    let gravity: Vec<DVec3> = body
-        .face_geometry()
-        .iter()
-        .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
-        .collect();
-    let out = solve(&SocpInput {
-        body: &body,
-        kind: &vec![Kind::Mobile; nv],
-        d_pred: &vec![0.0; nv],
-        weight: &vec![1.0; nv],
-        gravity: &gravity,
-        sin_phi: &vec![0.35; nf],
-        slope_row: &vec![true; nf],
-        mass_jac: &jac,
-        mass_residual: 0.0,
-        mass: 4.0e3,
-        trust: 0.1,
-        eps_n: 0.01,
-        varrho: 1.0e3,
-        warm: None,
-    })
-    .expect("inward face");
-    // Three outward faces each contribute t ≥ 0 and one overhang row.
-    // s⁺ and s⁻ make two more. Four mobile vertices add eight trust-box rows.
-    // The inward face, and every n·ê row, add none.
-    assert_eq!(out.n_nn, 16);
-    assert_eq!(out.n_soc, 3);
-    assert_eq!(out.n_trust, 0);
 }

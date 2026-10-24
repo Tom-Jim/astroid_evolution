@@ -2,62 +2,73 @@
 
 ## Abstract
 
-This paper establishes a unified mathematical and computational framework for the granular body of a rotating small body [4][5]. The internal mass distribution is a spatially varying Cauchy density. A Feynman parametrization supplies a single integral representation of the potential, its gradient, and its Hessian. Complex free boundaries are treated by ray-traced finite-part (RTFP) ray geometry. A variable-density poloidal–toroidal double-potential flow, a $\mu(I)$-type rheology, semi-Lagrangian transport on the surface, and the geometric projection of frictional constraints are coupled inside one self-consistent-field (SCF) iteration. Exterior classical derivatives, interior finite parts, and surface contact terms are distinguished. Sufficient conditions are given under which the combined rheological model reduces to the classical $\mu(I)$ law. The error and the range of validity are stated for a finite radial Galerkin truncation, for GPU ray intersection, and for a sequential convex quadratic-objective quadratic program or second-order-cone program (QP/SOCP).
+This paper gives a unified mathematical and computational framework for the granular body of a rotating small body [4][5]. The internal mass distribution is a spatially varying Cauchy density. A Feynman parametrization gives one integral representation of the potential, its gradient, and its Hessian. Complex free boundaries are handled by ray-traced finite-part (RTFP) geometry. These are coupled inside one self-consistent-field (SCF) iteration:
 
-The production default is the quasi-static viscoplastic granular body of Mode B. There is a single stress field,
+- a variable-density poloidal–toroidal double-potential flow;
+- a $\mu(I)$-type rheology;
+- semi-Lagrangian transport on the surface;
+- the geometric projection of frictional constraints.
+
+Exterior classical derivatives, interior finite parts, and surface contact terms are kept distinct. Sufficient conditions are given under which the combined rheology reduces to the classical $\mu(I)$ law. Error and range of validity are stated for the finite radial Galerkin truncation, for GPU ray intersection, and for the sequential convex QP/SOCP.
+
+The reference model is the quasi-static viscoplastic body of Mode B, with the single stress field
 
 $$
 \boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D,
 $$
 
-a $\mu(I)$ viscoplastic law regularized in the Bingham or Papanastasiou sense. At each geological step the quasi-static Stokes creep equilibrium is solved implicitly at the prescribed spin. Yield is then decided on that stress by the yield function $F$. Solid material connected to the unyielded rigid core receives no creep displacement. Only the yielded region, and those sliding blocks that are separated from the core by a yielded band, acquire a landslide displacement from the creep velocity relative to the core. In addition, the loose surface layer obeys an angle-of-repose proxy: the vertices of a face whose slope exceeds that proxy are admitted to the free set of the geometric subproblem even when the creep classification locks them (slope promotion, hypothesis A-C4, Section 2.8c). The Stokes solve resolves only the long wavelengths of the body and decides deep-seated and whole-body failure; slope promotion is the subgrid closure of shallow failure in the loose layer, and in the production runs, where no surface node yields under the Stokes test, it is the mechanism that actually moves the surface. Metal-PDHG corrects only these increments, using the current shape as the reference, and never takes an equipotential as its target. The density cores move with the material: every Cauchy kernel is treated as a passively transported material component, its centre and its metric are carried along the same masked slip velocity that moves the surface (exact 2-jet transport), and the kernel set is then closed in mass and, when a misfit indicator requires it, refitted adaptively (Section 9.10). A dense core that is squeezed or sheared away therefore takes its gravity with it. The spin rate $\omega(t)$ is an exogenously prescribed piecewise constant, or an exogenously prescribed function of time. It is not coupled to the internal flow by angular-momentum feedback. The fluid mass level and the fluid equipotential of Mode A are retained only as an explicitly marked interface for later use. They do not enter the default granular closed loop.
+a $\mu(I)$ viscoplastic law regularized in the Bingham or Papanastasiou sense. A geological step proceeds as follows:
 
-Rigour, in this paper, means only that the formulae and the acceptance conditions have a determinate meaning under the continuity, regularity, discretization, boundary, and constitutive assumptions that are listed. It does not mean that an absolute error bound is obtained automatically for an arbitrary material, an arbitrary mesh, or an arbitrary finite-precision computation. Any numerical example whose constitutive parameters or boundary data are not supplied is judged **model not closed** and must not be reported as passed.
+- **Creep solve.** The quasi-static Stokes creep equilibrium is solved implicitly at the prescribed spin.
+- **Yield classification.** Yield is decided on that stress by the yield function $F$. Material connected to the unyielded rigid core gets no creep displacement. Only the yielded region, and sliding blocks separated from the core by a yielded band, are displaced by the creep velocity relative to the core.
+- **Slope promotion (A-C4, Section 2.8c).** The loose surface layer also obeys an angle-of-repose proxy: the vertices of a face steeper than the proxy join the free set of the geometric subproblem even when the creep classification locks them. The Stokes solve resolves only wavelengths above its truncation and decides deep-seated and whole-body failure. Slope promotion is the subgrid closure of shallow failure.
+- **Geometric correction.** A primal–dual cone solver (PDHG) corrects only these increments, with the current shape as reference, never toward an equipotential.
+- **Density transport.** Every Cauchy kernel is a passively transported material component. Its centre and metric are carried along the same masked slip velocity by exact 2-jet transport, then the set is closed in mass and, when a misfit indicator asks for it, refitted (Section 9.10). A dense core that is squeezed or sheared away takes its gravity with it.
+
+The spin $\omega(t)$ is prescribed exogenously and is not coupled to the flow. The fluid mass level and equipotential of Mode A are kept only as a marked interface; they are not part of the granular loop.
+
+Rigour here means only that formulae and acceptance conditions have a determinate meaning under the stated continuity, regularity, discretization, boundary, and constitutive assumptions. It does not mean an automatic error bound for an arbitrary material, mesh, or finite-precision computation. An example whose constitutive parameters or boundary data are missing is **model not closed** and must not be reported as passed.
 
 ## Problem
 
-Given a rotation rate, a mass, Cauchy-density parameters, granular state variables, and a frictional constitutive law, construct a mathematically rigorous, conservation-checkable, GPU-implementable closed-loop algorithm such that the following four requirements hold.
+Given a rotation rate, a mass, Cauchy-density parameters, granular state variables, and a frictional law, construct a rigorous, conservation-checkable, GPU-implementable closed loop such that:
 
-1. Inside a complex free boundary, $U$, $\nabla U$, and $\nabla^2U$ admit one integral representation that can be verified.
-2. Radial modal changes produced by semi-Lagrangian surface transport pass, conditionally, to the surface shear rate, the inertial number, and the nodal friction angle, under the assumptions of model hypothesis A-M, under compatibility of the recovery operator, and under the full definition of $D'$. A radial difference, when used, is marked explicitly as a local approximation.
-3. The core of the loop is the quasi-static viscoplastic Stokes equilibrium of Mode B, with a single stress field, together with the classification into a rigid core and a movable set by the yield function. Mode C, local yield-driven erosion and deposition, is auxiliary. The loose surface layer additionally obeys the angle-of-repose proxy of Section 10.3 through slope promotion (Section 2.8c). Mechanically predicted increments, and the slope relief of promoted vertices, are corrected relative to the current shape by sequential convex subproblems on frozen fields. The spin is prescribed exogenously. The fluid equipotential solve of Mode A is retained only as an interface and does not enter the granular closed loop.
-4. Every reduction, regularization, and degeneration is stated together with its hypotheses, its sources of error, and the boundary of its validity.
+1. inside a complex free boundary, $U$, $\nabla U$, and $\nabla^2U$ have one verifiable integral representation;
+2. radial modal changes produced by surface transport pass, conditionally, to the surface shear rate, the inertial number, and the nodal friction angle. The conditions are hypothesis A-M, compatibility of the recovery operator, and the full definition of $D'$. A radial difference, when used, is marked as a local approximation;
+3. the core of the loop is the Mode B quasi-static Stokes equilibrium with a single stress and the yield classification into rigid core and movable set. Mode C (yield-driven erosion and deposition) is auxiliary, and slope promotion adds the repose proxy of Section 10.3. Increments and slope relief are corrected relative to the current shape by sequential convex subproblems on frozen fields. The spin is exogenous, and Mode A is an interface only;
+4. every reduction, regularization, and degeneration is stated with its hypotheses, error sources, and boundary of validity.
 
-**Normative text and implementation.** Several sections specify procedures that the present implementation realizes in a simpler form, or not at all (for example the orientation-based segment construction of Section 3.6, the incremental retracing of Section 3.15, the matrix-free PCG of Section 8.4, and Level 3 of Section 9.10). Where the implemented procedure differs from the specification, the text says so at the point of use, and Appendix A.6 lists every such item together with its status. A result produced by the implementation is governed by the implemented procedure.
+**Scope of the text.** The document is a mathematical specification: definitions, propositions with proofs, and algorithms in pseudocode. It contains no implementation status and no results of particular runs. Numerical values appear only as checks of formulas or as order-of-magnitude estimates from published body parameters.
 
 ## Notation and standing assumptions
 
-Unless otherwise stated, $V$ is a bounded polyhedral solid and $\rho_K$ is a nonnegative mass density. In the physical production configurations considered here, the spatial Cauchy density satisfies the global strict lower bound $\rho_K(\mathbf x)\ge\rho_{\min}>0$. This bound makes the kinetic-energy mass operator $\mathbf M_\Gamma$ symmetric positive definite on the subspace $\ell\ge 1$. Within a geological step the density is frozen; between steps its kernel parameters are advanced by the Lagrangian core transport of Section 9.10. (The specification asks for the bound $\rho_{\min}$ to be rechecked after every such update; the implementation does not perform this check, Appendix A.6.) The constant $G$ is the gravitational constant. The scalar $\omega$ is the exogenously prescribed angular velocity about the body-frame $z$-axis, which is the principal axis of maximum inertia (step 8 of Section 10.4.4). Within each geological step it is frozen at the constant value $\omega_n=\omega(t_n)$ (Section 10.4.1). The effective potential is $W=U+U_c$. Star-shapedness is an additional assumption, used only in the sections on the radial Galerkin method and on the free-surface parametrization. Derivatives at exterior points are classical. The Hessian at interior points and at boundary points is defined by the spherical finite-part convention. The inertial rheology is used when the granular pressure satisfies $p>0$. When $p=0$ or $\dot\gamma=0$, the corresponding regularization, or the static-yield branch, is required.
+- **Geometry.** $V$ is a bounded Lipschitz polyhedral solid. Its boundary $\Gamma$ is a closed, consistently oriented, embedded triangulation of any genus, possibly with sealed cavities. The origin (the centre of mass) need not lie in $V$. This is hypothesis (G) of Section 8.0, and it is the only geometric hypothesis of the model. The general formulation of Section 8.0 (enclosing-ball basis, ray-segment quadrature, normal increments) is normative throughout. Formulas written through a radial function $R(\hat{\boldsymbol\omega})$ are the *star-shaped special case*, kept only as consistency checks and for the dynamic mode of Chapter 9; Section 8.0 shows why the radial form cannot be the general theory.
+- **Density.** $\rho_K\ge\rho_{\min}>0$ on $\mathcal V$. This makes the kinetic-energy operator $\mathbf M_\Gamma$ SPD on $\ell\ge1$. The density is frozen within a geological step and advanced between steps by Section 9.10, after which $\rho_K\ge\rho_{\min}$ is rechecked at the volume nodes.
+- **Constants and spin.** $G$ is the gravitational constant. $\omega$ is the prescribed spin about the body $z$-axis, which is the axis of maximum inertia (Section 10.4.4, step 8). It is frozen at $\omega_n=\omega(t_n)$ within a step (Section 10.4.1).
+- **Potential and derivatives.** $W=U+U_c$. Derivatives at exterior points are classical. Interior and boundary Hessians use the spherical finite-part convention.
+- **Rheology.** The inertial rheology is used for $p>0$. At $p=0$ or $\dot\gamma=0$ the regularization or the static-yield branch is required.
+- **Status of statements.** A proposition, lemma, or theorem holds under its stated hypotheses and nothing more. Existence of the coupled velocity–pressure fixed point, convergence of the iterations that compute it, and the limit $\dot\gamma_\varepsilon\to0$ are open (PO-1, PO-11, PO-12, PO-19 of Appendix A.5). An algorithmic step that relies on them is a stopping rule judged by Section 2.15, not a consequence of a lemma. In particular Lemma 8.12 gives a unique velocity only for a frozen viscosity $\eta\ge\eta_{\rm lo}$, and Proposition 2.17.1 only at frozen pressure.
 
-The paper adopts the positive-potential convention for $U$, $U_c$, and $W$, and defines the conservative effective acceleration by
+Potentials are positive ($U,U_c,W$). The conservative effective acceleration is $g_{\mathrm{eff}}=\nabla W$. Where $-\rho\nabla\Phi_{\mathrm{eff}}$ appears, $\Phi_{\mathrm{eff}}=-W$.
 
-$$
-g_{\mathrm{eff}}=\nabla W.
-$$
-
-If the standard incompressible-fluid expression $-\rho\nabla\Phi_{\mathrm{eff}}$ appears, the convention is $\Phi_{\mathrm{eff}}=-W$. More generally, $-\nabla\Phi_{\mathrm{eff}}$ is the conservative acceleration adopted in that expression. This correspondence is maintained throughout the document.
-
-Chapter 2 sometimes writes the same vectors without boldface. The symbols denote the same objects. From Chapter 5 onward the notation of Appendix A.1 is mandatory: the stress is the bold tensor $\boldsymbol\sigma$, a direction is $\hat{\boldsymbol\omega}$, and the angular-velocity vector is $\boldsymbol\Omega=\omega\mathbf e_z$.
+Chapter 2 sometimes drops boldface; the symbols are the same. From Chapter 5 on, Appendix A.1 is mandatory: stress $\boldsymbol\sigma$, direction $\hat{\boldsymbol\omega}$, angular velocity $\boldsymbol\Omega=\omega\mathbf e_z$.
 
 # 1. Gravitational field, Hessian, and residuals of a polyhedral generalized Cauchy density
 
 ## Introduction: scope and logic
 
-**Objective of this section.** For one and the same model, establish two rigorous integral representations, state the exact range of the original residual method, and treat a polynomial approximation of finite degree as a separate evaluation scheme that carries its own error.
+This chapter gives two rigorous integral representations of one potential, the exact range of the residual method, and a finite-degree polynomial approximation as a separate scheme with its own error. The two routes are:
 
-The logical order is the following. Geometry, notation, and the pointwise convention on the boundary are fixed first. Route A defines the finite part by rays centred at the field point and by spherical exclusion. Route B converts the potential kernel, by a Feynman parametrization, into a radial kernel about a moving centre. The two routes are different representations of the same potential. They are not added. When a one-dimensional sub-integral is evaluated by a Carlson, Appell, or theta function, every outer integral that has not yet been evaluated is retained.
+- **Route A** defines the finite part by rays centred at the field point, with spherical exclusion.
+- **Route B** turns the potential kernel, by a Feynman parametrization, into a radial kernel about a moving centre.
 
-Every equality holds under the hypotheses stated in the adjacent text. An analytic representation means only that the identity itself introduces no transformation error. A strict numerical error bound requires, in addition, a computable upper bound on the truncation error, on the quadrature error, and on the rounding error, each separately.
-
-**Conclusion of this section.** The mathematical objects, the algorithmic channels, and the error statements used below have one common interpretation.
+They are two representations of the same potential and are never added. When a one-dimensional sub-integral is evaluated by a Carlson, Appell, or theta function, every outer integral not yet evaluated is retained. Each equality holds under the hypotheses stated next to it. "Analytic" means the identity introduces no transformation error. A strict numerical bound additionally needs separate bounds on truncation, quadrature, and rounding error.
 
 ## 1.1 Geometry, density, and potential
 
-**Objective of this section.** Give simultaneous and explicit conditions of applicability to ray-intersection segments, to the divergence theorem, and to the local tangent cone.
+Let $V\subset\mathbb R^3$ be a bounded polyhedral solid with $V=\overline{\operatorname{int}V}$. Its boundary consists of finitely many nondegenerate planar triangles, consistently oriented and not self-intersecting. Several components and internal cavities are allowed; on a cavity boundary the outward normal of the solid is used. If the mesh does not define such a solid, the volume theorems below do not apply directly. Examples for small bodies are given by Hirata et al. [4].
 
-Let $V\subset\mathbb R^3$ be a bounded polyhedral solid. Assume $V=\overline{\operatorname{int}V}$. The boundary consists of finitely many nondegenerate planar triangles. The triangles are consistently oriented and do not intersect themselves. Finitely many connected components, and internal cavities, are allowed. On the boundary of an interior-oriented cavity, the outward unit normal of the solid is used. If the input mesh does not determine such a solid, the theorems below that refer to a volume domain do not apply directly. Concrete examples of such meshes for small solar-system bodies are given by Hirata et al. [4].
-
-Let $K$ be a positive integer. For each $k\in\{1,\ldots,K\}$, fix $w_k\in\mathbb R$, $\sigma_k>0$, $\alpha_k>0$, and $\mathbf c_k\in\mathbb R^3$. Define the smooth density extended to all of space by
+For $k=1,\dots,K$ fix $w_k\in\mathbb R$, $\sigma_k>0$, $\alpha_k>0$, and $\mathbf c_k\in\mathbb R^3$. The density, smooth on all of space, is
 
 $$
 \rho_K(\mathbf y)
@@ -69,17 +80,17 @@ w_k
 \right]^{-\alpha_k}.
 $$
 
-If this function is used as a physical mass density, one must check separately that $\rho_K(\mathbf y)\ge 0$ for almost every $\mathbf y\in V$. The mathematical identities allow signed weights.
+The identities allow signed weights. As a physical density one must check $\rho_K\ge0$ a.e. on $V$. This chapter needs nothing more. The standing assumption $\rho_K\ge\rho_{\min}>0$ is a hypothesis of the mechanics (Propositions 8.0.3 and 8.7, Lemma 8.12), not of the gravity identities.
 
-**Constant matrix term.** The implementation adds a constant matrix density $\rho_b\ge 0$ (the configuration key `density.bulk`),
+**Constant matrix term.** The model adds a constant matrix density $\rho_b\ge0$:
 
 $$
 \rho_K(\mathbf y)=\rho_b+\sum_{k=1}^{K}w_k\left[1+\sigma_k^2\|\mathbf y-\mathbf c_k\|^2\right]^{-\alpha_k},
 $$
 
-with $K=0$ allowed (a uniform body). A constant is not a Cauchy kernel with $\alpha_k>0$, but it needs none of the machinery below: its potential, gradient, and Hessian are the closed-form field $\rho_b\Phi_V$ of the uniform polyhedron (Section 3.9), and every statement of this chapter holds for it with $\nabla\rho_b=\mathbf 0$. The kernels then describe the departure from the matrix, and their weights may be negative (a light core), provided that $\rho_K\ge 0$ on $V$.
+with $K=0$ allowed (a uniform body). A constant is not a Cauchy kernel, but it needs none of the machinery below. Its potential, gradient, and Hessian are the closed-form field $\rho_b\Phi_V$ of the uniform polyhedron (Section 3.9), and every statement of this chapter holds for it with $\nabla\rho_b=\mathbf 0$. The kernels then describe the departure from the matrix, and their weights may be negative (a light core) provided $\rho_K\ge0$ on $V$.
 
-**Anisotropic (sheared) cores.** The Lagrangian core transport of Section 9.10 deforms a kernel by the local deformation gradient of the flow, which in general destroys isotropy. The admissible kernel class is therefore the generalized Cauchy kernel with a symmetric positive-definite metric $\mathbf S_k$ (dimension $\mathrm L^{-2}$):
+**Anisotropic (sheared) cores.** The core transport of Section 9.10 deforms kernels by the local deformation gradient. The admissible class is therefore the generalized Cauchy kernel with an SPD metric $\mathbf S_k$ (dimension $\mathrm L^{-2}$):
 
 $$
 \rho_K(\mathbf y)
@@ -93,9 +104,9 @@ w_k
 \mathbf S_k=\mathbf S_k^{\!\top}\succ 0.
 $$
 
-The isotropic case is $\mathbf S_k=\sigma_k^2\mathbf I$. The point $\mathbf c_k$ is the unique critical point of the $k$-th summand, its value there is $w_k$, and its Hessian there is $-2\alpha_k w_k\mathbf S_k$. These three facts are what Section 9.10 transports. Every statement of Sections 1.2, 1.3, 1.5, and 1.10–1.15 uses only smoothness and boundedness of $\rho_K$ near $V$, and holds verbatim for the anisotropic class. The ray representation (Route A) carries over through Lemma 1.4′ below, at the cost of one $3\times 3$ matrix–vector product per ray and kernel. The Feynman representation (Route B) carries over through the remark at the end of Section 1.7. Chapters 1 and 2 are written for $\mathbf S_k=\sigma_k^2\mathbf I$ for readability. Chapter 3 and Section 6.1 give the general formulae.
+The isotropic case is $\mathbf S_k=\sigma_k^2\mathbf I$. The point $\mathbf c_k$ is the unique critical point of the $k$-th summand, its value there is $w_k$, and its Hessian there is $-2\alpha_kw_k\mathbf S_k$. These three facts are what Section 9.10 transports. Sections 1.2, 1.3, 1.5, and 1.10–1.15 use only smoothness and boundedness of $\rho_K$ near $V$, so they hold for this class verbatim. Route A carries over through Lemma 1.4′ (one $3\times3$ product per ray and kernel), and Route B through the remark at the end of Section 1.7. Chapters 1–2 are written isotropically. Chapter 3 and Section 6.1 give the general formulae.
 
-With the positive-potential sign convention,
+With positive potentials,
 
 $$
 U_K(\mathbf x)
@@ -106,68 +117,21 @@ G\int_V
 \,d^3\mathbf y,
 $$
 
-where $G>0$, $\mathbf x$ is the field point, and $\mathbf y$ is the source point. The potential is finite at every $\mathbf x\in\mathbb R^3$: $V$ is bounded, the density is bounded, and $1/\|\mathbf x-\mathbf y\|$ is locally integrable in three dimensions near $\mathbf y=\mathbf x$.
-
-The notation
-
-$$
-H_{ij}(\mathbf x)
-=
-\frac{\partial^2 U_K(\mathbf x)}
-{\partial x_i\,\partial x_j}
-$$
-
-is used, but $H_{ij}(\mathbf x)$ is called the classical Hessian only where the classical second derivatives exist. On edges and at other exceptional locations the separately defined finite part $H_{ij,\ell_0}^{\mathrm{FP}}$ is used.
-
-**Conclusion of this section.** The ranges of validity of $V$, $\rho_K$, $U_K$, and the classical Hessian are fixed.
+where $\mathbf x$ is the field point and $\mathbf y$ the source point. $U_K$ is finite everywhere because $V$ and $\rho_K$ are bounded and $1/\|\mathbf x-\mathbf y\|$ is locally integrable. We write $H_{ij}(\mathbf x)=\partial_i\partial_jU_K(\mathbf x)$, called the classical Hessian only where classical second derivatives exist. On edges and other exceptional points the finite part $H_{ij,\ell_0}^{\mathrm{FP}}$ is used.
 
 ## 1.2 Distributional derivatives and the spherical-exclusion convention
 
-**Objective of this section.** Derive the nonlocal kernel of the Hessian, and restore the contact term at coincident source and field points to the complete formula.
-
-Let $\mathbf r=\mathbf x-\mathbf y$ and $R=\|\mathbf r\|>0$. For $i,j\in\{1,2,3\}$,
+Let $\mathbf r=\mathbf x-\mathbf y$ and $R=\|\mathbf r\|>0$. Differentiating $R=(r_kr_k)^{1/2}$ and $R^{-1}$ twice gives
 
 $$
-\frac{\partial R}{\partial x_i}
-=
-\frac{r_i}{R},
-$$
-
-$$
-\frac{\partial}{\partial x_i}\frac1R
-=
--\frac{r_i}{R^3},
-$$
-
-$$
+\frac{\partial R}{\partial x_i}=\frac{r_i}{R},\qquad
+\frac{\partial}{\partial x_i}\frac1R=-\frac{r_i}{R^3},\qquad
 \frac{\partial^2}{\partial x_j\,\partial x_i}\frac1R
-=
--\frac{\delta_{ij}}{R^3}
-+
-\frac{3r_i r_j}{R^5}.
-$$
-
-*Intermediate differentiation.* The first identity is the derivative of $R=(r_k r_k)^{1/2}$. Differentiating $R^{-1}$ gives $-R^{-2}\partial_{x_i}R=-r_i R^{-3}$. Differentiating again,
-
-$$
-\partial_{x_j}(-r_i R^{-3})
-=
--\delta_{ij}R^{-3}-r_i(-3)R^{-4}\partial_{x_j}R
-=
--\delta_{ij}R^{-3}+3r_i r_j R^{-5},
-$$
-
-which is the displayed second derivative. Equivalently,
-
-$$
-\partial_{x_j}\partial_{x_i}R^{-1}
 =
 \frac{3r_i r_j-R^2\delta_{ij}}{R^5}.
 $$
 
-The numerator is traceless: $\sum_i(3r_i^2-R^2)=0$. The classical pointwise formula is $O(R^{-3})$, hence not absolutely locally integrable near $R=0$, and the distributional derivative must record the spherical contact contribution.
-
-For the distribution defined by spherical exclusion, the correct identity is
+The numerator is traceless. The kernel is $O(R^{-3})$, not absolutely integrable at $R=0$, so the distributional derivative must record the spherical contact term. With spherical exclusion,
 
 $$
 \frac{\partial^2}{\partial x_j\,\partial x_i}\frac1R
@@ -175,20 +139,10 @@ $$
 \operatorname{p.v.}_{\mathrm{ball}}
 \frac{3r_i r_j-R^2\delta_{ij}}{R^5}
 -
-\frac{4\pi}{3}\delta_{ij}\delta_0(\mathbf r).
+\frac{4\pi}{3}\delta_{ij}\delta_0(\mathbf r),
 $$
 
-Summing the three diagonal components gives
-
-$$
-\Delta_{\mathbf x}\frac1R
-=
--4\pi\delta_0(\mathbf r).
-$$
-
-*Trace check.* The principal-value kernel has trace zero, and $-\sum_i(4\pi/3)\delta_{ii}\delta_0=-4\pi\delta_0$.
-
-When $\mathbf x\in\operatorname{int}V$, the density $\rho_K$ is smooth near $\mathbf x$, so the classical Hessian and the spherical-exclusion formula satisfy
+whose trace is $\Delta_{\mathbf x}R^{-1}=-4\pi\delta_0(\mathbf r)$ (the principal-value kernel is traceless). For $\mathbf x\in\operatorname{int}V$, where $\rho_K$ is smooth,
 
 $$
 \begin{aligned}
@@ -211,65 +165,23 @@ G\lim_{\varepsilon\downarrow0}
 \end{aligned}
 $$
 
-The factor $G$ multiplies both the principal-value integral of the kernel and the contact density $-(4\pi/3)\rho_K(\mathbf x)\delta_{ij}$.
-
-On the boundary, $\rho_K\mathbf 1_V$ jumps. The pointwise product of the contact distribution with the indicator is not assigned a unique numerical value by the distributional identity alone. Boundary values used below are a specified spherical-exclusion representative. They do not automatically equal the interior limit or the exterior limit.
-
-**Conclusion of this section.** The signs and the locations of applicability of the nonlocal kernel, of the spherical principal value, and of the interior contact term are fixed.
+On the boundary $\rho_K\mathbf 1_V$ jumps, and the distributional identity alone gives the product of the contact distribution with the indicator no unique value. Boundary values below are a specified spherical-exclusion representative. They need not equal the interior or exterior limit.
 
 ## 1.3 Local tangent cone, logarithmic term, and finite part
 
-**Objective of this section.** Give one pointwise convention, which can be checked, for interior points, faces, edges, and vertices.
+This section gives one checkable pointwise convention for interior points, faces, edges, and vertices.
 
-Fix a field point $\mathbf x$. A finite planar mesh guarantees an $r_\ast(\mathbf x)>0$ such that, after translation to $\mathbf x$, the intersection $V\cap B_{r_\ast(\mathbf x)}(\mathbf x)$ coincides inside that ball with the intersection of a polyhedral cone with the ball. Choose $0<r_0<r_\ast(\mathbf x)$. For an exterior point, require in addition $0<r_0<\operatorname{dist}(\mathbf x,V)$, in which case the local cone is empty.
+Fix a field point $\mathbf x$. Because the mesh is finite and planar, there is an $r_\ast(\mathbf x)>0$ such that $V\cap B_{r_\ast}(\mathbf x)$ coincides with a polyhedral cone at $\mathbf x$. Choose $0<r_0<r_\ast(\mathbf x)$. For an exterior point also require $r_0<\operatorname{dist}(\mathbf x,V)$; the local cone is then empty.
 
-Adopt the ray convention
-
-$$
-\mathbf y=\mathbf x-R\mathbf u,
-\qquad
-R>0,
-\qquad
-\mathbf u\in\mathbb S^2.
-$$
-
-Let $\Gamma_{\mathbf x}$ be the set of directions for which $\mathbf x-R\mathbf u\in V$ for every sufficiently small $R>0$. Directions on the boundary of this set may be altered on a subset of spherical measure zero. Define
+Rays are $\mathbf y=\mathbf x-R\mathbf u$ with $R>0$ and $\mathbf u\in\mathbb S^2$. Let $\Gamma_{\mathbf x}$ be the set of directions with $\mathbf x-R\mathbf u\in V$ for all small $R>0$; it is defined up to a null set of directions. Define
 
 $$
-T_{ij}(\mathbf u)=3u_i u_j-\delta_{ij},
+T_{ij}(\mathbf u)=3u_i u_j-\delta_{ij},\qquad
+C_{ij}(\mathbf x)=\int_{\Gamma_{\mathbf x}}T_{ij}(\mathbf u)\,d\Omega,\qquad
+\vartheta_{\mathbf x}=\frac{1}{4\pi}\int_{\Gamma_{\mathbf x}}d\Omega .
 $$
 
-$$
-C_{ij}(\mathbf x)
-=
-\int_{\Gamma_{\mathbf x}}
-T_{ij}(\mathbf u)
-\,d\Omega,
-$$
-
-$$
-\vartheta_{\mathbf x}
-=
-\frac{1}{4\pi}
-\int_{\Gamma_{\mathbf x}}
-1\,d\Omega.
-$$
-
-The trace identity used repeatedly below is
-
-$$
-\sum_{i=1}^3 T_{ii}(\mathbf u)
-=
-\sum_{i=1}^3(3u_i^2-1)
-=
-3\|\mathbf u\|^2-3
-=
-0.
-$$
-
-Hence $\sum_i C_{ii}(\mathbf x)=0$.
-
-Define the nonlocal spherically truncated integral
+$\sum_iT_{ii}=3\|\mathbf u\|^2-3=0$, hence $\sum_iC_{ii}=0$. With the truncated integral
 
 $$
 J_{ij,\varepsilon}(\mathbf x)
@@ -283,10 +195,10 @@ G\int_{V\setminus B_\varepsilon(\mathbf x)}
 }{
 \|\mathbf x-\mathbf y\|^5
 }
-\,d^3\mathbf y.
+\,d^3\mathbf y
 $$
 
-For a prescribed positive length $\ell_0>0$, define
+and a prescribed length $\ell_0>0$, define
 
 $$
 \begin{aligned}
@@ -305,27 +217,17 @@ G\rho_K(\mathbf x)C_{ij}(\mathbf x)
 \end{aligned}
 $$
 
-Section 1.5 proves that the limit exists. If $\rho_K(\mathbf x)C_{ij}(\mathbf x)\ne 0$, the corresponding truncated integral, before the subtraction, diverges logarithmically. The number $H_{ij,\ell_0}^{\mathrm{FP}}(\mathbf x)$ is therefore the finite part in the spherical-exclusion convention at the prescribed scale $\ell_0$. It is not the ordinary limit of a truncated integral.
-
-From $\sum_i T_{ii}(\mathbf u)=0$,
+The limit exists (Section 1.5). If $\rho_KC_{ij}\ne0$, the unsubtracted truncated integral diverges logarithmically. $H^{\mathrm{FP}}_{\ell_0}$ is therefore a finite part at scale $\ell_0$, not an ordinary limit. Its trace is
 
 $$
 \operatorname{Tr}H_{\ell_0}^{\mathrm{FP}}(\mathbf x)
 =
--4\pi G\vartheta_{\mathbf x}\rho_K(\mathbf x).
+-4\pi G\vartheta_{\mathbf x}\rho_K(\mathbf x),
 $$
 
-*Derivation of the trace.* The logarithmic counterterm has trace zero because $\sum_i C_{ii}=0$. The contact term contributes
+because the counterterm is traceless and the contact term contributes $-4\pi G\vartheta_{\mathbf x}\rho_K$. In the interior $\vartheta_{\mathbf x}=1$ (the Poisson value); on a face, $\vartheta_{\mathbf x}=1/2$.
 
-$$
-\sum_i\Bigl(-\frac{4\pi G}{3}\vartheta_{\mathbf x}\rho_K\delta_{ii}\Bigr)
-=
--4\pi G\vartheta_{\mathbf x}\rho_K.
-$$
-
-In the interior, $\Gamma_{\mathbf x}=\mathbb S^2$ up to a null set, so $\vartheta_{\mathbf x}=1$ and the trace is the classical Poisson value $-4\pi G\rho_K(\mathbf x)$. On a face whose interior solid angle is a hemisphere, $\vartheta_{\mathbf x}=1/2$.
-
-For $\ell_0,\ell_1>0$, the change of scale is
+Changing the scale shifts only the subtracted logarithm:
 
 $$
 H_{ij,\ell_1}^{\mathrm{FP}}(\mathbf x)
@@ -336,45 +238,11 @@ G\rho_K(\mathbf x)C_{ij}(\mathbf x)
 \log\frac{\ell_0}{\ell_1}.
 $$
 
-*Derivation.* Replacing $\ell_0$ by $\ell_1$ changes only the subtracted logarithm, by
-
-$$
-G\rho_K C_{ij}\Bigl(\log\frac{\ell_1}{\varepsilon}-\log\frac{\ell_0}{\varepsilon}\Bigr)
-=
-G\rho_K C_{ij}\log\frac{\ell_1}{\ell_0}
-=
--G\rho_K C_{ij}\log\frac{\ell_0}{\ell_1}
-$$
-
-in the subtracted term of the limit that defines $H_{\ell_1}^{\mathrm{FP}}$. Because that term is subtracted, $H_{\ell_1}^{\mathrm{FP}}-H_{\ell_0}^{\mathrm{FP}}$ has the opposite sign, which is the displayed identity. The whole matrix is independent of $\ell_0$ if and only if $\rho_K(\mathbf x)C(\mathbf x)=0$. When $\rho_K(\mathbf x)\ne 0$, this condition reduces to $C(\mathbf x)=0$. The spherical second-moment tensor of a full ball vanishes by isotropy: $\int_{\mathbb S^2}u_iu_j\,d\Omega=\tfrac{4\pi}{3}\delta_{ij}$, so $\int_{\mathbb S^2}T_{ij}\,d\Omega=0$. Since $T_{ij}(-\mathbf u)=T_{ij}(\mathbf u)$, a hemisphere carries exactly half of the full-sphere value. The hemisphere attached to the relative interior of a face also gives $C(\mathbf x)=0$. Proposition 2.7.1 computes the hemispherical moment and then uses the Feynman representation to prove that the logarithmic RTFP singularity is absent at every triangular face centre. Edges and vertices must be computed pointwise, and on those sets $C(\mathbf x)$ need not vanish.
-
-**Conclusion of this section.** The classical Hessian, the truncated integral, and the finite part that depends on the spherical convention and on $\ell_0$ are distinguished.
+So $H^{\mathrm{FP}}$ is scale-free iff $\rho_KC=0$, i.e. $C(\mathbf x)=0$ when $\rho_K(\mathbf x)\ne0$. A full sphere gives $C=0$ by isotropy ($\int_{\mathbb S^2}u_iu_j\,d\Omega=\tfrac{4\pi}{3}\delta_{ij}$). Since $T(-\mathbf u)=T(\mathbf u)$, a hemisphere carries half of that, so $C=0$ on the relative interior of a face. Proposition 2.7.1 computes the hemispherical moment and uses the Feynman representation to show that the logarithmic RTFP singularity is absent at every face centre. Edges and vertices must be computed pointwise; there $C(\mathbf x)$ need not vanish.
 
 ## 1.4 Route A: spherical coordinates, intersection segments, and completion of the square
 
-**Objective of this section.** Write the nonlocal volume integral exactly as an integral in spherical angle and as a radial integral over every ray-intersection segment.
-
-For $\mathbf y=\mathbf x-R\mathbf u$, in the usual spherical coordinates $(R,\theta,\varphi)$,
-
-$$
-\mathbf u
-=
-(\sin\theta\cos\varphi,\sin\theta\sin\varphi,\cos\theta),
-$$
-
-$$
-d\Omega
-=
-\sin\theta\,d\theta\,d\varphi,
-$$
-
-$$
-d^3\mathbf y
-=
-R^2\,dR\,d\Omega.
-$$
-
-Since $\mathbf x-\mathbf y=R\mathbf u$,
+With $\mathbf y=\mathbf x-R\mathbf u$, $\mathbf u=(\sin\theta\cos\varphi,\sin\theta\sin\varphi,\cos\theta)$, $d\Omega=\sin\theta\,d\theta\,d\varphi$, and $d^3\mathbf y=R^2\,dR\,d\Omega$,
 
 $$
 \frac{
@@ -386,68 +254,30 @@ $$
 }
 \,d^3\mathbf y
 =
-T_{ij}(\mathbf u)\frac{dR}{R}\,d\Omega.
+T_{ij}(\mathbf u)\frac{dR}{R}\,d\Omega
 $$
 
-*Jacobian check.* The numerator is $T_{ij}(\mathbf u)R^2$, the denominator is $R^5$, and the volume element contributes $R^2\,dR\,d\Omega$, so the product is $T_{ij}(\mathbf u)R^{-1}\,dR\,d\Omega$.
-
-Define the ray intersection
+(numerator $T_{ij}R^2$, denominator $R^5$, volume element $R^2$). For almost every direction the ray intersection is a finite union of intervals:
 
 $$
 E_{\mathbf x}(\mathbf u)
 =
-\{R>0:\mathbf x-R\mathbf u\in V\}.
-$$
-
-Finite polyhedrality implies that, for almost every direction, this set is a finite union of closed intervals:
-
-$$
-E_{\mathbf x}(\mathbf u)
+\{R>0:\mathbf x-R\mathbf u\in V\}
 =
 \bigcup_{\ell=1}^{L(\mathbf u)}
 [R^-_\ell(\mathbf u),R^+_\ell(\mathbf u)].
 $$
 
-Here “closed interval” is understood in the relative topology of $R>0$. If the field point lies in the interior of the solid, the first segment is actually $(0,R_1]$. An implementation may use its closure $[0,R_1]$, because the endpoint $R=0$ makes no volumetric contribution to the ordinary radial integrals of the potential and of the gradient, whereas the Hessian at that endpoint must be treated by the finite-part rules of Sections 1.2–1.3.
-
-Every nonempty interval enters the sum, in particular the interval $\ell=1$ of a ray from an exterior point. For the $k$-th kernel set
+For an interior field point the first segment is $(0,R_1]$. A discretization may use $[0,R_1]$, since $R=0$ contributes nothing to the potential and gradient integrals; the Hessian there follows Sections 1.2–1.3. Every nonempty interval enters the sum, including interval $\ell=1$ of an exterior ray. For the $k$-th kernel set
 
 $$
-\mathbf p_k=\mathbf x-\mathbf c_k,
+\mathbf p_k=\mathbf x-\mathbf c_k,\qquad
+b_k(\mathbf u)=\mathbf p_k\cdot\mathbf u,\qquad
+a_k=\frac1{\sigma_k},\qquad
+d_k^2(\mathbf u)=a_k^2+\|\mathbf p_k\|^2-b_k^2(\mathbf u).
 $$
 
-$$
-b_k(\mathbf u)=\mathbf p_k\cdot\mathbf u,
-$$
-
-$$
-a_k=\frac1{\sigma_k},
-$$
-
-$$
-d_k^2(\mathbf u)
-=
-a_k^2+\|\mathbf p_k\|^2-b_k^2(\mathbf u)
->0.
-$$
-
-Expanding term by term,
-
-$$
-\|\mathbf x-R\mathbf u-\mathbf c_k\|^2
-=
-\|\mathbf p_k-R\mathbf u\|^2
-=
-\|\mathbf p_k\|^2-2Rb_k(\mathbf u)+R^2,
-$$
-
-$$
-\|\mathbf p_k\|^2-2Rb_k(\mathbf u)+R^2
-=
-[R-b_k(\mathbf u)]^2
-+
-\|\mathbf p_k\|^2-b_k^2(\mathbf u),
-$$
+Completing the square in $\|\mathbf p_k-R\mathbf u\|^2=\|\mathbf p_k\|^2-2Rb_k+R^2$,
 
 $$
 1+\sigma_k^2
@@ -459,9 +289,9 @@ $$
 \right].
 $$
 
-*Positivity.* The identity $\|\mathbf p_k\|^2-b_k^2=\|\mathbf p_k-b_k\mathbf u\|^2\ge 0$ and $a_k>0$ give $d_k^2(\mathbf u)\ge a_k^2>0$, so the quadratic in $R$ has no real root and the Cauchy factor never vanishes on the ray.
+Since $\|\mathbf p_k\|^2-b_k^2=\|\mathbf p_k-b_k\mathbf u\|^2\ge0$, one has $d_k^2\ge a_k^2>0$: the Cauchy factor never vanishes on a ray.
 
-**Lemma 1.4′ (Ray form of an anisotropic core).** For the anisotropic kernel of Section 1.1, set
+**Lemma 1.4′ (Ray form of an anisotropic core).** For the anisotropic kernel of Section 1.1 set
 
 $$
 s_k(\mathbf u)=\mathbf u^{\!\top}\mathbf S_k\mathbf u,\qquad
@@ -479,72 +309,13 @@ s_k(\mathbf u)\left[(R-b_k(\mathbf u))^2+d_k^2(\mathbf u)\right],
 d_k^2(\mathbf u)\ge\frac1{s_k(\mathbf u)}>0.
 $$
 
-*Proof.* The left-hand side is $s_kR^2-2R\,\mathbf u^{\!\top}\mathbf S_k\mathbf p_k+1+\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$. Completing the square in $R$ gives the right-hand side with the stated $b_k$ and $d_k^2$. The Cauchy–Schwarz inequality in the inner product of $\mathbf S_k$, $(\mathbf u^{\!\top}\mathbf S_k\mathbf p_k)^2\le s_k\,\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$, gives $s_kb_k^2\le\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$, hence $d_k^2\ge 1/s_k$. ∎
+*Proof.* Complete the square in $s_kR^2-2R\,\mathbf u^{\!\top}\mathbf S_k\mathbf p_k+1+\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$. The bound follows from Cauchy–Schwarz in the $\mathbf S_k$ inner product, $(\mathbf u^{\!\top}\mathbf S_k\mathbf p_k)^2\le s_k\,\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$. ∎
 
-Consequently every radial formula of Sections 1.5, 1.6, 1.11, and 3.1–3.3 holds for the anisotropic core after the single substitution $\sigma_k^{-2\alpha_k}\mapsto s_k(\mathbf u)^{-\alpha_k}$, with the direction-dependent $b_k(\mathbf u)$ and $d_k(\mathbf u)$ above. In the isotropic case $s_k=\sigma_k^2$, $b_k=\mathbf p_k\cdot\mathbf u$, and $d_k^2=a_k^2+\|\mathbf p_k\|^2-b_k^2$, which are the definitions already given. The quantity $d_k$ never degenerates, because $d_k\ge s_k^{-1/2}\ge\lambda_{\max}(\mathbf S_k)^{-1/2}$.
-
-**Conclusion of this section.** Every ray-intersection segment has a unique geometric index, and the real radial quadratic form of each kernel is strictly positive.
+Every radial formula of Sections 1.5, 1.6, 1.11, and 3.1–3.3 therefore holds for an anisotropic core after the substitution $\sigma_k^{-2\alpha_k}\mapsto s_k(\mathbf u)^{-\alpha_k}$, with the direction-dependent $b_k,d_k$. The isotropic case $s_k=\sigma_k^2$ returns the definitions above. $d_k\ge\lambda_{\max}(\mathbf S_k)^{-1/2}$ never degenerates.
 
 ## 1.5 Route A: near field, far field, and the finite-part identity
 
-**Objective of this section.** Prove that no segment is omitted or integrated twice, and prove that the finite-part limit of Section 1.3 exists.
-
-With the radius $r_0$ chosen in Section 1.3, define for each direction
-
-$$
-E_{\mathbf x}^{\mathrm{near}}(\mathbf u)
-=
-E_{\mathbf x}(\mathbf u)\cap(0,r_0),
-$$
-
-$$
-E_{\mathbf x}^{\mathrm{far}}(\mathbf u)
-=
-E_{\mathbf x}(\mathbf u)\cap[r_0,\infty).
-$$
-
-Set operations give
-
-$$
-E_{\mathbf x}(\mathbf u)
-=
-E_{\mathbf x}^{\mathrm{near}}(\mathbf u)
-\mathbin{\dot\cup}
-E_{\mathbf x}^{\mathrm{far}}(\mathbf u),
-$$
-
-where a shared endpoint contributes nothing to a radial integral. For almost every $\mathbf u$,
-
-$$
-E_{\mathbf x}^{\mathrm{near}}(\mathbf u)
-=
-\begin{cases}
-(0,r_0),&\mathbf u\in\Gamma_{\mathbf x},\\
-\varnothing,&\mathbf u\notin\Gamma_{\mathbf x}.
-\end{cases}
-$$
-
-Let $0<\varepsilon<r_0$. The Jacobian of Section 1.4 yields
-
-$$
-\begin{aligned}
-J_{ij,\varepsilon}(\mathbf x)
-={}&
-G\int_{\Gamma_{\mathbf x}}
-T_{ij}(\mathbf u)
-\int_\varepsilon^{r_0}
-\frac{\rho_K(\mathbf x-R\mathbf u)}{R}
-\,dR\,d\Omega\\
-&+
-G\int_{\mathbb S^2}
-T_{ij}(\mathbf u)
-\int_{E_{\mathbf x}^{\mathrm{far}}(\mathbf u)}
-\frac{\rho_K(\mathbf x-R\mathbf u)}{R}
-\,dR\,d\Omega.
-\end{aligned}
-$$
-
-Adding and subtracting $\rho_K(\mathbf x)$ in the near field,
+With $r_0$ from Section 1.3, split $E_{\mathbf x}=E^{\mathrm{near}}_{\mathbf x}\mathbin{\dot\cup}E^{\mathrm{far}}_{\mathbf x}$ at $R=r_0$ (a shared endpoint contributes nothing). For almost every $\mathbf u$, $E^{\mathrm{near}}_{\mathbf x}(\mathbf u)=(0,r_0)$ if $\mathbf u\in\Gamma_{\mathbf x}$ and $\varnothing$ otherwise. For $0<\varepsilon<r_0$, adding and subtracting $\rho_K(\mathbf x)$ in the near field gives
 
 $$
 \begin{aligned}
@@ -552,8 +323,8 @@ J_{ij,\varepsilon}(\mathbf x)
 ={}&
 G\rho_K(\mathbf x)
 C_{ij}(\mathbf x)
-\log\frac{r_0}{\varepsilon}\\
-&+
+\log\frac{r_0}{\varepsilon}
++
 G\int_{\Gamma_{\mathbf x}}
 T_{ij}(\mathbf u)
 \int_\varepsilon^{r_0}
@@ -570,41 +341,7 @@ T_{ij}(\mathbf u)
 \end{aligned}
 $$
 
-*Origin of the logarithm.* On $\Gamma_{\mathbf x}$,
-
-$$
-\int_\varepsilon^{r_0}\frac{\rho_K(\mathbf x)}{R}\,dR
-=
-\rho_K(\mathbf x)\log\frac{r_0}{\varepsilon},
-$$
-
-and integration against $T_{ij}$ produces $C_{ij}$.
-
-On a compact set containing every segment $\mathbf x-R\mathbf u$ with $0\le R\le r_0$, there is an $M_1<\infty$ such that $\|\nabla\rho_K\|\le M_1$. The fundamental theorem of calculus gives
-
-$$
-\rho_K(\mathbf x-R\mathbf u)-\rho_K(\mathbf x)
-=
--R\int_0^1
-\nabla\rho_K(\mathbf x-tR\mathbf u)
-\cdot\mathbf u
-\,dt,
-$$
-
-and therefore
-
-$$
-\left|
-\frac{
-\rho_K(\mathbf x-R\mathbf u)-\rho_K(\mathbf x)
-}{R}
-\right|
-\le M_1.
-$$
-
-The spherical measure is finite, so the near-field difference may be passed to the limit $\varepsilon\downarrow 0$. In the far field, $R\ge r_0$ and $V$ is bounded, so the far-field integral converges absolutely.
-
-Substitution into the definition of Section 1.3 produces
+The density difference is bounded: $\rho_K(\mathbf x-R\mathbf u)-\rho_K(\mathbf x)=-R\int_0^1\nabla\rho_K(\mathbf x-tR\mathbf u)\cdot\mathbf u\,dt$, so the quotient is at most $M_1=\sup\|\nabla\rho_K\|$ on a compact set containing the near segments. The near-field difference therefore passes to $\varepsilon\downarrow0$. The far field converges absolutely because $R\ge r_0$ and $V$ is bounded. Substituting into Section 1.3 (the logarithms combine to $\log(r_0/\ell_0)$),
 
 $$
 \boxed{
@@ -612,8 +349,8 @@ $$
 H_{ij,\ell_0}^{\mathrm{FP}}(\mathbf x)
 ={}&
 G\rho_K(\mathbf x)C_{ij}(\mathbf x)
-\log\frac{r_0}{\ell_0}\\
-&+
+\log\frac{r_0}{\ell_0}
++
 G\int_{\Gamma_{\mathbf x}}
 T_{ij}(\mathbf u)
 \int_0^{r_0}
@@ -626,45 +363,28 @@ G\int_{\mathbb S^2}
 T_{ij}(\mathbf u)
 \int_{E_{\mathbf x}^{\mathrm{far}}(\mathbf u)}
 \frac{\rho_K(\mathbf x-R\mathbf u)}{R}
-\,dR\,d\Omega\\
-&-
+\,dR\,d\Omega
+-
 \frac{4\pi G}{3}
 \vartheta_{\mathbf x}\rho_K(\mathbf x)\delta_{ij}.
 \end{aligned}
 }
 $$
 
-*Assembly of the logarithm.* The truncated integral contains $G\rho_K C_{ij}\log(r_0/\varepsilon)$. The definition subtracts $G\rho_K C_{ij}\log(\ell_0/\varepsilon)$. Their difference tends to $G\rho_K C_{ij}\log(r_0/\ell_0)$.
-
-To check independence of $r_0$, take another admissible radius $r_1>r_0$. In the same truncated integral, the interval $[r_0,r_1)$ moves from the old far field into the new near field. On that interval the density-difference term and the constant term add pointwise to the original density term, so the sum is unchanged.
-
-For an exterior field point one may take $r_0<\operatorname{dist}(\mathbf x,V)$. Then $\Gamma_{\mathbf x}=\varnothing$, every intersection segment remains in the far field, and the resulting identity is the classical Hessian. The contact coefficient vanishes because $\vartheta_{\mathbf x}=0$, and there is no logarithmic counterterm.
-
-**Conclusion of this section.** The near field of the fixed tangent cone and the complete far field are strictly complementary. The finite-part limit of Section 1.3 exists. The first intersection segment of an exterior ray is not omitted.
+The identity is independent of $r_0$. Moving to $r_1>r_0$ transfers $[r_0,r_1)$ from the far field to the near field, where the difference term plus the constant term equals the original density term pointwise. For an exterior point with $r_0<\operatorname{dist}(\mathbf x,V)$: $\Gamma_{\mathbf x}=\varnothing$ and $\vartheta_{\mathbf x}=0$, every segment is far field, and the identity is the classical Hessian with no counterterm. Near and far fields are complementary, so no segment is dropped or counted twice, including the first segment of an exterior ray.
 
 ## 1.6 The radial antiderivative for exponent one, and the zero endpoint
 
-**Objective of this section.** For $\alpha_k=1$, give the complete antiderivative, the reverse differentiation, and the finite-part value at a zero endpoint.
-
-Fix a kernel index $k$ and a direction $\mathbf u$, and write $b_k(\mathbf u)$ and $d_k(\mathbf u)$ temporarily as $b$ and $d$. Define
+Fix $k$ and $\mathbf u$, and write $b,d$ for $b_k(\mathbf u),d_k(\mathbf u)$. Let
 
 $$
-A_0=1+\sigma_k^2\|\mathbf x-\mathbf c_k\|^2,
+A_0=1+\sigma_k^2\|\mathbf x-\mathbf c_k\|^2,\qquad
+D(R)=1+\sigma_k^2\|\mathbf x-R\mathbf u-\mathbf c_k\|^2
+=\sigma_k^2R^2-2\sigma_k^2bR+A_0
+=\sigma_k^2[(R-b)^2+d^2].
 $$
 
-$$
-D(R)=1+\sigma_k^2\|\mathbf x-R\mathbf u-\mathbf c_k\|^2,
-$$
-
-$$
-D(R)
-=
-\sigma_k^2R^2-2\sigma_k^2bR+A_0
-=
-\sigma_k^2[(R-b)^2+d^2].
-$$
-
-Since $D'(R)=2\sigma_k^2(R-b)$, the partial-fraction decomposition is
+With $D'=2\sigma_k^2(R-b)$, the partial fractions are
 
 $$
 \frac1{R D(R)}
@@ -674,28 +394,11 @@ $$
 \frac1R
 -
 \frac{\sigma_k^2R-2\sigma_k^2b}{D(R)}
-\right],
+\right],\qquad
+\sigma_k^2R-2\sigma_k^2b=\tfrac12D'(R)-\sigma_k^2b .
 $$
 
-$$
-\sigma_k^2R-2\sigma_k^2b
-=
-\frac12D'(R)-\sigma_k^2b.
-$$
-
-*Verification of the decomposition.* The proposed right-hand side, cleared over the common denominator $A_0 R D$, has numerator
-
-$$
-D(R)-R(\sigma_k^2R-2\sigma_k^2 b)
-=
-\bigl(\sigma_k^2R^2-2\sigma_k^2 b R+A_0\bigr)-\sigma_k^2 R^2+2\sigma_k^2 b R
-=
-A_0.
-$$
-
-Division by $A_0 R D$ recovers $1/(R D)$.
-
-Take the continuous real branch of the arctangent for $R>0$, and define
+Check: over the common denominator the numerator is $D-R(\sigma_k^2R-2\sigma_k^2b)=A_0$. With the continuous real arctangent branch for $R>0$, the antiderivative is
 
 $$
 P(R)
@@ -708,74 +411,12 @@ P(R)
 +
 \frac bd
 \arctan\frac{R-b}{d}
-\right].
+\right],
 $$
 
-Differentiate term by term. First,
+since $\frac{d}{dR}(-\tfrac12\log D)=-\sigma_k^2(R-b)/D$ and $\frac{d}{dR}\arctan\frac{R-b}{d}=\sigma_k^2d/D$, so $P'=[D-\sigma_k^2R(R-2b)]/(A_0RD)=1/(RD)$. Thus $\int_A^B dR/(RD)=P(B)-P(A)$ for $0<A<B$.
 
-$$
-\frac{d}{dR}\log R=\frac1R,
-\qquad
-\frac{d}{dR}\Bigl(-\frac12\log D\Bigr)
-=
--\frac{\sigma_k^2(R-b)}{D(R)},
-$$
-
-because $D'=2\sigma_k^2(R-b)$. Second,
-
-$$
-\frac{d}{dR}\arctan\frac{R-b}{d}
-=
-\frac{1/d}{1+\bigl((R-b)/d\bigr)^2}
-=
-\frac{d}{(R-b)^2+d^2}
-=
-\frac{\sigma_k^2 d}{D(R)},
-$$
-
-where the last step uses $D=\sigma_k^2[(R-b)^2+d^2]$. Multiplication by $b/d$ therefore contributes $\sigma_k^2 b/D(R)$. Combining these derivatives,
-
-$$
-\begin{aligned}
-P'(R)
-={}&
-\frac1{A_0}
-\left[
-\frac1R
--
-\frac{\sigma_k^2(R-b)}{D(R)}
-+
-\frac{\sigma_k^2b}{D(R)}
-\right]\\
-={}&
-\frac{
-D(R)-\sigma_k^2R(R-2b)
-}{
-A_0 R D(R)
-}\\
-={}&
-\frac{
-D(R)-\sigma_k^2R^2+2\sigma_k^2 b R
-}{
-A_0 R D(R)
-}\\
-={}&
-\frac{A_0}{A_0 R D(R)}
-=
-\frac1{R D(R)}.
-\end{aligned}
-$$
-
-The numerator identity is the same cancellation used in the partial-fraction check. Thus, for $0<A<B$,
-
-$$
-\int_A^B
-\frac{dR}{R D(R)}
-=
-P(B)-P(A).
-$$
-
-For $L>0$, the radial finite part at the zero endpoint is
+The radial finite part at the zero endpoint, for $L>0$, is
 
 $$
 J_{\ell_0}^{\mathrm{FP}}(0,L)
@@ -789,45 +430,7 @@ P(L)-P(\varepsilon)
 \right].
 $$
 
-Because $D(0)=A_0$ and
-
-$$
-\arctan\frac{\varepsilon-b}{d}
-=
-\arctan\Bigl(-\frac{b}{d}\Bigr)+O(\varepsilon)
-=
--\arctan\frac{b}{d}+O(\varepsilon),
-$$
-
-one has the expansion
-
-$$
-\begin{aligned}
-P(\varepsilon)
-={}&
-\frac1{A_0}
-\left[
-\log\varepsilon
--
-\frac12\log D(\varepsilon)
-+
-\frac{b}{d}\arctan\frac{\varepsilon-b}{d}
-\right]\\
-={}&
-\frac1{A_0}
-\left[
-\log\varepsilon
--
-\frac12\log A_0
--
-\frac{b}{d}\arctan\frac{b}{d}
-\right]
-+
-o(1).
-\end{aligned}
-$$
-
-The logarithm $\log\varepsilon$ is cancelled by the counterterm $\log(\ell_0/\varepsilon)$, and
+From $D(0)=A_0$ and $\arctan((\varepsilon-b)/d)=-\arctan(b/d)+O(\varepsilon)$, one gets $P(\varepsilon)=A_0^{-1}[\log\varepsilon-\tfrac12\log A_0-(b/d)\arctan(b/d)]+o(1)$. The counterterm cancels $\log\varepsilon$, and
 
 $$
 \boxed{
@@ -851,128 +454,13 @@ J_{\ell_0}^{\mathrm{FP}}(0,L)
 }
 $$
 
-*Sign of the second arctangent.* The term $-(b/d)\arctan((\varepsilon-b)/d)$ tends to $+(b/d)\arctan(b/d)$, which is why the two arctangents are added. The arguments of both logarithms are dimensionless: $L/\ell_0$ is a ratio of lengths, and $D(L)/A_0$ is a quotient of two dimensionless quantities. The finite part along a single direction is one way of evaluating the near field of Section 1.5. It is not an extra term to be superimposed again.
+The two arctangents add because $-(b/d)\arctan((\varepsilon-b)/d)\to+(b/d)\arctan(b/d)$. Both logarithms have dimensionless arguments. This single-direction finite part is one way to evaluate the near field of Section 1.5; it is not an extra term.
 
-The antiderivative of Section 3.2 is the same identity after the constant factor $\sigma_k^2$ has been removed from $D$. If $\widetilde D(R)=(R-b)^2+d^2$, then $D=\sigma_k^2\widetilde D$ and $A_0=\sigma_k^2(b^2+d^2)$ on the ray through the present normalization, so
-
-$$
-\int\frac{dR}{R D(R)}
-=
-\sigma_k^{-2}\int\frac{dR}{R\widetilde D(R)}.
-$$
-
-Section 3.2 records the integral against $\widetilde D$, because the factor $\sigma_k^{-2\alpha_k}$ stands outside the radial integral. The symbol $A_0$ of Section 3.2 denotes $b^2+d^2=\sigma_k^{-2}A_0$, with $A_0$ as defined in the present section.
-
-**Conclusion of this section.** The radial antiderivative, and the sign of the finite-part value at the zero endpoint, follow term by term from the expansions above.
+Section 3.2 writes the same identity with $\sigma_k^2$ removed from $D$, because $\sigma_k^{-2\alpha_k}$ stands outside the radial integral. With $\widetilde D=(R-b)^2+d^2$, one has $D=\sigma_k^2\widetilde D$ and $\int dR/(RD)=\sigma_k^{-2}\int dR/(R\widetilde D)$. The symbol $\widetilde A_0$ of Section 3.2 is $b^2+d^2=\sigma_k^{-2}A_0$.
 
 ## 1.7 Route B: Feynman parametrization
 
-**Objective of this section.** Fuse the two centres of the Newtonian factor and of the generalized Cauchy factor into one moving centre, and retain the correct scale factor.
-
-Fix one kernel channel and suppress the subscript $k$ temporarily. Set
-
-$$
-A(\mathbf y)
-=
-\|\mathbf y-\mathbf x\|^2,
-$$
-
-$$
-a=\frac1{\sigma},
-$$
-
-$$
-B(\mathbf y)
-=
-\|\mathbf y-\mathbf c\|^2+a^2.
-$$
-
-Then
-
-$$
-\left[
-1+\sigma^2\|\mathbf y-\mathbf c\|^2
-\right]^{-\alpha}
-=
-\sigma^{-2\alpha}B(\mathbf y)^{-\alpha},
-$$
-
-because $1+\sigma^2\|\mathbf y-\mathbf c\|^2=\sigma^2(\|\mathbf y-\mathbf c\|^2+\sigma^{-2})=\sigma^2 B(\mathbf y)$.
-
-For $\alpha>0$, $A(\mathbf y)>0$, and $B(\mathbf y)>0$, the Gamma integral gives
-
-$$
-A^{-1/2}
-=
-\frac1{\Gamma(1/2)}
-\int_0^\infty
-s^{-1/2}e^{-sA}\,ds,
-$$
-
-$$
-B^{-\alpha}
-=
-\frac1{\Gamma(\alpha)}
-\int_0^\infty
-t^{\alpha-1}e^{-tB}\,dt.
-$$
-
-Both formulae are the standard representation $Q^{-\nu}=\Gamma(\nu)^{-1}\int_0^\infty\lambda^{\nu-1}e^{-\lambda Q}\,d\lambda$ for $Q>0$ and $\nu>0$. Set
-
-$$
-s=u\lambda,
-\qquad
-t=(1-u)\lambda,
-\qquad
-0<u<1,
-\qquad
-\lambda>0.
-$$
-
-The Jacobian is
-
-$$
-\left|
-\frac{\partial(s,t)}{\partial(u,\lambda)}
-\right|
-=
-\lambda,
-$$
-
-because $\partial(s,t)/\partial(u,\lambda)$ has rows $(\lambda,u)$ and $(-\lambda,1-u)$, whose determinant is $\lambda(1-u)+\lambda u=\lambda$. Hence $ds\,dt=\lambda\,du\,d\lambda$, and
-
-$$
-\begin{aligned}
-A^{-1/2}B^{-\alpha}
-={}&
-\frac1{\Gamma(1/2)\Gamma(\alpha)}
-\int_0^1
-u^{-1/2}(1-u)^{\alpha-1}
-\,du\\
-&\times
-\int_0^\infty
-\lambda^{\alpha-1/2}
-\exp\left(
--\lambda[uA+(1-u)B]
-\right)
-\,d\lambda.
-\end{aligned}
-$$
-
-The powers of $\lambda$ are $s^{-1/2}t^{\alpha-1}\lambda=(u\lambda)^{-1/2}((1-u)\lambda)^{\alpha-1}\lambda=\lambda^{\alpha-1/2}u^{-1/2}(1-u)^{\alpha-1}$. The inner Gamma integral is
-
-$$
-\int_0^\infty
-\lambda^{\alpha-1/2}e^{-\lambda Q}
-\,d\lambda
-=
-\Gamma\left(\alpha+\frac12\right)
-Q^{-\alpha-1/2},
-\qquad
-Q>0.
-$$
-
-Therefore
+Fix one kernel and drop $k$. Set $A(\mathbf y)=\|\mathbf y-\mathbf x\|^2$, $a=1/\sigma$, and $B(\mathbf y)=\|\mathbf y-\mathbf c\|^2+a^2$. Then $[1+\sigma^2\|\mathbf y-\mathbf c\|^2]^{-\alpha}=\sigma^{-2\alpha}B^{-\alpha}$. Write both factors as Gamma integrals, $Q^{-\nu}=\Gamma(\nu)^{-1}\int_0^\infty\lambda^{\nu-1}e^{-\lambda Q}d\lambda$ ($Q,\nu>0$), and substitute $s=u\lambda$, $t=(1-u)\lambda$ (Jacobian $\lambda$). The inner integral $\int_0^\infty\lambda^{\alpha-1/2}e^{-\lambda Q}d\lambda=\Gamma(\alpha+\tfrac12)Q^{-\alpha-1/2}$ then gives
 
 $$
 \boxed{
@@ -987,53 +475,14 @@ u^{-1/2}(1-u)^{\alpha-1}
 }
 $$
 
-Define
+With
 
 $$
-\mathbf z(u)
-=
-u\mathbf x+(1-u)\mathbf c,
+\mathbf z(u)=u\mathbf x+(1-u)\mathbf c,\qquad
+m^2(u)=(1-u)a^2+u(1-u)\|\mathbf x-\mathbf c\|^2,
 $$
 
-$$
-m^2(u)
-=
-(1-u)a^2
-+
-u(1-u)\|\mathbf x-\mathbf c\|^2.
-$$
-
-Expand the quadratic form:
-
-$$
-\begin{aligned}
-u\|\mathbf y-\mathbf x\|^2
-&+
-(1-u)\|\mathbf y-\mathbf c\|^2\\
-={}&
-\|\mathbf y\|^2
--2\mathbf y\cdot
-\left[u\mathbf x+(1-u)\mathbf c\right]\\
-&+
-u\|\mathbf x\|^2
-+
-(1-u)\|\mathbf c\|^2\\
-={}&
-\|\mathbf y-\mathbf z(u)\|^2
-+
-u(1-u)\|\mathbf x-\mathbf c\|^2.
-\end{aligned}
-$$
-
-The cross term that produces $u(1-u)\|\mathbf x-\mathbf c\|^2$ is
-
-$$
-u\|\mathbf x\|^2+(1-u)\|\mathbf c\|^2-\|\mathbf z\|^2
-=
-u(1-u)\|\mathbf x\|^2+u(1-u)\|\mathbf c\|^2-2u(1-u)\mathbf x\cdot\mathbf c.
-$$
-
-Adding $(1-u)a^2$ gives
+expanding the quadratic form gives $u\|\mathbf y-\mathbf x\|^2+(1-u)\|\mathbf y-\mathbf c\|^2=\|\mathbf y-\mathbf z\|^2+u(1-u)\|\mathbf x-\mathbf c\|^2$, hence
 
 $$
 \boxed{
@@ -1043,21 +492,9 @@ uA(\mathbf y)+(1-u)B(\mathbf y)
 }
 $$
 
-Thus $\mathbf z(u)$ travels along the segment from $\mathbf c$ to $\mathbf x$. For $0\le u<1$,
+The centre $\mathbf z(u)$ moves along the segment from $\mathbf c$ to $\mathbf x$. The parameter mass $m^2=(1-u)[a^2+u\|\mathbf x-\mathbf c\|^2]>0$ for $0\le u<1$ has dimension $\mathrm L^2$. As $u\uparrow1$, $\mathbf z\to\mathbf x$ and $m\to0$: the near-field singularity sits at this endpoint, and the transformation does not remove it. The parametrization is an identity, not an approximation.
 
-$$
-m^2(u)
-=
-(1-u)
-\left[
-a^2+u\|\mathbf x-\mathbf c\|^2
-\right]
->0,
-$$
-
-because $a>0$ and $1-u>0$. As $u\uparrow 1$, one has $\mathbf z(u)\to\mathbf x$ and $m(u)\to 0$. This is the parametric endpoint at which the near-field singularity sits. The Feynman transformation does not remove that singularity.
-
-**Remark (anisotropic cores on Route B).** For $\mathbf S\succ 0$ put $\bar\sigma=(\det\mathbf S)^{1/6}$, $\widehat{\mathbf S}=\mathbf S/\bar\sigma^2$ (so $\det\widehat{\mathbf S}=1$ and $\widehat{\mathbf S}$ is dimensionless), and $a=1/\bar\sigma$. Then $1+(\mathbf y-\mathbf c)^{\!\top}\mathbf S(\mathbf y-\mathbf c)=\bar\sigma^2\widehat B(\mathbf y)$ with $\widehat B=(\mathbf y-\mathbf c)^{\!\top}\widehat{\mathbf S}(\mathbf y-\mathbf c)+a^2$, a quantity of dimension $\mathrm L^2$ like $A$. The Feynman identity applies to $A^{-1/2}\widehat B^{-\alpha}$ unchanged, with prefactor $\bar\sigma^{-2\alpha}$, and
+**Remark (anisotropic cores on Route B).** For $\mathbf S\succ0$ put $\bar\sigma=(\det\mathbf S)^{1/6}$, $\widehat{\mathbf S}=\mathbf S/\bar\sigma^2$ ($\det\widehat{\mathbf S}=1$, dimensionless), and $a=1/\bar\sigma$. Then $1+(\mathbf y-\mathbf c)^{\!\top}\mathbf S(\mathbf y-\mathbf c)=\bar\sigma^2\widehat B$ with $\widehat B=(\mathbf y-\mathbf c)^{\!\top}\widehat{\mathbf S}(\mathbf y-\mathbf c)+a^2$. The Feynman identity applies to $A^{-1/2}\widehat B^{-\alpha}$ with prefactor $\bar\sigma^{-2\alpha}$, and
 
 $$
 uA+(1-u)\widehat B=(\mathbf y-\mathbf z)^{\!\top}\mathbf M_u(\mathbf y-\mathbf z)+m^2,\qquad
@@ -1069,28 +506,11 @@ $$
 m^2=(1-u)a^2+u(1-u)(\mathbf x-\mathbf c)^{\!\top}\mathbf M_u^{-1}\widehat{\mathbf S}(\mathbf x-\mathbf c).
 $$
 
-The second term of $m^2$ is the parallel sum of the two quadratic forms $u\mathbf I$ and $(1-u)\widehat{\mathbf S}$; $\mathbf M_u^{-1}\widehat{\mathbf S}$ is symmetric positive definite because the two matrices commute. Hence $m^2\ge(1-u)a^2>0$ for $u<1$. The linear map $\mathbf y\mapsto\mathbf M_u^{1/2}\mathbf y$ sends a polyhedron to a polyhedron, so $S_p$ of Section 1.8 becomes $\det(\mathbf M_u)^{-1/2}\,S_p(\mathbf M_u^{1/2}\mathbf z,m;\mathbf M_u^{1/2}V)$, and the face reduction of Section 1.8 applies to the transformed polyhedron at each $u$. For $\widehat{\mathbf S}=\mathbf I$ all of this reduces to the formulae above.
-
-**Conclusion of this section.** The parameter mass is $m^2(u)$ above; since $a=1/\sigma$ is a length, it has the dimension of a squared length, as the combination with $|\mathbf y-\mathbf z|^2$ requires. The Feynman parametrization is an identity, not an approximation.
+The second term of $m^2$ is the parallel sum of $u\mathbf I$ and $(1-u)\widehat{\mathbf S}$. It is SPD, so $m^2\ge(1-u)a^2>0$ for $u<1$. The map $\mathbf y\mapsto\mathbf M_u^{1/2}\mathbf y$ sends polyhedra to polyhedra, so $S_p$ of Section 1.8 becomes $\det(\mathbf M_u)^{-1/2}S_p(\mathbf M_u^{1/2}\mathbf z,m;\mathbf M_u^{1/2}V)$, and the face reduction of Section 1.8 applies at each $u$. For $\widehat{\mathbf S}=\mathbf I$ this is the isotropic formula.
 
 ## 1.8 Parametric integral, dimensional reduction, and Hessian of the Feynman potential
 
-**Objective of this section.** State which integrals remain after the parametrization, and give a differentiation formula for the exterior Hessian in which differentiation and integration may be exchanged.
-
-Set
-
-$$
-p_k=\alpha_k+\frac12,
-$$
-
-$$
-C_{\alpha_k}
-=
-\frac{\Gamma\left(\alpha_k+\frac12\right)}
-{\Gamma(1/2)\Gamma(\alpha_k)}.
-$$
-
-Define
+Set $p_k=\alpha_k+\tfrac12$, $C_{\alpha_k}=\Gamma(\alpha_k+\tfrac12)/(\Gamma(\tfrac12)\Gamma(\alpha_k))$, and
 
 $$
 S_p(\mathbf z,m;V)
@@ -1102,79 +522,34 @@ S_p(\mathbf z,m;V)
 \,d^3\mathbf y.
 $$
 
-For a nonnegative single kernel, Tonelli's theorem permits the exchange of the integrals in $u$ and in $\mathbf y$. Finitely many channels with signed weights may be exchanged channel by channel and then summed. Therefore
+Tonelli's theorem exchanges the $u$ and $\mathbf y$ integrals for each nonnegative kernel, and signed channels are exchanged one by one. Hence
 
 $$
 \boxed{
-\begin{aligned}
 U_K(\mathbf x)
-={}&
+=
 G\sum_{k=1}^{K}
 w_k\sigma_k^{-2\alpha_k}C_{\alpha_k}
-\\
-&\times
 \int_0^1
 u^{-1/2}(1-u)^{\alpha_k-1}
 S_{p_k}
 \left(
 \mathbf z_k(u),m_k(u);V
 \right)
-\,du.
-\end{aligned}
+\,du,
 }
 $$
 
-This is a one-dimensional outer parameter integral wrapped around a spatial volume integral. It does not prove that $S_p$ is available in closed form.
+a one-dimensional parameter integral around a volume integral. This does not claim that $S_p$ has a closed form.
 
-Fix $u<1$ and set
-
-$$
-\mathbf r=\mathbf y-\mathbf z,
-\qquad
-r=\|\mathbf r\|,
-$$
+**Reduction to faces.** Fix $u<1$, let $\mathbf r=\mathbf y-\mathbf z$ and $r=\|\mathbf r\|$, and set
 
 $$
-A_p(r;m)
-=
-\int_0^r
-\frac{s^2}{(s^2+m^2)^p}
-\,ds,
+A_p(r;m)=\int_0^r\frac{s^2}{(s^2+m^2)^p}\,ds,\qquad
+\mathbf F_p(\mathbf r;m)=\frac{A_p(r;m)}{r^3}\mathbf r .
 $$
 
-$$
-\mathbf F_p(\mathbf r;m)
-=
-\frac{A_p(r;m)}{r^3}\mathbf r.
-$$
-
-Since
-
-$$
-\frac{dA_p(r;m)}{dr}
-=
-\frac{r^2}{(r^2+m^2)^p},
-$$
-
-the radial divergence formula $\nabla_{\mathbf r}\cdot(f(r)\mathbf r)=r^{-2}(r^3 f)'$ gives
-
-$$
-\begin{aligned}
-\nabla_{\mathbf r}\cdot\mathbf F_p
-&=
-\frac1{r^2}
-\frac{d}{dr}
-\left[
-r^3\frac{A_p(r;m)}{r^3}
-\right]\\
-&=
-\frac1{r^2}\frac{dA_p(r;m)}{dr}\\
-&=
-(r^2+m^2)^{-p}.
-\end{aligned}
-$$
-
-The divergence theorem on the polyhedron, with the outward unit normal $\mathbf n_f$ of each face $\Delta_f$, therefore yields
+By $\nabla\cdot(f(r)\mathbf r)=r^{-2}(r^3f)'$ one gets $\nabla_{\mathbf r}\cdot\mathbf F_p=r^{-2}A_p'=(r^2+m^2)^{-p}$. The divergence theorem then gives
 
 $$
 \boxed{
@@ -1188,163 +563,47 @@ S_p(\mathbf z,m;V)
 }
 $$
 
-The identity requires $m>0$, so that $\mathbf F_p$ is smooth. The endpoint $u\to 1$, where $m\to 0$, is excluded from this undifferentiated application.
+This needs $m>0$ (smooth $\mathbf F_p$), so the endpoint $u\to1$ is excluded. For $p=3/2$, $A_{3/2}(r;m)=\operatorname{arsinh}(r/m)-r/\sqrt{r^2+m^2}$; it vanishes at $r=0$, and its derivative is $r^2/(r^2+m^2)^{3/2}$.
 
-When $p=3/2$,
-
-$$
-A_{3/2}(r;m)
-=
-\operatorname{arsinh}\left(\frac rm\right)
--
-\frac r{\sqrt{r^2+m^2}}.
-$$
-
-*Check.* Differentiating the right-hand side gives
+**Reduction to edges.** On a face, let $\boldsymbol\xi$ be the in-plane coordinate and $\boldsymbol\xi_0$ the projection of $\mathbf z$, with $\rho=\|\boldsymbol\xi-\boldsymbol\xi_0\|$ and $\delta_f=(\mathbf y_f-\mathbf z)\cdot\mathbf n_f$ (independent of $\mathbf y_f$ in the plane). Then $\|\mathbf y-\mathbf z\|^2=\rho^2+\delta_f^2$, and the face integrand is
 
 $$
-\frac{1}{\sqrt{r^2+m^2}}
--
-\frac{m^2}{(r^2+m^2)^{3/2}}
-=
-\frac{r^2}{(r^2+m^2)^{3/2}},
+g_{p,f}(\rho)=\delta_f\frac{A_p(\sqrt{\rho^2+\delta_f^2};m)}{(\rho^2+\delta_f^2)^{3/2}} .
 $$
 
-which is the integrand of $A_{3/2}$, and the value at $r=0$ is zero.
-
-Fix one planar face. Let $\boldsymbol\xi$ be the in-plane coordinate and let $\boldsymbol\xi_0$ be the in-plane projection of $\mathbf z$. Set
-
-$$
-\rho=\|\boldsymbol\xi-\boldsymbol\xi_0\|,
-$$
-
-$$
-\delta_f
-=
-(\mathbf y_f-\mathbf z)\cdot\mathbf n_f,
-$$
-
-where $\mathbf y_f$ is any point of the plane of $\Delta_f$; $\delta_f$ does not depend on that choice.
-The in-plane distance satisfies
-
-$$
-\|\mathbf y-\mathbf z\|^2
-=
-\rho^2+\delta_f^2.
-$$
-
-The integrand of the face integral is
-
-$$
-g_{p,f}(\rho)
-=
-\delta_f
-\frac{
-A_p\left(\sqrt{\rho^2+\delta_f^2};m\right)
-}{
-\left(\rho^2+\delta_f^2\right)^{3/2}
-}.
-$$
-
-If one defines
-
-$$
-h_{p,f}(\rho)
-=
-\frac1{\rho^2}
-\int_0^\rho
-s\,g_{p,f}(s)\,ds,
-\qquad
-\rho>0,
-$$
-
-then
-
-$$
-\mathbf G_{p,f}(\boldsymbol\xi)
-=
-h_{p,f}(\rho)
-(\boldsymbol\xi-\boldsymbol\xi_0)
-$$
-
-satisfies
-
-$$
-\nabla_{\boldsymbol\xi}\cdot\mathbf G_{p,f}
-=
-g_{p,f}(\rho),
-$$
-
-by the two-dimensional analogue of the radial divergence formula used above: $\nabla_{\boldsymbol\xi}\cdot\bigl(h(\rho)(\boldsymbol\xi-\boldsymbol\xi_0)\bigr)=\rho^{-1}\bigl(\rho^2h\bigr)'=\rho^{-1}\cdot\rho\,g_{p,f}(\rho)=g_{p,f}(\rho)$. Here $\boldsymbol\nu_f$ below is the outward in-plane unit conormal of $\partial\Delta_f$. Therefore
+With $h_{p,f}(\rho)=\rho^{-2}\int_0^\rho s\,g_{p,f}(s)\,ds$, the field $\mathbf G_{p,f}=h_{p,f}(\rho)(\boldsymbol\xi-\boldsymbol\xi_0)$ satisfies $\nabla_{\boldsymbol\xi}\cdot\mathbf G_{p,f}=\rho^{-1}(\rho^2h)'=g_{p,f}$. With the outward in-plane conormal $\boldsymbol\nu_f$,
 
 $$
 \int_{\Delta_f}g_{p,f}\,dS
 =
 \oint_{\partial\Delta_f}
 \mathbf G_{p,f}\cdot\boldsymbol\nu_f
-\,ds.
+\,ds .
 $$
 
-This step requires $h_{p,f}$ to be locally integrable in the face, the boundary trace to exist, and the limit at $\rho=0$ to be taken from the original integral definition. It writes the face integral as an edge integral. It does not guarantee that the edge integral is elementary or a Carlson integral.
+This needs $h_{p,f}$ locally integrable, a boundary trace, and the $\rho=0$ limit taken from the original integral. It turns a face integral into an edge integral, but it does not make the edge integral elementary or Carlson.
 
-For an exterior field point, let $d=\operatorname{dist}(\mathbf x,V)>0$. For
-
-$$
-q_k(u,\mathbf y;\mathbf x)
-=
-u\|\mathbf y-\mathbf x\|^2
-+
-(1-u)\left[
-\|\mathbf y-\mathbf c_k\|^2+a_k^2
-\right]
-$$
-
-one has
-
-$$
-\frac{\partial q_k}{\partial x_i}
-=
-2u(x_i-y_i),
-$$
-
-$$
-\frac{\partial^2q_k}
-{\partial x_j\partial x_i}
-=
-2u\delta_{ij}.
-$$
-
-*Differentiation.* Only $A(\mathbf y)=\|\mathbf y-\mathbf x\|^2$ depends on $\mathbf x$, and $\partial_{x_i}A=2(x_i-y_i)$, $\partial_{x_j}\partial_{x_i}A=2\delta_{ij}$. The moving-centre form of Section 1.7 produces the same first derivative, as recomputed in Section 2.4. With $p_k=\alpha_k+1/2$,
+**Exterior Hessian.** For an exterior point, $d_V:=\operatorname{dist}(\mathbf x,V)>0$. Let $q_k=u\|\mathbf y-\mathbf x\|^2+(1-u)[\|\mathbf y-\mathbf c_k\|^2+a_k^2]$. Only the first term depends on $\mathbf x$, so $\partial_iq_k=2u(x_i-y_i)$ and $\partial_i\partial_jq_k=2u\delta_{ij}$. Hence
 
 $$
 \frac{\partial}{\partial x_i}q_k^{-p_k}
 =
 -2p_ku(x_i-y_i)q_k^{-p_k-1},
-$$
-
-$$
-\begin{aligned}
+\qquad
 \frac{\partial^2}{\partial x_j\partial x_i}q_k^{-p_k}
-={}&
--2p_ku\delta_{ij}q_k^{-p_k-1}\\
-&+
+=
+-2p_ku\delta_{ij}q_k^{-p_k-1}
++
 4p_k(p_k+1)u^2
 (x_i-y_i)(x_j-y_j)
 q_k^{-p_k-2}.
-\end{aligned}
 $$
 
-The second line is the product rule applied to $-2p_k u(x_i-y_i)q_k^{-p_k-1}$: the derivative hits either the linear factor or the power, and $\partial_{x_j}q_k^{-p_k-1}=-(p_k+1)q_k^{-p_k-2}\partial_{x_j}q_k$.
-
-Since $\|\mathbf x-\mathbf y\|\ge d$, a uniform dominant function on an exterior neighbourhood justifies exchanging differentiation with the volume integral and with the parameter integral. Interior and boundary points cannot use this exterior estimate directly.
-
-**Conclusion of this section.** The Feynman route reduces rigorously to faces, and, under further conditions, to edge integrals. The differentiation formula for the exterior Hessian is complete. The outer integral in $u$ and the geometric boundary integrals remain.
+Since $\|\mathbf x-\mathbf y\|\ge d_V$, a uniform dominating function on an exterior neighbourhood justifies differentiating under both integrals. Interior and boundary points cannot use this estimate. What remains is the $u$ integral and the geometric boundary integrals.
 
 ## 1.9 The Carlson criterion on Route B
 
-**Objective of this section.** Prescribe when an edge integral is genuinely an algebraic integral of genus $1$, and when it must be passed to another channel.
-
-Suppose that the reduction from a face to an edge, together with any integration by parts that has been performed, has written a one-dimensional integral as
+Suppose the face-to-edge reduction, with any integrations by parts, has produced
 
 $$
 I_e
@@ -1352,57 +611,23 @@ I_e
 \int_{t_0}^{t_1}
 \frac{R(t,Y(t))}{Y(t)}
 \,dt,
-$$
-
-$$
-Y(t)^2=P_4(t),
-$$
-
-where $R(t,Y)$ is rational in $t$ and $Y$, and
-
-$$
-P_4(t)
-=
-a_4t^4+a_3t^3+a_2t^2+a_1t+a_0,
 \qquad
-a_4\neq0.
+Y(t)^2=P_4(t)=a_4t^4+a_3t^3+a_2t^2+a_1t+a_0,
 $$
 
-The sufficient criterion for the Carlson channel consists of the following five conditions.
+with $R$ rational in $(t,Y)$. Sufficient conditions for the Carlson channel are:
 
-First, the quartic term is genuinely nondegenerate: $a_4\neq 0$.
+1. the quartic term is nondegenerate: $a_4\ne0$;
+2. $P_4$ is square-free: $\gcd(P_4,P_4')=1$, equivalently $\operatorname{Disc}(P_4)\ne0$;
+3. the path avoids the branch points $P_4=0$, or an integrable endpoint limit is specified;
+4. no pole of $R$ lies inside the path; for a pole on the path, declare whether the integral is ordinary, a Cauchy principal value, or a Hadamard finite part;
+5. $Y(t)$ is continued continuously along the path (pointwise principal roots do not guarantee this).
 
-Second, $P_4$ is square-free:
-
-$$
-\gcd(P_4,P_4')=1,
-$$
-
-or equivalently
-
-$$
-\operatorname{Disc}(P_4)\neq0.
-$$
-
-Third, the path of integration does not pass through a branch point $P_4(t)=0$, or an integrable endpoint limit has been specified explicitly.
-
-Fourth, no pole of $R(t,Y)$ lies in the interior of the path. If a pole lies on the path, one must declare separately whether the integral is ordinary, a Cauchy principal value, or a Hadamard finite part.
-
-Fifth, the square root $Y(t)$ is chosen continuously along the path. Calling the principal square root independently at each point does not guarantee a continuous branch on the path.
-
-Under these conditions, the smooth projective compactification of the algebraic curve
-
-$$
-\mathcal C:\quad Y^2=P_4(t)
-$$
-
-is a curve of genus $1$. This conclusion applies only to a sub-integral that has been proved to be a one-dimensional differential of the form above. It is not an automatic global closed form for the original two-dimensional spherical integral.
+Then the smooth projective model of $\mathcal C:Y^2=P_4(t)$ has genus $1$. This applies only to a sub-integral proved to have this form. It is not a closed form for the original two-dimensional angular integral.
 
 ### 1.9.1 Hermite reduction
 
-**Objective of this section.** Reduce a one-dimensional differential with high-order poles and a high-degree numerator to finitely many standard abelian differentials.
-
-One must find an algebraic function $Q(t,Y)$ and a finite family of basis differentials $\omega_\nu$ such that
+Find an algebraic $Q(t,Y)$ and constants $c_\nu$ such that
 
 $$
 \frac{R(t,Y)}{Y}\,dt
@@ -1410,45 +635,26 @@ $$
 dQ(t,Y)
 +
 \sum_{\nu=1}^{N}
-c_\nu\omega_\nu.
+c_\nu\omega_\nu ,
 $$
 
-Because
+using $2Y\,dY=P_4'\,dt$. Since $d(t^jY)$ has numerator of degree $j+3$ over $Y$, every $t^n\,dt/Y$ with $n\ge3$ reduces modulo $dQ$ to the span of $t^0,t^1,t^2$ over $Y$. The reduced basis is
 
 $$
-2Y\,dY=P_4'(t)\,dt,
+\omega_0=\frac{dt}{Y}\ (\text{first kind}),\qquad
+\omega_1=\frac{t\,dt}{Y}\ (\text{third kind: simple poles at }\infty_\pm,\ \text{residues }\mp a_4^{-1/2}),
 $$
 
-the differential $dQ$ can be rewritten as a rational combination of $dt$ and $dt/Y$.
-
-For the quartic model $Y^2=P_4(t)$, the exact differentials $d(t^jY)$, $j\ge 0$, have numerators of degree $j+3$ over $Y$, so every polynomial differential $t^n\,dt/Y$ with $n\ge 3$ reduces, modulo $dQ$, to the span of $t^0,t^1,t^2$ over $Y$. The reduced basis is therefore
-
 $$
-\omega_0=\frac{dt}{Y}\quad(\text{first kind}),\qquad
-\omega_2=\frac{t^2\,dt}{Y}\quad(\text{double poles at the two points }\infty_\pm),
+\omega_2=\frac{t^2\,dt}{Y}\ (\text{double poles at }\infty_\pm),\qquad
+\omega_p=\frac{dt}{(t-p)Y}\ (\text{third kind, for each simple pole }p\text{ that is not a branch point}).
 $$
 
-where the residue-free combination $\omega_2+\tfrac{a_3}{2a_4}\omega_1$ is the differential of the second kind (the expansion $t^2/Y=a_4^{-1/2}\bigl(1-\tfrac{a_3}{2a_4t}+O(t^{-2})\bigr)$ at $\infty_+$ shows the residue that is removed), and
-
-$$
-\omega_1=\frac{t\,dt}{Y}\quad(\text{third kind; simple poles at }\infty_\pm\text{ with opposite residues }\mp a_4^{-1/2}),
-$$
-
-and, for each simple pole $p$ that is not a branch point, the differential of the third kind
-
-$$
-\omega_p=\frac{dt}{(t-p)Y}.
-$$
-
-The differential $\omega_2$ cannot be omitted. A reduction that stops at $\{\omega_0,\omega_1,\omega_p\}$ is incomplete for a quartic and produces a wrong coefficient whenever the numerator has degree at least two. Section 1.9.2 carries all four differentials $\omega_0,\omega_1,\omega_2,\omega_p$ to the cubic model.
-
-If the original expression contains $(t-p)^{-m}$ with $m\ge 2$, the corresponding $dQ$ must be constructed so as to remove the higher-order pole. This step requires the actual solution of algebraic equations for the coefficients. Reduction is not established merely by the shape of the integrand.
+The residue-free combination $\omega_2+\tfrac{a_3}{2a_4}\omega_1$ is of the second kind, from $t^2/Y=a_4^{-1/2}(1-\tfrac{a_3}{2a_4t}+O(t^{-2}))$ at $\infty_+$. $\omega_2$ cannot be omitted: stopping at $\{\omega_0,\omega_1,\omega_p\}$ gives wrong coefficients whenever the numerator has degree $\ge2$. A pole $(t-p)^{-m}$ with $m\ge2$ needs a $dQ$ that removes it, which means actually solving for the coefficients.
 
 ### 1.9.2 Reduction from degree four to degree three
 
-**Objective of this section.** Record the substitution required to enter the cubic standard model of Carlson, for every differential of the basis of Section 1.9.1.
-
-Let $e$ be a root of $P_4$ (a branch point) and take the Möbius transformation
+Let $e$ be a root of $P_4$ and use the Möbius map
 
 $$
 t=\frac{\alpha+\beta z}{\gamma+\delta z},
@@ -1458,187 +664,72 @@ t=\frac{\alpha+\beta z}{\gamma+\delta z},
 \beta/\delta=e,
 $$
 
-so that $z=\infty$ is sent to $t=e$. Then $dt=-\Delta\,dz/(\gamma+\delta z)^2$ and $P_4(t)=Q_4(z)/(\gamma+\delta z)^4$ with $Q_4(z)=\sum_j a_j(\alpha+\beta z)^j(\gamma+\delta z)^{4-j}$, whose $z^4$ coefficient is $\delta^4P_4(e)=0$. Define
-
-$$
-W(z)=(\gamma+\delta z)^2\,Y(t(z)),\qquad W(z)^2=Q_3(z),
-$$
-
-where $Q_3=Q_4$ is a cubic polynomial. The two points $\infty_\pm$ of the quartic model are not branch points ($a_4\neq0$); they are mapped to the two sheets over the finite point
-
-$$
-z_\infty=-\gamma/\delta,\qquad Q_3(z_\infty)=a_4\,\Delta^4/\delta^4\neq 0 .
-$$
-
-With $(\alpha+\beta z)/(\gamma+\delta z)=e+\Delta/\big(\delta(\gamma+\delta z)\big)=e+\dfrac{\Delta}{\delta^2(z-z_\infty)}$, the four basis differentials become
+which sends $z=\infty$ to $t=e$. Then $dt=-\Delta\,dz/(\gamma+\delta z)^2$ and $P_4(t)=Q_4(z)/(\gamma+\delta z)^4$. The $z^4$ coefficient of $Q_4(z)=\sum_ja_j(\alpha+\beta z)^j(\gamma+\delta z)^{4-j}$ is $\delta^4P_4(e)=0$. Define $W(z)=(\gamma+\delta z)^2Y(t(z))$, so $W^2=Q_3$ with $Q_3=Q_4$ cubic. The non-branch points $\infty_\pm$ go to the two sheets over $z_\infty=-\gamma/\delta$, where $Q_3(z_\infty)=a_4\Delta^4/\delta^4\ne0$. Since $t=e+\Delta/(\delta^2(z-z_\infty))$,
 
 $$
 \begin{aligned}
-\omega_0=\frac{dt}{Y}&=-\Delta\,\frac{dz}{W},\\
-\omega_1=\frac{t\,dt}{Y}&=-\Delta e\,\frac{dz}{W}-\frac{\Delta^2}{\delta^2}\,\frac{dz}{(z-z_\infty)W},\\
-\omega_2=\frac{t^2\,dt}{Y}&=-\Delta e^2\,\frac{dz}{W}-\frac{2e\Delta^2}{\delta^2}\,\frac{dz}{(z-z_\infty)W}-\frac{\Delta^3}{\delta^4}\,\frac{dz}{(z-z_\infty)^2W},\\
-\omega_p=\frac{dt}{(t-p)Y}&=-\frac{\Delta\delta}{\beta-p\delta}\,\frac{dz}{W}+\frac{\Delta^2}{(\beta-p\delta)^2}\,\frac{dz}{(z-z_p)W},
-\qquad z_p=-\frac{\alpha-p\gamma}{\beta-p\delta}.
+\omega_0&=-\Delta\,\frac{dz}{W},\\
+\omega_1&=-\Delta e\,\frac{dz}{W}-\frac{\Delta^2}{\delta^2}\,\frac{dz}{(z-z_\infty)W},\\
+\omega_2&=-\Delta e^2\,\frac{dz}{W}-\frac{2e\Delta^2}{\delta^2}\,\frac{dz}{(z-z_\infty)W}-\frac{\Delta^3}{\delta^4}\,\frac{dz}{(z-z_\infty)^2W},\\
+\omega_p&=-\frac{\Delta\delta}{\beta-p\delta}\,\frac{dz}{W}+\frac{\Delta^2}{(\beta-p\delta)^2}\,\frac{dz}{(z-z_p)W},
+\qquad z_p=-\frac{\alpha-p\gamma}{\beta-p\delta},
 \end{aligned}
 $$
 
-Here $\beta-p\delta\neq0$ because $p\neq e$, and $W(z_p)\neq0$ because $p$ is not a branch point. The image of $\omega_1$ is therefore of the third kind, with simple poles over $z_\infty$; it is not of the form $(A_0+A_1z)\,dz/W$. The image of $\omega_2$ has a **double pole** over $z_\infty$, which one more Hermite step removes. With $h:=z-z_\infty$ and the Taylor expansion $Q_3(z)=q_0+q_1h+q_2h^2+q_3h^3$, $q_0=Q_3(z_\infty)\neq0$,
+with $\beta-p\delta\ne0$ ($p\ne e$) and $W(z_p)\ne0$. The image of $\omega_1$ is of the third kind over $z_\infty$, not of the form $(A_0+A_1z)\,dz/W$. The image of $\omega_2$ has a double pole over $z_\infty$, which one more Hermite step removes. With $h=z-z_\infty$ and $Q_3=q_0+q_1h+q_2h^2+q_3h^3$ ($q_0\ne0$),
 
 $$
-d\!\left(\frac{W}{h}\right)=\left(\frac{Q_3'}{2h}-\frac{Q_3}{h^2}\right)\frac{dz}{W}
+d\!\left(\frac{W}{h}\right)
 =\left(-\frac{q_0}{h^2}-\frac{q_1}{2h}+\frac{q_3}{2}h\right)\frac{dz}{W},
-$$
-
-so that
-
-$$
+\qquad
 \frac{dz}{h^2W}=-\frac{1}{q_0}\,d\!\left(\frac{W}{h}\right)-\frac{q_1}{2q_0}\,\frac{dz}{hW}+\frac{q_3}{2q_0}\,\frac{(z-z_\infty)\,dz}{W}.
 $$
 
-The last term contains $z\,dz/W$, the differential of the second kind of the cubic model (the point at infinity is now a single branch point). After this step every basis differential is a combination of $dz/W$, $z\,dz/W$, third-kind differentials $dz/[(z-q)W]$ with $q\in\{z_\infty,z_p,\ldots\}$, and the exact differential $d(W/h)$, which joins the rational part already integrated in $dQ$. The coefficients are fixed by the actual endpoints, branch points and poles through $\alpha,\beta,\gamma,\delta$ and $Q_3$; there is no coefficient that is fixed independently of the geometric input.
+The last term contains $z\,dz/W$, the second-kind differential of the cubic model, where infinity is now a single branch point. Every basis differential is then a combination of the following, with all coefficients fixed by the actual endpoints, branch points, and poles through $\alpha,\beta,\gamma,\delta$ and $Q_3$:
+
+- $dz/W$ and $z\,dz/W$;
+- third-kind terms $dz/[(z-q)W]$ with $q\in\{z_\infty,z_p,\dots\}$;
+- the exact differential $d(W/h)$, which joins $dQ$.
 
 ### 1.9.3 Carlson symmetric integrals
 
-**Objective of this section.** Give the correct definitions of $R_F$, $R_D$, $R_J$, and $R_C$, and keep definitions, degenerations, and numerical error separate.
-
-For real parameters, and for a path of integration that does not meet a zero of the denominator, define
+For real parameters and a path avoiding zeros of the denominator,
 
 $$
-R_F(x,y,z)
-=
-\frac12
-\int_0^\infty
-\frac{ds}
-\sqrt{(s+x)(s+y)(s+z)}.
+R_F(x,y,z)=\frac12\int_0^\infty\frac{ds}{\sqrt{(s+x)(s+y)(s+z)}},\qquad
+R_D(x,y,z)=\frac32\int_0^\infty\frac{ds}{(s+z)\sqrt{(s+x)(s+y)(s+z)}},
 $$
 
-Define
-
 $$
-R_D(x,y,z)
-=
-\frac32
-\int_0^\infty
-\frac{ds}
-{(s+z)\sqrt{(s+x)(s+y)(s+z)}}.
+R_J(x,y,z,p)=\frac32\int_0^\infty\frac{ds}{(s+p)\sqrt{(s+x)(s+y)(s+z)}},\qquad
+R_C(x,y)=\frac12\int_0^\infty\frac{ds}{(s+y)\sqrt{s+x}}=R_F(x,y,y)
 $$
 
-Define
-
-$$
-R_J(x,y,z,p)
-=
-\frac32
-\int_0^\infty
-\frac{ds}
-{(s+p)\sqrt{(s+x)(s+y)(s+z)}}.
-$$
-
-Define the degenerate form
-
-$$
-R_C(x,y)
-=
-\frac12
-\int_0^\infty
-\frac{ds}
-{(s+y)\sqrt{s+x}}.
-$$
-
-When the branches agree, the definition of $R_F$ gives directly
-
-$$
-R_C(x,y)=R_F(x,y,y),
-$$
-
-because the two factors $s+y$ under the square root, together with the explicit factor $s+y$ in the denominator of $R_C$, reproduce the integrand of $R_F(x,y,y)$. The two writings are not contradictory definitions. The symbol $R_C$ is the special notation for the case of a repeated root.
-
-After the transformation to a cubic curve, a rational substitution from a finite interval to a semi-infinite interval, and the standard decomposition into differentials, the elliptic sub-integrals of the first, second, and third kinds can be written as finite linear combinations of the Carlson symmetric integrals above. The coefficients depend on the input roots, the endpoints, the branch along the path, and the locations of the poles. They must be generated term by term on each element.
+(with agreeing branches; $R_C$ is the notation for a repeated root). After the cubic transformation, a rational substitution to a semi-infinite interval, and the standard decomposition, the elliptic sub-integrals of the first, second, and third kinds are finite combinations of these. The coefficients depend on the roots, endpoints, branch, and poles, and are generated element by element.
 
 ### 1.9.4 Duplication iteration and the error boundary
 
-**Objective of this section.** Give the core iteration of a Carlson evaluation, and state explicitly that an internal stopping test is not a proof of a strict absolute error.
-
-For $R_F(x,y,z)$, set
+For $R_F$, start from $(x_0,y_0,z_0)=(x,y,z)$ and iterate
 
 $$
-x_0=x,\qquad
-y_0=y,\qquad
-z_0=z.
+\lambda_n=\sqrt{x_ny_n}+\sqrt{y_nz_n}+\sqrt{z_nx_n},\qquad
+(x,y,z)_{n+1}=\tfrac14\big((x,y,z)_n+\lambda_n\big),
 $$
 
-At step $n$, define
+using the homogeneity $R_F(tx,ty,tz)=t^{-1/2}R_F(x,y,z)$ ($t>0$) to expand the termination on normalized variables. $R_D$, $R_J$, and $R_C$ need their own recurrences and compensation terms. A spread threshold only decides convergence of the iteration. Claiming $|R_F^{\rm computed}-R_F^{\rm exact}|\le\varepsilon$ also needs bounds on the series remainder, the branch choice, and the rounding of the inputs and the recurrence. Without them, a Carlson threshold is an internal error estimate only.
 
-$$
-\lambda_n
-=
-\sqrt{x_ny_n}
-+
-\sqrt{y_nz_n}
-+
-\sqrt{z_nx_n},
-$$
-
-and set
-
-$$
-x_{n+1}
-=
-\frac{x_n+\lambda_n}{4},
-\qquad
-y_{n+1}
-=
-\frac{y_n+\lambda_n}{4},
-\qquad
-z_{n+1}
-=
-\frac{z_n+\lambda_n}{4}.
-$$
-
-These quantities draw together. Homogeneity,
-
-$$
-R_F(\lambda x,\lambda y,\lambda z)
-=
-\lambda^{-1/2}R_F(x,y,z),
-\qquad
-\lambda>0,
-$$
-
-is used to expand the termination on normalized variables. The integrals $R_D$, $R_J$, and $R_C$ each require their own recurrence and compensation terms.
-
-A threshold on the relative spread only decides whether the iteration has drawn together. To claim
-
-$$
-|R_F^{\mathrm{computed}}-R_F^{\mathrm{exact}}|
-\le\varepsilon
-$$
-
-one must also give a combined bound on the remainder of the terminating series, on the choice of complex branch, on the rounding error of the input, and on the rounding error of the recurrence. This paper therefore calls a Carlson stopping threshold an internal error estimate, unless those bounds are actually computed in the implementation.
-
-**Conclusion of this section.** Carlson evaluation is a conditional evaluator of one-dimensional sub-integrals on a square-free quartic algebraic curve. It is not a universal solver for an arbitrary nonintegral power, an arbitrary two-dimensional angular integral, or an arbitrary residual.
+Carlson evaluation is thus a conditional evaluator of one-dimensional sub-integrals on a square-free quartic curve. It is not a universal solver for arbitrary nonintegral powers, two-dimensional angular integrals, or residuals.
 
 ## 1.10 Strict definition of the residual
 
-**Objective of this section.** Recover the residual idea of the original reference, while keeping the residual strictly complementary to the analytic terms, omitting no single exterior interval, and never repeating one and the same complete element.
-
-For every open spherical element $\Omega_m$ and every nonempty far-field intersection segment, define the index
+The residual must be strictly complementary to the analytic terms. It must not omit any exterior interval, and it must not repeat any complete element. For each open spherical element $\Omega_m$ and each nonempty far-field segment, define the index $q=(m,\ell,k,i,j)$: element, far segment, kernel, and Hessian component. Each index carries one complete far-field integral
 
 $$
-q=(m,\ell,k,i,j),
-$$
-
-where $m$ is the index of the directional element, $\ell$ is the index of the far-field segment, $k$ is the kernel channel, and $i,j$ are the Hessian components. Each $q$ corresponds to one complete far-field integral
-
-$$
-\begin{aligned}
 I_q
-={}&
+=
 G w_k
 \int_{\Omega_m}
 T_{ij}(\mathbf u)
-\\
-&\times
 \int_{A_{m\ell}(\mathbf u)}^{B_{m\ell}(\mathbf u)}
 \frac{
 \left[
@@ -1646,27 +737,10 @@ T_{ij}(\mathbf u)
 \|\mathbf x-R\mathbf u-\mathbf c_k\|^2
 \right]^{-\alpha_k}
 }{R}
-\,dR\,d\Omega.
-\end{aligned}
+\,dR\,d\Omega .
 $$
 
-Near-field intervals do not belong to this residual set. They have already been split, in the finite-part identity of Section 1.5, into an explicit local logarithm, an absolutely integrable difference, and a contact term.
-
-Define a deterministic classification
-
-$$
-\chi(q)
-\in
-\{
-\mathrm{Carlson},
-\mathrm{Appell},
-\mathrm{homotopy},
-\mathrm{Theta},
-\mathrm{direct}
-\}.
-$$
-
-Require the disjoint decomposition
+Near-field intervals are not residuals. Section 1.5 has already split them into a logarithm, an integrable difference, and a contact term. A deterministic classification $\chi(q)\in\{\mathrm{Carlson},\mathrm{Appell},\mathrm{homotopy},\mathrm{Theta},\mathrm{direct}\}$ must partition the far set disjointly:
 
 $$
 \mathcal Q_{\mathrm{far}}
@@ -1679,111 +753,24 @@ $$
 \mathbin{\dot\cup}
 \mathcal Q_{\mathrm{Theta}}
 \mathbin{\dot\cup}
-\mathcal Q_{\mathrm{direct}}.
+\mathcal Q_{\mathrm{direct}} .
 $$
 
-Then
+Then $H^{\mathrm{Carlson}}_{ij}=\sum_{\mathcal Q_{\rm Carlson}}I_q$ is the analytically evaluated part, $H^{\mathrm{res}}_{ij}$ is the sum over the other four classes, and
 
 $$
-\begin{aligned}
-H_{ij}^{\mathrm{res}}(\mathbf x)
-={}&
-\sum_{q\in\mathcal Q_{\mathrm{Appell}}}I_q
-+
-\sum_{q\in\mathcal Q_{\mathrm{homotopy}}}I_q
-+
-\sum_{q\in\mathcal Q_{\mathrm{Theta}}}I_q
-+
-\sum_{q\in\mathcal Q_{\mathrm{direct}}}I_q,
-\end{aligned}
-$$
-
-while the Carlson subset belongs to the analytically evaluated part:
-
-$$
-H_{ij}^{\mathrm{Carlson}}(\mathbf x)
+H_{ij}^{\mathrm{far}}
 =
-\sum_{q\in\mathcal Q_{\mathrm{Carlson}}}I_q.
-$$
-
-The global far field satisfies
-
-$$
-H_{ij}^{\mathrm{far}}(\mathbf x)
-=
-H_{ij}^{\mathrm{Carlson}}(\mathbf x)
+H_{ij}^{\mathrm{Carlson}}
 +
-H_{ij}^{\mathrm{res}}(\mathbf x).
+H_{ij}^{\mathrm{res}} .
 $$
 
-If a complete element is to be split pointwise into an extracted function and a remainder, one must give
-
-$$
-F_q(\xi,\eta)
-=
-F_q^{\mathrm{ext}}(\xi,\eta)
-+
-F_q^{\mathrm{rem}}(\xi,\eta)
-\quad\text{almost everywhere},
-$$
-
-and define
-
-$$
-I_q^{\mathrm{ext}}
-=
-\int_{D_q}F_q^{\mathrm{ext}}(\xi,\eta)\,d\xi\,d\eta,
-$$
-
-$$
-I_q^{\mathrm{rem}}
-=
-\int_{D_q}F_q^{\mathrm{rem}}(\xi,\eta)\,d\xi\,d\eta.
-$$
-
-Otherwise $F_q^{\mathrm{rem}}$ has no mathematical definition.
-
-Regularity of a residual function can be asserted only piecewise. In the interior of an open element that contains no tangency, no visibility boundary, no vertex, no branch point, and no pole of the path, the residual is locally of class $C^r$ if the kernel and the endpoint functions are sufficiently smooth. On a global closed domain one can usually assert only piecewise integrability, or membership in $L^1$. Without a separate proof one cannot call the residual a $C^\infty$ function on the whole closed domain.
-
-**Conclusion of this section.** The residual is now an explicit complementary sum. It is not “the full integral minus an undefined analytic term”, and it is not the repeated addition of four channels on the same element.
+To split one element pointwise, one must give $F_q=F_q^{\mathrm{ext}}+F_q^{\mathrm{rem}}$ a.e. and define $I_q^{\mathrm{ext}},I_q^{\mathrm{rem}}$ as their integrals over $D_q$. Otherwise $F_q^{\mathrm{rem}}$ is undefined. Regularity of a residual is piecewise only. Inside an open element with no tangency, visibility boundary, vertex, branch point, or path pole, it is locally $C^r$ when the kernel and endpoints are smooth enough. On the closed domain one can usually assert only $L^1$; $C^\infty$ on the whole domain needs a proof. The residual is thus an explicit complementary sum: not "the full integral minus an undefined analytic term", and not four channels added on the same element.
 
 ## 1.11 Hypergeometric radial channel: Appell is only a special degeneration
 
-**Objective of this section.** Describe the general hypergeometric type of a radial integral at fixed direction, state that the Appell function appears only under a special degeneration, and correct the scale and the outer integral.
-
-Fix $\mathbf u$ and set
-
-$$
-\mathbf p_k=\mathbf x-\mathbf c_k,
-$$
-
-$$
-b_k(\mathbf u)
-=
-\mathbf p_k\cdot\mathbf u,
-$$
-
-$$
-d_k^2(\mathbf u)
-=
-a_k^2+\|\mathbf p_k\|^2-b_k^2(\mathbf u),
-\qquad
-a_k=\frac1{\sigma_k}.
-$$
-
-Then
-
-$$
-1+\sigma_k^2
-\|\mathbf x-R\mathbf u-\mathbf c_k\|^2
-=
-\sigma_k^2
-\left[
-(R-b_k(\mathbf u))^2+d_k^2(\mathbf u)
-\right].
-$$
-
-The radial integral at fixed direction is therefore
+With $\mathbf p_k,b_k,d_k,a_k$ of Section 1.4, the radial integral at fixed direction is
 
 $$
 \mathcal R_{\alpha_k}(A,B;\mathbf u)
@@ -1794,40 +781,10 @@ $$
 {R
 \left[
 (R-b_k(\mathbf u))^2+d_k^2(\mathbf u)
-\right]^{\alpha_k}}.
+\right]^{\alpha_k}} .
 $$
 
-Set
-
-$$
-\beta_k(\mathbf u)
-=
-\frac{b_k(\mathbf u)}{d_k(\mathbf u)},
-$$
-
-and
-
-$$
-t=\frac{R-b_k(\mathbf u)}{d_k(\mathbf u)}.
-$$
-
-Then
-
-$$
-R=d_k(\mathbf u)t+b_k(\mathbf u),
-$$
-
-$$
-dR=d_k(\mathbf u)\,dt,
-$$
-
-$$
-(R-b_k(\mathbf u))^2+d_k^2(\mathbf u)
-=
-d_k^2(\mathbf u)(1+t^2),
-$$
-
-and consequently
+With $\beta_k=b_k/d_k$ and $t=(R-b_k)/d_k$, one has $dR=d_k\,dt$, the quadratic becomes $d_k^2(1+t^2)$, and $1/R=1/[d_k(t+\beta_k)]$. So
 
 $$
 \mathcal R_{\alpha_k}(A,B;\mathbf u)
@@ -1836,213 +793,54 @@ $$
 d_k(\mathbf u)^{-2\alpha_k}
 \int_{t(A)}^{t(B)}
 \frac{dt}
-{\left[t+\beta_k(\mathbf u)\right](1+t^2)^{\alpha_k}}.
+{\left[t+\beta_k(\mathbf u)\right](1+t^2)^{\alpha_k}} .
 $$
 
-*Scale count.* The factor $\sigma_k^{-2\alpha_k}$ comes from the Cauchy normalization. The substitution contributes $d_k$ from $dR$, $d_k^{-2\alpha_k}$ from the quadratic factor, and $d_k^{-1}$ from $1/R=1/[d_k(t+\beta_k)]$; the product is $d_k^{-2\alpha_k}$, together with the dimensionless denominator $(t+\beta_k)(1+t^2)^{\alpha_k}$.
-
-After the factorization
-
-$$
-(1+t^2)^{-\alpha_k}
-=
-(1-it)^{-\alpha_k}(1+it)^{-\alpha_k},
-$$
-
-the integral generally contains two linear power factors and one simple polar factor. Under a linear or fractional change of variables it is, in general, an incomplete integral of Lauricella type $F_D$ in several variables. It reduces to an Appell function $F_1$, a Gaussian hypergeometric function, a Beta function, or an elementary function only when the polar factor, the exponent, or an endpoint undergoes a special degeneration. Every such representation requires a continuous branch and a path that does not cross a pole.
-
-On a complete directional element, the Appell channel supplies only
+The scale factor is $\sigma_k^{-2\alpha_k}d_k^{-2\alpha_k}$. After $(1+t^2)^{-\alpha_k}=(1-it)^{-\alpha_k}(1+it)^{-\alpha_k}$, the integrand has two linear power factors and one simple pole. In general it is an incomplete Lauricella $F_D$ integral. It reduces to Appell $F_1$, a Gauss hypergeometric function, a Beta function, or an elementary function only under a special degeneration of the pole, the exponent, or an endpoint. Each representation needs a continuous branch and a path that does not cross the pole. On a complete element the Appell channel supplies only the radial factor of
 
 $$
 \int_{\Omega_m}
-T_{ij}(\mathbf u)
-\left[
+T_{ij}(\mathbf u)\,
 \mathcal R_{\alpha_k}
 \left(
 A_{m\ell}(\mathbf u),
 B_{m\ell}(\mathbf u);
 \mathbf u
 \right)
-\right]
-\,d\Omega.
+\,d\Omega ,
 $$
 
-The two-dimensional directional integral therefore remains. The Appell channel is a computable scheme for a complete element only when the outer directional integral has a separate rigorous evaluator or an error certificate.
-
-**Conclusion of this section.** A nonintegral value of $\alpha_k$ does not mean that “the whole element is completed by Appell”. The general radial expression may even require a Lauricella function $F_D$. The correct scale factor is $\sigma_k^{-2\alpha_k}d_k^{-2\alpha_k}$, and the outer angular integral must be retained.
+so the two-dimensional directional integral remains. It needs its own rigorous evaluator or error certificate. A nonintegral $\alpha_k$ does not mean the element is "completed by Appell".
 
 ## 1.12 Homotopy residual and direct quadrature
 
-**Objective of this section.** Recover the Poincaré homotopy method, and restrict its geometric domain and its regularity hypotheses.
-
-Let a directional parameter domain $D_m\subset\mathbb R^2$ be parametrized by planar coordinates, and assume that $D_m$ is star-shaped with respect to the origin. Let the residual two-form be
-
-$$
-\eta_m
-=
-F_m(\xi,\eta)
-\,d\xi\wedge d\eta.
-$$
-
-Define
+Let $D_m\subset\mathbb R^2$ be a directional parameter domain, star-shaped with respect to the origin, carrying the residual two-form $\eta_m=F_m\,d\xi\wedge d\eta$. With $A(\xi,\eta)=\int_0^1sF_m(s\xi,s\eta)\,ds$ define
 
 $$
 \mathcal H\eta_m
 =
-\left[
-\int_0^1
-sF_m(s\xi,s\eta)
-\,ds
-\right]
-\left(
-\xi\,d\eta-\eta\,d\xi
-\right).
+A(\xi,\eta)\left(\xi\,d\eta-\eta\,d\xi\right).
 $$
 
-When $F_m$ is sufficiently smooth, compute the exterior derivative directly. Set
-
-$$
-A(\xi,\eta)
-=
-\int_0^1sF_m(s\xi,s\eta)\,ds.
-$$
-
-Then
-
-$$
-\mathcal H\eta_m
-=
-A(\xi,\eta)\xi\,d\eta
--
-A(\xi,\eta)\eta\,d\xi,
-$$
-
-and
-
-$$
-d(\mathcal H\eta_m)
-=
-\left[
-\frac{\partial(A\xi)}{\partial\xi}
-+
-\frac{\partial(A\eta)}{\partial\eta}
-\right]
-d\xi\wedge d\eta.
-$$
-
-The coefficient is
-
-$$
-\frac{\partial(A\xi)}{\partial\xi}
-+
-\frac{\partial(A\eta)}{\partial\eta}
-=
-2A+\xi\frac{\partial A}{\partial\xi}
-+
-\eta\frac{\partial A}{\partial\eta}.
-$$
-
-Substitute $A$ and differentiate in $s$:
-
-$$
-\frac{d}{ds}
-\left[
-s^2F_m(s\xi,s\eta)
-\right]
-=
-2sF_m(s\xi,s\eta)
-+
-s^2
-\left[
-\xi\partial_\xi F_m(s\xi,s\eta)
-+
-\eta\partial_\eta F_m(s\xi,s\eta)
-\right].
-$$
-
-Integrating in $s$ and using $\partial_\xi A=\int_0^1 s\cdot s\,\partial_\xi F_m(s\xi,s\eta)\,ds$, and the analogous formula for $\partial_\eta A$, gives
-
-$$
-2A+\xi A_\xi+\eta A_\eta
-=
-\int_0^1
-\frac{d}{ds}
-\left[
-s^2F_m(s\xi,s\eta)
-\right]
-\,ds
-=
-F_m(\xi,\eta),
-$$
-
-because $s^2F_m(s\xi,s\eta)\to 0$ as $s\downarrow 0$ under the smoothness assumption that makes the boundary term at $s=0$ vanish. Hence
-
-$$
-d(\mathcal H\eta_m)
-=
-F_m(\xi,\eta)
-\,d\xi\wedge d\eta.
-$$
-
-Stokes' theorem gives
+For smooth $F_m$, $d(\mathcal H\eta_m)=(2A+\xi A_\xi+\eta A_\eta)\,d\xi\wedge d\eta$. Since $2A+\xi A_\xi+\eta A_\eta=\int_0^1\frac{d}{ds}[s^2F_m(s\xi,s\eta)]\,ds=F_m(\xi,\eta)$ (the boundary term at $s=0$ vanishes), Stokes' theorem gives
 
 $$
 \int_{D_m}
 F_m(\xi,\eta)\,d\xi\,d\eta
 =
 \int_{\partial D_m}
-\mathcal H\eta_m.
+\mathcal H\eta_m .
 $$
 
-If $D_m$ is not star-shaped, it must be triangulated into finitely many star-shaped subdomains, and contributions on shared interior edges cancel by opposite orientation. If $F_m$ is merely locally integrable, one must delete the singular points, pass to the limit, and prove that the contribution of the small boundary circles tends to zero. The smooth version cannot be quoted directly.
+A non-star-shaped $D_m$ is triangulated into star-shaped pieces; shared interior edges cancel by orientation. For a merely locally integrable $F_m$, the singular points must be excised, the limit taken, and the small boundary circles shown to vanish. The formula still keeps an integral in the homotopy parameter.
 
-For elements that satisfy neither the Carlson, nor the Appell, nor the homotopy condition, define the direct-quadrature set $\mathcal Q_{\mathrm{direct}}$. A double-exponential step-halving test
-
-$$
-|I_{h/2}-I_h|<\mathrm{tol}
-$$
-
-is only an a-posteriori estimate. A strict error bound requires the order of the endpoint singularity, the width of the complex-analytic strip, the discrete tail, the error of the outer quadrature, and the rounding error.
-
-**Conclusion of this section.** The homotopy formula holds term by term, but it retains an integral in the homotopy parameter. Direct quadrature is a legitimate fallback. It does not automatically carry a certificate of absolute error.
+Elements that satisfy none of the Carlson, Appell, or homotopy conditions go to direct quadrature, $\mathcal Q_{\rm direct}$. A double-exponential halving test $|I_{h/2}-I_h|<\mathrm{tol}$ is an a-posteriori estimate only. A strict bound needs the endpoint singularity order, the analyticity strip width, the discrete tail, the outer quadrature error, and rounding. Direct quadrature is a legitimate fallback without an automatic certificate.
 
 ## 1.13 Conditional place of the higher-genus theta channel
 
-**Objective of this section.** State when a hyperelliptic integral enters the residual, and give a checkable upper bound on the truncation error of a theta series.
+The higher-genus channel is entered only when algebraization actually yields $Y^2=P_n(t)$ with $P_n$ square-free ($\gcd(P_n,P_n')=1$), of degree $n\ge5$, and the differential is genuinely abelian on that curve. For $n=2g+1$ or $2g+2$ the genus is $g=\lfloor(n-1)/2\rfloor$. Neither nonconvex geometry nor a nonintegral $\alpha_k$ implies $n\ge5$; the degree comes from the actual elimination.
 
-The higher-genus channel is entered only when algebraization has actually produced
-
-$$
-Y^2=P_n(t),
-$$
-
-where $P_n$ is a square-free polynomial of degree $n\ge 5$, and the differential to be integrated is genuinely an abelian differential on that curve. Square-freeness requires
-
-$$
-\gcd(P_n,P_n')=1.
-$$
-
-If $n=2g+1$ or $n=2g+2$, the genus of the smooth projective model is
-
-$$
-g=\left\lfloor\frac{n-1}{2}\right\rfloor.
-$$
-
-Nonconvex geometry does not by itself imply $n\ge 5$, and a nonintegral $\alpha_k$ does not by itself imply a hyperelliptic curve. The degree of the curve must be obtained term by term from the actual elimination.
-
-Let
-
-$$
-\tau=X+iY,
-$$
-
-where $X=X^T$ and $Y=Y^T>0$ (in this paragraph $Y$ is the imaginary part of the period matrix, not the curve variable $Y$ above), and let
-
-$$
-\mathbf z=\mathbf a+i\mathbf b.
-$$
-
-Define the Riemann theta series of genus $g$ by
+Let $\tau=X+iY$ with $X=X^{\!\top}$ and $Y=Y^{\!\top}>0$ (here $Y$ is the imaginary part of the period matrix), and let $\mathbf z=\mathbf a+i\mathbf b$. Define
 
 $$
 \Theta(\mathbf z\mid\tau)
@@ -2055,80 +853,12 @@ $$
 \right).
 $$
 
-Let $\lambda=\lambda_{\min}(Y)>0$. The absolute value of a general term satisfies
-
-$$
-\left|
-\exp\left(
-\pi i\mathbf n^T\tau\mathbf n
-+
-2\pi i\mathbf n^T\mathbf z
-\right)
-\right|
-=
-\exp\left(
--\pi\mathbf n^TY\mathbf n
--
-2\pi\mathbf n^T\mathbf b
-\right)
-$$
-
-and
-
-$$
-\left|
-\exp\left(
-\pi i\mathbf n^T\tau\mathbf n
-+
-2\pi i\mathbf n^T\mathbf z
-\right)
-\right|
-\le
-\exp\left(
--\pi\lambda\|\mathbf n\|_2^2
-+
-2\pi\|\mathbf b\|_2\|\mathbf n\|_2
-\right).
-$$
-
-The second bound follows from $\mathbf n^TY\mathbf n\ge\lambda\|\mathbf n\|_2^2$ and $-\mathbf n^T\mathbf b\le\|\mathbf b\|_2\|\mathbf n\|_2$. Set
-
-$$
-r_\Theta
-=
-\frac{\|\mathbf b\|_2}{\lambda}.
-$$
-
-For $q\ge r_\Theta$,
-
-$$
--\pi\lambda q^2+2\pi\|\mathbf b\|_2 q
-=
-\frac{\pi\|\mathbf b\|_2^2}{\lambda}
--
-\pi\lambda(q-r_\Theta)^2,
-$$
-
-which is the completion of the square. The shell in the infinity norm,
-
-$$
-\{\mathbf n\in\mathbb Z^g:\|\mathbf n\|_\infty=q\},
-$$
-
-contains
-
-$$
-N_g(q)
-=(2q+1)^g-(2q-1)^g
-$$
-
-lattice points, the difference of the two cubes of odd integer side length. If $N+1\ge r_\Theta$, the tail outside the truncation region $\|\mathbf n\|_\infty\le N$ satisfies
+With $\lambda=\lambda_{\min}(Y)$, each term has modulus $\exp(-\pi\mathbf n^TY\mathbf n-2\pi\mathbf n^T\mathbf b)\le\exp(-\pi\lambda\|\mathbf n\|_2^2+2\pi\|\mathbf b\|_2\|\mathbf n\|_2)$. With $r_\Theta=\|\mathbf b\|_2/\lambda$ and $q\ge r_\Theta$, completing the square gives $-\pi\lambda q^2+2\pi\|\mathbf b\|_2q=\pi\|\mathbf b\|_2^2/\lambda-\pi\lambda(q-r_\Theta)^2$. The exponent $f(s)=-\pi\lambda s^2+2\pi\|\mathbf b\|_2s$ decreases for $s\ge r_\Theta$, and on the shell $\|\mathbf n\|_2\ge\|\mathbf n\|_\infty=q\ge r_\Theta$. So every term of the shell is bounded by $e^{f(q)}$, with $f$ taken as a whole; its two terms are not bounded separately, and the condition $q\ge r_\Theta$ is what makes the bound valid. The shell $\|\mathbf n\|_\infty=q$ has $N_g(q)=(2q+1)^g-(2q-1)^g$ points. If $N+1\ge r_\Theta$, the tail outside $\|\mathbf n\|_\infty\le N$ is bounded by
 
 $$
 \boxed{
-\begin{aligned}
 B_g(N)
-={}&
+=
 \exp\left(
 \frac{\pi\|\mathbf b\|_2^2}{\lambda}
 \right)
@@ -2137,254 +867,70 @@ N_g(q)
 \exp\left[
 -\pi\lambda(q-r_\Theta)^2
 \right].
-\end{aligned}
 }
 $$
 
-Thus, if some $N$ has been computed for which
-
-$$
-B_g(N)\le\varepsilon_\Theta,
-$$
-
-one may assert only that the truncation error of the series does not exceed $\varepsilon_\Theta$. The errors of the period matrix, of the Abel map, of theta derivatives, of the algebraic reduction, and of floating-point arithmetic must still be estimated separately.
-
-**Conclusion of this section.** The theta function is a conditional channel for specified square-free abelian sub-integrals of higher genus. The tail bound is explicit. Nonconvexity and a nonintegral exponent are no longer miswritten as automatic evidence of higher genus.
+$B_g(N)\le\varepsilon_\Theta$ bounds only the series truncation. The errors of the period matrix, the Abel map, theta derivatives, the algebraic reduction, and floating point must be estimated separately.
 
 ## 1.14 Auxiliary route through a polynomial density
 
-**Objective of this section.** Decide independently whether a polynomial fit of finite degree can turn the original Cauchy model into a strict closed form.
-
-On the compact set $V$, each summand $\rho_k$ is real analytic. For a fixed degree $p$ one may construct
-
-$$
-\rho_{k,p}(\mathbf y)
-=
-\sum_{|\boldsymbol\beta|\le p}
-c_{k,\boldsymbol\beta}
-(\mathbf y-\mathbf y_\ast)^{\boldsymbol\beta},
-$$
-
-where
-
-$$
-\boldsymbol\beta=(\beta_1,\beta_2,\beta_3),
-\qquad
-|\boldsymbol\beta|=\beta_1+\beta_2+\beta_3,
-$$
-
-$$
-(\mathbf y-\mathbf y_\ast)^{\boldsymbol\beta}
-=
-(y_1-y_{\ast,1})^{\beta_1}
-(y_2-y_{\ast,2})^{\beta_2}
-(y_3-y_{\ast,3})^{\beta_3}.
-$$
-
-This expression is a polynomial surrogate. It is not an identity for the original Cauchy function at finite degree. By the theory of polynomial densities on polyhedra, the potential, the gradient, and the Hessian of $\rho_{k,p}$ can be written term by term, through a boundary recurrence, as algebraic expressions in vertices, faces, and edges. That conclusion applies to $\rho_{k,p}$. It does not apply automatically to $\rho_k$.
-
-Define the surrogate Hessian
-
-$$
-\begin{aligned}
-H_{ij,k}^{(p)}(\mathbf x)
-={}&
-G\int_V
-\rho_{k,p}(\mathbf y)
-\\
-&\times
-\frac{
-3(x_i-y_i)(x_j-y_j)
--
-\|\mathbf x-\mathbf y\|^2\delta_{ij}
-}{
-\|\mathbf x-\mathbf y\|^5
-}
-\,d^3\mathbf y.
-\end{aligned}
-$$
-
-The difference between the original target and the surrogate is
-
-$$
-\begin{aligned}
-E_{ij,k}^{(p)}(\mathbf x)
-={}&
-H_{ij,k}(\mathbf x)-H_{ij,k}^{(p)}(\mathbf x)\\
-={}&
-G\int_V
-\left[
-\rho_k(\mathbf y)-\rho_{k,p}(\mathbf y)
-\right]
-\\
-&\times
-\frac{
-3(x_i-y_i)(x_j-y_j)
--
-\|\mathbf x-\mathbf y\|^2\delta_{ij}
-}{
-\|\mathbf x-\mathbf y\|^5
-}
-\,d^3\mathbf y.
-\end{aligned}
-$$
-
-Let $\mathbf x$ be an exterior point, and set
-
-$$
-d=\operatorname{dist}(\mathbf x,V)>0.
-$$
-
-The numerator estimate
-
-$$
-\left|
-3(x_i-y_i)(x_j-y_j)
--
-\|\mathbf x-\mathbf y\|^2\delta_{ij}
-\right|
-\le
-3\|\mathbf x-\mathbf y\|^2
-+
-\|\mathbf x-\mathbf y\|^2
-=
-4\|\mathbf x-\mathbf y\|^2
-$$
-
-uses $|r_i r_j|\le R^2$. Division by $R^5$ and the lower bound $R\ge d$ give
-
-$$
-\left|
-\frac{
-3(x_i-y_i)(x_j-y_j)
--
-\|\mathbf x-\mathbf y\|^2\delta_{ij}
-}{
-\|\mathbf x-\mathbf y\|^5
-}
-\right|
-\le
-\frac4{d^3}.
-$$
-
-If
-
-$$
-\sup_{\mathbf y\in V}
-\left|
-\rho_k(\mathbf y)-\rho_{k,p}(\mathbf y)
-\right|
-\le
-\varepsilon_{\rho,k,p},
-$$
-
-then
+On compact $V$ each summand $\rho_k$ is real-analytic, so for a fixed degree $p$ one may fit $\rho_{k,p}(\mathbf y)=\sum_{|\boldsymbol\beta|\le p}c_{k,\boldsymbol\beta}(\mathbf y-\mathbf y_\ast)^{\boldsymbol\beta}$ (multi-index $\boldsymbol\beta$). This is a polynomial surrogate, not an identity for the Cauchy function. The potential, gradient, and Hessian of $\rho_{k,p}$ have term-by-term algebraic boundary recurrences on polyhedra, but that holds for $\rho_{k,p}$ only. Let $H^{(p)}_{ij,k}$ be the Hessian of the surrogate and $E^{(p)}_{ij,k}=H_{ij,k}-H^{(p)}_{ij,k}$. That is the kernel of Section 1.2 integrated against $\rho_k-\rho_{k,p}$. For an exterior point with $d_V=\operatorname{dist}(\mathbf x,V)>0$, $|3r_ir_j-R^2\delta_{ij}|\le2R^2$ gives a kernel bound of $2/d_V^3$. Hence, if $\sup_V|\rho_k-\rho_{k,p}|\le\varepsilon_{\rho,k,p}$,
 
 $$
 \boxed{
 |E_{ij,k}^{(p)}(\mathbf x)|
 \le
-\frac{4G\,\operatorname{Vol}(V)}{d^3}
+\frac{2G\,\operatorname{Vol}(V)}{d_V^3}
 \varepsilon_{\rho,k,p}.
 }
 $$
 
-The bound is valid for exterior points. For interior points, boundary points, and the finite-part Hessian, the kernel does not admit the same uniform majorant near $\mathbf y=\mathbf x$. The local singular part must be separated before the density-approximation error is estimated.
-
-A fit of degree two or three cannot promise $10^{-5}$ or $10^{-7}$ in general without $\sigma_k$, the locations of the kernel centres, the scale of the bounding box, and the norm in which the error is measured. The rigorous writing of this route is
-
-$$
-H_{ij,k}(\mathbf x)
-=
-H_{ij,k}^{(p)}(\mathbf x)
-+
-E_{ij,k}^{(p)}(\mathbf x),
-$$
-
-together with a verifiable upper bound on $E_{ij,k}^{(p)}$. If one lets $p\to\infty$, one must still prove that the approximating sequence converges in a suitable norm, that the gravitational integral operator is continuous in that norm, and that the limit may be exchanged with the integral.
-
-**Conclusion of this section.** The polynomial auxiliary route is useful, but it is an analytic approximation that carries a model error. The phrase “zero numerical-integration error” belongs only to the surrogate polynomial model, not to a Cauchy fit of finite order.
+For interior and boundary points and the finite-part Hessian, the local singular part must be separated first. Without $\sigma_k$, the centre locations, the box scale, and the norm, a degree-two or degree-three fit cannot promise $10^{-5}$ or $10^{-7}$. The rigorous form is $H=H^{(p)}+E^{(p)}$ together with a verifiable bound on $E^{(p)}$. The limit $p\to\infty$ needs convergence in a norm in which the gravity operator is continuous, and justification of the limit exchange. "Zero integration error" applies to the surrogate polynomial model only.
 
 ## 1.15 Self-check list and range of validity
 
-**Objective of this section.** Before a formal expository file is generated, make a final check of logical closure, notation, boundaries, and error statements.
+Before a result is reported, verify:
 
-First, verify that the geometric input defines a finite, polyhedral, consistently oriented volume domain without self-intersection.
+1. the geometric input defines a finite, consistently oriented, non-self-intersecting polyhedral volume;
+2. every ray segment is listed in $E_{\mathbf x}(\mathbf u)$, and $E_{\mathbf x}=E^{\mathrm{near}}_{\mathbf x}\mathbin{\dot\cup}E^{\mathrm{far}}_{\mathbf x}$;
+3. the residual classes are disjoint, so no element is added by two channels;
+4. every pointwise residual satisfies $F_q=F_q^{\mathrm{ext}}+F_q^{\mathrm{rem}}$; otherwise use complementary elements, not a formal subtraction;
+5. the $\alpha=1$ finite part uses the limit of Section 1.6;
+6. every Carlson element satisfies the square-free, branch, pole, and Hermite conditions;
+7. Appell evaluates only the radial integral, and the outer spherical integral is still treated;
+8. the residual is claimed only piecewise regular and integrable;
+9. the error budget includes special-function truncation, inner and outer quadrature, endpoints, and rounding;
+10. the polynomial route reports $E^{(p)}_{ij,k}$ and does not call the surrogate an identity.
 
-Second, verify that every ray-intersection segment is listed in $E_{\mathbf x}(\mathbf u)$, and that the near and far fields satisfy
+What holds rigorously:
 
-$$
-E_{\mathbf x}(\mathbf u)
-=
-E_{\mathbf x}^{\mathrm{near}}(\mathbf u)
-\mathbin{\dot\cup}
-E_{\mathbf x}^{\mathrm{far}}(\mathbf u).
-$$
+- RTFP has a complementary ray identity under the spherical finite-part convention;
+- the Feynman parametrization is an exact moving-centre identity;
+- at fixed parameter the spatial integral reduces to faces;
+- an edge sub-integral enters the Carlson channel under the algebraic criteria;
+- every remaining element goes to a mutually exclusive residual channel.
 
-Third, verify that the residual classification is a union of disjoint sets. One and the same complete element must not be added simultaneously by Carlson, Appell, homotopy, and direct quadrature.
+What does not hold in general:
 
-Fourth, verify that every pointwise residual satisfies the explicit definition
-
-$$
-F_q=F_q^{\mathrm{ext}}+F_q^{\mathrm{rem}}.
-$$
-
-Otherwise use a complementary collection of elements, not a formal subtraction.
-
-Fifth, verify that the finite part for $\alpha=1$ uses
-
-$$
-\lim_{\varepsilon\downarrow0}
-\left[
-P(L)-P(\varepsilon)
--
-\frac1{A_0}\log\frac{\ell_0}{\varepsilon}
-\right].
-$$
-
-Sixth, verify that every Carlson element satisfies the conditions of a square-free quartic, of the branch along the path, of the poles, and of Hermite reduction.
-
-Seventh, verify that Appell evaluates only the radial integral at fixed direction, and that the outer spherical integral is still treated.
-
-Eighth, verify that the global residual is declared only to be piecewise locally regular and integrable. Unless a separate proof is given, do not claim that it is smooth on the whole closed domain.
-
-Ninth, verify that the numerical error budget includes truncation of special functions, outer and inner quadrature, treatment of endpoints, and rounding.
-
-Tenth, verify that the polynomial route reports $E_{ij,k}^{(p)}$ explicitly, and does not call a surrogate of finite degree an identity for the original function.
-
-The conclusions that can be retained rigorously at present are these. RTFP has a complementary ray identity under the spherical finite-part convention. The Feynman parametrization has a strict moving-centre identity. A spatial integral at fixed parameter reduces rigorously to faces. A one-dimensional edge sub-integral may enter the Carlson channel when the additional algebraic criteria are satisfied. Every remaining element may be evaluated through a mutually exclusive residual channel.
-
-The following universal assertions do not hold. An arbitrary generalized Cauchy density, an arbitrary nonconvex polyhedron, and an arbitrary boundary point do not automatically possess a global closed form composed of finitely many elementary functions and Carlson functions. Not every residual is automatically zero. No fixed number of nodes, and no step-halving test, automatically produces a strict absolute error. A polynomial fit of finite order is not the original Cauchy model.
-
-**Conclusion of this section.** The residual analysis, the Carlson conditions of Route B, and the polynomial auxiliary route are placed under one complementary definition. The final conclusions are restricted strictly to the geometric, branch, regularization, and error conditions that have been listed.
+- a global closed form in elementary and Carlson functions for an arbitrary Cauchy density, nonconvex polyhedron, or boundary point;
+- an automatically zero residual;
+- a strict absolute error from a fixed node count or a halving test;
+- equality of a finite polynomial fit with the Cauchy model.
 
 # 2. A unified integral representation of gravity
 
-Chapter 1 fixed the geometric convention, the distributional Hessian, the finite part, the representations of Route A and Route B, and the residual criteria for a polyhedral generalized Cauchy density. This chapter rewrites the density kernel in the scale-parameter form used by the present SCF implementation, and derives the gradient, the Hessian, and the surface coupling quantities step by step from the three-dimensional volume integral. The two writings of the density are identical:
+This chapter rewrites the kernel in the scale-parameter form used by the SCF iteration and derives the gradient, Hessian, and surface quantities from the volume integral. The two writings agree by factorization:
 
 $$
 \left[1+\sigma_k^2|y-c_k|^2\right]^{-\alpha_k}
 =\sigma_k^{-2\alpha_k}\left[|y-c_k|^2+\sigma_k^{-2}\right]^{-\alpha_k}.
 $$
 
-The identity is the factorization $1+\sigma_k^2|y-c_k|^2=\sigma_k^2(|y-c_k|^2+\sigma_k^{-2})$. Throughout this chapter the same vectors are often written without boldface; they are the objects of Chapter 1.
+Vectors are often written without boldface here; they are the objects of Chapter 1.
 
 ## 2.1 Three-dimensional volume integral and ray representation
 
-For the $k$-th Cauchy kernel,
-
-$$
-\rho_k(y)
-=
-w_k\sigma_k^{-2\alpha_k}
-\left[
-|y-c_k|^2+a_k^2
-\right]^{-\alpha_k},
-\qquad
-a_k=\sigma_k^{-1}.
-$$
-
-Therefore
+With $\rho_k(y)=w_k\sigma_k^{-2\alpha_k}[|y-c_k|^2+a_k^2]^{-\alpha_k}$ and $a_k=\sigma_k^{-1}$,
 
 $$
 \nabla U(x)
@@ -2396,32 +942,10 @@ w_k\sigma_k^{-2\alpha_k}
 \left[
 |y-c_k|^2+a_k^2
 \right]^{-\alpha_k}
-dy.
+dy ,
 $$
 
-The minus sign is the derivative of $|x-y|^{-1}$ with respect to the field point, as in Section 1.2. Set
-
-$$
-y=x-Ru,\qquad u\in S^2.
-$$
-
-Then
-
-$$
-x-y=Ru,\qquad dy=R^2\,dR\,d\Omega,
-$$
-
-and
-
-$$
-\frac{x-y}{|x-y|^3}\,dy
-=
-\frac{Ru}{R^3}R^2\,dR\,d\Omega
-=
-u\,dR\,d\Omega.
-$$
-
-Hence
+where the sign comes from differentiating $|x-y|^{-1}$ in the field point. With $y=x-Ru$, the gradient kernel becomes $(x-y)|x-y|^{-3}dy=u\,dR\,d\Omega$, so
 
 $$
 \boxed{
@@ -2435,74 +959,15 @@ u
 \int_{R_\ell^-(u)}^{R_\ell^+(u)}
 \frac{dR}
 {\left[(R-b_k(u))^2+d_k^2(u)\right]^{\alpha_k}}
-\,d\Omega.
+\,d\Omega,
 }
 $$
 
-Here
-
-$$
-p_k=x-c_k,
-\qquad
-b_k(u)=p_k\cdot u,
-$$
-
-$$
-d_k^2(u)
-=
-a_k^2+|p_k|^2-b_k^2(u)>0.
-$$
-
-The formula is exactly equivalent to the three-dimensional volume integral. The sum over $\ell$ runs through every nonempty intersection segment of Section 1.4. If a segment begins at $R=0$, the gradient integral is nonsingular, because the integrand in $R$ is bounded, whereas the Hessian integral of the next sections is not.
-
----
+with $p_k=x-c_k$, $b_k=p_k\cdot u$, and $d_k^2=a_k^2+|p_k|^2-b_k^2>0$. This is exactly the volume integral. The sum runs over every nonempty segment of Section 1.4. A segment starting at $R=0$ is harmless for the gradient (bounded integrand), but not for the Hessian.
 
 ## 2.2 Feynman parametrization
 
-Define
-
-$$
-A(y)=|y-x|^2,
-$$
-
-$$
-B_k(y)=|y-c_k|^2+a_k^2.
-$$
-
-The $k$-th term of the original potential is
-
-$$
-U_k(x)
-=
-G w_k\sigma_k^{-2\alpha_k}
-\int_V A(y)^{-1/2}B_k(y)^{-\alpha_k}\,dy.
-$$
-
-Use the Feynman identity of Section 1.7,
-
-$$
-A^{-1/2}B^{-\alpha}
-=
-C_\alpha
-\int_0^1
-u^{-1/2}(1-u)^{\alpha-1}
-[uA+(1-u)B]^{-p}\,du,
-$$
-
-where
-
-$$
-p=\alpha+\frac12,
-$$
-
-$$
-C_\alpha
-=
-\frac{\Gamma(\alpha+\frac12)}
-{\Gamma(\frac12)\Gamma(\alpha)}.
-$$
-
-Therefore
+With $A(y)=|y-x|^2$ and $B_k(y)=|y-c_k|^2+a_k^2$, the $k$-th potential is $U_k=Gw_k\sigma_k^{-2\alpha_k}\int_VA^{-1/2}B_k^{-\alpha_k}dy$. By Section 1.7, with $p_k=\alpha_k+\tfrac12$ and $C_{\alpha_k}$ of Section 1.8,
 
 $$
 U_k(x)
@@ -2511,64 +976,24 @@ G w_k\sigma_k^{-2\alpha_k}C_{\alpha_k}
 \int_0^1
 u^{-1/2}(1-u)^{\alpha_k-1}
 S_{p_k}(x,u)\,du,
+\qquad
+S_{p_k}(x,u)=\int_VQ_k^{-p_k}\,dy,\qquad
+Q_k=uA(y)+(1-u)B_k(y).
 $$
-
-with
-
-$$
-p_k=\alpha_k+\frac12
-$$
-
-and
-
-$$
-S_{p_k}(x,u)
-=
-\int_V
-Q_k(x,y,u)^{-p_k}\,dy,
-$$
-
-$$
-Q_k(x,y,u)
-=
-uA(y)+(1-u)B_k(y).
-$$
-
----
 
 ## 2.3 Moving centre and effective screening scale
 
-Expand $Q_k$:
-
-$$
-Q_k
-=
-u|y-x|^2
-+
-(1-u)\left(|y-c_k|^2+a_k^2\right).
-$$
-
-Define the moving centre
+Completing the square as in Section 1.7,
 
 $$
 \boxed{
-z_k(x,u)=ux+(1-u)c_k.
-}
-$$
-
-Completion of the square, as in Section 1.7, gives
-
-$$
+z_k(x,u)=ux+(1-u)c_k,
+}\qquad
 \boxed{
 Q_k(x,y,u)
 =
 |y-z_k(x,u)|^2+m_k^2(x,u),
-}
-$$
-
-where
-
-$$
+}\qquad
 \boxed{
 m_k^2(x,u)
 =
@@ -2579,106 +1004,26 @@ a_k^2+u|x-c_k|^2
 }
 $$
 
-Since $a_k>0$,
-
-$$
-m_k^2(x,u)>0\qquad(0\le u<1),
-$$
-
-but
-
-$$
-m_k^2(x,u)\to0\qquad(u\to1).
-$$
-
-The Feynman parametrization therefore moves the source-point singularity to the parametric endpoint $u=1$.
-
----
+$m_k^2>0$ for $0\le u<1$ and $m_k^2\to0$ as $u\to1$: the parametrization moves the source-point singularity to the endpoint $u=1$.
 
 ## 2.4 Unified gradient formula
 
-Differentiation in $x$ begins with the derivatives of $Q_k$. From
+From $\nabla_xz_k=uI$ and $\nabla_xm_k^2=2u(1-u)(x-c_k)$,
 
 $$
-z_k=ux+(1-u)c_k
+\nabla_xQ_k=-2u(y-z_k)+2u(1-u)(x-c_k)=2u(x-y),
 $$
 
-one has
-
-$$
-\nabla_x z_k=uI.
-$$
-
-From
-
-$$
-m_k^2
-=
-(1-u)\left[a_k^2+u|x-c_k|^2\right]
-$$
-
-one has
-
-$$
-\nabla_xm_k^2
-=
-2u(1-u)(x-c_k).
-$$
-
-On the other hand,
-
-$$
-\nabla_x|y-z_k|^2
-=
--2u(y-z_k),
-$$
-
-because $\nabla_x z_k=uI$. Adding the two contributions,
-
-$$
-\begin{aligned}
-\nabla_xQ_k
-&=
--2u(y-z_k)
-+
-2u(1-u)(x-c_k)\\
-&=
-2u\bigl(x-y\bigr).
-\end{aligned}
-$$
-
-The cancellation, written out with $z_k=ux+(1-u)c_k$, is
-
-$$
--(y-z_k)+(1-u)(x-c_k)
-=
--y+ux+(1-u)c_k+(1-u)x-(1-u)c_k
-=
-x-y.
-$$
-
-Therefore
-
-$$
-\nabla_x Q_k^{-p_k}
-=
--p_kQ_k^{-p_k-1}\nabla_xQ_k
-=
--2p_k u(x-y)Q_k^{-p_k-1}.
-$$
-
-The unified gradient is
+since $-(y-z_k)+(1-u)(x-c_k)=x-y$. Hence $\nabla_xQ_k^{-p_k}=-2p_ku(x-y)Q_k^{-p_k-1}$, and
 
 $$
 \boxed{
-\begin{aligned}
 \nabla U(x)
-={}&
+=
 -2G
 \sum_{k=1}^K
 w_k\sigma_k^{-2\alpha_k}
-C_{\alpha_k}p_k\\
-&\times
+C_{\alpha_k}p_k
 \int_0^1
 u^{1/2}(1-u)^{\alpha_k-1}
 \int_V
@@ -2686,142 +1031,41 @@ u^{1/2}(1-u)^{\alpha_k-1}
 \left[
 |y-z_k|^2+m_k^2
 \right]^{-p_k-1}
-dy\,du.
-\end{aligned}
+dy\,du,
 }
 $$
 
-The power of $u$ is $u^{-1/2}\cdot u=u^{1/2}$, coming from the Feynman weight and from the factor $u$ in $\nabla_x Q_k$. Here
-
-$$
-z_k=z_k(x,u),
-\qquad
-m_k=m_k(x,u).
-$$
-
-The formula is a unified representation of the gradient.
-
-For an exterior point $x\notin\overline V$, differentiation in $x$ may be exchanged with integration. For an interior or boundary point, a local singular analysis is required first. That exchange cannot be quoted directly.
-
----
+where $u^{1/2}$ is the Feynman weight $u^{-1/2}$ times the factor $u$ of $\nabla_xQ_k$. Differentiation and integration may be exchanged for exterior points. Interior and boundary points need a local singular analysis first.
 
 ## 2.5 Unified Hessian formula
 
-Differentiate the gradient integrand:
-
-$$
-\partial_{x_j}
-\left[
-(x_i-y_i)Q_k^{-p_k-1}
-\right].
-$$
-
-The first contribution is
-
-$$
-\partial_{x_j}(x_i-y_i)
-=
-\delta_{ij}.
-$$
-
-The second is
-
-$$
-\partial_{x_j}Q_k^{-p_k-1}
-=
--(p_k+1)Q_k^{-p_k-2}
-\partial_{x_j}Q_k,
-$$
-
-and
-
-$$
-\partial_{x_j}Q_k
-=
-2u(x_j-y_j),
-$$
-
-so
-
-$$
-\begin{aligned}
-\partial_{x_j}
-\left[
-(x_i-y_i)Q_k^{-p_k-1}
-\right]
-={}&
-\delta_{ij}Q_k^{-p_k-1}\\
-&-
-2u(p_k+1)
-(x_i-y_i)(x_j-y_j)
-Q_k^{-p_k-2}.
-\end{aligned}
-$$
-
-Insert this expression into the gradient formula. The prefactor $-2G\sum w_k\sigma_k^{-2\alpha_k}C_{\alpha_k}p_k$, multiplied by the two terms and by the extra factor $u$ already present in the gradient weight $u^{1/2}=u\cdot u^{-1/2}$, produces the coefficients $4p_k(p_k+1)u^2$ and $-2p_k u$. The unified Hessian is
+From $\partial_j[(x_i-y_i)Q_k^{-p_k-1}]=\delta_{ij}Q_k^{-p_k-1}-2u(p_k+1)(x_i-y_i)(x_j-y_j)Q_k^{-p_k-2}$ and the gradient prefactor,
 
 $$
 \boxed{
-\begin{aligned}
-H_{ij}(x)
-={}&
-G\sum_{k=1}^K
-w_k\sigma_k^{-2\alpha_k}
-C_{\alpha_k}\\
-&\times
-\int_0^1
-u^{-1/2}(1-u)^{\alpha_k-1}
-\Bigg[
-4p_k(p_k+1)u^2\\
-&\qquad\qquad\times
-\int_V
-\frac{(x_i-y_i)(x_j-y_j)}
-{\left(|y-z_k|^2+m_k^2\right)^{p_k+2}}
-\,dy\\
-&\qquad
--
-2p_ku
-\delta_{ij}
-\int_V
-\frac{dy}
-{\left(|y-z_k|^2+m_k^2\right)^{p_k+1}}
-\Bigg]du.
-\end{aligned}
-}
-$$
-
-In matrix form,
-
-$$
-\boxed{
-\begin{aligned}
 H(x)
-={}&
+=
 G\sum_{k=1}^K
 w_k\sigma_k^{-2\alpha_k}
-C_{\alpha_k}\\
-&\times\int_0^1
+C_{\alpha_k}
+\int_0^1
 u^{-1/2}(1-u)^{\alpha_k-1}
 \int_V
 \Big[
 4p_k(p_k+1)u^2
-(x-y)(x-y)^T\\
-&\qquad\qquad\qquad\qquad\cdot
+(x-y)(x-y)^T
 Q_k^{-p_k-2}
 -
 2p_kuI\,Q_k^{-p_k-1}
-\Big]dy\,du.
-\end{aligned}
+\Big]dy\,du .
 }
 $$
 
-For an exterior point this formula is a strict representation of the classical Hessian.
-
----
+For an exterior point this is a strict representation of the classical Hessian.
 
 ## 2.6 Consistency with the Newtonian Hessian
 
-When $x\notin\overline V$, the original potential may be differentiated twice directly:
+For $x\notin\overline V$ the potential can be differentiated directly:
 
 $$
 H_{ij}(x)
@@ -2834,16 +1078,10 @@ w_k\sigma_k^{-2\alpha_k}
 -
 \frac{\delta_{ij}}{|x-y|^3}
 \right]
-B_k(y)^{-\alpha_k}\,dy.
+B_k(y)^{-\alpha_k}\,dy .
 $$
 
-The Feynman formula only rewrites
-
-$$
-|x-y|^{-1}B_k(y)^{-\alpha_k}
-$$
-
-as a parameter integral. The Feynman identity of Section 1.7 holds pointwise, and an exterior point has a positive lower bound on distance, so Fubini's theorem and the dominated-convergence theorem permit the exchange of the order of integration and the order of differentiation. Therefore
+The Feynman formula only rewrites $|x-y|^{-1}B_k^{-\alpha_k}$ pointwise as a parameter integral. With a positive distance bound, Fubini and dominated convergence allow both exchanges, so
 
 $$
 \boxed{
@@ -2852,55 +1090,13 @@ H_{\mathrm{Feynman}}(x)=H_{\mathrm{Newton}}(x)
 }
 $$
 
-The Feynman representation and the Newtonian representation of the exterior field agree.
-
 ---
 
 ## 2.7 Finite parts at interior points and at surface points
 
-When $x\in V$ or $x\in\partial V$, the limit $u\to 1$ forces
+For $x\in V$ or $x\in\partial V$, the limit $u\to1$ forces $z_k\to x$ and $m_k\to0$, so the Feynman Hessian is not an absolutely convergent integral. The reference is the spherical finite part $H^{\mathrm{FP}}_{ij,\ell_0}$ of Section 1.3. The Feynman value may be said to compute it only after proving that $\lim_{\delta\downarrow0}[H^{(\delta)}_{\mathrm{Feynman}}-\text{the same logarithmic counterterm}]=H^{\mathrm{FP}}_{\ell_0}$, where $H^{(\delta)}_{\mathrm{Feynman}}$ is the parameter integral cut off at $u\le1-\delta$.
 
-$$
-z_k(x,u)\to x,
-\qquad
-m_k(x,u)\to 0.
-$$
-
-The Feynman formula for the Hessian cannot then be read as an ordinary absolutely convergent integral.
-
-The spherical finite part must be introduced first:
-
-$$
-H^{\mathrm{FP}}_{ij,\ell_0}(x)
-=
-\lim_{\varepsilon\downarrow0}
-\left[
-J_{ij,\varepsilon}(x)
--
-G\rho_K(x)C_{ij}(x)
-\log\frac{\ell_0}{\varepsilon}
-\right]
--
-\frac{4\pi G}{3}
-\vartheta_x\rho_K(x)\delta_{ij}.
-$$
-
-Only after one has proved
-
-$$
-\lim_{\delta\downarrow0}
-\left[
-H_{\mathrm{Feynman}}^{(\delta)}(x)
--
-\text{the same logarithmic counterterm}
-\right]
-=
-H^{\mathrm{FP}}_{\ell_0}(x)
-$$
-
-may one say that the Feynman representation has computed that same finite part. The symbol $H_{\mathrm{Feynman}}^{(\delta)}$ denotes the parameter integral cut off at $u\le 1-\delta$.
-
-**Lemma 2.7.0 (The Feynman cut-off generates the contact term itself).** For every $\delta>0$, $H^{(\delta)}_{\mathrm{Feynman}}(x)=\nabla^2U^{\delta}(x)$ exactly, where $U^\delta$ is the potential of the truncated kernel $K^\delta=C_\alpha\int_0^{1-\delta}u^{-1/2}(1-u)^{\alpha-1}[uA+(1-u)B]^{-p}\,du$. The integrand is smooth for $u\le 1-\delta$ (because $m^2\ge\delta a^2>0$), so differentiation under the integral sign is legitimate. The missing part $K-K^\delta$ is concentrated at the scale $m\sim\delta^{1/2}$ around $\mathbf y=\mathbf x$; after the rescaling of the proof of Proposition 2.7.1 it is, up to the centre shift $\eta=O(\delta^{1/2})$ controlled there, a radial function $\kappa(|\boldsymbol\xi|)$ with $\kappa(\xi)\sim\xi^{-1}$ as $\xi\to 0$ and rapid decay. For a radial $\kappa$ of this type and a cone of directions $\Gamma$ with $C_{ij}=0$ and solid-angle fraction $\vartheta$, the spherical-exclusion convention gives
+**Lemma 2.7.0 (The Feynman cut-off generates the contact term itself).** For every $\delta>0$, $H^{(\delta)}_{\mathrm{Feynman}}=\nabla^2U^\delta$ exactly, where $U^\delta$ is the potential of the truncated kernel $K^\delta=C_\alpha\int_0^{1-\delta}u^{-1/2}(1-u)^{\alpha-1}[uA+(1-u)B]^{-p}\,du$. Its integrand is smooth because $m^2\ge\delta a^2>0$. The missing part $K-K^\delta$ is concentrated at scale $m\sim\delta^{1/2}$ around $\mathbf y=\mathbf x$. After the rescaling of Proposition 2.7.1, and up to the centre shift $\eta=O(\delta^{1/2})$ controlled there, it is a radial $\kappa(|\boldsymbol\xi|)$ with $\kappa\sim\xi^{-1}$ at $0$ and rapid decay. For a cone $\Gamma$ with $C_{ij}=0$ and solid-angle fraction $\vartheta$, the spherical convention gives
 
 $$
 \int_\Gamma\partial_i\partial_j\kappa\,d\boldsymbol\xi
@@ -2909,11 +1105,9 @@ $$
 =0 .
 $$
 
-The first term uses $\int_\Gamma\hat\xi_i\hat\xi_j\,d\Omega=\tfrac{4\pi\vartheta}{3}\delta_{ij}$ (which is $C_{ij}=0$), the identity $\partial_i\partial_j\kappa=\kappa''\hat\xi_i\hat\xi_j+\kappa'\xi^{-1}(\delta_{ij}-\hat\xi_i\hat\xi_j)$ away from the origin, and $\xi^2\kappa'\to-1$ at the origin. Hence the missing part contributes nothing in the limit, and **the $\delta$-limit of the Feynman Hessian already contains the contact term**: it equals the classical Hessian $\mathrm{p.v.}-\tfrac{4\pi G}{3}\rho_K\mathbf I$ at an interior point, and $H^{\mathrm{FP}}$ at a point where $C_{ij}=0$. The contact term must therefore **never be added a second time** to a Feynman value. Where $C_{ij}\ne 0$ (edges, vertices), the same computation leaves the divergent term $C_{ij}\int\xi^{-1}\,d\xi$, which is the logarithm of Section 1.3, and only that logarithm is the counterterm in the display above.
+The left side is the spherical-convention value: the classical integral over $\Gamma\setminus\{\mathbf 0\}$ plus the contact term. For the classical part, $\partial_i\partial_j\kappa=\kappa''\hat\xi_i\hat\xi_j+\kappa'\xi^{-1}(\delta_{ij}-\hat\xi_i\hat\xi_j)$ and $\int_\Gamma\hat\xi_i\hat\xi_j\,d\Omega=\tfrac{4\pi\vartheta}{3}\delta_{ij}$ (that is, $C_{ij}=0$) give the angular integral $\tfrac{4\pi\vartheta}{3}\delta_{ij}(\kappa''+2\kappa'/\xi)=\tfrac{4\pi\vartheta}{3}\delta_{ij}\,\xi^{-2}(\xi^2\kappa')'$. The radial integral against $\xi^2d\xi$ is therefore $[\xi^2\kappa']_0^\infty$. Since $\kappa$ decays rapidly, $\xi^2\kappa'\to0$ at $\infty$, and $\xi^2\kappa'\to-1$ at $0$, so the bracket is $+1$. (A pure $\xi^{-1}$ without decay would give $\xi^2\kappa'\equiv-1$ and a zero bracket; the decay of $K-K^\delta$ is what makes it $+1$.) The contact term is the spherical-convention value of the $\xi^{-1}$ singularity on the cone, $-\tfrac{4\pi\vartheta}{3}\delta_{ij}$ (Section 1.3). So the missing part contributes nothing, and **the $\delta$-limit of the Feynman Hessian already contains the contact term**. It equals $\mathrm{p.v.}-\tfrac{4\pi G}{3}\rho_K\mathbf I$ at an interior point and $H^{\mathrm{FP}}$ where $C_{ij}=0$. The contact term must **never be added again** to a Feynman value. Where $C_{ij}\ne0$ (edges, vertices), the same computation leaves $C_{ij}\int\xi^{-1}d\xi$, the logarithm of Section 1.3, and that logarithm alone is the counterterm.
 
-*Example.* Unit ball, one kernel $\mathbf c=\mathbf 0$, $\sigma=1$, $\alpha=1$, $G=1$. At the interior point $\mathbf x=(0.3,0,0)$ the truncated Feynman trace is $-11.15270,\,-11.52494,\,-11.52874,\,-11.52878$ for $\delta=10^{-2},10^{-4},10^{-6},10^{-8}$, against $-4\pi\rho(\mathbf x)=-11.52878$. At the surface point $(1,0,0)$, $H_{xx}$ tends to $2.245$ in that numerical check. The exact value is the average $2.25194$ of the exterior value $2M=5.39353$ and the interior value $2M-4\pi\rho(1)=-0.88965$, with $M=4\pi-\pi^2=2.69677$ the mass of the ball; the remaining difference of $0.3\%$ is the quadrature error of the check.
-
-The strict conclusion, once the representations have been identified, is
+*Example.* Unit ball, one kernel with $\mathbf c=\mathbf 0$, $\sigma=\alpha=G=1$. (The ball is not a polyhedron, but its tangent cone at every surface point is a half-space, which is all the face-centre statements below use.) At $\mathbf x=(0.3,0,0)$ the truncated Feynman trace is $-11.15270,-11.52494,-11.52874,-11.52878$ for $\delta=10^{-2},10^{-4},10^{-6},10^{-8}$, against $-4\pi\rho(\mathbf x)=-11.52878$. At $(1,0,0)$, $H_{xx}\to2.245$ numerically. The exact value is the average $2.25194$ of the exterior value $2M=5.39353$ and the interior value $2M-4\pi\rho(1)=-0.88965$, where $M=4\pi-\pi^2=2.69677$ is the ball's mass. The $0.3\%$ gap is the quadrature error of the check.
 
 $$
 \boxed{
@@ -2932,26 +1126,20 @@ x\in\partial V,\ C_{ij}(x)=0:
 \\[4pt]
 x\text{ on an edge or at a vertex}:
 &
-H_{\ell_0}^{\mathrm{FP}}\text{ depends on the local tangent cone and on the reference scale}.
+H_{\ell_0}^{\mathrm{FP}}\text{ depends on the local tangent cone and on }\ell_0 .
 \end{array}
 }
 $$
 
-In an implementation, the primary path for interior points and for boundary points uses the RTFP finite part defined in Section 1.3. The Feynman Hessian may replace that path only after the match to the same local counterterm and to the same scale $\ell_0$ has been verified. At a triangular face centre that match is unconditional: Proposition 2.7.1 proves that the logarithmic counterterm is identically zero.
+For interior and boundary points, the primary path is the RTFP finite part of Section 1.3. The Feynman Hessian may replace it only after matching the same counterterm and the same $\ell_0$. At a triangular face centre the match is unconditional: Proposition 2.7.1 proves that the counterterm vanishes.
 
 ### Proposition 2.7.1 (Absence of the RTFP singularity at a triangular face centre)
 
-Let $\Delta_f\subset\partial V$ be a nondegenerate planar triangle, with outward unit normal $n$ and centroid
+Let $\Delta_f\subset\partial V$ be a nondegenerate triangle with outward normal $n$ and centroid $x_\star=\tfrac13(v_0+v_1+v_2)$, and let $\rho_K$ be as in Section 1.1. Then:
 
-$$
-x_\star=\frac13(v_0+v_1+v_2).
-$$
-
-Let $\rho_K$ be a generalized Cauchy density of Section 1.1. Then the RTFP Hessian at $x_\star$ has no logarithmic singularity. Precisely:
-
-1. There exists $r_0>0$ such that $V\cap B_{r_0}(x_\star)$ is the closed half-ball cut by the plane of $\Delta_f$.
-2. The inward spherical moment vanishes, $C_{ij}(x_\star)=0$, and the solid-angle fraction is $\vartheta_{x_\star}=\tfrac12$.
-3. The truncated integral $J_{ij,\varepsilon}(x_\star)$ remains bounded as $\varepsilon\downarrow 0$ and converges to a finite limit. Consequently
+1. there is $r_0>0$ such that $V\cap B_{r_0}(x_\star)$ is the half-ball cut by the plane of $\Delta_f$;
+2. $C_{ij}(x_\star)=0$ and $\vartheta_{x_\star}=\tfrac12$;
+3. $J_{ij,\varepsilon}(x_\star)$ converges to a finite limit as $\varepsilon\downarrow0$, and
 
    $$
    H_{ij,\ell_0}^{\mathrm{FP}}(x_\star)
@@ -2961,272 +1149,78 @@ Let $\rho_K$ be a generalized Cauchy density of Section 1.1. Then the RTFP Hessi
    \frac{2\pi G}{3}\rho_K(x_\star)\delta_{ij}
    $$
 
-   is independent of the reference length $\ell_0$.
-4. The same finiteness is obtained from the Feynman integral of Section 2.5: if $H_{ij}^{\mathrm{F},\delta}(x_\star)$ denotes that integral with the parameter restricted to $u\in[0,1-\delta]$, then $\lim_{\delta\downarrow 0}H_{ij}^{\mathrm{F},\delta}(x_\star)$ exists in $\mathbb R$ and equals $H_{ij,\ell_0}^{\mathrm{FP}}(x_\star)$ directly. The hemispherical contact term $-\tfrac{2\pi G}{3}\rho_K\delta_{ij}$ is already contained in that limit (Lemma 2.7.0) and is not added again. No Hadamard subtraction in $\ell_0$ is required.
-5. The interior and exterior limits of the classical Hessian exist and satisfy
+   is independent of $\ell_0$;
+4. with $H^{\mathrm{F},\delta}_{ij}$ the Section 2.5 integral restricted to $u\in[0,1-\delta]$, $\lim_{\delta\downarrow0}H^{\mathrm{F},\delta}_{ij}(x_\star)$ exists and equals $H^{\mathrm{FP}}_{ij,\ell_0}(x_\star)$. The hemispherical contact term is already in the limit (Lemma 2.7.0), and no Hadamard subtraction is needed;
+5. the one-sided classical limits exist and satisfy
 
    $$
    H^+=H^{\mathrm{FP}}+2\pi G\rho_K(x_\star)\,nn^{\!\top},
    \qquad
-   H^-=H^{\mathrm{FP}}-2\pi G\rho_K(x_\star)\,nn^{\!\top}.
+   H^-=H^{\mathrm{FP}}-2\pi G\rho_K(x_\star)\,nn^{\!\top},
    $$
 
-   Their average is $H^{\mathrm{FP}}$. Their jump is $H^+-H^-=4\pi G\rho_K(x_\star)\,nn^{\!\top}$, and
+   so their average is $H^{\mathrm{FP}}$, their jump is $H^+-H^-=4\pi G\rho_K\,nn^{\!\top}$, and $\operatorname{tr}H^--\operatorname{tr}H^+=-4\pi G\rho_K$.
 
-   $$
-   \operatorname{tr}H^--\operatorname{tr}H^+=-4\pi G\rho_K(x_\star).
-   $$
+Only the fact that $x_\star$ lies in the relative interior of $\Delta_f$ is used; the centroid is what Section 10.3 evaluates. Every nondegenerate triangle contains its centroid there, since the barycentric coordinates $(\tfrac13,\tfrac13,\tfrac13)$ are positive. Edge points and vertices are excluded: their cone is not a half-space, $C_{ij}$ need not vanish, and $H^{\mathrm{FP}}_{\ell_0}$ keeps the scale term.
 
-The centroid is essential only as the evaluation point used for the tidal tensor in Section 10.3. The argument uses solely that $x_\star$ lies in the relative interior of $\Delta_f$. Every nondegenerate triangle has its centroid in that relative interior, because the barycentric coordinates $\bigl(\tfrac13,\tfrac13,\tfrac13\bigr)$ are strictly positive. A point of an edge, or a vertex, is excluded: the tangent cone is then not a half-space, $C_{ij}$ need not vanish, and $H^{\mathrm{FP}}_{\ell_0}$ retains the scale term of Section 1.3.
+*Proof of (1).* The centroid is at positive distance $d_f$ from $\partial\Delta_f$. Take $r_0$ below both $d_f$ and the cone radius of Section 1.3. The tangent cone is then the half-space $\{(y-x_\star)\cdot n\le0\}$.
 
-*Proof of (1).* Nondegeneracy means that the three vertices are affinely independent, so $\Delta_f$ has positive area and a well-defined unit normal. The centroid lies at a positive distance $d_f$ from $\partial\Delta_f$. Section 1.3 supplies a radius inside which $V$ coincides with its tangent cone. Take $r_0$ smaller than both that radius and $d_f$. Then $B_{r_0}(x_\star)$ meets $\partial V$ only in the plane of $\Delta_f$, and the tangent cone is the half-space $\{y:(y-x_\star)\cdot n\le 0\}$.
+*Proof of (2).* The inward directions form the hemisphere $\Gamma=\{u\cdot n\ge0\}$. With $n=e_3$, its area is $2\pi$, so $\vartheta=\tfrac12$, and $\int_\Gamma u_i^2\,d\Omega=2\pi/3$ for $i=1,2,3$. All off-diagonal moments vanish by the $\varphi$-integrals. Hence $\int_\Gamma(3u_iu_j-\delta_{ij})\,d\Omega=0$, and by Section 1.3 the finite part is scale-free once it exists.
 
-*Proof of (2).* The inward cone of directions is the hemisphere
+*Proof of (3).* In the splitting of Section 1.5 the counterterm carries $C_{ij}=0$. The near difference is bounded by $\|\nabla\rho_K\|_{L^\infty(B_{r_0})}$, and the far field is absolutely integrable. So $\lim J_{ij,\varepsilon}$ exists as an ordinary limit, not a Hadamard part. The contact coefficient is $\tfrac{4\pi G}{3}\vartheta\rho_K=\tfrac{2\pi G}{3}\rho_K$.
 
-$$
-\Gamma_{x_\star}=\{u\in\mathbb S^2:u\cdot n\ge 0\}.
-$$
+*Proof of (4).* The ray factor $\int dR/R$ of $I_H$ looks singular at $R=0$. The Feynman form shows that this singularity is removable at a face centre. Fix one kernel. For $u<1$, $m^2\ge(1-u)a^2>0$, so the integrand is continuous, and only $\delta\downarrow0$ is at issue. Split $V$ into $V_{\rm near}=V\cap B_{r_0}(x_\star)$ and $V_{\rm far}$.
 
-A ray $x_\star-Ru$ enters the solid for every small $R>0$ if and only if $-u\cdot n\le 0$. Rotate coordinates so that $n=e_3$. On this hemisphere $\theta\in[0,\pi/2]$ and $\varphi\in[0,2\pi)$, with $d\Omega=\sin\theta\,d\theta\,d\varphi$. The area is
+*Far field.* With $\delta_1=r_0/(2(1+|x_\star-c|))$ and $1-u\le\delta_1$, one has $|z(u)-x_\star|\le r_0/2$, so $Q_u\ge r_0^2/4$ on $V_{\rm far}$. The weight $u^{-1/2}(1-u)^{\alpha-1}$ is in $L^1(0,1)$ for $\alpha>0$, so the far part converges absolutely.
 
-$$
-\int_{\Gamma}1\,d\Omega
-=
-\int_0^{2\pi}\!d\varphi\int_0^{\pi/2}\sin\theta\,d\theta
-=
-2\pi,
-$$
+*Near part: no density split.* On $V_{\rm near}$ the Feynman integrand is used whole. $Q_u=|y-z(u)|^2+m^2(u)$ already contains the Cauchy factor through $z$ and $m$ (Section 1.7), so the rescaling below treats the full integrand, and the density enters only through $\mu$ and $\eta$. The split $\rho_K=\rho_K(x_\star)+(\rho_K-\rho_K(x_\star))$ belongs to the ray side, part (3); the Feynman representation acts on the whole product $A^{-1/2}B^{-\alpha}$ and has no separate transform of the two pieces.
 
-so $\vartheta_{x_\star}=(1/(4\pi))\cdot 2\pi=\tfrac12$. The second moments are
-
-$$
-\int_{\Gamma}u_3^2\,d\Omega
-=
-\int_0^{2\pi}\!d\varphi\int_0^{\pi/2}\cos^2\theta\sin\theta\,d\theta
-=
-2\pi\int_0^1\mu^2\,d\mu
-=
-\frac{2\pi}{3},
-$$
-
-where $\mu=\cos\theta$, and
-
-$$
-\int_{\Gamma}u_1^2\,d\Omega
-=
-\Bigl(\int_0^{2\pi}\cos^2\varphi\,d\varphi\Bigr)
-\Bigl(\int_0^{\pi/2}\sin^3\theta\,d\theta\Bigr)
-=
-\pi\int_0^1(1-\mu^2)\,d\mu
-=
-\pi\cdot\frac23
-=
-\frac{2\pi}{3}.
-$$
-
-The same value is obtained for $u_2^2$ by replacing $\cos^2\varphi$ with $\sin^2\varphi$. Every off-diagonal moment contains a factor $\int_0^{2\pi}\cos\varphi\,d\varphi$, $\int_0^{2\pi}\sin\varphi\,d\varphi$, or $\int_0^{2\pi}\sin\varphi\cos\varphi\,d\varphi$, each of which is zero. Therefore
-
-$$
-\int_{\Gamma}(3u_iu_j-\delta_{ij})\,d\Omega
-=
-3\cdot\frac{2\pi}{3}\delta_{ij}-2\pi\delta_{ij}
-=
-0.
-$$
-
-Hence $C_{ij}(x_\star)=0$. By the scale identity of Section 1.3 the finite part is independent of $\ell_0$ as soon as the limit that defines it exists.
-
-*Proof of (3), from the ray decomposition.* Apply the near/far splitting of Section 1.5 at this $x_\star$. The logarithmic counterterm carries the factor $C_{ij}(x_\star)$ and is identically zero. On the near hemisphere the density difference satisfies
-
-$$
-\Bigl|\frac{\rho_K(x_\star-Ru)-\rho_K(x_\star)}{R}\Bigr|\le\|\nabla\rho_K\|_{L^\infty(B_{r_0})},
-$$
-
-so the difference integral extends continuously down to $R=0$. The far-field integrand is $O(R^{-1})$ on a set bounded away from the origin and is absolutely integrable. Therefore $\lim_{\varepsilon\downarrow 0}J_{ij,\varepsilon}(x_\star)$ exists and is finite. The contact coefficient reduces to
-
-$$
-\frac{4\pi G}{3}\vartheta_{x_\star}\rho_K(x_\star)
-=
-\frac{2\pi G}{3}\rho_K(x_\star).
-$$
-
-This is an ordinary limit of an excised integral, not a Hadamard finite part.
-
-*Proof of (4): the Feynman integral removes the apparent ray singularity.* The ray formula for $I_H$ contains $\int dR/R$. At a surface point that factor looks singular at $R=0$. The Feynman representation proves that, at a face centre, the singularity is removable and that the improper parameter integral converges to the finite part already identified in (3).
-
-Fix one kernel and suppress its index. For $0\le u<1$,
-
-$$
-m^2(u)=(1-u)\bigl(a^2+u|x_\star-c|^2\bigr)\ge (1-u)a^2>0,
-$$
-
-so $Q_u(y)=|y-z(u)|^2+m^2(u)\ge m^2(u)>0$ on the compact set $V$. The integrand of Section 2.5 is continuous for each such $u$. Write $H_{ij}^{\mathrm{F},\delta}$ for the integral stopped at $u=1-\delta$. The limit $\delta\downarrow 0$ is the only point at issue.
-
-Split $V=V_{\mathrm{near}}\cup V_{\mathrm{far}}$ with $V_{\mathrm{near}}=V\cap B_{r_0}(x_\star)$. Set
-
-$$
-\delta_1=\frac{r_0}{2\bigl(1+|x_\star-c|\bigr)}.
-$$
-
-If $1-u\le\delta_1$, then $|z(u)-x_\star|=(1-u)|c-x_\star|\le r_0/2$. Every far source point therefore satisfies $|y-z(u)|\ge r_0/2$ and $Q_u(y)\ge r_0^2/4$. The spatial integrand is bounded uniformly in $u$. The weight $u^{-1/2}(1-u)^{\alpha-1}$ lies in $L^1(0,1)$ for $\alpha>0$: the exponent $-\tfrac12$ is integrable at $u=0$, and the exponent $\alpha-1>-1$ is integrable at $u=1$. The far contribution converges absolutely.
-
-On the half-ball, split $\rho_K(y)=\rho_K(x_\star)+\bigl(\rho_K(y)-\rho_K(x_\star)\bigr)$. The fluctuation is Lipschitz and vanishes at $x_\star$. Against the Newtonian Hessian kernel,
-
-$$
-\Bigl|\frac{3r_ir_j-R^2\delta_{ij}}{R^5}\Bigr|\,|\rho_K(y)-\rho_K(x_\star)|
-\le
-\frac{4}{R^3}\cdot M_1 R
-=
-\frac{4M_1}{R^2}.
-$$
-
-The majorant $R^{-2}$ is integrable on a ball in three dimensions, because $\int_0^{r_0}R^{-2}\cdot R^2\,dR<\infty$. Absolute convergence permits differentiation under the integral sign up to the boundary point. The identity of Section 1.7, applied to the potential of the fluctuation, equates this finite Newtonian integral with its Feynman transform. The fluctuation produces no singularity.
-
-The constant-density piece is estimated by scaling, which is where the hemispherical cancellation enters the Feynman integral. Set $s=1-u$, $x_\star$ as the origin, and
-
-$$
-m^2(s)=s\,\mu^2(s),\qquad
-\mu^2(s)=a^2+(1-s)|c|^2\ge a^2>0.
-$$
-
-Then $m(s)=\sqrt{s}\,\mu(s)$ and the moving centre is displaced from the plane by
-
-$$
-\eta_{\mathrm{phys}}=z(u)-x_\star=s(c-x_\star),\qquad |\eta_{\mathrm{phys}}|=O(s).
-$$
-
-Change variables by $y=m\xi$, so $dy=m^3\,d\xi$. The half-ball $|y|<r_0$ becomes $|\xi|<R_m$ with $R_m=r_0/m\to\infty$, and the half-space constraint is $\xi\cdot n\le 0$. The screening identity
-
-$$
-Q=|m\xi-\eta_{\mathrm{phys}}|^2+m^2=m^2\bigl(|\xi-\eta|^2+1\bigr),
-\qquad
-\eta=\eta_{\mathrm{phys}}/m=O(m)=O(s^{1/2}),
-$$
-
-converts the Section 2.5 kernel into
+*Rescaling.* Here the hemispherical cancellation enters. With $s=1-u$, $x_\star$ as origin, $m^2=s\mu^2$, and $\mu^2=a^2+(1-s)|c|^2\ge a^2$, the centre is displaced by $\eta_{\rm phys}=s(c-x_\star)=O(s)$. Substitute $y=m\xi$ ($dy=m^3d\xi$). The half-ball becomes $\{\xi\cdot n\le0,|\xi|<R_m\}$ with $R_m=r_0/m\to\infty$, and $Q=m^2(|\xi-\eta|^2+1)$ with $\eta=\eta_{\rm phys}/m=O(s^{1/2})$. The kernel becomes
 
 $$
 \int_{H}L_{ij}(y;u)\,dy
 =
 m^{-2\alpha}
 \int_{\substack{\xi\cdot n\le 0\\|\xi|<R_m}}
-\Lambda_{ij}(\xi;\eta,u)\,d\xi.
-$$
-
-The exponent is $3-(2p+2)=1-2p=-2\alpha$, since $p=\alpha+\tfrac12$. The rescaled density is
-
-$$
-\begin{aligned}
-\Lambda_{ij}(\xi;\eta,u)
-={}&
--2p\,u\,\delta_{ij}\bigl(|\xi-\eta|^2+1\bigr)^{-p-1}\\
-&+
-4p(p+1)u^2\,\xi_i\xi_j\bigl(|\xi-\eta|^2+1\bigr)^{-p-2}.
-\end{aligned}
-$$
-
-As $s\downarrow 0$ one has $u\to 1$ and $\eta\to 0$, and $\Lambda_{ij}$ converges pointwise to
-
-$$
-\Lambda_{ij}^0(\xi)
-=
-\partial_{\xi_i}\partial_{\xi_j}\bigl(|\xi|^2+1\bigr)^{-p}.
-$$
-
-Integrate $\Lambda^0$ over the half-space by the divergence theorem. For $f=(|\xi|^2+1)^{-p}$,
-
-$$
-\int_{\Pi_-\cap B_R}\partial_i\partial_j f\,d\xi
-=
-\int_{D_R}\partial_i f\,n_j\,dA
-+
-\int_{\mathrm{cap}_R}\partial_i f\,\nu_j\,dS.
-$$
-
-On the disk, $\xi\cdot n=0$, so $\partial_n f=-2p(\xi\cdot n)(|\xi|^2+1)^{-p-1}=0$. Each tangential derivative is odd about the origin and integrates to zero. On the cap, $|\nabla f|\le C R^{-2p-1}$ and the area is $O(R^2)$, so the flux is $O(R^{1-2p})=O(R^{-2\alpha})$. Therefore
-
-$$
-\int_{\Pi_-}\Lambda_{ij}^0\,d\xi=0,
-$$
-
-and the integral over the finite half-ball of radius $R_m$ equals the negative of the tail:
-
-$$
-\int_{|\xi|<R_m,\,\xi\cdot n\le 0}\Lambda_{ij}^0\,d\xi
-=
-O(R_m^{-2\alpha})
-=
-O(m^{2\alpha}).
-$$
-
-Multiplication by the prefactor $m^{-2\alpha}$ produces a contribution $O(1)$, uniformly as $m\downarrow 0$. This is the Feynman form of the statement $C_{ij}(x_\star)=0$: had the hemispherical moment been nonzero, the cap flux would have been logarithmic in $R_m$ and the prefactor $m^{-2\alpha}$ would not have cancelled it.
-
-The displacement $\eta$ is estimated by the mean-value theorem. Differentiating $(|\xi-t\eta|^2+1)^{-q}$ in the shift produces a factor of order $|\xi|(|\xi|^2+1)^{-q-1}$. For the $\delta_{ij}$ term ($q=p+1$) the radial integrand in polar coordinates is of order $r^2\cdot r^{-2q-1}=r^{1-2q}$; for the $\xi_i\xi_j$ term ($q=p+2$) the extra factor $|\xi|^2$ gives $r^{3-2q}$. Both equal $r^{-2\alpha-2}$, and $\int_1^\infty r^{-2\alpha-2}\,dr$ converges for every $\alpha>0$. The resulting dominant is integrable on the half-space for every $\alpha>0$, with no restriction $\alpha>\tfrac12$. Therefore, for $|\eta|\le 1$,
-
-$$
-\int_{\Pi_-}\bigl|\Lambda_{ij}(\xi;\eta,u)-\Lambda_{ij}^0(\xi)\bigr|\,d\xi
-\le
-C|\eta|
-=
-O(m).
-$$
-
-Multiplication by $m^{-2\alpha}$ produces $O(m^{1-2\alpha})=O(s^{(1-2\alpha)/2})$. The symmetric difference between the scaled half-ball and the half-space is the tail already shown to be $O(m^{2\alpha})$ in the unscaled $\Lambda$-integral, and the same integrable dominant controls the tail of the difference $\Lambda-\Lambda^0$.
-
-Return to the parameter weight $(1-u)^{\alpha-1}=s^{\alpha-1}$. The cancelled leading piece contributes
-
-$$
-s^{\alpha-1}\cdot O(1),
-$$
-
-which is integrable near $s=0$ because $\alpha-1>-1$. The centre-shift piece contributes
-
-$$
-s^{\alpha-1}\cdot O\bigl(s^{(1-2\alpha)/2}\bigr)
-=
-O(s^{-1/2}),
-$$
-
-and $\int_0^{1/2}s^{-1/2}\,ds<\infty$. Therefore $\int_0^1$ of the near, constant-density contribution converges as an ordinary improper integral. No logarithmic counterterm is subtracted.
-
-Adding the far field, the fluctuation, and this near-field limit shows that $\lim_{\delta\downarrow 0}H_{ij}^{\mathrm{F},\delta}(x_\star)$ exists and is finite. Its value is identified by Lemma 2.7.0: $H^{\mathrm F,\delta}=\nabla^2U^\delta$, and the Hessian of the excised part $U-U^\delta$ over the half-space cone ($C_{ij}=0$, $\vartheta=\tfrac12$) tends to zero, because its principal-value part $+\tfrac{2\pi}{3}\delta_{ij}$ and its contact part $-\tfrac{2\pi}{3}\delta_{ij}$ (per unit $G\rho_K$) cancel. Hence the limit is the spherical finite part $H^{\mathrm{FP}}_{ij,\ell_0}(x_\star)=\lim_\varepsilon J_{ij,\varepsilon}(x_\star)-\tfrac{2\pi G}{3}\rho_K(x_\star)\delta_{ij}$ of (3), with the contact term generated by the Feynman cut-off itself. Independence of $\ell_0$ is the statement $C_{ij}(x_\star)=0$, already used as the vanishing of the half-space flux. The ray singularity $\int_0 dR/R$ is therefore absent at the face centre: its angular coefficient is zero, and the Feynman integral converges to the same finite number.
-
-*Proof of (5).* The local model is the constant-density **half-ball** $V_{\rm loc}=B_{r_0}(x_\star)\cap\Pi_-$, not the infinite half-space. (The Hessian of an infinite half-space is only conditionally defined: the value $-2\pi G\rho_K nn^{\!\top}$ often quoted for it corresponds to a planar, slab-wise summation at infinity, which is not the spherical convention of Section 1.3.) For the half-ball, every ray from $x_\star$ into $\Gamma_{x_\star}$ has length $r_0$, so $J_{ij,\varepsilon}=G\rho_K C_{ij}\log(r_0/\varepsilon)=0$ and
-
-$$
-H^{\mathrm{FP}}_{\mathrm{loc}}=-\frac{2\pi G}{3}\rho_K\,\mathbf I,
-$$
-
-with trace $-2\pi G\rho_K=-4\pi G\vartheta\rho_K$, as required by Section 1.3. The classical jump relation for a volume potential whose density jumps by $\rho_K$ across a smooth surface (continuity of $U$ and $\nabla U$, continuity of every tangential second derivative, and the Poisson jump $\partial_{nn}U^--\partial_{nn}U^+=-4\pi G\rho_K$) gives
-
-$$
-H^+_{\mathrm{loc}}-H^-_{\mathrm{loc}}=4\pi G\rho_K\,nn^{\!\top},
+\Lambda_{ij}(\xi;\eta,u)\,d\xi,
 \qquad
-\operatorname{tr}H^-_{\mathrm{loc}}-\operatorname{tr}H^+_{\mathrm{loc}}=-4\pi G\rho_K.
+\Lambda_{ij}
+=
+-2p\,u\,\delta_{ij}\bigl(|\xi-\eta|^2+1\bigr)^{-p-1}
++
+4p(p+1)u^2\,\xi_i\xi_j\bigl(|\xi-\eta|^2+1\bigr)^{-p-2},
 $$
 
-The average of the two one-sided limits equals $H^{\mathrm{FP}}_{\mathrm{loc}}$. Indeed, by Lemma 2.7.0, $H^{\mathrm{FP}}_{\mathrm{loc}}$ is the limit of the Hessians of the potentials $U^\delta$, whose kernels are asymptotically radial mollifications of the Newtonian kernel; a symmetric mollification of a function whose Hessian is piecewise continuous with a jump across a plane converges, on the plane, to the average of the two sides. Therefore
+with exponent $3-(2p+2)=-2\alpha$. As $s\downarrow0$, $\Lambda_{ij}\to\Lambda^0_{ij}=\partial_i\partial_j(|\xi|^2+1)^{-p}$. By the divergence theorem on $\Pi_-\cap B_R$, the disk term vanishes: $\partial_nf=0$ on $\xi\cdot n=0$, and the tangential derivatives are odd. The cap flux is $O(R^{1-2p})=O(R^{-2\alpha})$. Hence $\int_{\Pi_-}\Lambda^0=0$ and the finite half-ball integral is $O(R_m^{-2\alpha})=O(m^{2\alpha})$, which the prefactor $m^{-2\alpha}$ makes $O(1)$. This is the Feynman form of $C_{ij}=0$. For a general cone $\Gamma$ the same radial computation gives $\int_\Gamma\Lambda^0\,d\xi=\kappa_pC_{ij}$ with $\kappa_p=2p\int_0^\infty r^2(1+r^2)^{-p-1}dr>0$. A nonzero $C_{ij}$ would leave $m^{-2\alpha}\kappa_pC_{ij}\propto s^{-\alpha}$ in the integrand, hence $\int ds/s$ against the weight $s^{\alpha-1}$: the logarithm of Section 1.3.
+
+*Remainders.* $\Lambda$ differs from $\Lambda^0$ through the shift $\eta$ and through the factors $u,u^2$. The $\eta$-derivatives of both terms of $\Lambda$ are $O(r^{-2\alpha-4})$ at large $r$, integrable against $r^2dr$ for every $\alpha>0$, so by the mean-value theorem the shift changes the half-space integral by at most $C|\eta|=O(s^{1/2})$. Replacing $u,u^2$ by $1$ changes the integrand by $O(s)$ times absolutely integrable functions. The same dominants bound the half-ball/half-space difference by $O(R_m^{-2\alpha})$. With the prefactor, the near part is $O(1)+O(s^{1/2-\alpha})+O(s^{1-\alpha})$.
+
+*Parameter integral.* Against the weight $s^{\alpha-1}$ the three pieces give $O(s^{\alpha-1})$, $O(s^{-1/2})$, and $O(1)$, all integrable at $s=0$. The near part therefore converges as an ordinary improper integral, with no counterterm.
+
+*Identification.* Far field and near part together show that $\lim_\delta H^{\mathrm F,\delta}(x_\star)$ exists. By Lemma 2.7.0, $H^{\mathrm F,\delta}=\nabla^2U^\delta$, and the Hessian of $U-U^\delta$ over the half-space cone tends to zero: its principal-value part $+\tfrac{2\pi}{3}\delta_{ij}$ and contact part $-\tfrac{2\pi}{3}\delta_{ij}$ (per unit $G\rho_K$) cancel. The limit is therefore the finite part of (3), with the contact term generated by the cut-off itself. The ray singularity $\int_0dR/R$ is absent at the face centre: its angular coefficient is zero.
+
+*Proof of (5).* The local model is the constant-density **half-ball** $V_{\rm loc}=B_{r_0}(x_\star)\cap\Pi_-$, not the infinite half-space. The often-quoted half-space value $-2\pi G\rho_Knn^{\!\top}$ assumes slab-wise summation at infinity, which is not the spherical convention. Every inward ray of the half-ball has length $r_0$, so $J_{ij,\varepsilon}=G\rho_KC_{ij}\log(r_0/\varepsilon)=0$ and $H^{\mathrm{FP}}_{\rm loc}=-\tfrac{2\pi G}{3}\rho_K\mathbf I$, with trace $-4\pi G\vartheta\rho_K$. The classical jump relations for a density jump across a smooth surface are: continuity of $U$, of $\nabla U$, and of all tangential second derivatives, and $\partial_{nn}U^--\partial_{nn}U^+=-4\pi G\rho_K$. They give $H^+_{\rm loc}-H^-_{\rm loc}=4\pi G\rho_Knn^{\!\top}$. By Lemma 2.7.0, $H^{\mathrm{FP}}_{\rm loc}$ is the limit of Hessians of asymptotically radial mollifications. A symmetric mollification of a function whose Hessian jumps across a plane converges on the plane to the average. Hence
 
 $$
 H^\pm_{\mathrm{loc}}=H^{\mathrm{FP}}_{\mathrm{loc}}\pm 2\pi G\rho_K\,nn^{\!\top}
-=-\frac{2\pi G}{3}\rho_K\mathbf I\pm 2\pi G\rho_K\,nn^{\!\top}.
+=-\frac{2\pi G}{3}\rho_K\mathbf I\pm 2\pi G\rho_K\,nn^{\!\top},
 $$
 
-The traces are $0$ on the exterior side and $-4\pi G\rho_K$ on the interior side, as Poisson's equation requires. *Independent check on a uniform ball of radius $a$.* At a surface point, $H^+=\tfrac{4\pi G\rho}{3}(3nn^{\!\top}-\mathbf I)$ and $H^-=-\tfrac{4\pi G\rho}{3}\mathbf I$, whose average is $2\pi G\rho\,nn^{\!\top}-\tfrac{4\pi G\rho}{3}\mathbf I$. The ray formula with chord length $2a\cos\theta$ gives $\lim J_{nn}=G\rho\cdot 2\pi\int_0^1(3\mu^2-1)\log\mu\,d\mu=\tfrac{4\pi G\rho}{3}$, hence $\lim J=\tfrac{2\pi G\rho}{3}(3nn^{\!\top}-\mathbf I)$ and $H^{\mathrm{FP}}=\lim J-\tfrac{2\pi G\rho}{3}\mathbf I$, which equals that average.
+with traces $0$ outside and $-4\pi G\rho_K$ inside.
 
-For the genuine polyhedron, the integrand outside $B_{r_0}(x_\star)$ is nonsingular as the field point approaches the face, and the density fluctuation was shown above to be absolutely integrable. Both contributions are continuous across the face. They add the same finite tensor to $H^+$, to $H^-$, and to $H^{\mathrm{FP}}$. The jump relations of the half-space therefore survive unchanged, which is (5).
+*Check on a uniform ball of radius $a$.* At a surface point, $H^+=\tfrac{4\pi G\rho}{3}(3nn^{\!\top}-\mathbf I)$ and $H^-=-\tfrac{4\pi G\rho}{3}\mathbf I$. With chord length $2a\cos\theta$, the ray formula gives $\lim J_{nn}=2\pi G\rho\int_0^1(3\mu^2-1)\log\mu\,d\mu=\tfrac{4\pi G\rho}{3}$, so $H^{\mathrm{FP}}=\tfrac{2\pi G\rho}{3}(3nn^{\!\top}-\mathbf I)-\tfrac{2\pi G\rho}{3}\mathbf I$, which is the average.
 
-The local contact tensor $-\tfrac{2\pi G}{3}\rho_K I\pm 2\pi G\rho_K\,nn^{\!\top}$ is not a substitute for $H^\pm$. It omits the nonlocal integral over $V\setminus B_{r_0}(x_\star)$. That integral is finite at the face centre precisely because the logarithm has been shown to vanish, and its deviatoric part is part of the tidal field. Discarding it would delete a long-range contribution that the Feynman representation retains.
+For the actual polyhedron, the contribution from outside $B_{r_0}$ and the density fluctuation are continuous across the face. They add the same tensor to $H^\pm$ and $H^{\mathrm{FP}}$, so (5) survives. ∎
 
-*Edge contrast, not used at face centres.* If the field point lies on an edge, the tangent cone is a dihedral wedge whose spherical section is a lune rather than a hemisphere. The moment $\int(3u_iu_j-\delta_{ij})\,d\Omega$ over that lune is not zero in general. The ray integral then diverges as $C_{ij}\log(\ell_0/\varepsilon)$, and $H^{\mathrm{FP}}_{\ell_0}$ depends on $\ell_0$. The Feynman weight does not cancel that coefficient. Face centres are exactly the boundary points at which the coefficient is proved to vanish.
+The local contact tensor $-\tfrac{2\pi G}{3}\rho_K\mathbf I\pm2\pi G\rho_Knn^{\!\top}$ is not a substitute for $H^\pm$. It omits the nonlocal integral over $V\setminus B_{r_0}$, which is finite at a face centre exactly because the logarithm vanishes, and whose deviatoric part belongs to the tidal field.
 
-**Conclusion of the proposition.** Every Hessian that enters $T_{\mathrm{tide}}$ through a triangular face centre is a finite, scale-free RTFP value. The Feynman integral is the instrument that isolates the local half-space, exhibits the vanishing of its flux, and identifies the resulting finite number with the ray-traced finite part. Vertices and edge samples remain scale-dependent and are excluded from that evaluation by Section 10.3.
+*Edge contrast.* On an edge the cone is a wedge with a lune section. Its moment is generally nonzero, the ray integral diverges as $C_{ij}\log(\ell_0/\varepsilon)$, and the Feynman weight does not cancel it. Face centres are exactly the boundary points where the coefficient provably vanishes. So every Hessian that enters $T_{\rm tide}$ at a face centre is a finite, scale-free RTFP value, and Section 10.3 excludes vertices and edges.
 
 ---
 
 ## 2.8 Granular balance equations
 
-The following conditions on the potential, on the slope, and on the mass are only part of granular balance:
+Three relations accompany granular balance, with different status:
 
 $$
 \begin{cases}
@@ -3242,48 +1236,16 @@ $$
 \end{cases}
 $$
 
-*Origin of the Poisson equation.* In the interior, the spherical convention of Section 1.3 gives $\vartheta_x=1$ and $\operatorname{Tr}\nabla^2 U=-4\pi G\rho_K$. The centrifugal potential $U_c=\tfrac12\omega^2(x_1^2+x_2^2)$ has Laplacian $2\omega^2$. Hence $\Delta W=\Delta U+2\omega^2=2\omega^2-4\pi G\rho_K$ in $\operatorname{int}V$. On the boundary, $\vartheta_x$ is not identically $1$, so this Poisson equation is an interior statement. Here
+The first is an identity satisfied by $W=U+U_c$ inside any body; it determines nothing about the shape and serves as a check of the field. The second holds only on the loose faces of the slope set $\mathcal S_{\rm slope}$ (Section 2.8c); locked bedrock may be steeper than repose. The third is the mass constraint of the geometric step (Section 2.13). The system the loop solves is the quasi-static Stokes problem (B1) with the yield classification, followed by the cone program of Section 10.4.3.
+
+The Poisson equation is an interior statement. There $\vartheta_x=1$, so $\operatorname{Tr}\nabla^2U=-4\pi G\rho_K$, and $U_c=\tfrac12\omega^2(x_1^2+x_2^2)$ has Laplacian $2\omega^2$. On the boundary $\vartheta_x\ne1$. With $W=U+U_c$,
 
 $$
-W(x)=U(x)+U_c(x),
+\nabla W=\nabla U+\omega^2(x_1,x_2,0),\qquad
+\nabla^2W=\nabla^2U+\omega^2\operatorname{diag}(1,1,0),
 $$
 
-the unified gradient is
-
-$$
-\nabla W(x)
-=
-\nabla U(x)
-+
-\omega^2(x_1,x_2,0),
-$$
-
-and the unified Hessian is
-
-$$
-\nabla^2W(x)
-=
-\nabla^2U(x)
-+
-\omega^2
-\begin{pmatrix}
-1&0&0\\
-0&1&0\\
-0&0&0
-\end{pmatrix}.
-$$
-
-Both follow by differentiating $U_c$ twice. At a surface node $x_i$,
-
-$$
-g_i^{(n)}
-=
-\nabla U^{(n)}(x_i^{(n)})
-+
-\omega^2(x_{i1}^{(n)},x_{i2}^{(n)},0).
-$$
-
-The local slope constraint is
+and at a surface node $g_i^{(n)}=\nabla U^{(n)}(x_i^{(n)})+\omega^2(x_{i1}^{(n)},x_{i2}^{(n)},0)$. The local slope constraint is
 
 $$
 \boxed{
@@ -3293,15 +1255,9 @@ $$
 }
 $$
 
-*Geometric meaning.* The identity $|g\times n|^2=|g|^2|n|^2-(g\cdot n)^2$ rewrites the inequality, for a unit normal and for $|g_i^{(n)}|>0$, as
+For a unit normal and $|g_i|>0$ it reads $\sin^2\theta_i\le\sin^2\phi_i$, where $\theta_i$ is the angle between $-g_i$ and the outward normal, i.e. the slope relative to the local effective horizontal [6]. At $|g_i|=0$ the normalized form is undefined. Use the un-normalized contact or yield constraint, or mark the node degenerate; never divide by $|g_i|^2$.
 
-$$
-\sin^2\theta_i\le\sin^2\phi_i^{(n)},
-$$
-
-where $\theta_i$ is the angle between $-g_i^{(n)}$ and the outward normal, equivalently the slope angle of the surface relative to the local effective horizontal [6]. The normalized constraint requires $|g_i^{(n)}|>0$. If $|g_i^{(n)}|=0$ at a node, the displayed formula is undefined. One must then use the un-normalized contact or yield constraint, or mark the node as degenerate. The implementation must not divide by $|g_i^{(n)}|^2$.
-
-**Mode B: quasi-static viscoplastic Stokes creep and physical yield classification (a single stress field).** The mechanical route of this paper has **one** stress field, the viscoplastic fluid stress of Definition 5.1 in Section 5.1:
+**Mode B: quasi-static viscoplastic Stokes creep and yield classification (a single stress field).** The only stress is that of Definition 5.1:
 
 $$
 \boxed{\ \boldsymbol\sigma=-p\,\mathbf I+\boldsymbol\tau,\qquad
@@ -3310,25 +1266,19 @@ $$
 \eta=\frac{c(\mathbf x)+\mu_d\,\tilde p}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}},\ }
 $$
 
-where $\dot\gamma=\sqrt{2\mathbf D:\mathbf D}$ and $\tilde p:=\max([p]_+,p_{\min})$ is the unique regularized pressure. The mandatory rule of Section 4.13 is that the stress magnitude, the yield strength, and the denominator of $I_c$ use this same $\tilde p$, with $I_c$ evaluated at $p_*=\tilde p+p_c$. The coefficient $\mu_d=\mu_d(I_c;\nu_0,Z_0)$ is given in Sections 4.5 and 10.3. If the Papanastasiou regularization
-
-$$
-\eta=(c+\mu_d\tilde p)\bigl(1-e^{-\dot\gamma/\dot\gamma_\varepsilon}\bigr)/\dot\gamma
-$$
-
-is used instead, the viscosity $\eta$ and its derivatives in Sections 4.17, 5.1, and 5.3 must be replaced together. The two regularizations must not be mixed. From $p_{\min}>0$ and the boundedness of the discrete velocity,
+with $\dot\gamma=\sqrt{2\mathbf D:\mathbf D}$ and the unique regularized pressure $\tilde p:=\max([p]_+,p_{\min})$. By the rule of Section 4.13, the stress magnitude, the yield strength, and the denominator of $I_c$ all use this $\tilde p$, with $I_c$ at $p_*=\tilde p+p_c$; $\mu_d=\mu_d(I_c;\nu_0,Z_0)$ is given in Sections 4.5 and 10.3. The Papanastasiou alternative $\eta=(c+\mu_d\tilde p)(1-e^{-\dot\gamma/\dot\gamma_\varepsilon})/\dot\gamma$ replaces $\eta$ and its derivatives in Sections 4.17, 5.1, and 5.3 together; the two are never mixed. At every discrete state, with a configured bound $\dot\gamma\le\dot\gamma_{\max}$ and $\mu_s\le\mu_d\le\mu_2$,
 
 $$
 0<\eta_{\rm lo}
 :=\frac{c+\mu_s p_{\min}}{\sqrt{\dot\gamma_{\max}^2+\dot\gamma_\varepsilon^2}}
 \le\eta\le
 \eta_{\rm hi}
-:=\frac{c+\mu_2\tilde p_{\max}}{\dot\gamma_\varepsilon}
+:=\frac{c+\mu_2\tilde p_{\max}}{\dot\gamma_\varepsilon},
 $$
 
-at every discrete state. The upper bound uses $0<\mu_d\le\mu_2$ and $\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}\ge\dot\gamma_\varepsilon$. The lower bound uses $\mu_d\ge\mu_s$ and a configured bound $\dot\gamma\le\dot\gamma_{\max}$ on the discrete velocity gradient. The viscous stiffness is therefore uniformly positive definite on the complement of the rigid-body constraints (Lemma 8.12 of Section 8.4). **This paper contains no** elastic strain, elastic modulus, hardening variable, return-mapping stress, or independent displacement unknown. Wherever a stress is required — balance, yield, tide, traction, erosional flux, or acceptance — the expression above is used.
+so the viscous stiffness is uniformly positive definite off the rigid-body constraints (Lemma 8.12). **There is no** elastic strain, elastic modulus, hardening variable, return-mapping stress, or displacement unknown. Every stress that is needed — balance, yield, tide, traction, erosion, acceptance — is this one.
 
-**(B1) Quasi-static Stokes balance.** At geological step $n$, on the frozen geometry $\mathcal V^{(n)}$, with the Cauchy density $\rho_K(\cdot;\theta^{(n)})$ frozen for this step (it is transported between steps, Section 9.10) and the exogenous spin $\omega_n:=\omega(t_n)$ (Section 10.4.1), solve the time-independent creep balance
+**(B1) Quasi-static Stokes balance.** At step $n$, on the frozen geometry $\mathcal V^{(n)}$, with $\rho_K(\cdot;\theta^{(n)})$ frozen (transported between steps, Section 9.10) and $\omega_n=\omega(t_n)$, solve
 
 $$
 \boxed{\ 
@@ -3339,220 +1289,123 @@ $$
 \end{aligned}\ }
 $$
 
-with $\mathbf g_{\rm eff}(\omega)=\nabla U+\omega^2\mathbf x_\perp$. The inertia $\rho\partial_t\mathbf v$, the convection $\rho(\mathbf v\cdot\nabla)\mathbf v$, and the Coriolis acceleration $2\rho\boldsymbol\Omega\times\mathbf v$ are all omitted. This is the quasi-static limit. The indicator of applicability
+with $\mathbf g_{\rm eff}(\omega)=\nabla U+\omega^2\mathbf x_\perp$. Inertia, convection, and Coriolis are omitted (the quasi-static limit). The indicator $\mathrm{Ek}^{-1}:=\max_{\mathcal Y}\rho_K\omega_nR_{\max}^2/\eta$ on the yielded region $\mathcal Y$ is reported. Above the threshold $\varepsilon_{\rm in}$ the step is marked **quasi-static assumption failed**. The problem has no time step. $\mathbf v$ is the creep velocity in instantaneous balance with the load, obtained implicitly from (8.4′) and Section 8.7 by the primal–dual iteration of Section 10.4.2. There is no momentum relaxation and no viscous CFL limit. The Euler force $-\dot\omega\mathbf e_z\times\mathbf x$ and the torque that drives $\dot\omega$ balance in the body frame. They are omitted together, and $\varepsilon_{\rm Euler}:=|\dot\omega|/\omega^2$ is reported. Omitting only one would violate the torque compatibility of Appendix A.3.
 
-$$
-\mathrm{Ek}^{-1}:=\max_{\mathcal Y}\rho_K\omega_n R_{\max}^2/\eta
-$$
-
-is reported at each step on the yielded region $\mathcal Y$. If it exceeds the configured threshold $\varepsilon_{\rm in}$, the step is marked **quasi-static assumption failed**. The problem **contains no time-step size**. The field $\mathbf v$ is the creep velocity in instantaneous balance with the current load. It is obtained implicitly from the discrete Stokes system (8.4′) of Section 8.4, from the pressure Poisson problem of Section 8.7, and from the Picard iteration of Section 10.4.2. There is no explicit momentum relaxation, and there is no CFL restriction of viscous-diffusion type.
-
-The Euler inertial force $-\dot\omega\,\mathbf e_z\times\mathbf x$ associated with an exogenous spin rate $\dot\omega$, and the external torque that drives the change of spin, balance each other in the body frame. Their relative contribution to the internal stress is
-
-$$
-\varepsilon_{\rm Euler}:=|\dot\omega|/\omega^2.
-$$
-
-Both are omitted together, and $\varepsilon_{\rm Euler}$ is reported. Omitting only one of them would violate the torque-compatibility condition of Section A.3.
-
-**(B2) Yield function and regularized yield criterion.** The static strength and the yield function are evaluated on the unique stress field:
+**(B2) Yield function and regularized yield criterion.** On the same stress,
 
 $$
 \tau_y:=c(\mathbf x)+\mu_y\,\tilde p,\qquad \mu_y:\equiv\mu_s(\nu_0,Z_0)=\lim_{I_c\to0}\mu_d,\qquad
 F:=\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}-\tau_y=\|\mathbf s-\mathbf T_{\rm tide}\|_{\rm eq}-c-\mu_y\tilde p,
 $$
 
-where $\|\mathbf A\|_{\rm eq}=\sqrt{\mathbf A:\mathbf A/2}$ and $\mathbf s=\boldsymbol\tau$ is the deviatoric stress. The identity $\operatorname{tr}\boldsymbol\tau_{\rm flow}=0$ follows from $\nabla\cdot\mathbf v=0$, because $\operatorname{tr}\mathbf D=0$. The identity $\operatorname{tr}\mathbf T_{\rm tide}=0$ follows from the deviatoric projection in the definition of $\mathbf T_{\rm tide}$. The static limit of $\mu_d$ is used for $\mu_y$, so that the viscous law in the unyielded region and the yield function use the same strength.
-
-From $\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}=\eta\dot\gamma=(c+\mu_d\tilde p)\,r(\dot\gamma/\dot\gamma_\varepsilon)$, with $r(x)=x/\sqrt{1+x^2}$ in the Bingham regularization, or $r(x)=1-e^{-x}$ in the Papanastasiou regularization, one has $0\le r<1$. *Verification for the Bingham branch:*
-
-$$
-\eta\dot\gamma
-=
-(c+\mu_d\tilde p)\frac{\dot\gamma}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}}
-=
-(c+\mu_d\tilde p)\,r(\dot\gamma/\dot\gamma_\varepsilon).
-$$
-
-In the quasi-static regime, where $\mu_d\to\mu_s$, the regularized stress is **strictly smaller** than the strength, and $F>0$ is never triggered. The yield criterion must therefore carry a tolerance $\delta_Y\in(0,1)$, a configured value whose default is $0.05$:
+with $\|\mathbf A\|_{\rm eq}=\sqrt{\mathbf A:\mathbf A/2}$ and deviatoric stress $\mathbf s=\boldsymbol\tau$. Both $\boldsymbol\tau_{\rm flow}$ and $\mathbf T_{\rm tide}$ are traceless (the first by incompressibility, the second by construction). Using $\mu_s$ makes the unyielded viscous law and the yield function share one strength. Since $\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}=\eta\dot\gamma=(c+\mu_d\tilde p)\,r(\dot\gamma/\dot\gamma_\varepsilon)$ with $r(x)=x/\sqrt{1+x^2}$ (Bingham) or $1-e^{-x}$ (Papanastasiou), and $0\le r<1$, the regularized stress never reaches the strength when $\mu_d\to\mu_s$. The criterion therefore carries a tolerance $\delta_Y\in(0,1)$, default $0.05$:
 
 $$
 \boxed{\ F_\delta:=\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}-(1-\delta_Y)\,\tau_y,\qquad
 \text{the point }\mathbf x\text{ has yielded}\iff F_\delta(\mathbf x)>0 .\ }
 $$
 
-When $\mu_d=\mu_s$, one has $F_\delta>0$ if and only if $\dot\gamma>\dot\gamma_Y$, with
+With $\mu_d=\mu_s$, $F_\delta>0$ iff $\dot\gamma>\dot\gamma_Y$, where $\dot\gamma_Y=\dot\gamma_\varepsilon(1-\delta_Y)/\sqrt{2\delta_Y-\delta_Y^2}$ (Bingham, from $x/\sqrt{1+x^2}>1-\delta_Y$) or $\dot\gamma_\varepsilon\ln(1/\delta_Y)$ (Papanastasiou). Both are about $3\dot\gamma_\varepsilon$ at $\delta_Y=0.05$. This is a criterion on the stress, equivalently on a strain-rate invariant, not on the velocity magnitude: a rigid motion ($\mathbf D=\mathbf 0$) has $F_\delta=-(1-\delta_Y)\tau_y<0$ however fast it moves. A point has yielded when equilibrium needs at least the fraction $1-\delta_Y$ of the local strength. $\dot\gamma_\varepsilon$ only sets the scale of residual creep in the unyielded region, and the yielded set depends on it only through the convergence of the regularized solution as $\dot\gamma_\varepsilon\to0$ (PO-12). Spin and loads are frozen within a step, so no geological strain rate enters the test.
+
+*Why (B2) cannot decide shallow failure.* Three properties of the model bias (B2) against failing a thin surface layer.
+
+1. *Resolution.* A velocity basis truncated at degree $L_{\max}$ and a quadrature of $N_q$ volume points resolve stresses only on wavelengths of order $2\pi\bar R/L_{\max}$ and on the scale of the point spacing. A failure surface at depth $h_s\ll\bar R/L_{\max}$ under one mesh face is below that resolution. A resolved solve would fail such a layer when it is steep enough: on an infinite slope of inclination $\theta$ the shear-to-normal ratio on parallel planes is $\tan\theta$.
+2. *Stress state of the creep model.* For uniform density $\rho_K\nabla W$ is a gradient carried by the pressure. Deviatoric stress then comes only from the departure of $\Gamma$ from an equipotential and, for variable density, from the baroclinic source of Section 6.3. The incompressible creep state is the least-deviatoric state compatible with the geometry. Elastic–plastic analyses of a compressible body ([10] for Ryugu) carry more, so (B2) on the creep stress is biased toward no yield.
+3. *Strength.* With published values for Ryugu, $\rho_K|\mathbf g|\approx0.18\ \mathrm{Pa\,m^{-1}}$ and an interior cohesion $c_b\approx4$ Pa [10]. A failure plane parallel to a $45^\circ$ slope with $\mu_y=0.70$ needs a normal depth of about $c_b/(\rho_K|\mathbf g|(\sin45^\circ-\mu_y\cos45^\circ))\approx100$ m. The absence of interior yield on such a body is therefore not by itself a defect of the model; causes 1 and 2 only decide that a shallow layer cannot fail in the truncated solve.
+
+The Stokes solve decides deep-seated and whole-body failure. Shallow failure of the loose layer is the subgrid closure A-C4 (Section 2.8c).
+
+**(B3) Rigid core and movable set.** Evaluate $F_\delta$ on the classification mesh of Section 8.0 (G7),
 
 $$
-\dot\gamma_Y=\dot\gamma_\varepsilon\frac{1-\delta_Y}{\sqrt{2\delta_Y-\delta_Y^2}}
+\mathcal X_Y=\mathcal X_{\rm vol}\cup\{\mathbf X_i-\xi_q\,t_i^-\mathbf N_i:\ q=1,\dots,N_r\}\cup\{\mathbf X_i\},
 $$
 
-for the Bingham branch, and
+the volume nodes, probes along the inward vertex normals, and the surface vertices. $\mathbf v$ and $p$ are synthesized pointwise (Lemma 5.5, Section 8.7). The graph $\mathsf G_Y$ joins successive probes on a normal, probes of equal $q$ on mesh-adjacent vertices, and each point to its nearest volume nodes along segments inside $\mathcal V$. On the unyielded set $\mathcal U=\{F_\delta\le0\}$, the **rigid core** $\mathcal U_{\rm core}$ is the connected component of largest quadrature mass $\sum\rho_Kw$; ties go to the component with more volume nodes. $\mathcal U=\varnothing$ means global instability. The graph resolves a yielded band only if the band is at least one probe spacing thick. A thinner internal shear band leaves the unyielded set connected, and the block beyond it is classified with the core ($\chi_Y=0$). This is a resolution limit of the classification and part of PO-12. Shallow surface failure has its own closure (A-C4); a thin internal band has none. The movable indicator is
 
 $$
-\dot\gamma_Y=\dot\gamma_\varepsilon\ln(1/\delta_Y)
+\boxed{\ \chi_{Y,i}=\begin{cases}0,&\mathbf X_i\in\mathcal U_{\rm core}\quad\text{(solid connected to the rigid core; locked)},\\ 1,&\text{otherwise (the node itself has yielded, or it lies on a sliding block separated from the core by a yielded band)}.\end{cases}\ }
 $$
 
-for the Papanastasiou branch. *Bingham threshold.* The inequality $r(\dot\gamma/\dot\gamma_\varepsilon)>1-\delta_Y$ becomes
+*Star-shaped special case.* There the probes may be taken on the rays from $O$, $\mathcal X_Y=\{(\zeta_q,\hat{\boldsymbol\omega}_i)\}$ with radial Gauss–Jacobi nodes and $\zeta_{N_r+1}=1$, with all innermost points joined through a virtual centre node.
+
+In the unregularized limit an unyielded component moves rigidly. A landslide block separated from the core by a yielded band slides as a whole, even if its surface points are themselves unyielded. That is why $F_\delta$ at the surface alone is not enough. The rigid motion of the core is the weighted least-squares fit
 
 $$
-\frac{x}{\sqrt{1+x^2}}>1-\delta_Y,\qquad x=\dot\gamma/\dot\gamma_\varepsilon,
+(\mathbf a_c,\boldsymbol\theta_c)=\arg\min_{\mathbf a,\boldsymbol\theta}\sum_{\mathbf x\in\mathcal U_{\rm core}}w_{\mathbf x}\rho_K(\mathbf x)\,|\mathbf v(\mathbf x)-\mathbf a-\boldsymbol\theta\times\mathbf x|^2,
 $$
 
-hence $x>(1-\delta_Y)/\sqrt{1-(1-\delta_Y)^2}=(1-\delta_Y)/\sqrt{2\delta_Y-\delta_Y^2}$. *Papanastasiou threshold.* The inequality $1-e^{-x}>1-\delta_Y$ is $e^{-x}<\delta_Y$, hence $x>\ln(1/\delta_Y)$. At $\delta_Y=0.05$ both thresholds are approximately $3\dot\gamma_\varepsilon$. This is a **criterion on the stress, or equivalently on an invariant of the strain rate, not a criterion on the magnitude of the velocity**. A rigid translation or rotation, for which $\mathbf D=\mathbf 0$, satisfies $F_\delta=-(1-\delta_Y)\tau_y<0$ however large the velocity may be. Convergence of the yield surface of the regularized solution, at fixed $\delta_Y$, to the yield surface of the unregularized Bingham or $\mu(I)$ law as $\dot\gamma_\varepsilon\to 0$ is proof obligation PO-12.
-
-*What the test measures.* Because $r<1$, the threshold $\dot\gamma>\dot\gamma_Y$ is the same statement as $\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}>(1-\delta_Y)\tau_y$: a point has yielded when equilibrium requires at least the fraction $1-\delta_Y$ of the local strength. That fraction is set by $\delta_Y$. The rate $\dot\gamma_\varepsilon$ fixes only the scale of the residual creep in the unyielded region, and the yielded set depends on it only through the convergence of the regularized solution (PO-12). The quasi-static solve of Section 10.4.2 has no time scale of its own, because the spin and the loads are frozen within a step, so no geological strain rate enters the test.
-
-*Consequence for the production runs.* In the runs of Ryugu, Phobos, and Deimos at most $0.6\%$ of the interior quadrature mass yields, and no surface node ever leaves the rigid core. The movable set of (B3) is then empty, and the surface moves only through slope promotion (Section 2.8c). Three causes contribute.
-
-1. *Resolution.* The bundled projects solve on a harmonic surface of degree $l_{\rm surface}=4$ (largest relative radial misfit to the polyhedron $0.12$ on Ryugu) with a velocity basis of degree $l_{\rm velocity}=2$ and $96$ quadrature points. The stress field resolves only wavelengths comparable with the mean radius. A shallow failure surface under one face of the surface mesh (node spacing about $15$ m on Ryugu) is not represented. In a resolved solve the same test would fail such a layer: on an infinite slope of inclination $\theta$ the ratio of shear to normal stress on planes parallel to the surface is $\tan\theta$, so (B2) is met once $\tan\theta$ exceeds the frictional and cohesive strength at that depth.
-2. *Stress state of the creep model.* For uniform density the body force $\rho_K\nabla W$ is a gradient and is carried by the pressure alone. Deviatoric stress then arises only from the departure of the free surface from an equipotential and, for variable density, from the baroclinic source of Section 6.3. The incompressible creep state is in this sense the state of least deviatoric stress compatible with the geometry. Elastic–plastic analyses of a compressible body (for Ryugu, [10]) carry additional deviatoric stress, so (B2) on the creep stress is biased toward no yield relative to them.
-3. *Strength.* On Ryugu $\rho_K|\mathbf g|\approx 0.18\ \mathrm{Pa\,m^{-1}}$, small beside the interior cohesion $c_b=4$ Pa. A deep-seated failure plane under a $45^\circ$ slope with $\mu_y=0.70$ needs a depth of about $c_b/\big(\rho_K|\mathbf g|(\sin45^\circ-\mu_y\cos45^\circ)\big)\approx 100$ m. The absence of interior yield at the start spin of the bundled run ($3.40$ h, the fastest spin at which every face is bound) is therefore not by itself a numerical defect; causes 1 and 2 decide only that the shallow layer cannot fail in this solve.
-
-The Stokes solve therefore decides deep-seated and whole-body failure. Shallow failure of the loose layer is supplied by the subgrid closure A-C4 of Section 2.8c.
-
-**(B3) Rigid core and movable set (the physical definition of the dead zone).** Evaluate $F_\delta$ on the classification mesh
+a $6\times6$ SPD system unless the core is collinear. In that case the step is marked **core degeneracy** and $\mathbf a_c=\boldsymbol\theta_c=\mathbf 0$. Every geometric prediction uses the slip velocity
 
 $$
-\mathcal X_Y:=\{(\zeta_q,\hat{\boldsymbol\omega}_i):\ q=1,\dots,N_r+1,\ i=1,\dots,N_S\},
+\mathbf v_{\rm sl}:=\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x .
 $$
 
-where $\hat{\boldsymbol\omega}_i$ is the direction of a surface-mesh vertex, $\zeta_1<\dots<\zeta_{N_r}$ are the radial Gauss–Jacobi nodes, and $\zeta_{N_r+1}=1$ is the surface. The velocity $\mathbf v$ is synthesized pointwise from the modal coefficients by Proposition 10.2 and Section 5.2. The pressure $p$ is synthesized pointwise from the pressure basis of Section 8.7. Both are defined at an arbitrary point. Adjacency in the graph $\mathsf G_Y$ is as follows: successive radial points on the same ray; at a fixed $\zeta_q$, the rays that meet along an edge of the surface mesh; and all points at $\zeta_1$, joined through one virtual centre node. Let $\mathcal U=\{F_\delta\le 0\}$ be the unyielded set. Compute the connected components of $\mathsf G_Y$ restricted to $\mathcal U$. The **rigid core** $\mathcal U_{\rm core}$ is the component of largest quadrature mass $\sum\rho_K w$. In the event of a tie, choose the component that contains the largest number of points on the layer $\zeta_1$. If $\mathcal U=\varnothing$, then $\mathcal U_{\rm core}=\varnothing$, which is global instability. The movable indicator of a surface node is
+The core's own translation is absorbed by the realignment of Section 10.4.4, step 8. The residual creep inside the core comes from $\dot\gamma_\varepsilon>0$ and is removed exactly by $\chi_Y=0$. No state variable integrates $\mathbf D$ in time, so this creep accumulates nowhere.
+
+**(B4) Surface predictor (the unique definition of $d_{\rm pred}$).** With $\rho_{\rm bulk}=\rho_p\nu_0$, the areal mass fluxes $J_{\rm dep},J_{\rm ero}$ (kg m⁻² s⁻¹), the thickness increment $\Delta h_C=\Delta t_n(\bar J_{\rm dep}-\bar J_{\rm ero})/\rho_{\rm bulk}$ with the step averages over $\tau_n=\lambda\Delta t_n$ of Section 2.8 (the update $\lambda d$ then lays down $\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$, the same mass as the $\rho_s$ source), and its mass-equivalent
 
 $$
-\boxed{\ \chi_{Y,i}=\begin{cases}0,&(1,\hat{\boldsymbol\omega}_i)\in\mathcal U_{\rm core}\quad\text{(solid connected to the rigid core; locked)},\\ 1,&\text{otherwise (the node itself has yielded, or it lies on a sliding block separated from the core by a yielded band)}.\end{cases}\ }
+\Delta h_C^*:=\frac{\rho_{\mathrm{bulk}}}{\rho_K|_\Gamma}\Delta h_C\qquad(\rho_{\rm bulk}\Delta h_C=\rho_K|_\Gamma\Delta h_C^*),
 $$
 
-In the unregularized limit, an unyielded connected component moves as a rigid body. Solid material connected to the core moves with the core. A sliding block separated from the core by a yielded shear band — a landslide block — slides as a whole relative to the core. Surface points of that block may themselves be unyielded, but they must remain movable. This is why the surface value of $F_\delta$ alone is not a sufficient test.
-
-The rigid motion of the core is the least-squares fit
+the predicted normal increment of vertex $i$ is
 
 $$
-(\mathbf a_c,\boldsymbol\theta_c)=\arg\min_{\mathbf a,\boldsymbol\theta}\sum_{\mathbf x\in\mathcal U_{\rm core}}w_{\mathbf x}\rho_K(\mathbf x)\,|\mathbf v(\mathbf x)-\mathbf a-\boldsymbol\theta\times\mathbf x|^2.
+\boxed{\ d_{\mathrm{pred},i}^{(n)}=\chi_{Y,i}\,\Delta t_n\,\mathbf v_{{\rm sl},i}^{(n)}\!\cdot\mathbf N_i^{(n)}+\Delta h^*_{C,i}\ }\qquad(\mathbf X_i\leftarrow\mathbf X_i+d_i\mathbf N_i;\ \text{Section 8.0, G4}).
 $$
 
-The normal equation is $6\times 6$ and symmetric positive definite when the weighted points are not collinear. If $\mathcal U_{\rm core}$ degenerates to a collinear set, the step is marked **core degeneracy** and one sets $\mathbf a_c=\boldsymbol\theta_c=\mathbf 0$. Every geometric prediction uses the **velocity relative to the core**,
+The increment is normal, along the unit vertex normal $\mathbf N_i$ of (G4), and is never converted to a radial increment: a radial form would divide by $\mathbf n\cdot\mathbf e_r$, which changes sign on a positive-area set of every non-star-shaped body (Proposition 8.0.1). Section 10.4.3 uses this same definition. There is no displacement field. The increment is the creep velocity relative to the core times the step, $\Delta t_n\mathbf v_{\rm sl}$. (In the star-shaped special case the same normal increment corresponds to the radial increment $d_i/(\mathbf N_i\cdot\mathbf e_r)$.)
+
+The creep term carries $\chi_Y$. The node classes carry the geometric movability $\tilde\chi_i:=\max(\chi_{Y,i},\pi_i)$, where $\pi_i$ is the slope-promotion indicator of Section 2.8c ($\pi\equiv0$ without A-C4). A promoted node keeps $\chi_{Y,i}=0$, so its predictor has no creep. The classes are:
+
+- **locked** $\mathcal L^{(n)}=\{\tilde\chi_i=0,\ \Delta h_{C,i}=0\}$, the solid substrate, with $d_i=0$;
+- **pure deposition** $\mathcal D^{(n)}=\{\tilde\chi_i=0,\ \Delta h_{C,i}\ne0\}$, an immobile substrate receiving material, with $d_i=d_{{\rm pred},i}$ fixed;
+- **movable** $\mathcal A^{(n)}=\{\tilde\chi_i=1\}$, the only free variables of the cone program: the yielded or sliding nodes plus the promoted ones.
+
+Locking means the substrate does not flow. Deposition accumulates on it; locking the deposit too would break mass conservation. In the mass row $D\mathcal M^{(n)}d+s_M=M-\mathcal M^{(n)}$ every flux increment uses $\Delta h_C^*$. Otherwise $\rho_{\rm bulk}\ne\rho_K|_\Gamma$ creates a spurious drift $s_M\ne0$ even when $\int J_{\rm dep}=\int J_{\rm ero}$. Only the Mode C flux produces $\Delta h_C$, and no flow displacement is added twice. A solid free surface does not in general satisfy $W=\mathrm{const}$. The slope surrogate applies only at movable nodes of the loose layer where it has been declared applicable, with $g_{\rm eff}\cdot n<0$ checked separately; locked nodes do not receive it. Solid material without loose cover ($\rho_s=0$) may stand steeper than the repose angle, which is what retains real topography. A loose node on a supercritical face is promoted by A-C4 and relieved even though the creep classification locks it.
+
+**(B5) Tensile truncation.** The Poisson problem of Section 8.7 has no pointwise inequality. Rheology and yield use $\tilde p=\max([p]_+,p_{\min})$, and the truncated part $\|[p]_-\|$ is reported each step as the **tensile fraction**. The truncated pressure does not satisfy the Poisson equation. In tension the strength degenerates to $\tau_y=c+\mu_yp_{\min}$ (Drucker–Prager tension cut-off); without cohesion such a region is ordinarily yielded.
+
+**(B6) Plastic diagnostics (no feedback).** $\mathbf D_p:=\mathbf 1_{\{F_\delta>0\}}\mathbf D$, the dissipation $\Phi_p:=\int\mathbf 1_{\{F_\delta>0\}}\boldsymbol\tau_{\rm flow}:\mathbf D\,dV\ge0$ (since $\boldsymbol\tau_{\rm flow}:\mathbf D=2\eta|\mathbf D|^2$), and $\bar\varepsilon_p\leftarrow\bar\varepsilon_p+\lambda\Delta t_n\dot\gamma\mathbf 1_{\{F_\delta>0\}}$ on $\mathcal X_Y$ ($\lambda$ the under-relaxation factor of Section 2.14) are post-processing outputs only. They **do not enter** $\boldsymbol\sigma$, $\eta$, $F_\delta$, $d_{\rm pred}$, or any acceptance test.
+
+**Mode C interface.** Let $\chi_{A,i}=\chi_{Y,i}\mathbf 1_{\{\rho_{s,i}>0\}}$ (movable and loose). On the moving surface $\Gamma(t)$, with surface measure $dS$, the loose layer obeys
 
 $$
-\mathbf v_{\rm sl}:=\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x.
+\partial^\bullet_t\rho_s+\rho_s\nabla_\Gamma\!\cdot\mathbf v_\Gamma=J_{\mathrm{dep}}-J_{\mathrm{ero}},\qquad
+\mathbf v_\Gamma=\mathbf v_T+V_n\mathbf n,\qquad
+\mathbf v_T=\chi_A\big(\mathbf v_{\rm sl}-(\mathbf v_{\rm sl}\cdot\mathbf n)\mathbf n\big)\big|_\Gamma,
 $$
 
-The net translation of the core itself is absorbed by the centre-of-mass realignment in step 8 of Section 10.4.4. The residual $\mathbf v_{\rm sl}$ inside the core is a numerical creep produced by the regularization $\dot\gamma_\varepsilon>0$. It is removed exactly by $\chi_{Y,i}=0$. This paper contains no state variable obtained by integrating $\mathbf D$ in time, so this creep neither enters the geometry nor accumulates in any history variable.
-
-**(B4) Surface predictor (the unique definition of $d_{\rm pred}$).**
+with $\partial^\bullet_t$ the time derivative following $\mathbf v_\Gamma$ and $V_n$ the normal speed of $\Gamma$ (Section 8.0, G5), and
 
 $$
-\boxed{\ d_{\mathrm{pred},i}^{(n)}=\frac{\chi_{Y,i}\,\Delta t_n\,\mathbf v_{{\rm sl},i}^{(n)}\!\cdot n_i^{(n)}+\dfrac{\rho_{\mathrm{bulk}}}{\rho_K(\mathbf x_i)}\,\Delta h_{C,i}}{n_i^{(n)}\cdot e_r},\ }
-\qquad
-\Delta h_C=\Delta t_n\,\frac{J_{\mathrm{dep}}-J_{\mathrm{ero}}}{\rho_{\mathrm{bulk}}},
-\qquad
-\rho_{\mathrm{bulk}}=\rho_p\nu_0,
+J_{\mathrm{ero}}=\chi_A\,k_e\rho_s\frac{[F_\delta]_+}{\sigma_0},\qquad
+J_{\mathrm{dep}}(a)=\int_{\Gamma}K(a,a')J_{\mathrm{ero}}(a')\,dS(a'),\qquad
+\int_{\Gamma}K(a,a')\,dS(a)=1,
 $$
 
-where $\Delta t_n$ is the geological step of Section 10.4.1. The creep term carries $\chi_{Y,i}$, the classification of (B3). The node classes carry the *geometric* movability
+with $\rho_s$ the loose-layer areal density (initially $\rho_{\rm bulk}h_s$), $k_e\ge0$ in s⁻¹, $\sigma_0>0$, and $K\ge0$. In the reference model $K$ is the runout kernel of A-C3 (Section 2.8b); the isotropic kernel $G_w$ is its limit $X(a')=a'$. $F_\delta$ is the surface value of the unique stress, so a locked node has $J_{\rm ero}=0$. Integrating $J_{\rm dep}$ and using the normalization of $K$ gives the exact balance
 
 $$
-\tilde\chi_{i}:=\max(\chi_{Y,i},\pi_i),
-$$
-where $\pi_i\in\{0,1\}$ is the slope-promotion indicator of Section 2.8c ($\pi\equiv 0$ when hypothesis A-C4 is not applied). A promoted node keeps $\chi_{Y,i}=0$, so its predictor contains no creep. Surface nodes then fall into three classes.
-
-- The **locked set** $\mathcal L^{(n)}=\{i:\tilde\chi_{i}=0,\ \Delta h_{C,i}=0\}$ is the solid substrate, with $d_i=0$.
-- The **pure-deposition set** $\mathcal D^{(n)}=\{i:\tilde\chi_{i}=0,\ \Delta h_{C,i}\ne 0\}$ has an immobile substrate and only an external accumulation of material, with $d_i=d_{\mathrm{pred},i}$ held fixed.
-- The **movable set** $\mathcal A^{(n)}=\{i:\tilde\chi_{i}=1\}$ is the only set of free variables of Metal-PDHG. It is the union of the yielded or sliding nodes ($\chi_{Y,i}=1$) and the promoted nodes ($\pi_i=1$).
-
-“Locked in the unyielded region” means that the solid substrate undergoes no flow displacement. Deposition is the accumulation of landslide material upon that substrate. It is not a motion of the substrate. Locking the deposition increment as well would destroy conservation of mass.
-
-The symbol $\Delta R_C$ denotes $\Delta h_C^*/(n\cdot e_r)$, where
-
-$$
-\Delta h_C^*:=\frac{\rho_{\mathrm{bulk}}}{\rho_K|_\Gamma}\Delta h_C.
+\int_{\Gamma}J_{\mathrm{dep}}\,dS
+=\int_{\Gamma}J_{\mathrm{ero}}\,dS .
 $$
 
-The formula above is the **unique definition** of $d_{\mathrm{pred}}$, and it is the same definition as in Section 10.4.3. This paper does not use a displacement field $u$. The incremental displacement is the instantaneous Stokes creep velocity relative to the rigid core, multiplied by the geological step: $\Delta t_n\,\mathbf v_{\rm sl}$.
-
-**Mass-Jacobian weight.** The increment $\Delta h_C$ converts the bulk density $\rho_{\mathrm{bulk}}$ into a thickness. When that thickness is converted into a geometric displacement expressed in the Cauchy density $\rho_K$ of the solid, it must be multiplied by the local density weight $\rho_{\mathrm{bulk}}/\rho_K|_\Gamma$, so that the mass per unit area is conserved:
-
-$$
-\rho_{\mathrm{bulk}}\Delta h_C=\rho_K|_\Gamma\Delta h_C^*.
-$$
-
-In the Metal-PDHG mass row $D\mathcal M^{(n)}d+s_M=M-\mathcal M^{(n)}$, every geometric increment that comes from a flux uses $\Delta h_C^*$. Otherwise, even if $\int J_{\mathrm{dep}}=\int J_{\mathrm{ero}}$, the inequality $\rho_{\mathrm{bulk}}\ne\rho_K|_\Gamma$ produces a spurious mass drift $s_M\ne 0$.
-
-The unknown $d$ is a radial increment, whereas $\mathbf v_{\rm sl}\cdot n$ and $\Delta h_C^*$ are normal increments. The first-order geometric relation $\delta R\,(n\cdot e_r)=\delta_n$ requires the surface to be star-shaped with respect to the origin and non-grazing, $n\cdot e_r\ge c_0>0$. Otherwise that node must not be parametrized radially. (Implementation: a node with $|n\cdot e_r|<0.05$ receives no radial increment from a normal displacement, and is left out of the CFL speed of Section 10.4.1; the configured $c_0$ is validated but not enforced as an acceptance test, and the smallest $n\cdot e_r$ of the accepted body is reported instead.) The fluxes $J_{\mathrm{dep}}$ and $J_{\mathrm{ero}}$ are areal mass fluxes, in $\mathrm{kg\,m^{-2}\,s^{-1}}$, so $\Delta h_C$ has the dimension of length. The increment $\Delta R_C$ can come only from the material flux of Mode C. The same flow displacement must not be added a second time. A solid free surface does not in general satisfy $W=\mathrm{const}$. The slope surrogate is used only at those movable nodes of the loose surface layer for which its applicability has been declared, and one must check separately that $g_{\mathrm{eff}}\cdot n<0$. Nodes that are locked after promotion ($\tilde\chi_i=0$) do not receive the slope surrogate. Solid material connected to the core and not covered by loose material ($\rho_s=0$) may be steeper than the angle of repose; that is the mechanism that retains real topography. A node that carries loose material and lies on a supercritical face is promoted by A-C4 (Section 2.8c), and its slope is relieved even though the creep classification locks it.
-
-**(B5) Tensile truncation.** The pressure Poisson problem of Section 8.7 carries no pointwise inequality constraint. The pressure used by the rheology and by the yield test is the truncated regularized value $\tilde p=\max([p]_+,p_{\min})$. The truncated tensile part $\|[p]_-\|$ must be reported at each step as the diagnostic **tensile fraction**. One must not claim that the truncated pressure still satisfies the Poisson equation. In a tensile region the strength degenerates to $\tau_y=c+\mu_y p_{\min}$, the Drucker–Prager tensile truncation. In the absence of cohesion, that region is ordinarily yielded according to $F_\delta$.
-
-**(B6) Plastic diagnostics (no feedback).** The plastic strain rate $\mathbf D_p:=\mathbf 1_{\{F_\delta>0\}}\mathbf D$ in the yielded region, the plastic dissipation
-
-$$
-\Phi_p:=\int_{\mathcal V}\mathbf 1_{\{F_\delta>0\}}\boldsymbol\tau_{\rm flow}:\mathbf D\,dV\ge 0,
-$$
-
-and the accumulated equivalent plastic strain on $\mathcal X_Y$,
-
-$$
-\bar\varepsilon_p\leftarrow\bar\varepsilon_p+\lambda\Delta t_n\,\dot\gamma\,\mathbf 1_{\{F_\delta>0\}},
-$$
-
-are diagnostic outputs of post-processing only. They **do not enter** $\boldsymbol\sigma$, $\eta$, $F_\delta$, $d_{\rm pred}$, or any acceptance criterion. Nonnegativity of $\Phi_p$ follows from $\boldsymbol\tau_{\rm flow}=2\eta\mathbf D$ and $\eta\ge 0$, because $\boldsymbol\tau_{\rm flow}:\mathbf D=2\eta|\mathbf D|^2\ge 0$.
-
-The closed interface of Mode C is as follows. Set $\chi_{A,i}=\chi_{Y,i}\cdot\mathbf 1_{\{\rho_{s,i}>0\}}$, the indicator of a node that is movable and carries loose material. The erosional flux is driven by the yield excess at the surface point:
-
-$$
-\partial_t(J_\Gamma\rho_s)+\partial_a(J_\Gamma\rho_s c^a)
-=J_\Gamma(J_{\mathrm{dep}}-J_{\mathrm{ero}}).
-$$
-
-The erosional flux uses the configured erosion coefficient $k_e\ge 0$:
-
-$$
-J_{\mathrm{ero}}=\chi_A\,k_e\rho_s\frac{[F_\delta]_+}{\sigma_0}\quad(\rho_s\ \text{is the loose-layer areal density in kg·m}^{-2},\ \text{with initial value }\rho_s^{0}=\rho_{\mathrm{bulk}}h_s,\ k_e\ \text{in s}^{-1}),
-$$
-
-$$
-J_{\mathrm{dep}}(a)=\int_{\Gamma}K(a,a')J_{\mathrm{ero}}(a')J_\Gamma(a')\,da',
-$$
-
-where $\sigma_0>0$, $K\ge 0$, and
-
-$$
-\int_{\Gamma}K(a,a')J_\Gamma(a)\,da=1.
-$$
-
-In production runs $K$ is the runout kernel of Section 2.8b (hypothesis A-C3), which carries each eroded parcel over the rotating surface before it is spread; the isotropic kernel $G_w(a,a')$ of this section is its limit $X(a')=a'$. The value of $F_\delta$ is the value computed from the unique stress field at the surface point $(1,\hat{\boldsymbol\omega}_i)$, so a locked node has $J_{\rm ero}=0$. In the absence of an external material source one therefore has the exact balance
-
-$$
-\int_{\Gamma}J_{\mathrm{dep}}J_\Gamma\,da
-=\int_{\Gamma}J_{\mathrm{ero}}J_\Gamma\,da.
-$$
-
-*Proof of the balance.* Integrate the definition of $J_{\mathrm{dep}}$ and apply the normalization of $K$ in the variable $a$. An external source must be added explicitly as $J_{\mathrm{ext}}$ and included in the total mass budget. It must not be hidden inside the deposition term. The mass target is then updated synchronously by
-
-$$
-M^{n+1}=M^n+\Delta t_n\int_{\Gamma}J_{\mathrm{ext}}J_\Gamma\,da.
-$$
-
-Only this one conservation equation produces $\Delta R_C$. The flow displacement of Mode B and the flux of Mode C must not be counted twice. On the active region the coordinate velocity on the surface is
-
-$$
-c^a:=\chi_A\,(\mathbf v_{\rm sl}|_\Gamma)_S^a/R,
-$$
-
-the restriction to the active set of the surface parameter velocity $\mathbf c=\mathbf v_S/R$ of Proposition 9.1 in Section 9.1, taken relative to the rigid core. The unprojected three-dimensional velocity must not be substituted directly into the surface conservation law. The field $\rho_s$ is only an areal density of the loose layer, kept for accounting. Its tangential transport does not itself change $R$. The radius $R$ is updated only by the net flux $J_{\rm dep}-J_{\rm ero}$, through $\Delta h_C^*$. Transport of $\rho_s$ uses the semi-Lagrangian scheme of Section 9.2, including the Jacobian correction. Positivity holds for every step: within a step $\lambda_i=\chi_{A,i}k_e[F_{\delta,i}]_+/\sigma_0$ is frozen, the erosion $\partial_t\rho_s=-\lambda_i\rho_s$ is linear, and it is integrated exactly, $\rho_s\mapsto\rho_s e^{-\lambda_i\Delta t_n}$; the eroded mass of the step is $\rho_s(1-e^{-\lambda_i\Delta t_n})$, and $J_{\rm ero}$ and $J_{\rm dep}$ are applied as their averages over the step. An explicit (forward Euler) update would require $\Delta t_n\lambda_i<1$ for positivity, a bound that persists on a nearly exhausted layer although nothing is left to erode. The remaining step bound is the change of layer thickness, $\Delta t_C$ of Section 10.4.1. Under the parametrization by $S^2$, one has $J_\Gamma\,d\theta\,d\varphi=j\,d\Omega$, so the conservation equation is equivalent to a form with density $j$. The implementation should use $j$, which avoids the coordinate singularity at the poles.
-
+An external source must be explicit, $J_{\rm ext}$, with $M^{n+1}=M^n+\Delta t_n\int_\Gamma J_{\rm ext}\,dS$, and never hidden in the deposit. The transport velocity is the active tangential slip $\mathbf v_T$ relative to the core; the unprojected 3-D velocity must not be used. $\rho_s$ is an accounting density: its tangential transport does not move the surface, which changes only through $J_{\rm dep}-J_{\rm ero}$ via $\Delta h_C^*$. Transport is the semi-Lagrangian scheme of Section 8.0 (G5) with the Jacobian correction. Positivity holds for every step. Let $\beta_i=\chi_{A,i}k_e[F_{\delta,i}]_+/\sigma_0$ be the frozen erosion rate, so $J_{\rm ero}=\beta\rho_s$, and $\tau_n=\lambda\Delta t_n$ the time the step advances (Section 10.4.1). $J_{\rm ero}$ is integrated exactly over $\tau_n$ through its step average $\bar J_{{\rm ero},i}=\rho_{s,i}(1-e^{-\beta_i\tau_n})/\tau_n$, and $\bar J_{\rm dep}$ is the routed and spread $\bar J_{\rm ero}$. The source update is $\rho_s\leftarrow\rho_s+\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$, whose erosion part is exactly $\rho_s\mapsto\rho_se^{-\beta_i\tau_n}$, and $\Delta h^*_C$ is formed from the same averages. The average and the update must use the same interval: an average over $\Delta t_n$ applied for $\tau_n$ would give the factor $1-\lambda+\lambda e^{-\beta_i\Delta t_n}$, which is not the exponential for $\lambda<1$. The exponential is this update, not a second factor: applying both would remove the eroded mass twice. Forward Euler would need $\tau_n\beta_i<1$ even on an exhausted layer. The remaining bound is $\Delta t_C$ of Section 10.4.1. *Star-shaped special case:* with $a=\hat{\boldsymbol\omega}\in S^2$ and $dS=j\,d\Omega$ (Section 9.0) the law reads $\partial_t(j\rho_s)+\nabla_{S^2}\!\cdot(j\rho_s\mathbf c)=j(J_{\rm dep}-J_{\rm ero})$ with $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$ (Proposition 9.1); writing it with $j\,d\Omega$ rather than $J_\Gamma\,d\theta\,d\varphi$ avoids the pole singularity.
 
 ## 2.8b Rotating-frame runout of eroded regolith (hypothesis A-C3)
 
-*Motivation.* The equatorial ridge of Ryugu is attributed to a fast-spin phase, at a period near 3.5 h, in which the equator was the low of the rotating geopotential and loose material from the mid-latitudes migrated to it and accumulated there (Watanabe et al., 2019 [5]). The isotropic kernel of Section 2.8 cannot represent that migration: it returns eroded mass symmetrically about its source, and the tangential geopotential gradient and the Coriolis acceleration act on the surface only through the creep of Mode B. Hypothesis A-C3 replaces the isotropic kernel by a transport kernel. Each eroded parcel first runs out over $\Gamma$ in the rotating body frame, and only then is the spread of Section 2.8 applied.
+*Motivation.* Ryugu's equatorial ridge is attributed to a fast-spin phase (period near 3.5 h) in which the equator was the low of the rotating geopotential and loose material migrated to it from mid-latitudes [5]. The isotropic kernel returns eroded mass symmetrically about its source, and the tangential geopotential gradient and Coriolis act only through Mode B creep, so it cannot represent this. A-C3 lets each eroded parcel run out over $\Gamma$ in the rotating frame before the spread of Section 2.8.
 
 **Hypothesis A-C3 (runout of eroded regolith).**
 
-1. Material eroded at $a'$ during step $n$ leaves as a thin granular packet of the active-layer thickness $h_s$. Its cohesive bonds are broken: the residual cohesion of the moving packet is zero, and the cohesive pressure $p_c$ of Section 4.3 enters only its inertial number.
-2. The packet moves over the frozen surface $\Gamma^{(n)}$ in the frozen effective gravity $\mathbf g_{\rm eff}$ of step 1 of Section 10.4.4 and under the Coriolis acceleration of the body frame, $\boldsymbol\Omega=\omega_n\mathbf e_z$. The Euler force of $\dot\omega$ is omitted, as in (B1).
-3. The runout is instantaneous on the geological time scale, $t_{\rm run}\ll\Delta t_n$, so the arrival point $X(a')$ is evaluated on the frozen geometry of step $n$.
-4. Packets do not interact, and a packet does not change the surface it moves on.
+1. Material eroded at $a'$ in step $n$ leaves as a thin packet of thickness $h_s$ with broken bonds. Its residual cohesion is zero, and $p_c$ (Section 4.3) enters only its inertial number.
+2. The packet moves over the frozen $\Gamma^{(n)}$ in the frozen $\mathbf g_{\rm eff}$ of step 1 (Section 10.4.4), under the Coriolis acceleration of $\boldsymbol\Omega=\omega_n\mathbf e_z$. The Euler force is omitted, as in (B1).
+3. The runout is instantaneous geologically ($t_{\rm run}\ll\Delta t_n$), so $X(a')$ is evaluated on the frozen geometry.
+4. Packets do not interact and do not change the surface.
 
-**Sliding.** On $\Gamma$, with the outward unit normal $\mathbf n$, the tangential velocity $\mathbf v$ and the normal curvature $\kappa_v$ of $\Gamma$ in the direction of $\mathbf v$ (positive where $\Gamma$ is convex), the packet satisfies
+**Sliding.** With outward normal $\mathbf n$, tangential velocity $\mathbf v$, and normal curvature $\kappa_v$ along $\mathbf v$ (positive where convex),
 
 $$
 \boxed{
@@ -3562,7 +1415,7 @@ N=-\mathbf g_{\rm eff}\cdot\mathbf n+2(\boldsymbol\Omega\times\mathbf v)\cdot\ma
 }
 $$
 
-where $\mathbf P_n=\mathbf I-\mathbf n\mathbf n^{\!\top}$ and $N$ is the normal reaction per unit mass. The last term of $\dot{\mathbf v}$ is the constraint acceleration that keeps the packet on $\Gamma$; it does not change $|\mathbf v|$. The basal friction is the $\mu(I)$ law of Section 4.1, written for a depth-averaged layer. For the Bagnold profile of a uniform-$I$ layer the basal shear rate is $5|\mathbf v|/(2h_s)$ and the basal pressure is $p_b=\rho_{\rm bulk}Nh_s$, so
+with $\mathbf P_n=\mathbf I-\mathbf n\mathbf n^{\!\top}$ and $N$ the normal reaction per unit mass. The last term keeps the packet on $\Gamma$ without changing $|\mathbf v|$. Basal friction is the $\mu(I)$ law for a depth-averaged Bagnold layer, with basal shear rate $5|\mathbf v|/(2h_s)$ and basal pressure $p_b=\rho_{\rm bulk}Nh_s$:
 
 $$
 \boxed{
@@ -3572,11 +1425,11 @@ I=\frac{d_p\,\dfrac{5|\mathbf v|}{2h_s}}{\sqrt{(p_b+p_c)/\rho_p}},
 }
 $$
 
-the same $\mu_d(I_c)$ that (B1) uses, with the same constants. Without $p_c$, $I$ is uniform through the Bagnold layer and the basal value is exact; with $p_c$ it is evaluated at the base.
+the same law and constants as (B1). Without $p_c$ the value is exact through the layer; with $p_c$ it is the basal value.
 
-**Arrest.** The packet stops at the first instant at which $|\mathbf v|\le v_{\rm stop}$ and $|\mathbf P_n\mathbf g_{\rm eff}|\le\mu_sN$, the static Coulomb condition at rest (the Coriolis term vanishes with $\mathbf v$). Then $X(a')=\mathbf x$. A packet that is released where the static condition already holds does not move, so $X(a')=a'$. The stopping speed is $v_{\rm stop}=\epsilon_{\rm stop}\sqrt{|\mathbf g_{\rm eff}|h_s}$ with the configured fraction $\epsilon_{\rm stop}$.
+**Arrest.** The packet stops at the first instant with $|\mathbf v|\le v_{\rm stop}$ and $|\mathbf P_n\mathbf g_{\rm eff}|\le\mu_sN$ (static Coulomb at rest), with $v_{\rm stop}=\epsilon_{\rm stop}\sqrt{|\mathbf g_{\rm eff}|h_s}$; then $X(a')=\mathbf x$. A packet released where the static condition holds does not move.
 
-**Flight (lift-off).** Where $N\le0$ the surface cannot hold the packet, and it leaves $\Gamma$ on a ballistic hop:
+**Flight.** Where $N\le0$ the packet lifts off:
 
 $$
 \boxed{
@@ -3586,135 +1439,158 @@ $$
 }
 $$
 
-The centrifugal and tidal terms are exact at $\mathbf x$. Off the surface the self-gravity is taken in the near-surface form $\mathbf g_{\rm grav}(\mathbf x)\approx\mathbf g_{\rm grav}(\mathbf x_\Gamma)\,(r_\Gamma/r)^2$, where $\mathbf x_\Gamma=R(\hat{\boldsymbol\omega})\hat{\boldsymbol\omega}$ is the surface point below $\mathbf x$ and $\mathbf g_{\rm grav}(\mathbf x_\Gamma)$ is the face value of $\mathbf g_{\rm eff}$ with the centrifugal and tidal terms removed; the error is $O(h/R)$ for a hop of height $h$. The packet lands when $r\le R(\hat{\boldsymbol\omega})$. The landing is perfectly inelastic in the normal direction (restitution $e_n=0$): the normal velocity is lost, the tangential velocity is kept, and sliding resumes. A packet that rises above $r_{\rm esc}=3\max_\Gamma R$, or above $1.05\max_\Gamma R$ while moving outward under an outward effective gravity ($\mathbf v\cdot\hat{\mathbf x}>0$, $\mathbf g_{\rm eff}\cdot\hat{\mathbf x}\ge0$), is counted as **escaped**: beyond the synchronous radius $(GM/\omega_n^2)^{1/3}$ the outward pull grows with height, so such a packet does not return. Under A-C3 it is returned to its launch point, $X(a')=a'$, so the body loses no mass; the alternative, an explicit sink $J_{\rm ext}<0$, is not used. A packet that is still moving at the configured runout time $T_{\rm run}$ stops where it is and is counted as **timed out**. Escaped and timed-out packets are reported at every step.
+Centrifugal and tidal terms are exact. Self-gravity near the surface uses the first-order expansion $\mathbf g_{\rm grav}(\mathbf x)\approx\mathbf g_{\rm grav}(\mathbf x_\Gamma)+H^+(\mathbf x_\Gamma)(\mathbf x-\mathbf x_\Gamma)$, with $\mathbf x_\Gamma=\pi(\mathbf x)$ the closest point of $\Gamma$ and $H^+$ the exterior one-sided Hessian of the containing face (Proposition 2.7.1(5)); its error is $O((h/\bar R)^2)|\mathbf g|$ for hop height $h$. It uses no distance to the origin, which may lie outside $\mathcal V$ under (G). For $h$ above a fixed fraction of $\bar R$ (e.g. $0.1$) the field is evaluated directly at $\mathbf x\notin\overline V$ by the exterior route of Section 3.11, together with its classical Hessian $H(\mathbf x_0)$. Until the packet has moved $|\mathbf x-\mathbf x_0|\le0.1\,h$ from that evaluation point it uses $\mathbf g_{\rm grav}(\mathbf x_0)+H(\mathbf x_0)(\mathbf x-\mathbf x_0)$, whose error $O((|\mathbf x-\mathbf x_0|/h)^2)|\mathbf g|$ is within the same budget as the near-surface expansion; beyond that the field is evaluated again. Landing is perfectly inelastic normally ($e_n=0$): the tangential velocity is kept and sliding resumes. A packet above $r_{\rm esc}=3\max_\Gamma|\mathbf x|$, or above $1.05\max_\Gamma|\mathbf x|$ while moving outward under outward effective gravity, is classified **escaped**. This is a heuristic classification, not an orbital criterion. The motivation, that a packet beyond the synchronous radius $(GM/\omega_n^2)^{1/3}$ does not return, holds only for a spherical body, equatorial motion, and near-circular orbits, and the thresholds are not that radius; a trajectory with inward velocity can cross the synchronous radius and fall back. Under A-C3 an escaped packet is returned to its launch point, so escape is a count, not a mass loss; an explicit sink is not used. A packet still moving at $T_{\rm run}$ stops and is **timed out**. Both counts are reported.
 
-**Runout kernel.** With the isotropic spread $G_w(a,b)$ of Section 2.8 (angular width $w$, normalized over $a$),
+**Runout kernel.** With the isotropic spread $G_w(a,b)$ of width $w$, normalized over $a$,
 
 $$
 \boxed{
 K(a,a')=G_w\big(a,X(a')\big),
 \qquad
-\int_\Gamma K(a,a')J_\Gamma(a)\,da=1\ \text{for every }a'.
+\int_\Gamma K(a,a')\,dS(a)=1\ \text{for every }a',
 }
 $$
 
-The normalization is that of $G_w$ about the point $X(a')$, so the balance $\int_\Gamma J_{\rm dep}J_\Gamma\,da=\int_\Gamma J_{\rm ero}J_\Gamma\,da$ of Section 2.8 holds with the same proof. In the discrete form the eroded mass rate $J_{{\rm ero},i}A_i$ of node $i$ is first moved to $X(a_i)$, split over the vertices of the triangle that contains $X(a_i)$ by its barycentric weights; the moved source is then spread by the same convolution as in Section 2.8. The splitting preserves the sum, so $\sum_iJ_{{\rm dep},i}A_i=\sum_iJ_{{\rm ero},i}A_i$ holds to rounding.
+so the balance of Section 2.8 holds with the same proof. Discretely, the eroded rate $J_{{\rm ero},i}A_i$ is moved to $X(a_i)$, split by the barycentric weights of the containing triangle, and then spread. The sum is preserved to rounding.
 
-**Reduction.**
+**Reduction.** $X(a')=a'$ gives the isotropic kernel exactly (runout switched off). $\boldsymbol\Omega=\mathbf 0$ leaves the gravitational slope alone. $\mu_s\to\infty$ means no motion.
 
-1. If every packet stops at its source, $X(a')=a'$, then $K$ is the isotropic kernel of Section 2.8. The configuration `runout = false` sets $X(a')=a'$ and reproduces that kernel exactly; it is kept for regression.
-2. If $\boldsymbol\Omega=\mathbf 0$, the packets run down the gravitational slope alone.
-3. If $\mu_s\to\infty$, no packet moves, and case 1 applies.
+**Why Coriolis enters the runout and not Mode B.** The Coriolis-to-gravity ratio is $2\Omega U/|\mathbf g_{\rm eff}|$, and $\mathrm{Ro}=U/(2\Omega L)$. For Ryugu at 3.3 h ($|\mathbf g|\approx1.5\times10^{-4}$ m s⁻², $2\Omega\approx1.1\times10^{-3}$ s⁻¹), a packet accelerated at $10^{-5}$ m s⁻² over 50 m reaches $U\approx3\times10^{-2}$ m s⁻¹ in about $3\times10^3$ s. So $\mathrm{Ro}\approx0.6$ and $2\Omega t\approx3$, a turn of order one. In the rigid core the regularized creep is of order $\dot\gamma_YR\approx3\dot\gamma_\varepsilon R$ (Section 10.4.4); for $\dot\gamma_\varepsilon\le10^{-9}$ s⁻¹ and $R\lesssim1$ km this is $U\lesssim3\times10^{-6}$ m s⁻¹, a Coriolis-to-gravity ratio below $10^{-4}$. In a yielded region the Coriolis force per volume, $2\rho_K\Omega U$, is small against the viscous force $\sim\eta U/R^2$ exactly when $\mathrm{Ek}^{-1}\ll1$, the indicator of (B1). Under these conditions (8.4′) omits the Coriolis block without loss (Section 7.5). The same estimate gives $t_{\rm run}\sim10^3$–$10^4$ s against $\Delta t_n\gtrsim10^{10}$ s (item 3).
 
-**Why Coriolis enters the runout and not Mode B.** The ratio of the Coriolis to the effective gravity is $2\Omega U/|\mathbf g_{\rm eff}|$, and the Rossby number of a runout of length $L$ is $\mathrm{Ro}=U/(2\Omega L)$. For Ryugu at 3.3 h ($|\mathbf g|\approx1.5\times10^{-4}\,\mathrm{m\,s^{-2}}$, $2\Omega\approx1.1\times10^{-3}\,\mathrm{s^{-1}}$) a packet accelerated at $10^{-5}\,\mathrm{m\,s^{-2}}$ over 50 m reaches $U\approx3\times10^{-2}\,\mathrm{m\,s^{-1}}$ in about $3\times10^{3}$ s. Then $\mathrm{Ro}\approx0.6$ and $2\Omega t\approx3$: the Coriolis acceleration turns the path through an angle of order one. The creep of Mode B has $U\lesssim10^{-9}\,\mathrm{m\,s^{-1}}$, a ratio below $10^{-8}$, so the quasi-static system (8.4′) omits the Coriolis block (Section 7.5) without loss. The same estimate gives $t_{\rm run}\sim10^{3}$–$10^{4}$ s against $\Delta t_n\gtrsim10^{10}$ s, which is item 3 of A-C3.
+**Discretization.** On the polyhedron $V^{(n)}$, $\mathbf n$ and $\mathbf g_{\rm eff}$ are the piecewise-constant face values of step 1. Following Section 8.0 (G9):
 
-**Discretization.** The surface is the polyhedron $V^{(n)}$; $\mathbf n$ and $\mathbf g_{\rm eff}$ are the face values of step 1, piecewise constant, and $R(\hat{\boldsymbol\omega})$ is found by ray–face intersection. On $\Gamma$ one substep of length $\tau$:
+- a packet lands at the first crossing of its drift segment with $\Gamma$;
+- the surface point below $\mathbf x$ is the closest point $\pi(\mathbf x)$;
+- the escape radii use $\max_\Gamma|\mathbf x|$;
+- relief and deposits are normal thicknesses, with $(D\mathcal M)_i=\rho_K(\mathbf X_i)|\mathbf A_i|$.
 
-1. adds $\tau\,\mathbf P_n\mathbf g_{\rm eff}$ to $\mathbf v$;
-2. turns $\mathbf v$ about $\mathbf n$ by the angle $-2(\boldsymbol\Omega\cdot\mathbf n)\tau$, the exact solution of the tangential Coriolis term, which is unconditionally stable;
+One sliding substep of length $\tau$:
+
+1. adds $\tau\mathbf P_n\mathbf g_{\rm eff}$ to $\mathbf v$;
+2. turns $\mathbf v$ about $\mathbf n$ by $-2(\boldsymbol\Omega\cdot\mathbf n)\tau$ (the exact, unconditionally stable tangential Coriolis term);
 3. lowers $|\mathbf v|$ by $\mu(I)N\tau$ without reversing it;
-4. moves the packet to the surface point in the direction of $\mathbf x+\tfrac{\tau}{2}(\mathbf v_{\rm old}+\mathbf v)$ (the trapezoidal drift, exact for a constant deceleration), and projects $\mathbf v$ onto the new tangent plane at the same speed.
+4. moves the packet to the surface point in the direction of $\mathbf x+\tfrac\tau2(\mathbf v_{\rm old}+\mathbf v)$ (trapezoidal drift, exact for constant deceleration), and projects $\mathbf v$ onto the new tangent plane at the same speed.
 
-$\kappa_v$ is the turning, over the substep, of the smooth normal (the area-weighted vertex normals blended barycentrically inside the face) divided by the distance moved; the face normals would read the facet edges as kinks. $N$ uses its last value. In flight the velocity is turned about $\mathbf e_z$ by $-2\omega_n\tau$ (exact for $-2\boldsymbol\Omega\times\mathbf v$) and then receives $\tau\,\mathbf g_{\rm eff}(\mathbf x)$. The flight drift is trapezoidal as well. The substep is $\tau=\theta_r\min\big(\ell/|\mathbf v|,\sqrt{\ell/|\dot{\mathbf v}|},|\mathbf v|/|\dot{\mathbf v}|,1/(2\omega_n)\big)$ with the local edge length $\ell$ and $\theta_r=0.2$, and the last substep ends at $T_{\rm run}$. The third bound, absent at rest, resolves a decelerating packet; the fourth resolves the Coriolis turn, which the rotation integrates exactly in velocity but not in position. Packets are independent and are traced in parallel; only nodes with $J_{\rm ero}>0$ are traced.
+$\kappa_v$ is the signed turning of the smooth normal (area-weighted vertex normals blended barycentrically) along the motion, $\kappa_v\approx(\mathbf n_{\rm new}-\mathbf n_{\rm old})\cdot\hat{\mathbf v}/\Delta s$ over a substep of length $\Delta s$: positive on convex ground, negative in concave ground (crater floors, necks), where it raises $N$. An unsigned $|\Delta\mathbf n|/\Delta s$ would treat concave ground as convex and trigger spurious lift-off. Face normals would read facet edges as kinks. $N$ uses its last value. In flight, $\mathbf v$ is turned about $\mathbf e_z$ by $-2\omega_n\tau$ and then gets $\tau\mathbf g_{\rm eff}(\mathbf x)$, again with a trapezoidal drift. The substep is
 
-**Routing of the slope relief (A-C3, second part).** In the bundled runs the Stokes solve does not resolve the loose layer and no surface node yields under (B2) (Section 2.8, consequence for the production runs), so $F_\delta\le0$ at the surface and Mode C does not erode. The landslides of a fast-spinning body are then carried by the slope relief of the geometric subproblem (Section 10.4.3) on the vertices promoted by A-C4 (Section 2.8c), which lowers every supercritical face of $\mathcal S_{\rm slope}$ toward the angle of repose. Without routing, the mass it removes is returned by the least-change correction of the mass row, spread over the movable set without regard to where a slide would go. Hypothesis A-C3 sends that mass along the same runout. With $d^{1}$ the solution of the subproblem and $\mathcal V_{\rm slope}$ the vertices of $\mathcal S_{\rm slope}$, the relief removes from vertex $i\in\mathcal V_{\rm slope}$ the radial thickness and the mass
+$$
+\tau=\theta_r\min\big(\ell/|\mathbf v|,\ \sqrt{\ell/|\dot{\mathbf v}|},\ |\mathbf v|/|\dot{\mathbf v}|,\ 1/(2\omega_n)\big),
+$$
+
+with $\theta_r=0.2$, and the last substep ends at $T_{\rm run}$. The length $\ell$ is the edge length while sliding and $\max(\text{edge length},h)$ in flight: the field varies on the scale of the height, and a drift of at most $\theta_rh$ cannot pass the ground before the landing test. The third bound resolves deceleration. The fourth resolves the Coriolis turn, which is exact in velocity but not in position. Packets are independent and traced in parallel, and only nodes with $J_{\rm ero}>0$ are traced.
+
+**Routing of the slope relief (A-C3, second part).** Where Mode C does not erode ($F_\delta\le0$ at the surface), landslides are carried by the slope relief of Section 10.4.3 on the vertices promoted by A-C4. Without routing, the removed mass would be returned by the least-change correction of the mass row, without regard to where a slide goes. A-C3 sends it along the runout. With $d^1$ the first solution and $\mathcal V_{\rm slope}$ the movable vertices ($\in\mathcal A$) of the faces of $\mathcal S_{\rm slope}$, vertex $i\in\mathcal V_{\rm slope}$ loses
 
 $$
 \boxed{
 r_i=\big[d_{{\rm pred},i}-d^{1}_i\big]_+,
 \qquad
-m_i=(D\mathcal M)_i\,r_i ,
+m^{\rm rel}_i=(D\mathcal M)_i\,r_i ,
 }
 $$
 
-where $(D\mathcal M)_i=\partial\mathcal M/\partial R_i$ is the row of the linearized mass constraint. A packet released at $a_i$ runs out as above to $X(a_i)$, and the mass is spread by the kernel $K$ of Section 2.8. Vertex $j$ receives the radial deposit
+with $(D\mathcal M)_i$ the mass-row coefficient; $m^{\rm rel}_i$ is not the layer mass $m_i=\rho_{s,i}A_i$ of Section 8.0 (G5). These masses route the deposit. The loose-layer ledger of a promoted source is debited with the mass of the accepted step instead (Section 2.8c, item 3). A packet released at $a_i$ runs out to $X(a_i)$ and is spread by $K$, and vertex $j$ receives
 
 $$
 \boxed{
-\delta_j=\frac{\sum_i K(a_j,X(a_i))\,m_i\,A_j}{(D\mathcal M)_j},
+\delta_j=\frac{\sum_i K(a_j,X(a_i))\,m^{\rm rel}_i\,A_j}{(D\mathcal M)_j},
 \qquad
-\sum_j(D\mathcal M)_j\,\delta_j=\sum_i m_i ,
+\sum_j(D\mathcal M)_j\,\delta_j=\sum_i m^{\rm rel}_i .
 }
 $$
 
-the equality being the normalization of $K$. The subproblem is solved a second time with the corrected prediction $d'_{\rm pred}=d_{\rm pred}+\delta$. A locked vertex with $\delta_j>0$ joins the pure-deposition set, so the deposit lies on the rigid core without moving it. A movable vertex has its target raised. The second solve starts from the first, and its mass row is now met by the routed deposit instead of the least-change spread. One correction pass is made. The relative difference between the masses that the two solves remove from $\mathcal V_{\rm slope}$ is reported as the routing gap.
+The subproblem is then solved once more, starting from the first solution, with $d'_{\rm pred}=d_{\rm pred}+\delta$:
 
-**Configuration** (section `mode_c`): `runout` (A-C3 on or off, for the eroded packets and the routed relief alike), `runout_time` ($T_{\rm run}$, s) and `runout_stop` ($\epsilon_{\rm stop}$). They belong to the closed set of step 0 of Section 10.4.4.
+- a locked vertex with $\delta_j>0$ joins $\mathcal D$, so the deposit rests on the core;
+- a movable vertex has its target raised;
+- the mass row is now met by the routed deposit.
 
-**Report.** Per step, over the eroded and the routed packets together: the number of traced packets, the routed relief mass and the routing gap, the mass-weighted mean and the largest runout distance, the mass-weighted mean change of $|\text{latitude}|$ (negative values are equatorward), the number of hops and the largest hop height, and the numbers of escaped and timed-out packets. The viewer draws a subset of the paths.
+One pass is made. The relative difference between the masses removed by the two solves is reported as the **routing gap**.
 
-The hypothesis is labelled **A-C3**. It is a kinematic closure of the erosion–deposition interface. It does not change the stress field, the yield classification, or any acceptance criterion of Mode B.
+**Parameters:** the runout switch (for eroded packets and routed relief alike), $T_{\rm run}$ (s), and $\epsilon_{\rm stop}$; all part of step 0 of Section 10.4.4. **Report** per step, over all packets:
+
+- the number of packets traced;
+- the routed relief mass and the routing gap;
+- the mean and largest runout distance, and the mass-weighted mean change of $|\text{latitude}|$ (negative is equatorward);
+- the number of hops and the largest hop height;
+- the escaped and timed-out counts.
+
+A-C3 is a kinematic closure of the erosion–deposition interface. It changes neither the stress, nor the yield classification, nor any Mode B acceptance test.
 
 ## 2.8c Slope promotion of the loose layer (hypothesis A-C4)
 
-*Motivation: a subgrid closure of shallow failure.* The loose layer has thickness $h_s$ ($1$ m on Ryugu, $5$ m on Phobos and Deimos), far below the wavelengths that the Stokes solve resolves (Section 2.8, B2, cause 1). The yield test (B2) therefore cannot fail it, the movable set of (B3) stays empty at the surface, and (B4) alone would never move the surface, even where the friction-angle chain of Section 10.3 reports that the loose layer stands steeper than its angle of repose. Hypothesis A-C4 decides shallow failure at the scale of the surface mesh instead, by the infinite-slope Mohr–Coulomb balance at the depth $h_s$. On a plane parallel to the face at that depth the normal stress is $p_{\rm ref}=\rho_{\rm bulk}|\mathbf g\cdot\mathbf n|h_s$ and the shear stress is $\rho_{\rm bulk}|\mathbf g\times\mathbf n|h_s$. The layer holds when
+*Motivation: a subgrid closure of shallow failure.* The loose layer (thickness $h_s$, of order metres on rubble-pile surfaces) lies far below the resolution of the truncated Stokes solve (Section 2.8, B2, cause 1). So (B2) cannot fail it; where the movable set of (B3) is empty at the surface, (B4) alone would never move the surface, even where Section 10.3 reports a loose layer steeper than repose. A-C4 decides shallow failure at mesh scale instead, by the infinite-slope Mohr–Coulomb balance at depth $h_s$. With normal stress $p_{\rm ref}=\rho_{\rm bulk}|\mathbf g\cdot\mathbf n|h_s$ and shear stress $\rho_{\rm bulk}|\mathbf g\times\mathbf n|h_s$, the layer holds when
+
 $$
 \frac{|\mathbf g\times\mathbf n|}{|\mathbf g\cdot\mathbf n|}\le\frac{c_s+\mu_{\rm proj}\,p_{\rm ref}}{p_{\rm ref}},
 $$
-with $c_s=c(d=0)$ the surface cohesion of Section 4.3a. The projection angle of Section 10.3, $\tan\phi=\mu_{\rm eff}=\big[c_s+\mu_{\rm proj}p_{\rm ref}-\|\mathbf T_{\rm tide}\|_F/\sqrt2\big]_+/p_{*,\rm ref}$, is this ratio with the tidal backstress subtracted and the contact pressure $p_c$ added to the confinement in $p_{*,\rm ref}$. A positive slack $s_f$ below is therefore the subgrid statement that the shallow layer under face $f$ would yield in a resolved solve.
 
-The two criteria divide the work. The global Stokes solve with (B2) decides deep-seated and whole-body failure; A-C4 supplies the shallow failure that the solve cannot resolve. A-C4 is a closure, not a consequence of (B2). The two share the strength parameters, but (B2) is evaluated on the harmonic surface of degree $l_{\rm surface}$ and on the creep stress, and A-C4 on the faces of the surface mesh and on the shallow-layer balance above.
+with $c_s=c(d=0)$ (Section 4.3a). The projection angle of Section 10.3, $\tan\phi=\mu_{\rm eff}=[c_s+\mu_{\rm proj}p_{\rm ref}-\|\mathbf T_{\rm tide}\|_F/\sqrt2]_+/p_{*,\rm ref}$, is this ratio with the tidal backstress subtracted and $p_c$ added to the confinement. A positive slack below therefore means the shallow layer under the face would yield in a resolved solve. (B2) on the truncated creep stress decides deep and whole-body failure. A-C4 on the mesh faces supplies shallow failure. The two share strength parameters, and A-C4 is a closure, not a consequence of (B2).
 
-**Hypothesis A-C4 (slope promotion).** The repose slack of face $f$ at geological step $n$ is
+**Hypothesis A-C4 (slope promotion).** The repose slack of face $f$ at step $n$ is
 
 $$
 s_f:=\Big[\frac{|\mathbf g_f\times\mathbf n_f|}{|\mathbf g_f|}-\sin\phi_f\Big]_+ .
 $$
 
-1. A face $f$ is *supercritical* when $s_f$ exceeds the configured tolerance $\tau_s$ (`relief.tol_slack`). Here $\mathbf g_f$, $\mathbf n_f$, and $\phi_f$ are the effective gravity, the normal, and the nominal projection angle of Section 10.3 at the face centre, evaluated on the converged quasi-static Stokes state of the step.
-2. A vertex $i$ is *promoted*, $\pi_i=1$, when it is a vertex of at least one supercritical face, it is not already movable ($\chi_{Y,i}=0$), and it carries loose material ($\rho_{s,i}>0$). Otherwise $\pi_i=0$.
-3. A promoted vertex is a free variable of the geometric subproblem of Section 10.4.3. Its predictor contains no creep: by (B4), $d_{{\rm pred},i}=\Delta h^*_{C,i}/(\mathbf n_i\cdot\mathbf e_r)$, which is zero unless Mode C deposits at that node.
-4. Promotion changes neither the stress field, nor $\chi_Y$ and $F_\delta$, nor the Mode C fluxes ($\chi_A=\chi_Y\mathbf 1_{\{\rho_s>0\}}$ excludes promoted vertices), nor the runout sources of Section 2.8b, nor the core advection $\mathbf v_{\rm adv}=\chi_Y\mathbf v_{\rm sl}$ of Section 9.10.2, nor the CFL bound of Section 10.4.1. All of these keep the classification of (B3).
+1. Face $f$ is *supercritical* when $s_f>\tau_s$, with a configured tolerance $\tau_s\ge0$. $\tau_s$ is a tolerance on the difference of sines, not on the stress ratio of the Mohr–Coulomb balance above, and the two thresholds agree only at $\tau_s=0$. A face of slope $\theta$ is supercritical when $\sin\theta>\sin\phi_f+\tau_s$, which is the stress-ratio margin $\tan(\arcsin(\sin\phi_f+\tau_s))-\tan\phi_f$. $\mathbf g_f$, $\mathbf n_f$, and $\phi_f$ are face-centre values (Section 10.3) on the converged Stokes state of the step.
+2. Vertex $i$ is *promoted*, $\pi_i=1$, when it belongs to a supercritical face, is not already movable ($\chi_{Y,i}=0$), and carries loose material ($\rho_{s,i}>0$).
+3. A promoted vertex is a free variable of Section 10.4.3. Its predictor has no creep: $d_{{\rm pred},i}=\Delta h^*_{C,i}\ge0$, zero unless Mode C deposits there (it does not erode, since $\chi_{A,i}=0$). Its relief cannot cut below the loose layer it carries plus the deposit it receives in the step. Where $(D\mathcal M)_i>0$,
+$$
+d_i\ \ge\ \min(d_{{\rm pred},i},0)-\frac{\rho_{s,i}A_i}{(D\mathcal M)_i}\ \le\ 0,
+$$
+so $d=0$ stays feasible; where $(D\mathcal M)_i\le0$ there is no bound. For a full layer, $\rho_s=\rho_{\rm bulk}h_s$, the bound lies $(\rho_{\rm bulk}/\rho_K(\mathbf X_i))(A_i/|\mathbf A_i|)\,h_s$ below the current surface, with $A_i/|\mathbf A_i|\ge1$ and equality on a flat ring. The ledger uses the accepted step. With $d'_{\rm pred}=d_{\rm pred}+\delta$ the prediction of the second solve of Section 2.8b and $\lambda$ the accepted fraction of the step, the layer is debited by
+$$
+m^{\rm lay}_i=\lambda(D\mathcal M)_i\big[d'_{{\rm pred},i}-d_{*,i}\big]_+\ \le\ \rho_{s,i}A_i+\lambda(D\mathcal M)_i\big[d'_{{\rm pred},i}\big]_+,
+$$
+the inequality following from the bound above for $\lambda\le1$: a layer loses at most what it carries and what arrives on it in the step. Each $m^{\rm lay}_i$ is credited to $\rho_s$ along the runout of the first solve: it is moved to the landing points $X(a_i)$ of the packets of $i$ and spread by $K$, and an escaped packet lands at its source. The credit equals the debit, so the ledger $\sum_iA_i\rho_{s,i}$ is unchanged. $\sum_im^{\rm lay}_i$ differs from the routed $\sum_im^{\rm rel}_i$ by the factor $\lambda$ and by the change between the two solves, which the routing gap reports.
+4. Promotion changes none of the following, all of which keep the (B3) classification: the stress; $\chi_Y$ and $F_\delta$; the Mode C fluxes ($\chi_A=\chi_Y\mathbf 1_{\{\rho_s>0\}}$ excludes promoted vertices); the eroded-packet sources of the runout (the relief packets of Section 2.8b are sources of their own, not a reclassification); the core advection $\chi_Y\mathbf v_{\rm sl}$ (Section 9.10.2); and the CFL bound.
 
-The rule is local: a yielded vertex elsewhere on the body does not switch it off. (An earlier implementation promoted vertices only when no surface vertex was movable at all. The two rules coincide whenever $\chi_Y\equiv 0$ on the surface, which holds at every step of the bundled runs, so their results are unaffected.)
+The rule is local: a yielded vertex elsewhere does not switch it off.
 
 **Slope rows.** The slope set of Section 10.4.3 is
 
 $$
-\mathcal S^{(n)}_{\rm slope}=\Big\{f:\ s_f>\tau_s,\ \sin\phi_f\ \text{finite},\ \text{all three vertices of }f\text{ in }\mathcal A^{(n)},\ \textstyle\sum_{i\in f}\rho_{s,i}>0\Big\},
+\mathcal S^{(n)}_{\rm slope}=\Big\{f\in\mathcal F:\ \sin\phi_f\ \text{finite},\ \textstyle\sum_{i\in f}\rho_{s,i}>0,\ f\text{ has at least one vertex in }\mathcal A^{(n)}\Big\},
 $$
-with $\mathcal A^{(n)}=\{\tilde\chi=1\}$ of (B4). Each face of $\mathcal S_{\rm slope}$ carries the second-order-cone slope row and the anti-overhang row at its centre. Thus $\mathcal S_{\rm slope}\subseteq\mathcal A$ holds, with $\mathcal A$ containing the promoted vertices.
 
-**What the relief does.** On promoted vertices $d_{\rm pred}=0$, so the subproblem is the least-change projection of the current shape onto the repose cone,
+a set of faces ($\mathcal F$ the faces of $\Gamma$), with $\mathcal A=\{\tilde\chi=1\}$ of (B4) a set of vertices. Each face of $\mathcal S_{\rm slope}$ carries the second-order-cone slope row at its centre; its vertices outside $\mathcal A$ enter the linearized normal $\widehat{\mathbf n}_f(d)$ with their fixed increments ($0$ on $\mathcal L$, $d_{\rm pred}$ on $\mathcal D$). The set contains the supercritical faces, so every promoted vertex has a slope row, and it contains the subcritical loose faces around them, whose rows start inactive and keep the relief from pushing a neighbour past repose. Every face with a vertex in $\mathcal A$, loose or not, carries the anti-overhang row, except a face that already overhangs at $d=0$: item 2 of Section 2.13 removes its rows before the solve and counts it.
+
+**What the relief does.** Where Mode C does not deposit, $d_{\rm pred}=0$ on promoted vertices, so the subproblem is the least-change projection of the current shape onto the repose cone,
 
 $$
 \min_d\ \tfrac12\sum_{i\in\mathcal A}w_i(d_i-d_{{\rm pred},i})^2+\varrho\sum_{f}t_f
-\quad\text{s.t. the slope rows, the anti-overhang rows, the mass row, and the trust box.}
+\quad\text{s.t. slope rows, anti-overhang rows, mass row, trust box.}
 $$
-It removes material from supercritical faces and, through the mass row or through the routed deposit of Section 2.8b, places it elsewhere in $\mathcal A$ or on the pure-deposition set. The same program, with additional crater-protection weights and without the Stokes solve, is the stand-alone relaxation of `scf-cli relax`.
 
-**Time scale.** Like the runout of A-C3, the failure is instantaneous on the geological time scale: a supercritical face is relieved in the step in which it becomes supercritical. The amount of relief per step is limited only by the trust box $|d_i|\le\Delta=\texttt{trust0}\,\bar R$ and by the KKT tolerance of the cone program. Promoted vertices have no creep speed and do not enter $\Delta t_{\rm CFL}$, so the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. Consequently:
+It removes material from supercritical faces and places it elsewhere in $\mathcal A$ or on $\mathcal D$, through the mass row or the routed deposit of Section 2.8b. The same program without the Stokes solve, with weights that protect selected regions (e.g. craters), is a stand-alone static relaxation of a given shape.
 
-- the *onset* of a landslide (the first step with $s_f>\tau_s$) is physical, to within one step;
-- its *duration* in model time, and the displacement per step, are numerical: a slide that needs $N$ trust-limited steps lasts about $N\,\Delta t_n$. In the bundled Ryugu run the relief took 11 steps of $\Delta t_{\max}=3\times10^{11}$ s; in the Phobos forecast the largest displacement per step equals the trust radius ($220$ m), and a slope slack of up to $0.19$ remains on some faces at the end of a step.
+**Time scale.** Failure is instantaneous geologically: a face is relieved in the step in which it becomes supercritical. The relief per step is limited by the trust box $|d_i|\le\Delta=\Delta_0\bar R$ (configured fraction $\Delta_0$ of the mean radius $\bar R$), by the loose mass of each promoted vertex (item 3), and by the KKT tolerance. The second bound keeps the closure shallow: a promoted vertex never loses more than the layer it carries, and an exhausted layer ($\rho_{s,i}=0$) is not promoted again (item 2), so a shallow failure cannot excavate the body. Promoted vertices have no creep speed and do not enter $\Delta t_{\rm CFL}$, so the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. The onset of a landslide is physical to within one step. Its model duration and per-step displacement are numerical: a relief that needs $N$ trust-limited steps lasts about $N\Delta t_n$ of model time, and a step whose displacement reaches $\Delta$ may leave positive slack on some faces.
 
-Reports: the number of movable vertices (`n_mobile`, promoted ones included), the number of supercritical faces, the largest slack, the slope slack $\sum t_f$ left by the cone, the largest displacement, and the trust radius.
+**Reports:**
 
-**Stage equilibrium.** Criterion (c) of Section 2.15 is taken with $\mathcal A^{(n)}$ after promotion. A stage is therefore equilibrated only when, in addition to (B3), no loose face is supercritical.
+- the number of movable vertices (promoted vertices included);
+- the number of supercritical faces and the largest slack;
+- the cone's residual slope slack $\sum t_f$;
+- the largest displacement and the trust radius.
 
-**Reduction.** If $\tau_s\to\infty$, or $\rho_s\equiv 0$, then $\pi\equiv 0$ and (B3)–(B4) apply unchanged.
+**Stage equilibrium.** Criterion (c) of Section 2.15 is a fixed-point test. With the whole body in the rigid core ($\chi_Y\equiv0$ on $\mathcal X_Y$) and no erosion ($J_{\rm ero}\equiv0$), a stage is equilibrated when no loose face is supercritical ($\mathcal A=\varnothing$), or when the cone program, converged within its KKT tolerance, leaves every promoted vertex in place ($d_*=0$). The zero of a *cone unresolved* step (Section 10.4.3) does not count. The step that reaches the fixed point ends the stage. The second case covers faces that the relief cannot flatten (for instance a face whose locked edge is itself steeper than repose); their slack is reported as unrelievable. **Reduction.** $\tau_s\to\infty$ or $\rho_s\equiv0$ gives $\pi\equiv0$ and plain (B3)–(B4).
 
-The hypothesis is labelled **A-C4** and registered as PO-17. It is a subgrid closure of shallow failure in the loose layer. Its open questions are the instantaneous-failure assumption, the dependence of the reported slide durations and per-step displacements on $\Delta$ and $\Delta t_{\max}$, and the agreement of the shallow-layer criterion with a solve that resolves the layer.
+A-C4 is registered as PO-17. Its open questions:
+
+- the instantaneous-failure assumption;
+- the dependence of slide durations and per-step displacements on $\Delta$ and $\Delta t_{\max}$;
+- agreement of the shallow-layer criterion with a solve that resolves the layer.
 
 ---
 
 ## 2.9 SCF iteration driven by the unified formulae
 
-Let the shape at geological step $n$ be $V^{(n)}$, and let the exogenous spin be $\omega=\omega_n=\omega(t_n)$ (Section 10.4.1). In every subsequent formula of this chapter, $\omega$ means that frozen value.
+Let $V^{(n)}$ be the shape at geological step $n$. In the rest of this chapter $\omega$ is the frozen spin $\omega_n=\omega(t_n)$ (Section 10.4.1).
 
 ## 2.10 Forward evaluation
 
-At each surface node $x_i^{(n)}$, compute
-
-$$
-U_i^{(n)},
-\qquad
-\nabla U_i^{(n)},
-\qquad
-\nabla^2U_i^{(n)}
-$$
-
-from the unified Feynman representation. Near the surface, use subtraction of the spherical finite part. Then compute
+At each surface node, compute $U_i$, $\nabla U_i$, and $\nabla^2U_i$ from the unified representation, using spherical finite-part subtraction near the surface. Then
 
 $$
 W_i^{(n)}
@@ -3725,9 +1601,7 @@ U_i^{(n)}
 \left[
 (x_{i1}^{(n)})^2+(x_{i2}^{(n)})^2
 \right],
-$$
-
-$$
+\qquad
 g_i^{(n)}
 =
 \nabla U_i^{(n)}
@@ -3740,308 +1614,170 @@ $$
 
 ## 2.11 Fluid mass-level interface (Mode A, retained but not enabled)
 
-
-The formulae below define only the fluid interface of Mode A. Modes B and C constrain $\mathcal M(V,\rho)=M$ directly on the actual material domain. They do not select a solid boundary by a level of the potential, and they do not depend on successful root-finding for this interface.
-
-Define
-
-$$
-M^{(n)}(W_0)
-=
-\int_{\{x:W^{(n)}(x)>W_0\}}
-\rho_K(x)\,dx.
-$$
-
-Solve
-
-$$
-M^{(n)}(W_0^{(n)})=M.
-$$
-
-If $M^{(n)}$ is continuous and strictly decreasing on the target interval, bisection may be used. Strict decrease requires the region between the target levels to have positive volume and the density on that region to be nonzero.
+This and the next section define only the fluid interface of Mode A. Modes B and C impose $\mathcal M(V,\rho)=M$ directly on the material domain. They never select a boundary by a potential level, and they do not depend on these root-finds. Define $M^{(n)}(W_0)=\int_{\{W^{(n)}>W_0\}}\rho_K\,dx$ and solve $M^{(n)}(W_0^{(n)})=M$. Bisection is valid if $M^{(n)}$ is continuous and strictly decreasing on the target interval. That requires the region between the target levels to have positive volume and nonzero density.
 
 ---
 
 ## 2.12 Fluid equipotential interface (Mode A, retained but not enabled)
 
-
-For each direction $u_i$, solve
-
-$$
-W^{(n)}(R_{\mathrm{eq},i}^{(n)}u_i)
-=
-W_0^{(n)}.
-$$
-
-The equation may be executed only when a root exists in the chosen radial search interval. Monotone bisection requires, in addition, that $R\mapsto W^{(n)}(Ru_i)$ be strictly monotone on that interval. If there are several roots, the selection rule must be fixed in advance, and the branch must be continued. The resulting candidate equipotential radius is
-
-$$
-R_{\mathrm{eq}}^{(n)}
-=
-\left(
-R_{\mathrm{eq},1}^{(n)},\ldots,R_{\mathrm{eq},N}^{(n)}
-\right).
-$$
-
-This step produces only a fluid reference shape. It is not a solid target of Mode B or Mode C. A locally smooth equipotential follows from the implicit-function theorem only when the potential has the corresponding regularity and $\nabla W\ne 0$. At a polyhedral boundary, and at a critical point, one cannot assert unconditionally that the surface is globally of class $C^\infty$ or analytic.
+For each direction $u_i$ solve $W^{(n)}(R^{(n)}_{\mathrm{eq},i}u_i)=W_0^{(n)}$, giving $R_{\rm eq}^{(n)}=(R^{(n)}_{\mathrm{eq},1},\dots,R^{(n)}_{\mathrm{eq},N})$. This is executed only when a root exists in the search interval. Bisection needs strict monotonicity there, and with several roots the selection rule must be fixed in advance and the branch continued. The result is a fluid reference shape only, never a solid target of Modes B or C. A locally smooth equipotential follows from the implicit-function theorem only with sufficient regularity and $\nabla W\ne0$. At a polyhedral boundary or a critical point, global smoothness cannot be asserted.
 
 ---
 
 ## 2.13 Constraint correction after the mechanical prediction (Mode B primary, Mode C auxiliary)
 
-Freeze $g^{(n)}$ and $H_W^{(n)}$. First obtain the flow prediction relative to the rigid core from the quasi-static Stokes creep solution of Mode B and from the physical yield classification (B1–B4 of Section 2.8). Only yielded surface points in the movable set are passed to Mode C for conservative erosion and deposition. The hand-off must be explicit. The same flow displacement, or the same material flux, must not be counted twice. Write $d_{\mathrm{pred}}^{(n)}$ for the predicted radial increment, and set $R_{\mathrm{pred}}=R^{(n)}+d_{\mathrm{pred}}^{(n)}$. This prediction contains neither $R_{\mathrm{eq}}$ nor a global equipotential blending term.
+Freeze $g^{(n)}$ and $H_W^{(n)}$. The flow prediction relative to the core comes from the Mode B creep solve and the yield classification (B1–B4). Only yielded surface points of the movable set are passed to Mode C, and the hand-off is explicit: no flow displacement or material flux is counted twice. The prediction $d_{\rm pred}^{(n)}$ (Section 2.8, B4) contains neither $R_{\rm eq}$ nor any equipotential blending.
 
-**Geometric reference: the current shape is held.** The reference of the subproblem is the **current geometry** $R^{(n)}$ itself. The only changes that are allowed are the mechanically predicted increment $d_{\rm pred}^{(n)}$, which vanishes identically on the locked set, and the slope relief of the vertices promoted by A-C4 (Section 2.8c). Partition the nodes, by (B4) of Section 2.8, into the locked set $\mathcal L^{(n)}$, the pure-deposition set $\mathcal D^{(n)}$, and the movable set $\mathcal A^{(n)}$. The protected region is $\mathcal P^{(n)}:=\mathcal L^{(n)}$. Given weights $w_i>0$, the Metal-PDHG subproblem has the objective
+**The current shape is the reference.** The only allowed changes are the predicted increment, which vanishes on the locked set, and the slope relief of the vertices promoted by A-C4. With the partition $\mathcal L,\mathcal D,\mathcal A$ of (B4), protected region $\mathcal P^{(n)}:=\mathcal L^{(n)}$, and weights $w_i>0$, the fidelity part of the objective is
 
 $$
-d_*^{(n)}=\arg\min_d\frac12\sum_{i\in\mathcal A^{(n)}}w_i
+\frac12\sum_{i\in\mathcal A^{(n)}}w_i
 \left(d_i-d_{{\mathrm{pred}},i}^{(n)}\right)^2,
-\qquad R_*^{(n)}=R^{(n)}+d_*^{(n)}.
 $$
 
-This is the weighted deviation
-
-$$
-\|(R^{(n)}+d)-(R^{(n)}+d_{\rm pred})\|_w^2
-$$
-
-from the current shape plus the mechanical increment, with the current shape as the origin. The objective **must not** contain $R_{\mathrm{eq}}$, $W_0$, or any equipotential term. An equipotential is the shape of a fluid with no shear strength. Using it as a target would erase unyielded topography into a smooth ellipsoid. Nodes that are not movable are fixed by hard constraints:
+the weighted deviation from the current shape plus the mechanical increment. The slack penalties of the linearized subproblem below complete the objective. It **must not** contain $R_{\rm eq}$, $W_0$, or any equipotential term. An equipotential is the shape of a fluid without shear strength, and targeting it would erase unyielded topography into an ellipsoid. Non-movable nodes are fixed:
 
 $$
 d_i=0\qquad(i\in\mathcal L^{(n)}),\qquad
-d_i=d_{\mathrm{pred},i}^{(n)}=\frac{\Delta h_{C,i}^*}{n_i^{(n)}\cdot e_r}\qquad(i\in\mathcal D^{(n)}).
+d_i=d_{\mathrm{pred},i}^{(n)}=\Delta h_{C,i}^*\qquad(i\in\mathcal D^{(n)}).
 $$
 
-The outer nonlinear acceptance test uses
+**Outer nonlinear acceptance.** Write $\mathbf X(d)$ for the vertices $\mathbf X_i^{(n)}+d_i\mathbf N_i^{(n)}$. The true slope slack $[|\mathbf g_f\times\mathbf n_f(\mathbf X(d))|/|\mathbf g_f|-\sin\phi_f]_+$ is evaluated on the loose faces of $\mathcal S_{\rm slope}$ and reported; it does not reject the step, because a face that ends supercritical re-enters the next step through promotion. The mass test is $\mathcal M(\mathbf X(d),\rho_{\rm cand})=M$. Here $\rho_{\rm cand}=\rho_K(\cdot;\theta^{\rm pred})$ is the density predicted by the core transport of Section 9.10.3 for the same step $\tau_n=\lambda\Delta t_n$ ($\rho_K^{(n)}$ in the frozen-density variant A-ρ), and $D\mathcal M^{(n)}$ uses the same density.
+
+**Linearized subproblem.** Rows are indexed by faces $f$ and unknowns by vertices $i$. With the linearized face normal $\widehat{\mathbf n}_f(d)=\mathbf n_f^{(n)}+D\mathbf n_f^{(n)}d$, the face-centre gravity $\mathbf g_f^{(n)}$, and $\widehat{\mathcal M}(d)=\mathcal M^{(n)}+D\mathcal M^{(n)}d$, inside the trust region $\|d\|\le\Delta$,
 
 $$
-\frac{|g_i^{(n)}\times n_i(R^{(n)}+d)|^2}{|g_i^{(n)}|^2}
-\le \sin^2\phi_i^{(n)},
-$$
-
-only at those nodes of the movable set $\mathcal A^{(n)}$ (including the vertices promoted by A-C4, Section 2.8c) for which the loose-layer surrogate has been declared applicable. Nodes that stay locked after promotion are not constrained by the slope surrogate. It also uses
-
-$$
-\mathcal M(R^{(n)}+d,\rho_{\mathrm{cand}})=M.
-$$
-
-Here $\rho_{\rm cand}=\rho_K(\cdot;\theta^{\rm pred})$ is the density predicted by the core transport of Section 9.10.3 for the same step $\tau_n=\lambda\Delta t_n$. With `density_mode = frozen` it is $\rho_K^{(n)}$. The linearization $D\mathcal M^{(n)}$ below is taken with the same $\rho_{\rm cand}$.
-
-Metal-PDHG receives only the first-order model at the current iterate. Let $n_i^{(n)}$ be the outward unit normal, and define
-
-$$
-\widehat n_i(d)=n_i^{(n)}+Dn_i^{(n)}d,
+\frac{\|\mathbf g_f^{(n)}\times\widehat{\mathbf n}_f(d)\|}{|\mathbf g_f^{(n)}|}
+\le\sin\phi_f^{(n)}+t_f\quad(f\in\mathcal S_{\rm slope}),
 \qquad
-\widehat{\mathcal M}(d)=\mathcal M^{(n)}+D\mathcal M^{(n)}d.
-$$
-
-Inside the trust region $\|d\|\le\Delta$, the subproblem uses
-
-$$
-\frac{\|g_i^{(n)}\times\widehat n_i(d)\|}{|g_i^{(n)}|}
-\le\sin\phi_i^{(n)}+t_i,
-\qquad
-g_i^{(n)}\cdot\widehat n_i(d)\le-\epsilon_n|g_i^{(n)}|,
+\mathbf g_f^{(n)}\cdot\widehat{\mathbf n}_f(d)\le-\epsilon_n|\mathbf g_f^{(n)}|\quad(f\ni\text{a vertex of }\mathcal A),
 \qquad
 D\mathcal M^{(n)}d+s_M=M-\mathcal M^{(n)},
 $$
 
-where $t_i\ge 0$ and $s_M\in\mathbb R$ are elastic slack variables, and $\epsilon_n\in(0,1)$ is the anti-overhang margin. The anti-overhang row is linear and does not destroy convexity. The mass constraint is equivalent to $\widehat{\mathcal M}(d)=M$ when $s_M=0$. It **must not** be written $\widehat{\mathcal M}(d)=M-\mathcal M^{(n)}$, which would subtract $\mathcal M^{(n)}$ twice and reverse the sign of the increment. The objective is changed accordingly to
+with elastic slacks $t_f\ge0$, $s_M\in\mathbb R$ (kg) and anti-overhang margin $\epsilon_n\in(0,1)$. The anti-overhang row is linear. The mass row is $\widehat{\mathcal M}(d)=M$ when $s_M=0$. It **must not** be written $\widehat{\mathcal M}(d)=M-\mathcal M^{(n)}$, which subtracts $\mathcal M^{(n)}$ twice and reverses the sign. With the relative mass slack $\sigma_M:=s_M/M$, the objective becomes
 
 $$
-\frac12\sum_{i\in\mathcal A}w_i(d_i-d_{\mathrm{pred},i})^2+\varrho\Big(\sum_it_i+|s_M|\Big),
+\frac12\sum_{i\in\mathcal A}w_i(d_i-d_{\mathrm{pred},i})^2+\varrho\sum_{f\in\mathcal S_{\rm slope}}t_f+\varrho_M|\sigma_M|.
 $$
 
-where the exact-penalty factor $\varrho>0$ is taken large enough. *Scale of “large enough”.* The penalty is exact when $\varrho$ exceeds the multipliers of the slack rows, $\varrho>\max_f|y_{t,f}|$. Relieving a slope excess on a face moves its nodes by a distance of the order of the node spacing $\bar h_\Gamma$, and the multiplier is the marginal fidelity cost of that move, $|y_t|\sim w\,\bar h_\Gamma^2$ (with $d$ in metres). A configuration therefore takes $\varrho\ge 10\,w\,\bar h_\Gamma^2$; a smaller value lets the program keep a supercritical slope and pay the penalty instead, and the slope slack $\sum_i t_i$ of the report then stays positive although the geometry could relieve it.
+*How large $\varrho$ must be.* The penalty is exact when $\varrho>\max_f|y_{t,f}|$, the slack multipliers. Relieving a slope moves nodes by about the node spacing $\bar h_\Gamma$, so $|y_t|\sim w\bar h_\Gamma^2$ ($d$ in metres), and a configuration takes $\varrho\ge10w\bar h_\Gamma^2$. A smaller value lets the program keep a supercritical slope and pay the penalty, and $\sum t_f$ stays positive although the geometry could relieve it. *Units of the mass penalty.* The fidelity term is $\mathrm L^2$, and $t_f$ is dimensionless, so $\varrho$ and $\varrho_M$ are $\mathrm L^2$. The mass slack must enter through the dimensionless $\sigma_M$: a penalty $\varrho|s_M|$ with $s_M$ in kg would add $\mathrm L^2$ to $\mathrm L^2\,\mathrm M$. The bound above concerns the slope rows only. The choice $\varrho_M=\varrho\hat M$ ($\hat M$ the numerical value of $M$ in kg) is a deliberate overweighting that makes the mass row effectively hard: $\sigma_M\ne0$ only when it cannot be met inside the trust box.
 
-*Units of the mass penalty.* With $d$ in metres and dimensionless weights $w_i$, the fidelity term has the dimension $\mathrm L^2$, $t$ is dimensionless, and $\varrho$ carries $\mathrm L^2$. The term $\varrho|s_M|$ with $s_M$ in kilograms is therefore not dimensionally consistent, and the bound $\varrho\ge 10w\bar h_\Gamma^2$ concerns the slope rows only. The consistent form uses the relative slack $\sigma_M:=s_M/M$ with its own factor, $\varrho_M|\sigma_M|$, $\varrho_M$ in $\mathrm L^2$. The implementation takes $\varrho_M=\varrho\,\hat M$, where $\hat M$ is the numerical value of $M$ in kilograms ($10^{11}$–$10^{16}$ for the bundled bodies). This is a deliberate overweighting that makes the mass row effectively a hard constraint: $\sigma_M\ne 0$ only when the linearized row cannot be met inside the trust box.
+**Discrete form of the subproblem.** The program is assembled as follows; this is the normative discrete form of the rows above.
 
-**Implementation of the subproblem.** The program actually assembled differs from the display above in the following points.
+1. The rows sit at face centres, with the face-centre gravity and $D\mathbf n_f^{(n)}d=\sum_{k\in f}(\partial_{\mathbf X_k}\mathbf n_f)\mathbf N_k\,d_k$, where $d_k$ is the free increment for $k\in\mathcal A$ and the fixed one for $k\in\mathcal L\cup\mathcal D$ ($\phi_f$ is evaluated there too, Section 10.3). The slack $t_f$ belongs to the face.
+2. The anti-overhang row is imposed only on faces that satisfy it at $d=0$. A violating face is not repaired: both of its rows (anti-overhang and slope) are dropped, and the face is counted and reported. This is the only treatment of such a face; a repair would move the geometry outside the mechanics.
+3. The trust region is the box $|d_i|\le\Delta$ on the free nodes. On a promoted vertex ($\pi_i=1$) it is also bounded below by the loose mass the vertex carries, $d_i\ge\min(d_{{\rm pred},i},0)-\rho_{s,i}A_i/(D\mathcal M)_i$ (Section 2.8c). The linearization error is per node, and a ball would shrink the RMS displacement of a large patch by $\sqrt{|\mathcal A|}$.
+4. Let $[a_-,a_+]$ be the range of $a\cdot x$ over the box, clearance, and loose-mass bounds of the free variables. When $b_M\notin[a_-,a_+]$, $\sigma_M$ cannot change sign, so the program assumes $\sigma_M$ has the sign of $b_M$ and folds $\varrho_M|b_M-a\cdot x|$ into the linear term (exact penalty of a sign-definite slack). Otherwise the target is reachable, the exact penalty keeps $\sigma_M=0$, and the hard equality is solved. If a folded solution flips the sign, the hard equality is solved instead.
+5. A point is accepted when the largest row violation, the per-variable stationarity, the duality gap, and the dual-cone residual are each below $10^{-3}$ in scaled variables ($x=d/\bar R$, relative mass). Otherwise the solve has failed, and the outer level halves $\Delta$.
+6. Embeddedness is kept inside the program by the clearance rows $-\theta_gt_i^-\le d_i\le\theta_gt_i^+$ of Section 8.0 (G4). The outer test checks positive volume, no self-intersection, a valid closed, consistently oriented mesh (the hypothesis of Section 1.1), and the mass.
 
-1. The slope row and the anti-overhang row are imposed per *face* of $\mathcal S_{\rm slope}$, at the face centre, with the face-centre effective gravity and the linearized face normal $\widehat{\mathbf n}_f(d)=\mathbf n_f+\sum_{k\in f}\partial_{R_k}\mathbf n_f\,d_k$ (Section 10.3 evaluates $\phi$ there as well). The slack $t_f$ belongs to the face.
-2. The anti-overhang row is imposed only on faces that satisfy it at $d=0$. A face that already violates it is not repaired; its row and its slope cone are dropped and the face is counted (`dropped_overhang`).
-3. The trust region is the box $|d_i|\le\Delta$ on the free nodes, not a Euclidean ball: the linearization error of Section 2.13 is per node, and a ball of the same radius would force the root-mean-square displacement of a large patch down by $\sqrt{|\mathcal A|}$.
-4. When the relative mass target $|b_M|$ exceeds $10^{-4}$, the program first assumes that $\sigma_M$ has the sign of $b_M$ and folds $\varrho_M|b_M-a\cdot x|$ into the linear term (the exact penalty of a sign-definite slack). If the solution changes that sign, the hard equality row is solved instead.
-5. Metal-PDHG accepts a point when the largest row violation, the per-variable stationarity, the duality gap, and the dual-cone residual are each below $10^{-3}$ in the scaled variables ($x=d/\bar R$, relative mass). A point that misses this tolerance is a failed solve; the outer level then halves $\Delta$ (see the trust-region policy below and Section 10.4.3).
-6. The outer acceptance test checks a positive volume, the absence of self-intersection and the validity of the closed mesh (the mesh validation of the gravity solver), and the mass. Star-shapedness $\mathbf n\cdot\mathbf e_r\ge c_0$ is reported, not enforced.
+**Feasibility.** The clearance rows and the loose-mass bound of Section 2.8c contain $d=0$. If the anti-overhang rows hold at $d=0$ ($\mathbf g_f\cdot\mathbf n_f<-\epsilon_n|\mathbf g_f|$), then $d=0$, $s_M=M-\mathcal M^{(n)}$, $t_f=\max(0,\cdot)$ is feasible. It is not automatically a Slater point, because the positive part can sit on a cone boundary. A Slater certificate needs a margin $\delta_t>0$ on every cone slack and a check of every unrelaxed linear row. The anti-overhang row has no slack. If $d=0$ violates it on a face, $d=0$ would be infeasible. Item 2 removes that face's rows before the SOCP, which makes $d=0$ feasible again; the overhanging face stays in the geometry and in the count. $t_f=s_M=0$ means only that the slacks vanish; the outer test still checks the true constraints. These are genuine cone constraints, a QP only after further linearization. $\widehat n$ is not a unit normal, and shrinking its norm does not satisfy the physical constraint. A candidate is renormalized and rechecked against the outer nonlinear constraints, which alone use the true normal, mass, and yield condition. This correction does not replace solving stress balance and the constitutive law. A yield certificate at a frozen tensor is not a geometrically coupled yield constraint.
 
-If the anti-overhang row holds at $d=0$, that is, if $g_i\cdot n_i<-\epsilon_n|g_i|$, then $d=0$, $s_M=M-\mathcal M^{(n)}$, and $t_i=\max(0,\cdot)$ give a feasible point. This point does not automatically provide a Slater strictly feasible interior point, because the positive-part construction may place a second-order-cone constraint on its boundary. If a Slater certificate is required, every second-order-cone slack must be given an additional prescribed positive margin $\delta_t>0$, one must take $t_i=\max(0,\cdot)+\delta_t$, and every linear constraint that has not been relaxed must be checked at the same time. The anti-overhang row has no slack variable. If $d=0$ violates that row, then $d=0$ is infeasible. The point must be repaired, along a geometrically verifiable direction, or removed, in the outer geometric preprocessing, before the SOCP is entered. The statement $t_i=s_M=0$ means only that the slack variables vanish. The outer acceptance test must still check the true constraints.
+Fields are frozen inside the subproblem. After the update, geometry, density, and stress are re-evaluated by a forward gravity solve and checked again. If the state is balanced, feasible, and has $d_{\rm pred}=0$, then $d=0$ is the unique minimizer, so topography does not drift without cause.
 
-These are genuine second-order-cone constraints. They become a quadratic program only if the norm constraints are linearized further. The vector $\widehat n$ is not treated as a unit normal. Shrinking its norm is not a way to satisfy the physical constraint. A candidate solution must have its true normal renormalized, and it must be checked again against the outer nonlinear constraints. The original normal $n(R+d)$, the true mass, and the true yield condition belong only to the outer acceptance test. This geometric correction does not replace the solution of stress balance and of the constitutive law. A tensorial yield certificate must change with the candidate mechanical state. Passage or rejection at a frozen constant tensor cannot be called a geometrically coupled yield constraint.
+**Unified trust-region policy.** The elastic program is always feasible on an overhang-free geometry after preprocessing, because $d=0$ meets the clearance rows and the loose-mass bound of Section 2.8c, both of which contain $0$, so "if infeasible, shrink and retry" is not used. If the current point itself violates a constraint, the feasible set empties as $\Delta\to0$, and that strategy cannot work. The inner SOCP never shrinks $\Delta^{(n)}$. The outer level shrinks it by a factor $\theta_\Delta\in(0,1)$ and regenerates the subproblem when the geometric test rejects the candidate (non-positive volume, self-intersection, invalid mesh) or the cone program misses its KKT tolerance (item 5). It is not shrunk for a mass miss (Section 2.14). Nonzero optimal $t_f$ or $s_M$ means the linear model holds only partially. The outer level then decides by a filter or merit function and may recompute the prediction. It must never release the protected region or fall back to a fluid target. If the protected region surrounds a violating node, or a signed $\rho_K$ makes $D\mathcal M$ degenerate, $s_M\ne0$ is unavoidable and is reported.
 
-Fields are frozen inside the subproblem. After the outer update, the candidate geometry, density, and stress are re-evaluated by a forward gravitational solve and checked again. If the current state is already balanced, satisfies the constraints, and has $d_{\mathrm{pred}}=0$, then $d=0$ is the unique minimizer of a strictly positive-weight objective. Topography therefore does not drift in the absence of an external cause.
-
-Because the elastic form above is always feasible on an overhang-free geometry after preprocessing, the logic “if infeasible, shrink the trust region and retry” is not used. When the current point itself violates a constraint, $d=0$ is infeasible, and as $\Delta\to 0$ the feasible set tends to empty, so that strategy necessarily fails. **Unified trust-region policy.** The inner SOCP never shrinks $\Delta^{(n)}$. The outer level shrinks $\Delta^{(n)}$ by the factor `trust_shrink`, and regenerates the subproblem, when the outer geometric acceptance test rejects the candidate (non-positive volume, self-intersection, an invalid mesh) or when the cone program misses its KKT tolerance (item 5 above). A smaller box is a better-conditioned program. It is not shrunk for a mass miss (Section 2.14). Every flux increment in the mass row is taken to be $\Delta h_C^*=(\rho_{\mathrm{bulk}}/\rho_K|_\Gamma)\Delta h_C$ (Section 2.8). If the optimal $t_i$ or $s_M$ is nonzero, the linearized model can satisfy the constraints only partially. The outer level decides acceptance by a filter or a merit function, and it may recompute the mechanical prediction. It must not release the protected region or fall back to a fluid target. If the protected region completely surrounds a violating node, or if a signed $\rho_K$ makes $D\mathcal M$ degenerate, then $s_M\neq 0$ is unavoidable and must be reported as such.
-
-Freezing $g$ ignores $Dg\cdot d$. The iteration is therefore of sequential-convex (Picard) type, not a strict SQP iteration, and local superlinear convergence is not claimed. The linearization error is $O(\Delta^2)$, and the outer acceptance test must set a tolerance. The derivative $Dn_i^{(n)}$ in $\widehat n_i$ must be the Jacobian of the **normalized** unit normal. Then $n\cdot Dn\,d=0$ and $|\widehat n|\ge 1$.
+Freezing $g$ ignores $Dg\cdot d$. The iteration is sequential-convex (Picard), not SQP, and superlinear convergence is not claimed. The linearization error is $O(\Delta^2)$, and the outer test sets a tolerance. $D\mathbf n_f^{(n)}$ must be the Jacobian of the **normalized** face normal, so that $\mathbf n_f\cdot D\mathbf n_f\,d=0$ and $|\widehat{\mathbf n}_f|\ge1$. Hence $|\widehat{\mathbf n}_f|^2=1+|D\mathbf n_fd|^2$, and the slope row, written with the unnormalized $\widehat{\mathbf n}_f$, is tighter than the slope of the renormalized normal: it bounds $\sin\theta_f$ by $(\sin\phi_f+t_f)/|\widehat{\mathbf n}_f|$, with $|\widehat{\mathbf n}_f|=1+O(|D\mathbf n_fd|^2)$. The excess is second order in $d$, the order of the linearization error that the outer test already accepts. Dividing the row by $|\widehat{\mathbf n}_f|$ would make it nonconvex.
 
 ---
 
 ## 2.14 Under-relaxation
 
-Take $0<\lambda\le 1$ and define
+For $0<\lambda\le1$, $\mathbf X_i\leftarrow\mathbf X_i+\lambda d_{*,i}\mathbf N_i$ (Section 8.0, G4), and $V^{(n+1)}$ is rebuilt. Locked nodes do not move. The physical time advanced is $\lambda\Delta t_n$. Afterwards, gravity, the Stokes problem, and the pressure are recomputed. Stress is instantaneous, so there is no history to update. $\rho_s$ follows the Mode C law. Mass and yield constraints are not guaranteed along the segment. Mass must not be repaired by a global scaling or a uniform increment that moves the protected region; the correction stays inside $\mathcal A$. On a miss of $|\mathcal M-M|\le\varepsilon_MM$, one correction along the mass gradient is applied,
 
 $$
-R_i^{(n+1)}
-=
-(1-\lambda)R_i^{(n)}
-+
-\lambda R_{*,i}^{(n)}.
+\mathbf X_i\leftarrow\mathbf X_i+\alpha\,(D\mathcal M)_i\,\mathbf N_i\quad(i\in\mathcal A),\qquad
+\alpha=\operatorname{clip}\Big(\frac{M-\mathcal M}{\sum_{i\in\mathcal A}(D\mathcal M)_i^2},\,-\frac{\Delta}{\max_{i\in\mathcal A}|(D\mathcal M)_i|},\,\frac{\Delta}{\max_{i\in\mathcal A}|(D\mathcal M)_i|}\Big),
 $$
 
-Rebuild the new polyhedron $V^{(n+1)}$ from $R^{(n+1)}$. On the locked set, $d_{*,i}=0$, so under-relaxation does not move a locked node. The physical time advanced by under-relaxation is $\lambda\Delta t_n$ (Section 10.4.1). After under-relaxation one must recompute gravity on the new geometry and resolve the quasi-static Stokes problem and the pressure. Stress is an instantaneous equilibrium quantity; there is no material history to update. The loose-layer density $\rho_s$ is updated by the conservation law of Mode C. Nonlinear mass and yield constraints are not guaranteed to hold along the line segment. Mass must not be repaired by a global scaling of the radius, or by a uniform increment, in such a way that the protected region moves. The conservation correction is performed inside the movable set. *Implementation.* If the candidate misses $|\mathcal M-M|\le\varepsilon_M M$, one correction along the mass gradient is applied on the movable set,
-$$
-R_i\leftarrow R_i+\alpha\,(D\mathcal M)_i\quad(i\in\mathcal A),\qquad
-\alpha=\operatorname{clip}\Big(\frac{M-\mathcal M}{\sum_{i\in\mathcal A}(D\mathcal M)_i^2},\,-\Delta,\,\Delta\Big),
-$$
-and the corrected candidate is accepted if it passes the geometric test. A relative mass residual that remains above $\varepsilon_M$ is not a rejection: the step is accepted and the residual is recorded (`mass_residual`). Neither $\Delta t_n$ nor the trust region is reduced for a mass miss. The trust region is reduced, according to Section 2.13, only when the geometric test or the cone program fails.
+so that $\alpha$ ($\mathrm L^2\mathrm M^{-1}$) is bounded by a length divided by $(D\mathcal M)_i$ ($\mathrm M\,\mathrm L^{-1}$), and every increment $\alpha(D\mathcal M)_i$ stays inside the trust box $|\cdot|\le\Delta$. The candidate is accepted if it passes the geometric test. A residual still above $\varepsilon_M$ is reported as the mass residual, not rejected. Neither $\Delta t_n$ nor $\Delta$ is reduced for a mass miss.
 
 ---
 
 ## 2.15 Convergence criteria
 
-The quasi-static route has three layers of criteria. They are independent and must not be substituted for one another. The algorithm is given in Section 10.4.4.
+There are three independent layers, not substitutes for one another (algorithm in Section 10.4.4).
 
-**(a) Convergence of the rheological nonlinearity (Picard, level $k$).** On a fixed geometry and at a fixed $\omega_n$, the Stokes–pressure Picard iteration of Section 10.4.2 stops if and only if
-
-$$
-\frac{\|\mathbf u^{k+1}-\mathbf u^{k}\|_{\mathbf K}}{\max\{\|\mathbf u^{k+1}\|_{\mathbf K},\varepsilon_u\}}\le\varepsilon_{\rm pic},\qquad
-\frac{\|p^{k+1}-p^{k}\|_{L^2}}{\max\{\|p^{k+1}\|_{L^2},\varepsilon_p\}}\le\varepsilon_{\rm pic},
-$$
-
-where $\|\mathbf u\|_{\mathbf K}^2=\mathbf u^{\!\top}\mathbf K(\eta^{k})\mathbf u$. If the iteration limit $k_{\max}$ is reached without satisfaction of the test, retry by the continuation in $\dot\gamma_\varepsilon$ and by the viscosity relaxation of Section 10.4.2. That solve is independent of $\Delta t_n$; reducing the step does not help. If the retry still fails, the step is judged **rheology not converged** and is terminated. A passing status must not be emitted.
-
-**(b) Acceptance of mechanical balance (each geological step; a hard criterion).** On the converged pair $(\mathbf u,p)$,
+**(a) Rheological nonlinearity (iteration index $k$).** On fixed geometry and $\omega_n$, the primal–dual iteration of Section 10.4.2 stops iff, at a pressure update,
 
 $$
-\varepsilon_{\rm mom}^{\rm weak}:=\frac{\|\mathbf F-\mathbf K(\mathbf u;\tilde p)\mathbf u-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F\|_2,\varepsilon_F\}}\le\varepsilon_{\rm mom},\qquad
-\varepsilon_\lambda:=\frac{\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F\|_2,\varepsilon_F\}}\le\varepsilon_{\lambda}^{\rm tol}.
+\frac{\|\mathbf u^{k+1}-\mathbf u^{k}\|_{\mathbf P}}{\max\{\|\mathbf u^{k+1}\|_{\mathbf P},\varepsilon_u\}}\le\varepsilon_{\rm pd},\qquad
+r_{\rm gap}\le\varepsilon_{\rm pd},\qquad
+\frac{\|p^{\rm new}-p^{\rm old}\|_{L^2}}{\max\{\|p^{\rm new}\|_{L^2},\varepsilon_p\}}\le\varepsilon_{\rm pic},
 $$
 
-The first quantity is the Galerkin momentum residual of the true fluid system, with its unique stress field. The second measures incompatibility of the external load with the rigid-body modes, caused by a misaligned frame or by a missing discrete rigid mode (Section A.3). The relative norm $\|\mathbf r_{\rm rot}\|_{L^2}/\max\{\|\rho_K\mathbf g_{\rm eff}\|_{L^2},\varepsilon_f\}$ of the strong residual $\mathbf r_{\rm rot}=\mathbf f-\nabla p$, and the tangential traction deviation $\delta_{na}$, are indicators of discrete resolution. They converge as $K$ and $L_{\max}$ increase, and they must be reported at each step. If they exceed a configured threshold, the step is marked **insufficient resolution**. That mark does not rewrite the decision (b).
+with $\|\mathbf u\|_{\mathbf P}^2=\mathbf u^{\!\top}\mathbf P\mathbf u$, $r_{\rm gap}$ the relative primal–dual gap at the frozen pressure, and $p^{\rm old},p^{\rm new}$ two consecutive pressure updates. If $k_{\max}$ is reached, retry with the continuation in $\dot\gamma_\varepsilon$ of Section 10.4.2. The solve does not depend on $\Delta t_n$, so a smaller step does not help. A second failure is **rheology not converged** and ends the step, with no passing status.
 
-*Implementation.* The denominator of both quantities is not $\|\mathbf F\|_2$ but the load scale $\|\mathbf F^{\rm abs}\|_2$, with $F^{\rm abs}_\alpha=\int_{\mathcal V}\big(\rho_K|\mathbf g_{\rm eff}|\,|\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\,\|\mathbf D(\mathbf B_\alpha)\|_F\big)\,dV$: a load that cancels exactly (a uniform sphere in its own gravity) would otherwise make the relative residual meaningless. Both are compared with the single tolerance `stokes.tol_momentum`; a failure of either terminates the step. The rotational residual is reported as `eps_rot`; $\delta_{na}$ is not computed, and no insufficient-resolution threshold is configured. In the bundled runs `eps_rot` lies between $0.25$ (Phobos) and $0.62$ (Ryugu) at every step: the stress field of the coarse production discretization (Section 8.4) is resolution-limited, although it meets (b).
-
-**(c) Stage equilibrium (when the exogenous spin is constant on a stage).** During a stage of constant $\omega_j$, the geometry has reached static equilibrium if and only if
+**(b) Mechanical balance (every step; hard).** On the converged $(\mathbf u,p)$,
 
 $$
-\boxed{\ \mathcal A^{(n)}=\varnothing\quad(\text{every surface point belongs to the rigid core }\mathcal U_{\rm core}\text{ and no vertex is promoted}),\qquad\text{and (b) holds}. \ }
+\varepsilon_{\rm mom}^{\rm weak}:=\frac{\|\mathbf F-\mathbf K(\mathbf u;\tilde p)\mathbf u-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F^{\rm abs}\|_2,\varepsilon_F\}}\le\varepsilon_{\rm mom},\qquad
+\varepsilon_\lambda:=\frac{\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F^{\rm abs}\|_2,\varepsilon_F\}}\le\varepsilon_{\rm mom},
 $$
 
-Here $\mathcal A^{(n)}$ is the movable set after slope promotion (Section 2.8c), so an equilibrated stage also has no supercritical loose face. Then $F_\delta\le 0$ at every surface point, so $J_{\rm ero}=0$, $J_{\rm dep}=0$, $\mathcal D^{(n)}=\varnothing$, and $d_{\rm pred}=0$. Moreover $\mathbf v_{\rm adv}\equiv\mathbf 0$, so the density cores do not move ($\theta^{(n+1)}=\theta^{(n)}$, $\xi_n=0$; Section 9.10.2), and no ray is retraced (Section 3.15.2). The SOCP has no free variable, and $d_*=0$ holds exactly. This state is independent of $\Delta t_n$ and of $\lambda$. Because no state variable integrates $\mathbf D$, the state is a genuine fixed point, not a slowly drifting creep state. Regularized creep still exists inside the core, but it is removed exactly by $\chi_Y=0$. When $\mathcal A^{(n)}\ne\varnothing$, so that a genuine yielded flow exists, the size of $d_*$ is not a meaningful convergence test: the adaptive step $\Delta t_n$ makes the geometric displacement of each step about $\theta_{\rm CFL}h_\Gamma$. If the stage duration $T_j$ is exhausted while $\mathcal A^{(n)}\ne\varnothing$, the stage ends as **not equilibrated**, and the movable area fraction
+with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}||\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\|\mathbf D(\mathbf B_\alpha)\|_F)\,dV$. A load that cancels exactly (a uniform sphere, $\mathbf F=\mathbf 0$) would make a ratio to $\|\mathbf F\|$ meaningless. The first is the Galerkin momentum residual of the true system. With the solver of Section 10.4.2 it is evaluated as $\mathbf F-\sum_iw_i\mathbf e_i^{\!\top}\boldsymbol\varsigma_i-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$, which equals the displayed form at the converged point, where $\boldsymbol\varsigma_i=\eta_i\mathbf e_i$. The second measures incompatibility of the load with the rigid modes, from a misaligned frame or a missing discrete rigid mode (Appendix A.3). Either failure ends the step. The strong residual $\varepsilon_{\rm rot}:=\|\mathbf r_{\rm rot}\|/\max\{\|\rho_K\mathbf g_{\rm eff}\|,\varepsilon_f\}$ with $\mathbf r_{\rm rot}=\mathbf f-\nabla p$, and the traction deviation $\delta_{na}$, are resolution indicators that converge with $K$ and $L_{\max}$. They are reported each step. Above a threshold the step is marked **insufficient resolution**, which does not change decision (b): a truncated stress field can satisfy (b) and still be resolution-limited.
+
+**(c) Stage equilibrium (constant spin on a stage).** The geometry is in static equilibrium iff
 
 $$
-\sum_{i\in\mathcal A}j_iw_i\Big/\sum_ij_iw_i
+\boxed{\ \chi_Y\equiv0\ \text{on }\mathcal X_Y,\quad J_{\rm ero}\equiv0,\quad\big(\mathcal A^{(n)}=\varnothing\ \text{ or the converged cone program returns }d_*=0\big),\quad\text{and (b) holds}. \ }
 $$
 
-is reported. That outcome is a physical result — the landslide has not stopped in the allotted time — and not a numerical failure. Under a continuously varying exogenous spin $\omega(t)$ there is no stage-equilibrium target. One performs only (a) and (b), and advances to the terminal time.
+The first condition says that the whole body, not only its surface, belongs to the rigid core: an interior yielded pocket would move the cores even with a locked surface. Then:
 
-At the same time, check the slope residual of the applicable surface layer, at movable nodes only,
+- $J_{\rm ero}=J_{\rm dep}=0$, $\mathcal D=\varnothing$, and $d_{\rm pred}=0$ (promoted vertices have no creep);
+- $\mathbf v_{\rm adv}\equiv\mathbf 0$, so the cores do not move ($\xi_n=0$, Section 9.10.2) and nothing is retraced (Section 3.15.2);
+- $d_*=0$ exactly: either the SOCP has no free variable, or its converged solution is zero. A zero from a cone solve that missed its KKT tolerance (*cone unresolved*, Section 10.4.3) does not count.
+
+Positive slope slack may remain only on faces that the relief cannot reduce; it is reported as unrelievable slack.
+
+This state does not depend on $\Delta t_n$ or $\lambda$. Since nothing integrates $\mathbf D$, it is a genuine fixed point, not a slowly drifting creep; the core's regularized creep is removed by $\chi_Y=0$. Apart from the exact zero above, the size of $|d_*|$ is not a convergence test, because the adaptive step makes each displacement about $\theta_{\rm CFL}h_\Gamma$. If the stage time $T_j$ runs out before the fixed point is reached, the stage ends **not equilibrated**, and the movable area fraction $\sum_{i\in\mathcal A}A_i/\sum_iA_i$ (vertex areas of G4) is reported. That is a physical result (the slide has not stopped), not a numerical failure. Under a continuously varying $\omega(t)$ there is no stage target: only (a) and (b) are applied, up to the terminal time. Also report the largest true slope slack over the loose faces and check the mass,
 
 $$
-\max_{i\in\mathcal A^{(n)}}
+\max_{f\in\mathcal S^{(n)}_{\rm slope}}
 \left[
-\frac{|g_i^{(n)}\times n_i^{(n)}|}
-{|g_i^{(n)}|}
--\sin\phi_i^{(n)}
-\right]_+
-<\varepsilon_{\mathrm{slope}},
-$$
-
-and the mass residual
-
-$$
+\frac{|\mathbf g_f^{(n)}\times\mathbf n_f^{(n)}|}
+{|\mathbf g_f^{(n)}|}
+-\sin\phi_f^{(n)}
+\right]_+ ,
+\qquad
 |\mathcal M(V^{(n)})-M|
-<\varepsilon_M.
+<\varepsilon_M ;
 $$
 
-Finally recompute
+the slack is a diagnostic (positive values at a fixed point are unrelievable), the mass bound is a test.
 
-$$
-U,\qquad
-\nabla U,\qquad
-\nabla^2U
-$$
+**Final audit.**
 
-on the terminal geometry, and, on that same final geometry, density, and $\omega$, recheck (b), the yield classification, and the vanishing of the displacement on the locked set. Passage of the KKT conditions of the subproblem is not passage of the nonlinear mechanical loop. A step that has become small because the trust region has contracted is not convergence. Only after the final audit has passed are the effective potential, the effective gravity, and the Hessian emitted.
+1. Recompute $U$, $\nabla U$, and $\nabla^2U$ on the terminal geometry.
+2. On that geometry, density, and $\omega$, recheck (b), the yield classification, and zero displacement on the locked set.
+
+KKT passage of a subproblem is not passage of the nonlinear loop, and a step that is small only because $\Delta$ has contracted has not converged. The effective potential, gravity, and Hessian are emitted only after this audit passes.
 
 ---
 
 ## 2.16 The unified coupled system
 
-After the unified computational formulae enter the granular SCF, the final mathematical loop is
+The loop combines four parts:
 
-$$
-\boxed{
-\begin{aligned}
-U(x)
-={}&
-G\sum_{k=1}^K
-w_k\sigma_k^{-2\alpha_k}C_{\alpha_k}
-\int_0^1
-u^{-1/2}(1-u)^{\alpha_k-1}\\
-&\qquad\times
-\int_V
-\left[
-|y-z_k(x,u)|^2+m_k^2(x,u)
-\right]^{-\alpha_k-\frac12}
-\,dy\,du,
-\end{aligned}
-}
-$$
+- the Feynman potential of Section 1.8 (equivalently Section 2.2);
+- $\nabla W$ and $\nabla^2W$ of Section 2.8;
+- the mass constraint and the slope inequality on $\mathcal S_{\rm slope}$ displayed at the start of Section 2.8 (the Poisson identity there is a check of the field, not a condition on the shape);
+- the Mode B balance (B1) with the unique stress $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$, the traction condition, the yield classification and core locking (B2–B3), and slope promotion.
 
-$$
-\boxed{
-\nabla W=\nabla U+\omega^2(x_1,x_2,0),
-}
-$$
+The slope inequality holds only at loose-layer faces whose vertices are movable (promotion included) and where the surrogate is declared applicable. It is not sufficient for balance of the solid. The spin is exogenous, Mode C supplies the local conservative prediction, and Mode A is not in the loop. Section 2.17 restates the whole model in one place and records its convex structure.
 
-$$
-\boxed{
-\nabla^2W
-=
-\nabla^2U
-+
-\omega^2
-\begin{pmatrix}
-1&0&0\\
-0&1&0\\
-0&0&0
-\end{pmatrix},
-}
-$$
+The GPU algorithm that follows (Chapter 3) rests on these ideas:
 
-The field equation of Mode B, the applicable surface slope surrogate, and the mass constraint may be written
+- intersections use a bounding-volume hierarchy (BVH), with hardware ray tracing as an option;
+- $U$, $\nabla U$, and $H$ are computed together on the same ray;
+- one batch of rays shares all geometric results;
+- $\alpha=1$ uses the analytic antiderivative, and other $\alpha$ the composite rule of Section 3.3;
+- the constant part $\rho(x)\Phi_V$ is closed-form (Section 3.9), so the rays carry only the density difference and no finite part;
+- the closed-form part is accelerated by the face tree of Section 3.10.
 
-$$
-\boxed{
-\begin{cases}
-\Delta W
-=
-2\omega^2-4\pi G\rho_K\mathbf1_V,
-\\[4pt]
-|\nabla W\times n|^2
-\le
-\sin^2\phi_i^{(n)}\,|\nabla W|^2,
-\\[4pt]
-\displaystyle\int_V\rho_K\,dx=M
-\end{cases}
-}
-$$
-
-The slope inequality in this box holds only at those faces of the loose surface layer whose vertices lie in the movable set, including the vertices promoted by A-C4 (Section 2.8c), and for which the surrogate has been declared applicable. It is not a sufficient condition for balance of the solid body. Together with the quasi-static Stokes balance of (B1) in Section 2.8 — the unique stress $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$ — with the free-surface traction, with the yield classification and the locking of the rigid core in (B2–B3), and with the slope promotion of the loose layer, it forms the coupled system solved in Mode B. The spin $\omega$ is an exogenous datum (Section 10.4.1), not an unknown. Mode C supplies the local conservative flow prediction. The Mode A interface does not enter this loop.
-
-A fast algorithm aimed at the GPU, at RayBackend, and at batches of field points is given below. Its central idea is the following.
-
-- Geometric intersections use a WGSL bounding-volume hierarchy, with hardware ray tracing as an option.
-- The quantities $U$, $\nabla U$, and $H$ are computed together on the same ray.
-- One batch of rays shares all geometric results.
-- The case $\alpha=1$ uses an analytic radial antiderivative.
-- Every other $\alpha$ uses the fixed composite tangent/logarithmic rule of Section 3.3.
-- The constant part $\rho(x)\Phi_V$ is evaluated in closed form (Section 3.9), so the rays carry only the density difference and no finite part.
-- The closed-form part is accelerated by the face tree of Section 3.10.
-
-Hardware ray tracing is responsible only for ray–triangle intersection. It does not evaluate a Feynman parameter integral. In the absence of hardware ray tracing, the same interface uses a WGSL bounding-volume hierarchy. The most effective structure is therefore
+Hardware ray tracing only intersects rays with triangles. It evaluates no Feynman integral, and without it the same interface runs on a software BVH:
 
 $$
 \boxed{
@@ -4055,252 +1791,183 @@ $$
 }
 $$
 
+## 2.17 The unified rheological model on a general body
+
+This section restates, in one place and without the radial parametrization, the model of Sections 2.8–2.13, Chapter 4, Sections 8.7, 9.2, 9.10, and 10.3–10.4, on a body satisfying hypothesis (G) of Section 8.0. It adds no physics. It adds two structural statements that bear on solving the model, Proposition 2.17.1 and Remark 2.17.2; the normative solver of Section 10.4.2 is built on them.
+
+**State at $t_n$.**
+
+- The surface $\Gamma^{(n)}$, with vertices $\mathbf X_i$.
+- The core parameters $\theta^{(n)}$ of $\rho_K=\rho_b+\sum_kw_k[1+(\mathbf y-\mathbf c_k)^{\!\top}\mathbf S_k(\mathbf y-\mathbf c_k)]^{-\alpha_k}$.
+- The surface density $\rho_s^{(n)}$.
+- The spin $\omega_n$.
+
+The unknowns of the step are $(\mathbf v,p)$ in $\mathcal V^{(n)}$ and the increments $d$.
+
+**(M1) Loads.** $W=U+\tfrac12\omega_n^2|\mathbf x_\perp|^2$ (plus $U_{\rm tide}$ under the orbital spin schedule of Section 10.4.1), with $U$ the RTFP potential of $\rho_K$. Then $\mathbf g_{\rm eff}=\nabla W$, $H_W=\nabla^2W$, and $\mathbf T_{\rm tide}=C_T\rho_p\nu_0d_p^2\operatorname{dev}H_W$.
+
+**(M2) Constitutive law (one stress).**
+
+$$
+\boxed{
+\begin{gathered}
+\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D,\qquad
+\eta=\frac{c(\mathbf x)+\mu_d(I_c)\,\tilde p}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}},\qquad
+\dot\gamma=\sqrt{2\mathbf D:\mathbf D},\qquad\tilde p=\max([p]_+,p_{\min}),\\
+I_c=\frac{d_p\dot\gamma}{\sqrt{(\tilde p+p_c)/\rho_p}},\qquad
+\mu_d=\mu_s+(\mu_2-\mu_s)\frac{I_c}{I_0+I_c},\qquad
+c(\mathbf x)=c_b+(c_s-c_b)\,e^{-\operatorname{dist}(\mathbf x,\Gamma)/h_c}.
+\end{gathered}}
+$$
+
+**(M3) Quasi-static balance.**
+
+$$
+\nabla\cdot\boldsymbol\sigma+\rho_K\mathbf g_{\rm eff}=\mathbf 0,\quad\nabla\cdot\mathbf v=0\ \text{ in }\mathcal V;\qquad
+\boldsymbol\sigma\mathbf n=\mathbf t_{\rm ext}\ \text{ on }\Gamma;\qquad
+\int_{\mathcal V}\rho_K\mathbf v\,dV=\mathbf 0,\quad\int_{\mathcal V}\rho_K\,\mathbf x\times\mathbf v\,dV=\mathbf 0 .
+$$
+
+**(M4) Pressure.** $\Delta p=\nabla\cdot(\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau)$ in $\mathcal V$, and $p=\mathbf n\cdot\boldsymbol\tau\mathbf n-\mathbf n\cdot\mathbf t_{\rm ext}$ on $\Gamma$ (Section 8.7; Nitsche discretization, Section 8.0, G3).
+
+**(M5) Classification.** $F_\delta=\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}-(1-\delta_Y)(c+\mu_s\tilde p)$. The rigid core is the largest-mass component of $\{F_\delta\le0\}$ on the mesh of Section 8.0 (G7). The slip velocity is $\mathbf v_{\rm sl}=\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x$. With $\chi_Y$ of (B3) and the promotion $\pi$ of A-C4, the movable set is $\mathcal A=\{\max(\chi_Y,\pi)=1\}$.
+
+**(M6) Geometric step.** With $d_{{\rm pred},i}=\chi_{Y,i}\Delta t_n\mathbf v_{{\rm sl},i}\cdot\mathbf N_i+\Delta h^*_{C,i}$,
+
+$$
+d_*=\arg\min_{d,t\ge0,\sigma_M}\ \tfrac12\sum_{i\in\mathcal A}w_i(d_i-d_{{\rm pred},i})^2+\varrho\sum_ft_f+\varrho_M|\sigma_M|
+$$
+
+subject to:
+
+- the locked and deposition rows;
+- the slope cones on the faces of $\mathcal S_{\rm slope}$ and the anti-overhang rows on every face with a vertex in $\mathcal A$;
+- the mass row $\sum_i(D\mathcal M)_id_i+s_M=M-\mathcal M^{(n)}$, with $\sigma_M:=s_M/M$;
+- the trust box, the clearance rows, and the loose-mass bound of the promoted vertices (Section 2.8c, item 3).
+
+The update is $\mathbf X_i\leftarrow\mathbf X_i+\lambda d_{*,i}\mathbf N_i$ (Sections 2.13 and 10.4.3, with Section 8.0, G4).
+
+**(M7) Surface layer.** $\rho_s$ is transported along $\mathbf v_T$ (Section 8.0, G5) with the Mode C source $\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$, $\tau_n=\lambda\Delta t_n$, with the step averages over $\tau_n$ of Section 2.8, and the runout of A-C3.
+
+**(M8) Density.** The cores are transported along $\mathbf v_{\rm adv}=\chi_Y\mathbf v_{\rm sl}$ (Section 9.10).
+
+**(M9) Frame.** A rigid realignment to the centre of mass and the principal axes (Section 8.0, G8).
+
+A step is therefore three nested problems. The velocity problem at frozen pressure is convex, the pressure is a fixed point, and the geometric program is convex.
+
+**Proposition 2.17.1 (Variational structure at frozen pressure; limit load).** Fix the geometry. Freeze $\tilde p\ge p_{\min}$ (bounded above), $c$, $\mathbf T_{\rm tide}$, and the loads. Let
+
+$$
+\ell(\mathbf v):=\int_{\mathcal V}\rho_K\mathbf g_{\rm eff}\cdot\mathbf v\,dV-\int_{\mathcal V}\mathbf T_{\rm tide}:\mathbf D(\mathbf v)\,dV+\oint_\Gamma\mathbf t_{\rm ext}\cdot\mathbf v\,dS,
+\qquad
+\phi(s;\mathbf x):=\int_0^s\big(c+\mu_d(I_c(\varsigma))\,\tilde p\big)\frac{\varsigma}{\sqrt{\varsigma^2+\dot\gamma_\varepsilon^2}}\,d\varsigma ,
+$$
+
+and $J(\mathbf v):=\int_{\mathcal V}\phi(\dot\gamma(\mathbf v);\mathbf x)\,dV-\ell(\mathbf v)$ on a finite-dimensional $\mathbb V_h\subset H^1_\sigma(\mathcal V)$ containing the rigid motions, with $\mathbb K:=\ker\mathbf B_{\rm rb}\cap\mathbb V_h$.
+
+1. $\phi$ is $C^1$, strictly convex, and increasing, with $\phi'(s)=s\eta(s)$ at the frozen pressure. A velocity $\mathbf v\in\mathbb K$ is a fixed point of the fixed-viscosity (Picard) map of Section 8.7 iff it minimizes $J$ on $\mathbb K$, and it is the velocity computed by the primal–dual iteration of Section 10.4.2 at that pressure.
+2. $J$ is strictly convex on $\mathbb K$.
+3. Let $\tau_{\max}:=c+\mu_2\tilde p$, let $N(\mathbf v):=\int_{\mathcal V}\tau_{\max}\dot\gamma(\mathbf v)\,dV$ (a norm on $\mathbb K$), and let $L^*:=\sup\{\ell(\mathbf v):\mathbf v\in\mathbb K,\ N(\mathbf v)=1\}$. If $L^*<1$, $J$ has a unique minimizer. If $L^*>1$, $J$ is unbounded below, and no quasi-static solution exists at this pressure. The borderline $L^*=1$ is not decided by this test.
+
+*Proof.* (1) $\phi'(s)=(c+\mu_d\tilde p)\,r(s/\dot\gamma_\varepsilon)$ with $r(x)=x/\sqrt{1+x^2}$. At frozen pressure $c+\mu_d\tilde p\ge c+\mu_sp_{\min}>0$ is nondecreasing in $s$ and $r$ is strictly increasing, so $\phi'$ is strictly increasing with $\phi'(0)=0$. From $\partial\dot\gamma/\partial\mathbf D=2\mathbf D/\dot\gamma$ one gets $\partial_{\mathbf D}\phi(\dot\gamma)=2(\phi'/\dot\gamma)\mathbf D=2\eta\mathbf D$. The first variation of $J$ is therefore (8.4′) with $\eta$ at $\mathbf v$ itself, which is the fixed-point condition, and convexity makes stationary points minimizers.
+
+(2) $\dot\gamma=\sqrt2|\mathbf D|$ is a norm. Take $\mathbf D_1\ne\mathbf D_2$. Unequal norms give strict midpoint convexity through $\phi$. Equal norms give a strictly smaller midpoint norm, and $\phi$ is strictly increasing. Two distinct elements of $\mathbb K$ differ in $\mathbf D$ on a set of positive measure, because a rigid motion in $\mathbb K$ is zero (Lemma 8.12).
+
+(3) $\phi'(s)/\tau_{\max}\to1$ uniformly in $\mathbf x$, since $\tilde p$ is bounded and $I_c\ge k_{\min}s$. Hence for each $\delta\in(0,1)$, $\phi(s)\ge(1-\delta)\tau_{\max}s-C_\delta$, and $J\ge(1-\delta-L^*)N-C_\delta|\mathcal V|$. With $L^*<1$ and $\delta<1-L^*$, $J$ is coercive on finite-dimensional $\mathbb K$, so a minimizer exists, unique by (2). With $L^*>1$, take $\ell(\mathbf v)>N(\mathbf v)$. Since $\phi(ts)/t\uparrow\tau_{\max}s$, $J(t\mathbf v)/t\to N(\mathbf v)-\ell(\mathbf v)<0$. ∎
+
+*Reading.* $L^*$ is the limit-load multiplier at the frozen pressure, with strength $c+\mu_2\tilde p$ ($\mu_2=\mu_s$ for Bingham). If $L^*>1$ there is no quasi-static creep state, and no iteration can converge: velocities grow while $\eta\to0$, and the primal–dual iteration shows a dual-infeasibility certificate (Section 10.4.2). This is a mechanical failure of the body or a block, outside the quasi-static route. Regularization does not remove it, because $\phi$ grows linearly for every $\dot\gamma_\varepsilon>0$. Discretely, $L^*$ is the dual norm of $\ell$:
+
+$$
+L^*=\min\Big\{\max_i\frac{|\boldsymbol\varsigma_i|}{\tau_{\max,i}}:\ \ell=\sum_iw_i\langle\boldsymbol\varsigma_i,\mathbf e_i(\cdot)\rangle\ \text{on }\mathbb K\Big\},
+$$
+
+with $\mathbf e_i$ the strain-rate samples of Section 10.4.2. This is a small SOCP (the static theorem of limit analysis) that can be reported each step. The fixed-viscosity (Kačanov) iteration decreases $J$ monotonically when $\eta(s)=\phi'(s)/s$ is nonincreasing. That holds on the Bingham branch. With rate dependence it fails at small rates, because $d\ln\eta/ds=\mu_d'\tilde p/(c+\mu_d\tilde p)-s/(s^2+\dot\gamma_\varepsilon^2)>0$ as $s\to0$. This is why the fixed-viscosity iteration is not the solver: the normative inner solver is the primal–dual iteration of Section 10.4.2, which needs no monotonicity of $\eta$. The convexity holds per frozen pressure only.
+
+**Remark 2.17.2 (The pressure coupling is not variational).** In (M2) the strength depends on the mean stress, while the flow is isochoric and co-axial with $\boldsymbol\tau_{\rm flow}$. That is a non-associated flow rule (zero dilatancy, positive friction), and such laws do not derive from a convex dissipation potential in the stress. The coupled $(\mathbf v,p)$ problem is therefore a fixed point, not a convex program, and its existence is PO-1. Appendix A.6 records a convex surrogate and a bracketing conjecture (Conjecture A.2, PO-21).
+
+---
+
 # 3. GPU ray integration and hybrid acceleration
 
 ## 3.1 The unified ray formula
 
-For each field point $x$ and each spherical direction $u_q$, set
+For field point $x$ and direction $u_q$, set $y=x-Ru_q$ and
 
 $$
-y=x-Ru_q.
+D_k(R)=(R-b_k)^2+d_k^2,\qquad
+b_k=(x-c_k)\cdot u_q,\qquad
+d_k^2=a_k^2+|x-c_k|^2-b_k^2,\qquad a_k=\sigma_k^{-1}.
 $$
 
-The $k$-th density kernel is
+The three radial integrals along one segment are
 
 $$
-D_k(R)
-=
-(R-b_k)^2+d_k^2,
+I_U^{(k)}=\int_{R^-}^{R^+}R\,D_k^{-\alpha_k}\,dR,\qquad
+I_g^{(k)}=\int_{R^-}^{R^+}D_k^{-\alpha_k}\,dR,\qquad
+I_H^{(k)}=\int_{R^-}^{R^+}\frac{D_k^{-\alpha_k}}{R}\,dR,
 $$
 
-where
-
-$$
-b_k=(x-c_k)\cdot u_q,
-$$
-
-$$
-d_k^2
-=
-a_k^2+|x-c_k|^2-b_k^2,
-\qquad
-a_k=\sigma_k^{-1}.
-$$
-
-The three basic radial integrals along one ray are
-
-$$
-I_U^{(k)}
-=
-\int_{R^-}^{R^+}
-R\,D_k(R)^{-\alpha_k}\,dR,
-$$
-
-$$
-I_g^{(k)}
-=
-\int_{R^-}^{R^+}
-D_k(R)^{-\alpha_k}\,dR,
-$$
-
-$$
-I_H^{(k)}
-=
-\int_{R^-}^{R^+}
-\frac{D_k(R)^{-\alpha_k}}{R}\,dR.
-$$
-
-They arise by inserting $dy=R^2\,dR\,d\Omega$ and $x-y=Ru$ into the Newtonian kernels. The potential picks up one factor of $R$ from $R^2/R$, the gradient picks up none from $R^2/R^2$, and the Hessian picks up $R^{-1}$ from $R^2/R^3$ after the angular factor $T(u)$ has been removed. Consequently
+from $dy=R^2dR\,d\Omega$ and $x-y=Ru$: the potential gets $R^2/R$, the gradient $R^2/R^2$, and the Hessian $R^2/R^3$ after the angular factor $T(u)$ is removed. Hence
 
 $$
 \boxed{
-U(x)
-=
-G\sum_{q,\ell,k}
-w_k\sigma_k^{-2\alpha_k}
-\omega_q I_{U,\ell}^{(k)}.
+U(x)=G\sum_{q,\ell,k}w_k\sigma_k^{-2\alpha_k}\omega_q I_{U,\ell}^{(k)},\qquad
+\nabla U(x)=-G\sum_{q,\ell,k}w_k\sigma_k^{-2\alpha_k}\omega_q u_q I_{g,\ell}^{(k)},\qquad
+H(x)=G\sum_{q,\ell,k}w_k\sigma_k^{-2\alpha_k}\omega_qT(u_q)I_{H,\ell}^{(k)},
 }
 $$
 
-The gradient is
-
-$$
-\boxed{
-\nabla U(x)
-=
--G\sum_{q,\ell,k}
-w_k\sigma_k^{-2\alpha_k}
-\omega_q u_q I_{g,\ell}^{(k)}.
-}
-$$
-
-The Hessian is
-
-$$
-\boxed{
-H(x)
-=
-G\sum_{q,\ell,k}
-w_k\sigma_k^{-2\alpha_k}
-\omega_q
-T(u_q)I_{H,\ell}^{(k)},
-}
-$$
-
-where
-
-$$
-T(u)=3uu^T-I
-$$
-
-is the matrix whose entries are $T_{ij}(u)$ of Section 1.3, and $\omega_q$ is the spherical quadrature weight of direction $u_q$, not the spin. The index $\ell$ runs over every intersection segment $[R^-_\ell,R^+_\ell]$ of the ray (Section 1.4), and $I^{(k)}_{\cdot,\ell}$ is the corresponding radial integral. For an anisotropic core (Lemma 1.4′), replace $\sigma_k^{-2\alpha_k}$ by $s_k(u_q)^{-\alpha_k}$ and use the direction-dependent $b_k(u_q)$, $d_k(u_q)$; nothing else changes. The three quantities share
-
-- the same direction $u_q$;
-- the same ray-intersection segment $[R^-,R^+]$;
-- the same coefficients $b_k,d_k$;
-- the same density parameters.
-
-Three separate integration programs should therefore not be run.
+with $T(u)=3uu^T-I$ (Section 1.3), $\omega_q$ the angular quadrature weight (not the spin), and $\ell$ over every segment of the ray (Section 1.4). For an anisotropic core (Lemma 1.4′), replace $\sigma_k^{-2\alpha_k}$ by $s_k(u_q)^{-\alpha_k}$ and use the direction-dependent $b_k,d_k$. The three quantities share the direction, segment, coefficients, and density parameters, so they are never computed by three separate programs. The $I_H$ column applies as written only to segments with $R^->0$. A segment $[0,R_1]$ (every interior or boundary field point) contributes to the Hessian only through the subtraction of Section 3.9, under the route rule stated there.
 
 ---
 
 ## 3.2 Analytic antiderivatives for $\alpha=1$
 
-When $\alpha_k=1$, define
-
-$$
-D(R)=(R-b)^2+d^2.
-$$
-
-The potential integral has the antiderivative
+With $D(R)=(R-b)^2+d^2$ and $D'=2(R-b)$,
 
 $$
 \boxed{
-P(R)
-=
-\frac12\log D(R)
-+
-\frac{b}{d}
-\arctan\frac{R-b}{d}.
-}
+P(R)=\frac12\log D(R)+\frac{b}{d}\arctan\frac{R-b}{d}
+}\quad(P'=R/D),\qquad
+\boxed{
+Q(R)=\frac1d\arctan\frac{R-b}{d}
+}\quad(Q'=1/D).
 $$
 
-*Differentiation.* One has $D'=2(R-b)$, so
-
-$$
-P'(R)
-=
-\frac{R-b}{D(R)}
-+
-\frac{b}{(R-b)^2+d^2}
-=
-\frac{R-b+b}{D(R)}
-=
-\frac{R}{D(R)}.
-$$
-
-Thus $\int R\,D^{-1}\,dR=P(R)$ up to a constant. The gradient integral has the antiderivative
+For the Hessian, with $\widetilde A_0=b^2+d^2$, the partial fractions are $\frac{1}{R D}=\frac{1}{\widetilde A_0R}+\frac{-R+2b}{\widetilde A_0D}$ (common numerator $\widetilde A_0$). Since $-R+2b=-(R-b)+b$,
 
 $$
 \boxed{
-Q(R)
-=
-\frac1d\arctan\frac{R-b}{d},
-}
-$$
-
-and $Q'(R)=1/D(R)$. The radial integral of the Hessian,
-
-$$
-L(R)=\int \frac{dR}{R[(R-b)^2+d^2]},
-$$
-
-is computed by partial fractions. Set
-
-$$
-A_0=b^2+d^2.
-$$
-
-Then
-
-$$
-\frac1{R[(R-b)^2+d^2]}
-=
-\frac1{A_0}\frac1R
-+
-\frac{-R+2b}{A_0[(R-b)^2+d^2]}.
-$$
-
-*Verification.* The common-denominator numerator is
-
-$$
-(R-b)^2+d^2+R(-R+2b)
-=
-R^2-2bR+b^2+d^2-R^2+2bR
-=
-A_0.
-$$
-
-Integration of the second term uses
-
-$$
-\int\frac{-R+2b}{(R-b)^2+d^2}\,dR
-=
--\frac12\log D(R)
-+
-\frac{b}{d}\arctan\frac{R-b}{d},
-$$
-
-because $-R+2b=-(R-b)+b$ and $\int(R-b)/D\,dR=\tfrac12\log D$. Therefore
-
-$$
-\boxed{
-\begin{aligned}
 L(R)
-={}&
-\frac1{A_0}\log R
--\frac1{2A_0}\log\left((R-b)^2+d^2\right)\\
-&+
-\frac{b}{A_0d}
+=
+\frac1{\widetilde A_0}\log R
+-\frac1{2\widetilde A_0}\log\left((R-b)^2+d^2\right)
++
+\frac{b}{\widetilde A_0d}
 \arctan\frac{R-b}{d}.
-\end{aligned}
 }
 $$
 
-As recorded in Section 1.6, this $L$ differs from the antiderivative written there by the constant factor that converts $1+\sigma^2|x-Ru-c|^2$ into $\sigma^2 D(R)$. For an ordinary exterior ray,
-
-$$
-I_U=P(R^+)-P(R^-),
-$$
-
-$$
-I_g=Q(R^+)-Q(R^-),
-$$
-
-$$
-I_H=L(R^+)-L(R^-).
-$$
-
-The dominant cost of each ray is then a small number of logarithms, arctangents, and multiply-adds. A segment with $R^-=0$ must not use $L(R^+)-L(R^-)$ directly. It uses the finite-part limit of Sections 1.6 and 3.9.
+$L$ differs from the antiderivative of Section 1.6 by the constant factor that turns $1+\sigma^2|x-Ru-c|^2$ into $\sigma^2D$. For an ordinary segment, $I_U=[P]$, $I_g=[Q]$, and $I_H=[L]$, evaluated between $R^-$ and $R^+$: a few logarithms, arctangents, and multiply-adds per ray. A segment with $R^-=0$ must not use $[L]$ directly; it uses the finite part of Sections 1.6 and 3.9.
 
 ---
 
 ## 3.3 GPU quadrature for general $\alpha$
 
-When $\alpha\neq 1$, do not run an adaptive integrator on the GPU. Two facts reduce the work and make a fixed rule uniformly accurate. Write $D(R)=(R-b)^2+d^2$ as in Section 3.2.
+For $\alpha\ne1$ no adaptive integrator runs on the GPU. Two facts make a fixed rule uniformly accurate.
 
-**(i) The potential integral is never quadratured.** For every $\alpha\ne 1$,
+**(i) The potential integral is never quadratured.**
 
 $$
 \boxed{
 I_U=\int_{R^-}^{R^+}R\,D^{-\alpha}\,dR
-=b\,I_g+\frac{D(R^+)^{1-\alpha}-D(R^-)^{1-\alpha}}{2-2\alpha}.
+=b\,I_g+\frac{D(R^+)^{1-\alpha}-D(R^-)^{1-\alpha}}{2-2\alpha}
 }
 $$
 
-*Proof.* Write $R=(R-b)+b$. The first part is $\int(R-b)D^{-\alpha}\,dR=D^{1-\alpha}/(2-2\alpha)$, because $\frac{d}{dR}D^{1-\alpha}=(1-\alpha)\,2(R-b)\,D^{-\alpha}$. The second part is $b\,I_g$. ∎ For $\alpha=1$ the same splitting gives $P(R)$ of Section 3.2. The gradient integral also has the closed form $I_g=d^{1-2\alpha}\big[F(t^+)-F(t^-)\big]$, $t^\pm=(R^\pm-b)/d$, $F(t)=t\,{}_2F_1(\tfrac12,\alpha;\tfrac32;-t^2)$, which may be used where a hypergeometric evaluator with a verified error is available. Only $I_H$ genuinely needs quadrature (it is the Lauricella/Appell integral of Section 1.11).
+(write $R=(R-b)+b$, with $\frac{d}{dR}D^{1-\alpha}=2(1-\alpha)(R-b)D^{-\alpha}$). For $\alpha=1$ the same splitting gives $P$. Also $I_g=d^{1-2\alpha}[F(t^+)-F(t^-)]$, with $t^\pm=(R^\pm-b)/d$ and $F(t)=t\,{}_2F_1(\tfrac12,\alpha;\tfrac32;-t^2)$, usable with a verified hypergeometric evaluator. Only $I_H$ really needs quadrature (it is the Lauricella/Appell integral of Section 1.11).
 
-**(ii) Tangent substitution.** Put $R=b+d\tan\theta$, $\theta\in[\theta^-,\theta^+]$, $\theta^\pm=\arctan\big((R^\pm-b)/d\big)\in(-\tfrac\pi2,\tfrac\pi2)$. Then $dR=d\sec^2\theta\,d\theta$ and $D=d^2\sec^2\theta$, so
+**(ii) Tangent substitution.** With $R=b+d\tan\theta$, $\theta^\pm=\arctan((R^\pm-b)/d)\in(-\tfrac\pi2,\tfrac\pi2)$, $dR=d\sec^2\theta\,d\theta$, and $D=d^2\sec^2\theta$,
 
 $$
 I_g=d^{1-2\alpha}\int_{\theta^-}^{\theta^+}\cos^{2\alpha-2}\theta\,d\theta,
@@ -4308,66 +1975,39 @@ I_g=d^{1-2\alpha}\int_{\theta^-}^{\theta^+}\cos^{2\alpha-2}\theta\,d\theta,
 I_H=d^{1-2\alpha}\int_{\theta^-}^{\theta^+}\frac{\cos^{2\alpha-1}\theta}{b\cos\theta+d\sin\theta}\,d\theta,
 $$
 
-where $b\cos\theta+d\sin\theta=R\cos\theta>0$ on a segment with $R^->0$. The integrand of $I_g$ **no longer contains the scales $d$ or $\sigma_k$**, and that of $I_H$ contains them only through the factor $1/(b\cos\theta+d\sin\theta)=\cos\theta/R$, which is smooth away from $R=0$: the Lorentzian peak of width $d$ at $R=b$, which a fixed Gauss rule in $R$ cannot resolve when $d\ll R^+-R^-$ (a narrow, dense core), is mapped onto a smooth function of $\theta$. Apply an $n_r$-point Gauss–Legendre rule in $\theta$, and evaluate $I_g$ and $I_H$ on the same nodes, because they share $\cos^{2\alpha-2}\theta_j$. For $\alpha\ge 1$ the integrand of $I_g$ is bounded and smooth on $[-\tfrac\pi2,\tfrac\pi2]$. For $\alpha<1$ it has an integrable singularity at $\theta=\pm\tfrac\pi2$, which is close to the interval when $|R^\pm-b|\gg d$. The robust **composite rule**, valid for every $\alpha>0$, splits the segment at $R=b\pm\kappa d$ (default $\kappa=4$): the inner part $|R-b|\le\kappa d$ uses the tangent rule, whose $\theta$-interval then stays inside $[-\arctan\kappa,\arctan\kappa]$, away from $\pm\tfrac\pi2$; each outer part, where $D$ has no peak, uses Gauss–Legendre in $\log|R-b|$. There $D^{-\alpha}$ behaves as a power of $|R-b|$, which the logarithmic variable maps to a smooth exponential, and the variable stays regular when the segment starts at small $R$. With $16$ nodes per part, the same test case gives relative errors $1.1\times10^{-8}$, $2.3\times10^{-9}$, $1.1\times10^{-10}$ in $I_g$ and $7.7\times10^{-8}$, $3.4\times10^{-8}$, $1.2\times10^{-8}$ in $I_H$ for $\alpha=0.3,0.6,0.9$. *Measured accuracy of the pure tangent rule* ($n_r=16$, $b=0.7$, $d=0.05$, $[R^-,R^+]=[0.2,3]$): plain Gauss–Legendre in $R$ gives relative errors of $6.8\times10^{-2}$, $2.1\times10^{-1}$, $1.7\times10^{-1}$ in $I_g$ for $\alpha=0.6,1.3,2.5$. The tangent rule gives $1.2\times10^{-3}$, $1.6\times10^{-6}$, $1\times10^{-15}$ in $I_g$, and $9.4\times10^{-4}$, $6.2\times10^{-5}$, $1.9\times10^{-7}$ in $I_H$. These numbers are a-posteriori observations, not certificates (Section 1.12).
+where $b\cos\theta+d\sin\theta=R\cos\theta>0$ for $R^->0$. The $I_g$ integrand no longer contains $d$ or $\sigma_k$, and the $I_H$ integrand only through $\cos\theta/R$, which is smooth away from $R=0$. The Lorentzian peak of width $d$ at $R=b$, which a fixed Gauss rule in $R$ misses when $d\ll R^+-R^-$ (a narrow dense core), becomes a smooth function of $\theta$. One $n_r$-point Gauss–Legendre rule in $\theta$ serves both $I_g$ and $I_H$, which share $\cos^{2\alpha-2}\theta_j$. For $\alpha\ge1$ the $I_g$ integrand is smooth on $[-\tfrac\pi2,\tfrac\pi2]$. For $\alpha<1$ it is singular at $\pm\tfrac\pi2$ (integrably only for $\alpha>\tfrac12$). The interval $[\theta^-,\theta^+]$ always lies strictly inside $(-\tfrac\pi2,\tfrac\pi2)$, but it comes close to the singularity when $|R^\pm-b|\gg d$.
 
-The cost per (segment, kernel) is therefore one $\arctan$ pair, $n_r$ evaluations of $\cos^{2\alpha-2}$ and one division each, and a closed-form $I_U$. That is about two thirds of the arithmetic of three independent quadratures, and the accuracy is independent of the core width.
+The **composite rule**, valid for every $\alpha>0$, splits at $R=b\pm\kappa d$ (default $\kappa=4$). The inner part uses the tangent rule, with $\theta\in[-\arctan\kappa,\arctan\kappa]$. Each outer part, where $D$ has no peak, uses Gauss–Legendre in $\log|R-b|$, which maps the power behaviour to a smooth exponential and stays regular near small $R$. With 16 nodes per part the relative errors are $1.1\times10^{-8},2.3\times10^{-9},1.1\times10^{-10}$ in $I_g$ and $7.7\times10^{-8},3.4\times10^{-8},1.2\times10^{-8}$ in $I_H$ for $\alpha=0.3,0.6,0.9$. For the pure tangent rule ($n_r=16$, $b=0.7$, $d=0.05$, $[0.2,3]$) and $\alpha=0.6,1.3,2.5$:
 
-These ordinary quadrature formulae apply only to a nonsingular segment with $R^->0$. If the field point lies inside the solid and the segment starts at $R^-=0$, or if the segment belongs to a boundary or near-field singular branch, then $I_H$ must not be computed by ordinary Gauss quadrature. Control passes to the finite-part subtraction of Section 3.9, and the contact term is added explicitly. (This is the RTFP route. On the Feynman route the contact term is never added, Lemma 2.7.0.)
+- plain Gauss–Legendre in $R$ gives $6.8\times10^{-2},2.1\times10^{-1},1.7\times10^{-1}$ in $I_g$;
+- the tangent rule gives $1.2\times10^{-3},1.6\times10^{-6},1\times10^{-15}$ in $I_g$ and $9.4\times10^{-4},6.2\times10^{-5},1.9\times10^{-7}$ in $I_H$.
 
-The implementation is configured as follows.
+These are a-posteriori observations, not certificates (Section 1.12). The cost per (segment, kernel) is one $\arctan$ pair, $n_r$ evaluations of $\cos^{2\alpha-2}$ with one division each, and a closed-form $I_U$. That is about two thirds of three independent quadratures, with accuracy independent of the core width.
 
-- When $\alpha$ is fixed, nodes and weights are precomputed.
-- The case $\alpha=1$ takes the analytic branch.
-- The node counts $n_r=8,16,32$ are three levels of accuracy.
-- Only a small number of difficult rays are recomputed at the higher-order nodes.
+These rules apply only to nonsingular segments with $R^->0$. A segment starting at $R^-=0$ (interior field point), or on a boundary or near-field singular branch, goes to the subtraction of Section 3.9. Whether the contact term appears explicitly depends on the route; the route rule of Section 3.9 fixes one route per evaluation.
+
+Configuration:
+
+- nodes and weights are precomputed for fixed $\alpha$;
+- $\alpha=1$ takes the analytic branch;
+- $n_r=8,16,32$ are three accuracy levels;
+- only a few difficult rays are recomputed at higher order.
 
 ---
 
 ## 3.4 GPU BVH geometric pipeline (optional hardware ray-tracing backend)
 
-Sections 3.5–3.8 describe this pipeline. Section 3.15 adds the caching, incremental-update, and hardware ray-tracing rules that make it efficient inside the SCF loop.
+Sections 3.5–3.8 describe the pipeline. Section 3.15 adds caching, incremental updates, and hardware ray tracing.
 
 ## 3.5 Preprocessing
 
-Build a bounding-volume hierarchy for the polyhedral triangle mesh.
-
-1. Store triangle vertices in a structure-of-arrays layout.
-2. Precompute face normals, bounding boxes, and edge data.
-3. Construct a flat bounding-volume hierarchy that can be uploaded to WGSL. If hardware ray tracing is available, build an equivalent acceleration structure.
-4. Reuse the hierarchy while the shape of the body is fixed.
-
-Triangle data may be stored as
-```text
-v0x[], v0y[], v0z[]
-v1x[], v1y[], v1z[]
-v2x[], v2y[], v2z[]
-normal_x[], normal_y[], normal_z[]
-```
-An array-of-structures layout, which produces uncoalesced memory access, is avoided.
+Build a flat BVH for the triangle mesh (or an equivalent hardware acceleration structure). Store vertices, face normals, boxes, and edge data as one array per component (structure of arrays), so that neighbouring threads read neighbouring entries. Reuse the BVH while the shape is fixed.
 
 ---
 
 ## 3.6 Ray tasks
 
-For each field point $x_m$ and each spherical direction $u_q$, cast the ray
-
-$$
-r(t)=x_m-tu_q,\qquad t>0.
-$$
-
-RayBackend returns every intersection distance
-
-$$
-0<R_1<R_2<\cdots<R_L.
-$$
-
-For a closed polyhedron:
-
-- an exterior point usually produces intersections in pairs;
-- the first intersection of an interior point is an exit, and the interval from $R=0$ to that first intersection also belongs to the solid;
-- a nonconvex polyhedron may have several intersection segments.
-
-One must therefore not pair intersections as $[R_1,R_2],[R_3,R_4],\ldots$ for every field point. The occupancy at $R=0$ is determined first from the interior/exterior classification of the field point, and the intervals are then generated by switching state:
+For field point $x_m$ and direction $u_q$, cast $r(t)=x_m-tu_q$, $t>0$. RayBackend returns all distances $0<R_1<\dots<R_L$. Exterior points usually give pairs. The first hit from an interior point is an exit, with $[0,R_1]$ inside. Nonconvex bodies give several segments. Intersections must therefore not be paired blindly as $[R_1,R_2],[R_3,R_4],\dots$. Fix the occupancy at $R=0$ from the interior/exterior status first:
 
 $$
 \begin{cases}
@@ -4376,171 +2016,113 @@ $$
 \end{cases}
 $$
 
-A boundary point must first be fixed to the spherical representative convention of Sections 1.2–1.3. An implementation may use the interior limit, the exterior limit, or an explicit near-field branch at $R=0$. A boundary point must not be forced unconditionally into either pairing rule.
+A boundary point is first fixed to the spherical representative of Sections 1.2–1.3 (interior limit, exterior limit, or an explicit near-field branch), never forced into either rule.
 
-**Orientation-based segment construction (mandatory when hits are reported out of order or duplicated, which is the normal case for hardware ray tracing).** Pure parity pairing fails when a ray passes through a shared edge or vertex: the hit can be reported twice or not at all. Record, for each hit $R_j$, the orientation sign $\varsigma_j=\operatorname{sign}(\mathbf u\cdot\mathbf n_{f_j})$ of the face hit. Since the ray direction is $-\mathbf u$, $\varsigma_j=+1$ means *entering* the solid and $\varsigma_j=-1$ means *leaving*. Then:
+**Orientation-based segment construction (mandatory when hits are out of order or duplicated, the normal case for hardware ray tracing).** Parity fails when a ray passes through a shared edge or vertex, because the hit is then reported twice or not at all. Record $\varsigma_j=\operatorname{sign}(\mathbf u\cdot\mathbf n_{f_j})$ per hit: since the ray direction is $-\mathbf u$, $+1$ means entering and $-1$ leaving.
 
-1. sort the hits by $R$ (insertion sort in registers; $L$ is small);
-2. merge hits whose distances agree to within $\epsilon_{\rm hit}=c\,\epsilon_{\rm mach}\max(R_j,h_\Gamma)$ **and** whose signs agree (a duplicate across an edge); keep hits of opposite sign that coincide (a grazing pair, which encloses a segment of zero length and is dropped);
-3. set the initial state from the classification of the field point (inside: occupied; outside: empty), and require the signs to alternate, $-,+,-,\dots$ from an interior point and $+,-,+,\dots$ from an exterior point;
-4. if two consecutive signs are equal after merging, a hit has been lost: re-trace that ray in the software BVH in double precision, and count the event in the diagnostics.
+1. Sort by $R$ (insertion sort in registers; $L$ is small).
+2. Merge hits within $\epsilon_{\rm hit}=c\,\epsilon_{\rm mach}\max(R_j,h_\Gamma)$ **with equal sign** (a duplicate across an edge). Coincident hits of opposite sign are a grazing pair enclosing a zero-length segment, which is dropped.
+3. Start from the field point's status and require alternation: $-,+,-,\dots$ from inside, $+,-,+,\dots$ from outside.
+4. Two equal consecutive signs after merging mean a lost hit. Re-trace that ray in the software BVH in double precision, and count the event.
 
-On a closed, consistently oriented, watertight mesh, the alternation in step 3 is an invariant (the winding number along the ray changes by $\pm1$ at each transversal crossing), so step 4 detects every inconsistency instead of silently mispairing segments.
+On a closed, consistently oriented, watertight mesh, alternation is an invariant (the winding number changes by $\pm1$ at each transversal crossing), so step 4 detects every inconsistency.
 
-**Implemented construction (parity after merging).** The implementation does not record orientation signs. Every crossing of the ray with the mesh is collected in single precision in the unit frame of the body (lengths divided by the bounding radius), sorted, and merged when two distances differ by at most $10^{-6}(1+R_j)$; crossings closer than $10^{-6}$ to the launch point are dropped. Because a ray ends outside a bounded body, the parity of the merged count fixes the occupancy at $R=0$: an odd count means the ray starts inside, $[0,R_1],[R_2,R_3],\dots$; an even count gives $[R_1,R_2],\dots$. This replaces the separate interior/exterior classification of step 3 and is correct whenever every transversal crossing is reported once. A crossing that is lost (a watertightness miss at an edge or a vertex) is not detected and mispairs the rest of that ray; the orientation-based steps 1–4 are the remedy and are not implemented (Appendix A.6). The impact is limited to the density-difference rays of Section 3.9: a uniform body casts no rays at all. Each ray holds at most 64 crossings in registers; a ray with more is an error, so the count–scan–write scheme below is not needed.
+**Simplified construction (parity after merging).** Without orientation signs, sort the crossings and merge those closer than a relative tolerance $\epsilon_{\rm hit}(1+R_j/R_*)$. A ray ends outside the body, so the parity of the merged count fixes the occupancy at $R=0$: an odd count starts inside, $[0,R_1],[R_2,R_3],\dots$, and an even count gives $[R_1,R_2],\dots$. This is correct whenever each transversal crossing is reported exactly once. A lost or duplicated crossing (a watertightness failure at an edge or vertex) is not detected and mispairs the rest of the ray, so the simplified construction is admissible only together with a watertight intersection test; steps 1–4 remove that condition. Under the split of Section 3.9 only the density-difference rays are affected.
 
-Do not let each thread allocate memory dynamically. The recommended scheme has two stages, followed by a write.
+Threads must not allocate memory dynamically. The general scheme has three stages:
 
-### Stage A: counting
+- **Stage A, counting:** each ray counts its intersections $L$.
+- **Stage B, prefix sum:** a GPU prefix sum over the rays allocates one contiguous buffer.
+- **Stage C, writing:** the query is run again, and the hits are written into the packed array.
 
-Each ray only counts the number $L$ of intersections.
-
-### Stage B: prefix sum
-
-A GPU prefix sum over all rays allocates a contiguous intersection buffer.
-
-### Stage C: writing
-
-The ray query is executed again, and the intersections are written into the packed array.
-
-This avoids wasting a large amount of device memory on a buffer of fixed length.
+This avoids wasting memory on fixed-length buffers.
 
 ---
 
 ## 3.7 Organization of the GPU kernels
 
-The recommended thread mapping is
-```text
-one WGSL workgroup
-    → one batch of field points
-    → a fixed number of spherical directions
-
-one invocation
-    → one direction
-    → every intersection segment of that direction
-
-one workgroup
-    → shared parameters of the batch, including x, c_k, and the quadrature weights
-```
-For each directional thread:
-
-1. Read the segment $[R^-,R^+]$.
-2. Compute $u_q$.
-3. For each $k$, compute $b_k$ and $d_k^2$.
-4. Compute $I_U$, $I_g$, and $I_H$.
-5. Accumulate $U$, $\nabla U$, and $H$.
-
-Local accumulations are written to workgroup-local storage and reduced hierarchically after a workgroup barrier. If the device supports subgroup operations, the reduction may be replaced under the same error verification.
+One workgroup takes a batch of field points over a fixed set of directions, with shared batch parameters ($x$, $c_k$, weights) in workgroup memory. One invocation takes one direction and all its segments: it reads $[R^-,R^+]$, forms $u_q$ and $b_k,d_k^2$, computes $I_U,I_g,I_H$, and accumulates $U,\nabla U,H$. Partial sums are reduced hierarchically after a barrier, or by subgroup operations under the same error verification.
 
 ---
 
 ## 3.8 Fused kernel
 
-Do not call separately
-```text
-compute_potential()
-compute_gradient()
-compute_hessian()
-```
-Use one fused kernel:
+One kernel computes all three fields; potential, gradient, and Hessian are never evaluated by separate passes:
+
 ```text
 for each field point x:
-    U_local = 0
-    g_local = (0,0,0)
-    H_local = zero_matrix
-
+    U_local = 0; g_local = (0,0,0); H_local = 0
+    # x in closed V: the rays carry rho(y) - rho(x) (Section 3.9, route (i)); x outside V: rho(y)
     for each ray direction q:
         intersections = RT_query(x, u[q])
-
         for each segment [R0, R1]:
             for each density component k:
                 compute b, d2
-
-                if alpha[k] == 1:
-                    IU = analytic_potential(...)
-                    IG = analytic_gradient(...)
-                    IH = analytic_hessian(...)
+                if R0 == 0:                                          # interior or boundary point
+                    IU, IG, IH = remainder_quotient(...)             # Section 3.9, whole quotient
+                elif alpha[k] == 1:
+                    IU, IG, IH = analytic(...)                       # Section 3.2
                 else:
-                    IG, IH = tangent_or_composite_rule(...)   # Section 3.3 (ii)
-                    IU = b*IG + (D(R1)^(1-a) - D(R0)^(1-a))/(2-2a)   # Section 3.3 (i)
-
+                    IG, IH = tangent_or_composite_rule(...)          # Section 3.3 (ii)
+                    IU = b*IG + (D(R1)^(1-a) - D(R0)^(1-a))/(2-2a)  # Section 3.3 (i)
                 U_local += coeff * weight[q] * IU
                 g_local += -coeff * weight[q] * u[q] * IG
                 H_local += coeff * weight[q] * T(u[q]) * IH
-
+    if x in closed V:
+        add rho(x) * (Phi_V, grad Phi_V, Hess Phi_V)(x)              # Section 3.9, route (i)
     write U_local, g_local, H_local
 ```
-Here
 
-$$
-T(u)=3uu^T-I
-$$
-
-contains only six independent Hessian components,
-
-$$
-H_{xx},H_{yy},H_{zz},H_{xy},H_{xz},H_{yz}.
-$$
-
-The nine entries of the matrix need not be computed separately. Symmetry $H_{ji}=H_{ij}$ follows from equality of mixed classical derivatives in the exterior, and from the symmetry $T_{ij}=T_{ji}$ of the finite-part kernel.
+$T(u)=3uu^T-I$ needs only the six components $H_{xx},H_{yy},H_{zz},H_{xy},H_{xz},H_{yz}$. Symmetry follows from equal mixed derivatives in the exterior and from $T_{ij}=T_{ji}$ for the finite part.
 
 ---
 
 ## 3.9 Near-surface finite part
 
-Every segment that begins at $R=0$ is singular for $I_H$, because its integrand is $D^{-\alpha}/R$. This concerns **every interior field point**, not only points close to the surface, and every boundary point. For an interior point take $r_0=\min\{r_\ast(x),\operatorname{dist}(x,\partial V)\}$; then $\Gamma_x=\mathbb S^2$, $C(x)=0$, $\vartheta_x=1$, and the logarithmic term below vanishes identically, leaving the density-difference integral and the contact term. For a point on a face, $C=0$ and $\vartheta=\tfrac12$ (Proposition 2.7.1). Only at edges and vertices does the logarithm survive. Let $\Gamma_x$ be the set of directions of the local tangent cone. Subtract at the near-field radius $r_0$:
+Every segment starting at $R=0$ is singular for $I_H$ (integrand $D^{-\alpha}/R$). This means every interior field point and every boundary point. For an interior point take $r_0=\min\{r_\ast(x),\operatorname{dist}(x,\partial V)\}$; then $\Gamma_x=\mathbb S^2$, $C=0$, and $\vartheta=1$. On a face, $C=0$ and $\vartheta=\tfrac12$ (Proposition 2.7.1). Only at edges and vertices does the logarithm survive. Two forms of the subtraction exist, and the route rule at the end of this section allows exactly one per evaluation.
+
+**Local form (alternative).** Subtract at $r_0$ over the tangent-cone directions $\Gamma_x$:
 
 $$
-\begin{aligned}
 I_H^{\mathrm{near}}
-={}&
-\int_{\Gamma_x}
-T(u)
-\int_\varepsilon^{r_0}
-\frac{\rho(x-Ru)}{R}\,dR\,d\Omega\\
-={}&
-\rho(x)C(x)\log\frac{r_0}{\varepsilon}\\
-&+
-\int_{\Gamma_x}T(u)
-\int_\varepsilon^{r_0}
-\frac{\rho(x-Ru)-\rho(x)}{R}\,dR\,d\Omega.
-\end{aligned}
+=
+\int_{\Gamma_x}T(u)\int_\varepsilon^{r_0}\frac{\rho(x-Ru)}{R}\,dR\,d\Omega
+=
+\rho(x)C(x)\log\frac{r_0}{\varepsilon}
++
+\int_{\Gamma_x}T(u)\int_\varepsilon^{r_0}\frac{\rho(x-Ru)-\rho(x)}{R}\,dR\,d\Omega,
 $$
 
-This is the angular form of Section 1.5, before multiplication by $G$ and before the contact term. In the GPU implementation:
+the angular form of Section 1.5 before the factor $G$ and the contact term. On the GPU:
 
-1. The part of a ray whose intersection distance satisfies $R<r_0$ enters the near kernel.
-2. Compute the density difference $\rho(x-Ru)-\rho(x)$.
-3. Apply fixed quadrature to the difference. At a node with $R=0$, use the limit $-\nabla\rho(x)\cdot u$. Do not evaluate $0/0$. The limit is the integrand identity of Section 1.5.
-4. Add explicitly
+1. the part of a ray with $R<r_0$ enters the near kernel;
+2. the density difference is computed and integrated by a fixed rule, using the limit $-\nabla\rho(x)\cdot u$ at $R=0$ (never $0/0$);
+3. $G\rho(x)C(x)\log(r_0/\ell_0)$ and the contact term $-\frac{4\pi G}{3}\vartheta_x\rho(x)I$ are added explicitly.
 
-   $$
-   G\rho(x)C(x)\log(r_0/\ell_0).
-   $$
+$\log\varepsilon$ is never formed on the GPU.
 
-5. Add the contact term
-
-   $$
-   -\frac{4\pi G}{3}\vartheta_x\rho(x)I.
-   $$
-
-The divergent term $\log\varepsilon$ is then never computed on the GPU. The matrix $C(x)$ is the spherical moment of $T(u)$ over $\Gamma_x$, and $\vartheta_x$ is the corresponding solid-angle fraction, both as in Section 1.3.
-
-**Global form of the subtraction (production route).** The production kernel applies the subtraction on the whole body rather than on $[0,r_0)$. With $\Phi_V(x)=\int_V|x-y|^{-1}dy$, the field of the uniform polyhedron of unit density,
+**Global form of the subtraction (primary route).** The primary kernel subtracts over the whole body. With $\Phi_V(x)=\int_V|x-y|^{-1}dy$, the unit-density field of the polyhedron,
 
 $$
 U(x)=G\rho(x)\,\Phi_V(x)+G\int_V\frac{\rho(y)-\rho(x)}{|x-y|}\,dy,
 $$
 
-and likewise for $\nabla U$ and $H$, differentiating in $x$ only the kernel. The constant part carries the whole singular structure at $x$: the contact term $-\tfrac{4\pi}{3}\vartheta_x\rho(x)\mathbf I$, the logarithm $C(x)\log$ at an edge or a vertex, and the jump across a face. $\Phi_V$, $\nabla\Phi_V$ and $\nabla\nabla\Phi_V$ are evaluated in closed form (Werner and Scheeres 1997 [7]): a sum over faces of the solid angle $\omega_f$ and over edges of $L_e=\ln\frac{a+b+e}{a+b-e}$. For a point in the interior of face $f$ the convention of Section 1.3 takes the mean of the two one-sided limits, which sets $\omega_f=0$ for that face, and $\sum_f\omega_f=-\operatorname{tr}\nabla\nabla\Phi_V$ equals $4\pi\vartheta_x$. The remainder has the integrands $(\rho(x-Ru)-\rho(x))R$, $\rho(x-Ru)-\rho(x)$, and $(\rho(x-Ru)-\rho(x))/R$; the first two vanish at $R=0$ and the third tends to the finite limit $-\nabla\rho(x)\cdot u$ (step 3 above). Its ray integrals of Section 3.1 need neither the finite part, nor the contact term, nor the logarithm, and the radial rules of Section 3.3 apply on every segment. The angular rule then sees only the smooth variation of $\rho$ and no longer the kinks of the chord lengths of a constant density. (With $\rho\equiv\rho(x)$ a Lebedev rule of degree 29 alone leaves a relative error of about $2\times10^{-2}$ in $H$ at the centre of a cube; the split removes it exactly.) Nothing is cast for a uniform density.
+and likewise for $\nabla U$ and $H$, differentiating only the kernel. The constant part carries the whole singular structure at $x$: the contact term $-\tfrac{4\pi}{3}\vartheta_x\rho(x)\mathbf I$, the edge or vertex logarithm, and the jump across a face. $\Phi_V$, $\nabla\Phi_V$, and $\nabla\nabla\Phi_V$ are closed form (Werner and Scheeres [7]): sums over faces of solid angles $\omega_f$ and over edges of $L_e=\ln\frac{a+b+e}{a+b-e}$. For a point inside face $f$, the convention of Section 1.3 takes the mean of the one-sided limits, which sets $\omega_f=0$ for that face; then $\sum_f\omega_f=-\operatorname{tr}\nabla\nabla\Phi_V=4\pi\vartheta_x$. The remainder has integrands $(\rho(x-Ru)-\rho(x))R$, $\rho(x-Ru)-\rho(x)$, and $(\rho(x-Ru)-\rho(x))/R$, which are finite at $R=0$. Its ray integrals need no finite part, contact term, or logarithm. For the potential and gradient the two pieces separate on every segment: Section 3.3 integrates $\rho(\mathbf x-R\mathbf u)R$ and $\rho(\mathbf x-R\mathbf u)$, and $\rho(\mathbf x)R$, $\rho(\mathbf x)$ integrate in closed form. For the Hessian the pieces separate only on segments with $R^->0$: there $\int\rho(\mathbf x-R\mathbf u)R^{-1}dR$ follows Section 3.3 and $-\rho(\mathbf x)\log(R^+/R^-)$ is exact. On a segment $[0,R_1]$ each piece alone diverges, and the quotient $(\rho(\mathbf x-R\mathbf u)-\rho(\mathbf x))/R$ is integrated as a whole, kernel by kernel. With $D_k$ and $A_0=D_k(0)$ in the normalization of Section 1.6:
+
+- $\alpha_k=1$: $\displaystyle\int_0^{R_1}\frac{D_k(R)^{-1}-A_0^{-1}}{R}\,dR=\frac1{A_0}\Big[-\frac12\log\frac{D_k(R_1)}{A_0}+\frac bd\Big(\arctan\frac{R_1-b}{d}+\arctan\frac bd\Big)\Big]$, the finite part of Section 1.6 with $\ell_0=R_1$;
+- general $\alpha_k$: Gauss–Legendre in $R$ on the quotient, whose value at $R=0$ is the limit $-\nabla\rho_k(\mathbf x)\cdot\mathbf u$, with the split at $R=b\pm\kappa d$ of Section 3.3 when a narrow core lies on the segment (on the parts away from $R=0$ the pieces separate again).
+
+The angular rule then sees only the smooth variation of $\rho$, not the kinks of constant-density chord lengths. With $\rho\equiv\rho(x)$, a degree-29 Lebedev rule alone leaves about $2\times10^{-2}$ relative error in $H$ at a cube's centre, and the split removes it exactly. A uniform density casts no rays.
+
+**Route rule.** One evaluation of the Hessian at a point of $\overline V$ uses exactly one of three routes. (i) The global subtraction is the normative RTFP route: the contact term, the face jump, and the edge logarithms enter only through $\rho(\mathbf x)\nabla\nabla\Phi_V$, and nothing is added to the remainder. (ii) The local form adds $G\rho(\mathbf x)C(\mathbf x)\log(r_0/\ell_0)$ and the contact term once, and $\Phi_V$ is then not used. (iii) The Feynman route of Section 2.7 never adds the contact term (Lemma 2.7.0). Combining (i) or (iii) with an explicit contact term counts it twice. Applying the boxed $I_H$ of Section 3.1 to a segment $[0,R_1]$ outside these routes drops it, and diverges besides.
 
 ---
 
 ## 3.10 Far-field multipole acceleration
 
-The rays of Section 3.1 cost $O(N_{\rm ray})$ per field point independently of the number $F$ of faces. The closed-form uniform part of Section 3.9 costs $O(F)$ per point, and it is the part that a tree accelerates, in the spirit of the fast multipole method [2] (here a Barnes–Hut-type traversal with octupole expansions, without local expansions).
+Rays cost $O(N_{\rm ray})$ per point, independent of the face count $F$. The closed-form uniform part costs $O(F)$ per point, and that part is accelerated by a tree in the spirit of the FMM [2]: a Barnes–Hut traversal with octupole expansions, without local expansions.
 
-**Surface charges.** By the divergence theorem, $\nabla_y\cdot\big((y-x)/|y-x|\big)=2/|y-x|$, so
+**Surface charges.** From $\nabla_y\cdot((y-x)/|y-x|)=2/|y-x|$, for any point $c$,
 
 $$
 \Phi_V(x)=\tfrac12\big(P(x)-(x-c)\cdot\mathbf S(x)\big),\qquad
@@ -4548,213 +2130,144 @@ $$
 P(x)=\oint_{\partial V}\frac{\mathbf n\cdot(y-c)}{|x-y|}\,dS_y,
 $$
 
-for any point $c$, and $\nabla\Phi_V=-\mathbf S$, $\nabla\nabla\Phi_V=-\nabla\mathbf S$. These are single-layer potentials of four surface charge densities, $n_1,n_2,n_3$ and $\mathbf n\cdot(y-c)$, each constant on a planar face.
+with $\nabla\Phi_V=-\mathbf S$ and $\nabla\nabla\Phi_V=-\nabla\mathbf S$. These are single layers of four charge densities, $n_1,n_2,n_3$ and $\mathbf n\cdot(y-c)$, each constant on a face.
 
-**Tree.** The faces are split recursively at the median of their centroids along the longest axis of the centroid box, down to leaves of at most four faces. Node $\nu$ stores its centre $c_\nu$ (the area-weighted centroid), its radius $h_\nu=\max|y-c_\nu|$ over the vertices it contains, and, for each charge type $t$ with type 3 taken about $c_\nu$, the Cartesian moments
+**Tree.** Faces are split recursively at the median centroid along the longest axis, down to leaves of at most four faces. Each node stores its area-weighted centre $c_\nu$, its radius $h_\nu$, and, per charge type (type 3 about $c_\nu$), the moments $Q^{(k)}_{t,i_1\dots i_k}=\int_\nu q_t\,\delta_{i_1}\cdots\delta_{i_k}\,dS$, $\delta=y-c_\nu$, $k\le3$. Leaves integrate exactly with $\int_f\lambda_1^a\lambda_2^b\lambda_3^c\,dA=2A_f\,a!\,b!\,c!/(a+b+c+2)!$. Parents use the translation $\delta=\delta'+s$: $Q^{(1)}=Q'^{(1)}+sQ'^{(0)}$, $Q^{(2)}_{ab}=Q'^{(2)}_{ab}+s_aQ'^{(1)}_b+s_bQ'^{(1)}_a+s_as_bQ'^{(0)}$, and similarly for the octupole, after re-centring the type-3 density. The build is $O(F\log F)$ and the moments $O(F)$.
 
-$$
-Q^{(k)}_{t,i_1\ldots i_k}=\int_{\nu}q_t(y)\,\delta_{i_1}\cdots\delta_{i_k}\,dS_y,\qquad \delta=y-c_\nu,\quad k=0,\ldots,3.
-$$
-
-A leaf integrates them exactly over its triangles, with $\int_f\lambda_1^{a}\lambda_2^{b}\lambda_3^{c}\,dA=2A_f\,a!\,b!\,c!/(a+b+c+2)!$ in barycentric coordinates. A parent is assembled from its children by the multipole-to-multipole translation $\delta=\delta'+s$, $s=c_{\rm child}-c_\nu$: $Q^{(1)}=Q'^{(1)}+sQ'^{(0)}$, $Q^{(2)}_{ab}=Q'^{(2)}_{ab}+s_aQ'^{(1)}_b+s_bQ'^{(1)}_a+s_as_bQ'^{(0)}$, and the analogous octupole formula, after the type-3 density is re-centred, $\mathbf n\cdot(y-c_\nu)=\mathbf n\cdot(y-c_{\rm child})+\sum_is_i n_i$. The build costs $O(F\log F)$, the moments $O(F)$.
-
-**Evaluation.** With $r=x-c_\nu$, $R=|r|$, $a_2=r^{\top}Q^{(2)}r$, $w=Q^{(3)}(\cdot,r,r)$, $v_k=Q^{(3)}_{iik}$, $a_3=r\cdot w$, the potential of one charge type through octupole order is
+**Evaluation.** With $r=x-c_\nu$, $R=|r|$, $a_2=r^{\top}Q^{(2)}r$, $w=Q^{(3)}(\cdot,r,r)$, $v_k=Q^{(3)}_{iik}$, and $a_3=r\cdot w$,
 
 $$
 \phi=\frac{Q^{(0)}}{R}+\frac{r\cdot Q^{(1)}}{R^3}+\frac{3a_2-R^2\operatorname{tr}Q^{(2)}}{2R^5}+\frac{5a_3-3R^2\,v\cdot r}{2R^7},
 $$
 
-and its gradient is the analytic derivative of each term. A node with $R\,\theta>h_\nu$ contributes its expansion; otherwise its children are visited, and the faces of a leaf are summed in closed form, with the own-face convention of Section 3.9. The truncation error of a node decreases as $\theta^4$. On the Phobos shape model ($3.2\times10^4$ faces, interior and face-centre points) the opening angle $\theta=0.1$ gives relative errors of about $1\times10^{-6}$ in $\Phi_V$, $3\times10^{-6}$ in $\nabla\Phi_V$ and $1\times10^{-5}$ in $\nabla\nabla\Phi_V$ (relative to its largest entry), with about $2\times10^{3}$ node or face interactions per point instead of $3.2\times10^4$; these are a-posteriori measurements, not bounds. Since $\operatorname{tr}\nabla\nabla\Phi_V=-\sum_f\omega_f$ face by face, a far node contributes $-\operatorname{tr}$ of its Hessian to the solid angle used by the inside test.
-
-The ray part and the tree share no data. Both run on the GPU, one thread per field point, with partial sums in single precision flushed into double-single accumulators.
+with the analytic gradient. A node with $R\theta>h_\nu$ contributes its expansion. Otherwise its children are visited, and leaf faces are summed in closed form with the own-face convention of Section 3.9. The truncation error of a node falls as $(h_\nu/R)^4<\theta^4$, and at fixed $\theta$ the number of interactions per point grows like $O(\log F)$ instead of $F$. Since $\operatorname{tr}\nabla\nabla\Phi_V=-\sum_f\omega_f$, a far node contributes $-\operatorname{tr}$ of its Hessian to the inside test's solid angle. The ray part and the tree share no data, and both parallelize over field points.
 
 ---
 
 ## 3.11 Hybrid scheduling
 
-For each field point $x$, let $d(x,V)$ be the distance to the nearest geometry. Choose two thresholds
-
-$$
-d_{\mathrm{near}}<d_{\mathrm{far}}.
-$$
-
-Use
+With $d(x,V)$ the distance to the geometry and thresholds $d_{\rm near}<d_{\rm far}$:
 
 $$
 \begin{cases}
-d<d_{\mathrm{near}}:&
-\text{RTFP + finite part};\\
-d_{\mathrm{near}}\le d\le d_{\mathrm{far}}:&
-\text{RTFP, full rays};\\
-d>d_{\mathrm{far}}:&
-\text{GPU FMM/multipole expansion}.
+d<d_{\mathrm{near}}:&\text{RTFP + finite part};\\
+d_{\mathrm{near}}\le d\le d_{\mathrm{far}}:&\text{RTFP, full rays};\\
+d>d_{\mathrm{far}}:&\text{GPU FMM/multipole}.
 \end{cases}
 $$
 
-This is faster than using Feynman face integrals at every field point, because the Feynman route usually still requires
-
-- a parameter integral in $u$;
-- a face integral;
-- treatment of the endpoint $u\to 1$;
-- an additional inner quadrature.
-
-**Remark (where the cost actually lies in the SCF).** Every field point of the SCF loop — surface nodes, face centres, $\mathcal X_{\rm vol}$, and $\mathcal X_Y$ — lies in $\overline V$, so $d(x,V)=0$ and the far-field branch above is never taken in production. It serves exterior diagnostics only. The production cost is the RTFP branch, whose dominant term is ray traversal, not radial integration (for $\alpha=1$ each segment costs a few transcendental functions). The effective accelerations for the SCF are therefore the ones that **reduce the number of traversals**: reuse of segment tables across density updates and across steps, and incremental retracing of only the rays that a geometric update can affect (Section 3.15).
+This beats Feynman face integrals at every point, because those still need a $u$-integral, a face integral, the $u\to1$ endpoint, and an inner quadrature. *Where the cost lies.* Every SCF field point (surface nodes, face centres, $\mathcal X_{\rm vol}$, $\mathcal X_Y$) lies in $\overline V$, so $d=0$ and the far branch is used only for exterior diagnostics. The production cost is RTFP, dominated by traversal, not radial integration (a few transcendentals per segment for $\alpha=1$). The effective accelerations therefore **reduce traversals**: reuse of segment tables across density updates and steps, and incremental retracing (Section 3.15).
 
 ---
 
 ## 3.12 GPU execution inside the SCF
 
-**The only authoritative execution procedure of the SCF algorithm is the nine-step loop of Section 10.4.4.** It records only the part of that loop which the GPU carries.
-
-- In step 1 of Section 10.4.4, and in the recomputation of step 9, the fields $U$, $\nabla U$, and $H$ are computed by a batched RayBackend intersection together with the fused kernel of Sections 3.6–3.8. The input is the triangle mesh of the current $R^{(n)}$ and the updated bounding-volume hierarchy.
-- The effective quantities $W=U+U_c$, $\mathbf g_{\rm eff}$, and $H_{\rm eff}$ are assembled as in Section 2.8.
-- The execution requirements of modal transport, mass recovery, the SOCP, and remapping in steps 2–8 are given in Chapters 9 and 10. They are not part of the RTFP kernel.
-
+**The only authoritative procedure is the nine-step loop of Section 10.4.4.** On the GPU, steps 1 and 9 compute $U$, $\nabla U$, and $H$ by batched RayBackend intersection and the fused kernel (Sections 3.6–3.8) on the current mesh and BVH. $W$, $\mathbf g_{\rm eff}$, and $H_{\rm eff}$ are assembled as in Section 2.8. Steps 2–8 (transport, mass recovery, SOCP, remapping) are specified in Chapters 9–10 and are not part of the RTFP kernel.
 
 ---
 
 ## 3.13 Complexity
 
-Let
-
-- $N_x$ be the number of field points;
-- $N_\Omega$ the number of spherical directions;
-- $F$ the number of triangles;
-- $K$ the number of density kernels;
-- $L$ the average number of intersection segments per ray;
-- $n_r$ the number of radial quadrature nodes.
-
-After the bounding-volume hierarchy is used, the near-field complexity of RTFP is approximately
+With $N_x$ field points, $N_\Omega$ directions, $F$ triangles, $K$ kernels, $L$ segments per ray, and $n_r$ radial nodes, RTFP costs about
 
 $$
 \boxed{
-O\left(
-N_xN_\Omega
-\bigl(\log F+L\bigr)
-K n_r
-\right).
+O\left(N_xN_\Omega(\log F+L)Kn_r\right),
 }
 $$
 
-When $\alpha=1$ and the analytic antiderivative is used, $n_r$ may be treated as the constant $1$, and the estimate becomes
-
-$$
-\boxed{
-O\left(
-N_xN_\Omega
-(\log F+L)K
-\right).
-}
-$$
-
-The total complexity of the SCF is
-
-$$
-\boxed{
-O\left(
-N_{\mathrm{iter}}
-N_xN_\Omega
-(\log F+L)K
-\right)
-}
-$$
-
-plus the cost of the geometric update, of the mass calibration, and of the constraint projection. These are planning estimates under the hypotheses stated with the hierarchy and the quadrature. They are not strict runtime certificates.
+with $n_r=1$ for analytic $\alpha=1$. The SCF total is $O(N_{\rm iter}N_xN_\Omega(\log F+L)K)$ plus the geometric update, mass calibration, and projection. These are planning estimates, not runtime certificates.
 
 ---
 
-## 3.14 Implementation rules
-
-The fastest practical implementation should use
+## 3.14 Algorithmic rules
 
 $$
 \boxed{
-\text{Lebedev spherical nodes}
+\text{Lebedev nodes}
 +
-\text{flat WGSL BVH with multiple intersections}
+\text{flat multi-hit BVH}
 +
-\text{RTFP radial analytic formulae}
+\text{RTFP analytic radial formulae}
 +
-\text{a fused }U/\nabla U/H\text{ kernel}
+\text{fused }U/\nabla U/H\text{ kernel}
 +
-\text{the closed-form uniform part (Section 3.9)}
+\text{closed-form uniform part (3.9)}
 +
-\text{its face tree (Section 3.10)}.
+\text{its face tree (3.10)}.
 }
 $$
 
-The unified Feynman formula is appropriate as
-
-- an independent channel for the exterior field;
-- an implementation by face integrals;
-- a cross-check of the RTFP result.
-
-It is not appropriate as the fastest primary algorithm at every point.
-
-RayBackend is responsible for geometric intersection. The WGSL compute kernel is responsible for the radial formulae and for accumulation of the tensors. Optional matrix hardware is used only for a reduction whose error has been verified. The critical accumulation of the finite-part Hessian must not be handed entirely to a low-precision path.
-
+The Feynman formula serves as an independent exterior channel, a face-integral evaluation, and a cross-check of RTFP; it is not the fastest primary algorithm. RayBackend does intersection, and the compute kernels do the radial formulae and tensor accumulation. Matrix hardware is used only for reductions with verified error, and the finite-part Hessian accumulation is never handed entirely to a low-precision path.
 
 ## 3.15 Data reuse, incremental retracing, and hardware ray tracing
 
-This section is normative for efficiency only. It changes no value computed by Sections 3.1–3.9; every rule below either reuses an exactly unchanged intermediate result or reorganizes the same arithmetic.
-
-*Implementation status.* The segment table, the dirty-ray test, the refit of the acceleration structure, the antipodal pairing, and the wavefront passes W1–W4 are not implemented. A geometric update rebuilds the acceleration structure and the face tree of Section 3.10, and every ray is cast again. What is reused is coarser: the face-centre fields are kept while the face centres, the mesh, and the density are unchanged (a spin-only step), the Stokes operators and the interior gravity of Section 8.4 are cached under a hash of the geometry and the density, and a uniform body casts no rays at all (Section 3.9). Hits are taken in single precision and not refined (compare Section 3.15.4).
+This section is normative for efficiency only. It changes no value of Sections 3.1–3.9: each rule reuses an unchanged intermediate result or reorders the same arithmetic. The coarsest admissible form recasts every ray after a geometric update and reuses only results whose inputs are unchanged: the face-centre fields on a spin-only step, the Stokes operators and interior gravity while geometry and density are unchanged, and no rays at all for a uniform body (Section 3.9).
 
 ### 3.15.1 Factorization of the field evaluation
 
-The evaluation of $U$, $\nabla U$, $H$ at a field-point set $\mathcal X$ factorizes into two stages with disjoint inputs.
+The evaluation at a point set $\mathcal X$ has two stages with disjoint inputs:
 
-- **Geometric stage.** From the mesh $V$, the field points $\mathcal X$, and the directions $\{\mathbf u_q\}$, build the *segment table* $\mathcal T=\{(m,q,\ell,R^-_{m q\ell},R^+_{m q\ell},\text{flags})\}$ (Sections 3.6 and 3.9, including the interior/boundary classification). It does not depend on any density parameter.
-- **Density stage.** From $\mathcal T$ and the kernel parameters $\theta=\{w_k,\mathbf c_k,\mathbf S_k,\alpha_k\}$, evaluate the radial integrals and the angular sums.
+- **geometric stage:** from the mesh, $\mathcal X$, and $\{\mathbf u_q\}$, build the *segment table* $\mathcal T=\{(m,q,\ell,R^-_{mq\ell},R^+_{mq\ell},\text{flags})\}$ (Sections 3.6, 3.9). It uses no density parameter;
+- **density stage:** from $\mathcal T$ and $\theta=\{w_k,\mathbf c_k,\mathbf S_k,\alpha_k\}$, evaluate the radial integrals and angular sums.
 
-**Proposition 3.15.1 (Reuse).** (a) If only $\theta$ changes, the fields are recomputed from the cached $\mathcal T$ with no ray traversal. (b) The fields are linear in the weights. If the per-kernel partial sums $U_k,\nabla U_k,H_k$ are kept, a change of the weights alone costs $O(|\mathcal X|K)$, and the uniform mass-closure scaling $w_k\mapsto(1+\xi)w_k$ of Section 9.10 multiplies every field by $1+\xi$ exactly, at no cost. (c) The per-direction quantities $\mathbf S_k\mathbf u_q$ and $s_k(\mathbf u_q)$ of Lemma 1.4′ depend only on $(q,k)$, and $\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$ only on $(m,k)$. After these $O((N_\Omega+|\mathcal X|)K)$ precomputations, $b_k$ and $d_k^2$ cost one dot product per (segment, kernel) for an anisotropic core, the same as for an isotropic one.
+**Proposition 3.15.1 (Reuse).**
 
-*Proof.* (a) and (c) are statements about which inputs enter which formula in Sections 1.4, 3.1–3.3, and Lemma 1.4′. (b) is linearity of the integrals in $\rho_K$. ∎
+(a) If only $\theta$ changes, the fields are recomputed from $\mathcal T$ without traversal.
 
-Consequently the Lagrangian core transport of Section 9.10, which changes $\theta$ but not the mesh, never triggers a traversal by itself.
+(b) The fields are affine in the weights: $U=\rho_b\Phi_V+\sum_kU_k$ and likewise for $\nabla U$, $H$. The subtraction of Section 3.9 keeps this split, since $\rho(\mathbf x)\Phi_V=\rho_b\Phi_V+\sum_k\rho_k(\mathbf x)\Phi_V$ and the density difference is a sum over kernels. With per-kernel partial sums $U_k,\nabla U_k,H_k$ stored, a weight change costs $O(|\mathcal X|K)$; the mass-closure scaling $w_k\mapsto(1+\xi)w_k$ of Section 9.10 multiplies the core part $\sum_kU_k$ by $1+\xi$ and leaves $\rho_b\Phi_V$ unchanged. Both statements concern fields on an unchanged geometry; after a geometric update the fields are re-evaluated (Proposition 3.15.2).
+
+(c) $\mathbf S_k\mathbf u_q$ and $s_k(\mathbf u_q)$ depend only on $(q,k)$, and $\mathbf p_k^{\!\top}\mathbf S_k\mathbf p_k$ only on $(m,k)$. After $O((N_\Omega+|\mathcal X|)K)$ precomputation, $b_k$ and $d_k^2$ cost one dot product per (segment, kernel) for an anisotropic core, as for an isotropic one.
+
+*Proof.* (a) and (c) follow from which inputs enter which formula (Sections 1.4, 3.1–3.3, Lemma 1.4′), and (b) from linearity in $\rho_K$. ∎
+
+So the core transport of Section 9.10, which changes $\theta$ but not the mesh, never triggers a traversal by itself.
 
 ### 3.15.2 Incremental retracing after a geometric update
 
-**Proposition 3.15.2 (Dirty-ray criterion).** Let $V$ and $V'$ be closed meshes with the same connectivity, let $\mathcal F_{\rm chg}$ be the set of triangles at least one of whose vertices moved, and let $f$ and $f'$ denote the old and new positions of $f\in\mathcal F_{\rm chg}$. Let a ray $\mathbf x-R\mathbf u$, $R>0$, start from a field point $\mathbf x$ that did not move. If the ray meets no triangle of $\mathcal F_{\rm chg}\cup\mathcal F'_{\rm chg}$, then $E_{\mathbf x}(\mathbf u)$ is the same for $V$ and $V'$, including the interior/exterior status of $\mathbf x$.
+**Proposition 3.15.2 (Dirty-ray criterion).** Let $V,V'$ be closed meshes with the same connectivity, let $\mathcal F_{\rm chg}$ be the triangles with a moved vertex, and let $f,f'$ be the old and new positions. If a ray $\mathbf x-R\mathbf u$ from an unmoved field point meets no triangle of $\mathcal F_{\rm chg}\cup\mathcal F'_{\rm chg}$, then $E_{\mathbf x}(\mathbf u)$, including the status of $\mathbf x$, is the same for $V$ and $V'$.
 
-*Proof.* The hits of the ray with unchanged triangles are identical for $V$ and $V'$, and by hypothesis there are no other hits in either configuration. If the status of $\mathbf x$ had changed, $\mathbf x$ would lie in the symmetric difference $V\triangle V'$, whose boundary is contained in $\bigcup_{f\in\mathcal F_{\rm chg}}(f\cup f')$. A ray from $\mathbf x$ to infinity leaves that bounded set and must therefore meet $f$ or $f'$ for some $f\in\mathcal F_{\rm chg}$, which is excluded. Hence the sorted hit list and the initial state of Section 3.6 coincide, and so do the segments. ∎
+*Proof.* Hits with unchanged triangles coincide, and there are no others. A change of status would put $\mathbf x$ in $V\triangle V'$, whose boundary lies in $\bigcup(f\cup f')$. A ray to infinity would then have to cross some $f$ or $f'$. ∎
 
-*Algorithm.* After step 8a of Section 10.4.4: (1) mark as dirty every field point that moved. For the star-shaped node and quadrature sets, these are the points on directions $\hat{\boldsymbol\omega}_i$ with $d_{*,i}\ne 0$ and the faces incident to them. (2) Build a small acceleration structure $\mathcal A_{\rm chg}$ over the $2|\mathcal F_{\rm chg}|$ old and new triangles. (3) Trace every cached ray of a clean field point against $\mathcal A_{\rm chg}$ with a *terminate-on-first-hit* query (the cheapest ray-tracing query). (4) Retrace in the full structure only the rays of dirty points and the rays that reported a hit. On the locked set $d_*=0$ (Section 2.13), so in a typical step $|\mathcal F_{\rm chg}|$ is a small fraction of the mesh, and most of $\mathcal T$ is reused exactly. In stage equilibrium nothing is retraced.
+*Algorithm* (after step 8a of Section 10.4.4):
+
+1. mark as dirty every moved field point: vertices with $d_{*,i}\ne0$, their incident faces, and the volume nodes on rays from $O$ that the test marks (Section 8.0, G2);
+2. build a small structure $\mathcal A_{\rm chg}$ over the $2|\mathcal F_{\rm chg}|$ old and new triangles;
+3. trace every cached ray of a clean point against $\mathcal A_{\rm chg}$ with a terminate-on-first-hit query;
+4. retrace fully only the rays of dirty points and the rays that hit.
+
+Since $d_*=0$ on the locked set, $|\mathcal F_{\rm chg}|$ is typically a small fraction of the mesh and most of $\mathcal T$ is reused. In stage equilibrium nothing is retraced.
 
 ### 3.15.3 Acceleration-structure maintenance
 
-The connectivity of the star-shaped mesh is fixed for the whole run; only the radii change. The bounding-volume hierarchy, or the hardware acceleration structure, is therefore **refitted** (node boxes recomputed bottom-up, $O(F)$) after step 8a instead of being rebuilt. A refit changes traversal cost only, never the hits. Rebuild when the surface-area-heuristic cost of the refitted tree exceeds that of the last built tree by a configured factor (for example $1.5$), and after every frame realignment 8b, which moves every vertex.
+Connectivity is fixed for the run; only vertex positions change, along their normals (Section 8.0, G4). The BVH, or the hardware structure, is **refitted** bottom-up in $O(F)$ after step 8a instead of rebuilt; a refit changes traversal cost, never hits. Rebuild when the surface-area-heuristic cost exceeds that of the last build by a configured factor (e.g. $1.5$), and after every realignment 8b, which moves every vertex.
 
 ### 3.15.4 Mapping onto ray-tracing hardware
 
-Ray-tracing units perform BVH traversal and watertight ray–triangle tests in single precision. They are used for:
+The ray-tracing units (single-precision traversal and watertight tests) serve:
 
-1. **multi-hit queries** for $\mathcal T$: the candidate loop of a ray query records every candidate hit (triangle id, distance) and commits none, into a per-ray slot of fixed capacity $L_{\rm cap}$. An overflow flag sends only the overflowing rays to the two-pass count–scan–write scheme of Section 3.6. In the common case one pass replaces the three stages A–C;
-2. the **terminate-on-first-hit** dirty test of Section 3.15.2;
-3. the **interior/exterior classification** of field points, by one ray and the orientation rule of Section 3.6;
-4. the **radial resampling** of step 8b(v) and the volume, mass, and inertia integrals of steps 8a–8b;
-5. the **self-intersection test** of the outer acceptance (Section 2.13), restricted to the edges of triangles in $\mathcal F_{\rm chg}$, as segment queries with $t_{\max}$ equal to the edge length.
+1. **multi-hit queries** for $\mathcal T$: every candidate (triangle id, distance) is recorded, none committed, in a per-ray slot of capacity $L_{\rm cap}$. Overflowing rays go to the count–scan–write scheme; otherwise one pass replaces stages A–C;
+2. the first-hit dirty test of 3.15.2;
+3. interior/exterior classification by one ray and the orientation rule;
+4. the volume, mass, and inertia integrals of 8a–8b, and the clearances $t_i^\pm$ and volume segments of Section 8.0;
+5. the self-intersection test of Section 2.13, restricted to edges of triangles in $\mathcal F_{\rm chg}$, as segment queries with $t_{\max}$ equal to the edge length.
 
-**Hit refinement (precision decoupling).** The hardware returns the triangle id together with a single-precision distance. The integration kernel recomputes the distance from the triangle id by one Möller–Trumbore evaluation in double (or double-float) precision. The segment endpoints, and hence $U,\nabla U,H$, are then independent of the precision of the ray-tracing unit, which only selects the candidate triangles. A missed or spurious candidate is caught by the alternation test of Section 3.6.
-
-**Antipodal pairing.** Lebedev rules are invariant under $\mathbf u\mapsto-\mathbf u$ with equal weights, and $T(-\mathbf u)=T(\mathbf u)$. The two rays $\mathbf x\mp R\mathbf u$ are the two halves of one line. Trace the whole line once, from the origin $\mathbf x-\Lambda\mathbf u$ outside the bounding box with $t\in(0,2\Lambda)$, and split the hits at $t=\Lambda$. This halves the number of traversals at unchanged arithmetic.
+**Hit refinement (precision decoupling).** From the triangle id, the integration kernel recomputes the distance by one double (or double-float) Möller–Trumbore evaluation. The endpoints, and so $U,\nabla U,H$, then do not depend on the RT unit's precision, which only selects candidates. Misses or spurious candidates are caught by the alternation test. **Antipodal pairing.** Lebedev rules are symmetric under $\mathbf u\mapsto-\mathbf u$ with equal weights, and $T(-\mathbf u)=T(\mathbf u)$. Trace the full line once, from $\mathbf x-\Lambda\mathbf u$ outside the box with $t\in(0,2\Lambda)$, and split the hits at $t=\Lambda$. This halves the traversals.
 
 ### 3.15.5 Wavefront organization of the kernels
 
-The fused kernel of Section 3.8 is executed as four passes over flat buffers:
-
 | Pass | Work item | Content |
 |---|---|---|
-| W1 | ray (line) | generation in **direction-major order** (all field points of one $\mathbf u_q$ contiguous), so that neighbouring threads trace nearly parallel rays through the same nodes; dirty filtering |
-| W2 | ray | hardware or software traversal, orientation-based segment construction, hit refinement; writes $\mathcal T$ |
-| W3 | segment | for every kernel $k$ (parameters and the tables of Proposition 3.15.1(c) in constant or shared memory): $b_k,d_k$, the radial integrals of Sections 3.2–3.3 (analytic for $\alpha_k=1$; closed-form $I_U$ and the tangent or composite rule otherwise), multiplication by $\omega_q$, $\mathbf u_q$, $T(\mathbf u_q)$; near-field branch of Section 3.9 for segments with $R^-=0$ |
-| W4 | field point | segmented reduction over its segments in a **fixed order** (bitwise reproducible), with the six independent Hessian components accumulated in double or compensated single precision |
+| W1 | ray (line) | generation in **direction-major order** (all points of one $\mathbf u_q$ contiguous, so neighbouring threads trace nearly parallel rays); dirty filtering |
+| W2 | ray | traversal, orientation-based segments, hit refinement; writes $\mathcal T$ |
+| W3 | segment | per kernel (parameters and the tables of Proposition 3.15.1(c) in constant/shared memory): $b_k,d_k$, radial integrals (analytic for $\alpha_k=1$; closed-form $I_U$ and tangent/composite rule otherwise), multiplication by $\omega_q,\mathbf u_q,T(\mathbf u_q)$; near-field branch for $R^-=0$ |
+| W4 | field point | segmented reduction in a **fixed order** (bitwise reproducible); six Hessian components in double or compensated single |
 
-Passes W1–W2 run only for dirty rays. Pass W3 runs after every change of $\theta$ (Section 9.10) or of $\mathcal T$. Pass W4 always runs. A segment table of $|\mathcal X|N_\Omega\bar L$ entries with two endpoints each is kept in device memory between steps. If memory does not allow it, the table may be kept only for the largest point set ($\mathcal X_{\rm vol}$), and the others are retraced.
+W1–W2 run only for dirty rays, W3 after any change of $\theta$ or $\mathcal T$, and W4 always. The segment table ($|\mathcal X|N_\Omega\bar L$ entries, two endpoints each) stays in device memory between steps. If memory is short, it is kept only for the largest point set ($\mathcal X_{\rm vol}$).
 
 ### 3.15.6 Cost per geological step
 
-With $N_x^{\rm dirty}$ moved field points and $N_{\rm chg}=|\mathcal F_{\rm chg}|$,
+With $N_x^{\rm dirty}$ moved points, $N_{\rm chg}=|\mathcal F_{\rm chg}|$, and $N_{\rm hit}$ clean points with a dirty ray,
 
 $$
 C_{\rm grav}
@@ -4764,7 +2277,7 @@ C_{\rm grav}
 +\underbrace{c_{\rm seg}\,N_xN_\Omega\bar LK}_{\text{radial integrals}},
 $$
 
-against $c_{\rm trav}N_xN_\Omega(\log F+\bar L)+c_{\rm seg}N_xN_\Omega\bar LK$ for a full re-evaluation. Here $N_{\rm hit}$ is the number of clean points with at least one dirty ray. These are planning estimates under the stated hypotheses (Section 3.13), not runtime certificates.
+against $c_{\rm trav}N_xN_\Omega(\log F+\bar L)+c_{\rm seg}N_xN_\Omega\bar LK$ for a full re-evaluation (planning estimates, Section 3.13).
 
 ---
 
@@ -4772,225 +2285,103 @@ against $c_{\rm trav}N_xN_\Omega(\log F+\bar L)+c_{\rm seg}N_xN_\Omega\bar LK$ f
 
 ## 4.0 Normalization of the deviatoric law
 
-The conclusion of this chapter is the following.
+Main result of this chapter: under the limit conditions listed explicitly below, the combined model reduces strictly and term by term to the classical $\mu(I)$ law. When those conditions fail, the two models differ.
 
-> Under the limit conditions that are listed explicitly, the combined model reduces, strictly and term by term, to the classical $\mu(I)$ rheological model.
-
-If those conditions are not satisfied, the combined model is not equal to the classical $\mu(I)$ law.
-
-A coefficient must be corrected before that reduction is used. If one defines
-
-$$
-\dot\gamma=\sqrt{2D':D'},
-\qquad
-\tau_{\mathrm{eq}}=\sqrt{\frac12\tau:\tau},
-$$
-
-then the constitutive relation must be written
-
-$$
-\boxed{
-\tau
-=
-2\frac{\mu p}{\dot\gamma}D'
-}
-$$
-
-in order to obtain
-
-$$
-\tau_{\mathrm{eq}}=\mu p,
-$$
-
-or equivalently
+With $\dot\gamma=\sqrt{2D':D'}$ and $\tau_{\rm eq}=\sqrt{\tfrac12\tau:\tau}$, the law must be written
 
 $$
 \boxed{
 \tau=2\eta D',
 \qquad
-\eta=\frac{\mu p}{\dot\gamma}.
+\eta=\frac{\mu p}{\dot\gamma},
 }
 $$
 
-*Expansion of the coefficient.* With $\tau=2(\mu p/\dot\gamma)D'$,
-
-$$
-\tau:\tau
-=
-4\frac{\mu^2 p^2}{\dot\gamma^2}(D':D')
-=
-4\frac{\mu^2 p^2}{\dot\gamma^2}\cdot\frac{\dot\gamma^2}{2}
-=
-2\mu^2 p^2,
-$$
-
-because $D':D'=\dot\gamma^2/2$ by the definition of $\dot\gamma$. Therefore
-
-$$
-\tau_{\mathrm{eq}}
-=
-\sqrt{\tfrac12\tau:\tau}
-=
-\mu p.
-$$
-
-The conventions in force are $\tau_{\mathrm{eq}}=\sqrt{\tfrac12\tau:\tau}$ and $\dot\gamma=\sqrt{2D':D'}$. If the factor $2$ in the constitutive relation is omitted, the equivalent stress becomes $\mu p/2$: the same calculation with $\tau=(\mu p/\dot\gamma)D'$ produces $\tau:\tau=\mu^2 p^2/2$ and $\tau_{\mathrm{eq}}=\mu p/2$.
-
+so that $\tau_{\rm eq}=\mu p$. Indeed, $\tau:\tau=4(\mu p/\dot\gamma)^2(D':D')=2\mu^2p^2$, because $D':D'=\dot\gamma^2/2$. Dropping the factor $2$ would give $\tau_{\rm eq}=\mu p/2$.
 
 ## 4.1 Constitutive convention and the classical $\mu(I)$ model
 
-*Range of application.* The $\mu(I)$ law of this chapter, and the argument that it is recovered in the limit, concern the flow (deviatoric) stress and an incompressible flow velocity ($\nabla\cdot v=0$). The production model (Section 2.8) uses only the viscoplastic stress given in this chapter. It introduces neither an elastic strain nor an equation of state. Pressure is the Lagrange multiplier of the incompressibility constraint, and it is determined by the Poisson problem of Section 8.7.
-
-The classical inertial rheology [1][11] defines
-
-$$
-\dot\gamma=\sqrt{2D':D'},
-$$
+The law concerns the flow (deviatoric) stress of an incompressible velocity, $\nabla\cdot v=0$. The reference model (Section 2.8) uses only this viscoplastic stress, with no elastic strain and no equation of state. The pressure is the multiplier of incompressibility and is determined by the Poisson problem of Section 8.7. The classical inertial rheology [1][11] is
 
 $$
 \boxed{
-I=
-\frac{d\dot\gamma}{\sqrt{p/\rho_p}},
-}
-\qquad p>0.
-$$
-
-The friction coefficient is
-
-$$
-\boxed{
-\mu_{\mathrm{cl}}(I)
-=
-\mu_s+
-(\mu_2-\mu_s)
-\frac{I}{I_0+I}.
+I=\frac{d\dot\gamma}{\sqrt{p/\rho_p}}\quad(p>0),
+\qquad
+\mu_{\mathrm{cl}}(I)=\mu_s+(\mu_2-\mu_s)\frac{I}{I_0+I},
+\qquad
+\tau_{\mathrm{eq}}=\mu_{\mathrm{cl}}(I)p,
+\qquad
+\tau=2\mu_{\mathrm{cl}}(I)p\frac{D'}{\dot\gamma},
 }
 $$
 
-In a state of sustained flow,
-
-$$
-\boxed{
-\tau_{\mathrm{eq}}
-=
-\mu_{\mathrm{cl}}(I)p.
-}
-$$
-
-The corresponding deviatoric stress is
-
-$$
-\boxed{
-\tau
-=
-2\mu_{\mathrm{cl}}(I)p
-\frac{D'}{\dot\gamma}.
-}
-$$
-
-The coefficient $2$ is required by the normalization fixed in Section 4.0. Explicitly,
-
-$$
-\frac12
-\left(
-2\mu p\frac{D'}{\dot\gamma}
-\right):
-\left(
-2\mu p\frac{D'}{\dot\gamma}
-\right)
-=
-\frac{4\mu^2p^2}{2\dot\gamma^2}
-(D':D'),
-$$
-
-and $D':D'=\dot\gamma^2/2$, so the right-hand side equals $\mu^2 p^2$. Therefore
-
-$$
-\tau_{\mathrm{eq}}=\mu p.
-$$
+with the factor $2$ fixed by Section 4.0.
 
 ---
 
 ## 4.2 The combined model
 
-The combined model contains four extensions: a cohesive pressure, a modified inertial number, a state-dependent friction coefficient, and a tidal backstress.
+The combined model of this chapter is general: $c=c(\nu,Z)$, $\mu_y=\mu_y(\nu,Z)$, and the pressure $p$. The reference model of Sections 2.8 and 2.17 is its specialization: $c=c(\mathbf x)$ (Section 4.3a), $p\to\tilde p$ everywhere (the rule of Section 4.13), and the yield function $\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}-(1-\delta_Y)\tau_y$ with the classification tolerance $\delta_Y$ of (B2). The reduction statements of Sections 4.7–4.20 are made for the general form and hold for the specialization with these substitutions. The combined model has four extensions:
+
+- a cohesive pressure;
+- a modified inertial number;
+- a state-dependent friction coefficient;
+- a tidal backstress.
 
 ## 4.3 Cohesive pressure
 
-Define
-
 $$
-p_c
-=
-C_c\frac{Z\nu F_H}{d^2}.
+p_c=C_c\frac{Z\nu F_H}{d^2},\qquad
+\boxed{p_*=p+p_c,}
 $$
 
-Here $Z$ is the coordination number and $F_H$ is the cohesive force of a single contact. Define the effective pressure
-
-$$
-\boxed{
-p_*=p+p_c.
-}
-$$
+with coordination number $Z$ and single-contact cohesive force $F_H$.
 
 ## 4.3a Two-layer strength: the fragile surface regolith
 
-The macroscopic cohesion $c$ of Sections 2.8 and 4.1 is not uniform in a rubble pile. Spacecraft data separate a weak loose layer from a stronger interior: the Hayabusa2 impact crater on Ryugu grew in the gravity-dominated regime, which bounds the surface strength to below about one pascal (Arakawa et al., 2020 [9]; a tensile strength of about 0.5 Pa, Sugimura et al., 2026 [12]), whereas the rotational deformation that formed Ryugu's western bulge requires an interior cohesion of 4–10 Pa (Hirabayashi et al., 2019 [10]). The cohesion is therefore a field of the depth below the free surface,
+The macroscopic cohesion $c$ of a rubble pile is not uniform. The Hayabusa2 crater on Ryugu grew in the gravity regime, which bounds the surface strength below about $1$ Pa ([9]; a tensile strength near $0.5$ Pa, [12]). The western bulge, by contrast, requires an interior cohesion of 4–10 Pa [10]. The cohesion is therefore a field of the depth below the surface,
 
 $$
 \boxed{
 c(\mathbf x)=c_b+(c_s-c_b)\,e^{-d(\mathbf x)/h_c},\qquad
-d(\mathbf x)=R(\hat{\boldsymbol\omega})-r=(1-\zeta)R(\hat{\boldsymbol\omega}),
+d(\mathbf x)=\operatorname{dist}(\mathbf x,\Gamma),
 }
 $$
 
-with the configured constants $c_b\ge0$ (interior cohesion, the key `cohesion`), $c_s\ge0$ (surface cohesion, `cohesion_surface`) and $h_c>0$ (transition depth, `cohesion_depth`). The profile has the following properties.
+with configured interior cohesion $c_b\ge0$, surface cohesion $c_s\ge0$, and transition depth $h_c>0$.
 
-1. $c=c_s$ on $\Gamma$, $c\to c_b$ as $d/h_c\to\infty$, and $c$ lies between $c_s$ and $c_b$ everywhere; it is monotone in $d$.
-2. $c$ is smooth in the interior of $\mathcal V$, wherever $R$ is smooth, and bounded, so the bounds on $\eta$ of Section 2.8 hold with $c$ replaced by $\min(c_s,c_b)$ in the lower bound and by $\max(c_s,c_b)$ in the upper bound.
-3. **Reduction.** If $c_s=c_b$, then $c\equiv c_b$ for every $h_c$, and every statement of this paper reduces to the single-layer theory. Condition E (Section 4.12) is to be read for both constants: $\max(c_s,c_b)/p\to0$.
+1. $c=c_s$ on $\Gamma$, and $c\to c_b$ with depth, monotonically, between the two constants.
+2. $c$ is bounded and smooth away from the medial axis, so the $\eta$ bounds of Section 2.8 hold with $\min(c_s,c_b)$ in the lower bound and $\max(c_s,c_b)$ in the upper bound.
+3. **Reduction.** If $c_s=c_b$, then $c\equiv c_b$ and the single-layer theory is recovered. Condition E (Section 4.12) then applies to both constants.
 
-**Gradient.** The cohesion enters the momentum equation through $\nabla\eta$ (Section 8.7), so its gradient is required:
+**Gradient** (needed through $\nabla\eta$ in Section 8.7):
 
 $$
 \nabla c=c'(d)\,\nabla d,\qquad c'(d)=-\frac{c_s-c_b}{h_c}\,e^{-d/h_c},\qquad
-\nabla d=\nabla R(\hat{\boldsymbol\omega})-\mathbf e_r .
+\nabla d=-\mathbf n\big(\pi(\mathbf x)\big)\quad\text{a.e.},
 $$
 
-Write the free surface as $\{F=0\}$ with $F=r-R(\hat{\boldsymbol\omega})$. Then $\nabla F=\mathbf e_r-\nabla_{S^2}R/r$, and on $\Gamma$ the outward normal is $\mathbf n=\nabla F/|\nabla F|$, so $\nabla_{S^2}R/R=\mathbf e_r-\mathbf n/(\mathbf n\cdot\mathbf e_r)$, a function of $\hat{\boldsymbol\omega}$ alone. At the interior point $\mathbf x=\zeta R\,\hat{\boldsymbol\omega}$,
-
-$$
-\boxed{
-\nabla d=\frac{1}{\zeta}\Big(\mathbf e_r-\frac{\mathbf n(\hat{\boldsymbol\omega})}{\mathbf n(\hat{\boldsymbol\omega})\cdot\mathbf e_r}\Big)-\mathbf e_r ,
-}
-$$
-
-where $\mathbf n(\hat{\boldsymbol\omega})$ is the outward normal of the harmonic surface at the end of the same ray. Star-shapedness $\mathbf n\cdot\mathbf e_r\ge c_0>0$ (Section 2.13) makes the expression finite away from the centre; at the volume quadrature nodes $\zeta>0$.
+with $\pi$ the closest point of $\Gamma$. $|\nabla d|=1$ off the medial axis, a null set on which $\nabla c$ jumps, so $\nabla c\in L^\infty$, which is all Section 8.7 needs. $d$ and $\pi$ are BVH closest-point queries (Section 8.0, G6). A radial depth $R(\hat{\boldsymbol\omega})-r$ is not used: it exists only on star-shaped bodies, and even there it only bounds $d$ from above.
 
 **Where $c$ is evaluated.**
 
-- Viscosity and yield (B1, B2 of Section 2.8): $c=c(\mathbf x)$ at each volume point. The rigid-core classification (B3) evaluates $d=(1-\zeta_q)R_i$ along the ray of surface node $i$.
-- Free-surface traction and the surface friction-angle chain (Section 10.3): $d=0$, so $c=c_s$.
-- The cohesive pressure $p_c$ (Section 4.3) is a contact quantity of the grains and keeps its single value; only the macroscopic strength $c$ is layered.
+- **Viscosity and yield (B1, B2):** $c(\mathbf x)$ at each volume point and on $\mathcal X_Y$, with $d=\operatorname{dist}(\mathbf x,\Gamma)$.
+- **Traction and the surface chain of Section 10.3:** $d=0$, so $c=c_s$.
+- **Contact pressure $p_c$:** it is a grain-contact quantity and is not layered.
 
-The profile is a constitutive hypothesis of this paper, labelled **A-C2**. It is not derived from a contact model. Its three constants are taken from measurements of the body in question where they exist, and the choice must be reported with the run.
+The profile is constitutive hypothesis **A-C2**. It is not derived from a contact model. Its constants are taken from published measurements of the body where available.
 
 ## 4.4 Modified inertial number
 
 $$
 \boxed{
-I_c
-=
-\frac{d\dot\gamma}
-{\sqrt{p_*/\rho_p}}.
+I_c=\frac{d\dot\gamma}{\sqrt{p_*/\rho_p}},
 }
 $$
 
-The formula is the classical inertial number with $p$ replaced by $p_*$. It requires $p_*>0$.
+the classical $I$ with $p$ replaced by $p_*$. It requires $p_*>0$.
 
 ## 4.5 State-dependent friction coefficient
-
-The dynamic friction coefficient is
 
 $$
 \boxed{
@@ -5005,572 +2396,178 @@ $$
 
 ## 4.6 Tidal backstress
 
-Let
-
-$$
-H_W=\nabla^2W,
-$$
-
-and define
+With $H_W=\nabla^2W$ and $\operatorname{dev}H_W=H_W-(\operatorname{tr}H_W)I/3$,
 
 $$
 \boxed{
-T_{\mathrm{tide}}
-=
-C_T\rho_p\nu d^2
-\operatorname{dev}H_W.
-}
-$$
-
-The deviatoric projection $\operatorname{dev}H_W=H_W-(\operatorname{tr}H_W)I/3$ makes $T_{\mathrm{tide}}$ traceless. The combined yield function is
-
-$$
-\boxed{
+T_{\mathrm{tide}}=C_T\rho_p\nu d^2\operatorname{dev}H_W,
+\qquad
 F_{\mathrm{comb}}
 =
-\sqrt{
-\frac12
-(s-T_{\mathrm{tide}}):(s-T_{\mathrm{tide}})
-}
--
-c(\nu,Z)
--
-\mu_y(\nu,Z)p.
+\sqrt{\tfrac12(s-T_{\mathrm{tide}}):(s-T_{\mathrm{tide}})}
+-c(\nu,Z)-\mu_y(\nu,Z)p,
 }
 $$
 
-Here $s:=\operatorname{dev}\sigma$ is the deviator of the total stress. In order that the tidal backstress be consistent with the dynamic constitutive law, define the flow deviator $\tau_{\mathrm{flow}}$ and set
-
-$$
-s=T_{\mathrm{tide}}+\tau_{\mathrm{flow}}.
-$$
-
-The effective stress in the yield function is therefore
-
-$$
-s-T_{\mathrm{tide}}=\tau_{\mathrm{flow}}
-$$
-
-identically, not merely in a limit. The dynamic flow branch uses
+with $s:=\operatorname{dev}\sigma$. For consistency with the dynamic law set $s=T_{\rm tide}+\tau_{\rm flow}$, so that $s-T_{\rm tide}=\tau_{\rm flow}$ identically, not merely in a limit. The flow branch is
 
 $$
 \boxed{
-\tau_{{\mathrm{flow}},\mathrm{eq}}
-=
-c(\nu,Z)+\mu_d(I_c,\nu,Z)p,
+\tau_{{\mathrm{flow}},\mathrm{eq}}=c(\nu,Z)+\mu_d(I_c,\nu,Z)p,
 \qquad
-\tau_{\mathrm{flow}}=2\eta D'.
+\tau_{\mathrm{flow}}=2\eta D',
 }
 $$
 
-The scalar target and the tensor law are related by the normalization of Section 4.0 once $\eta$ is chosen so that $\|2\eta D'\|_{\mathrm{eq}}$ equals the scalar target. Under the regularizations of Section 4.17 that equality holds only in the limit $\dot\gamma_\varepsilon/\dot\gamma\to 0$.
+with $\eta$ chosen by Section 4.0 so that $\|2\eta D'\|_{\rm eq}$ equals the scalar target. Under the regularizations of Section 4.17 this equality holds only as $\dot\gamma_\varepsilon/\dot\gamma\to0$.
 
 ---
 
 ## 4.7 Conditions for reduction
 
-Consider a family of parameters and states of the combined model,
-
-$$
-\left(
-p_c^{(n)},
-H_W^{(n)},
-c^{(n)},
-\nu^{(n)},
-Z^{(n)}
-\right).
-$$
-
-Assume that $p>0$ and $\dot\gamma>0$ in the region under consideration, and that the following conditions hold. The index $n$ is the index of this parameter sequence. It is not the index of an SCF iteration. In the production configuration of Sections 10.3 and 10.4, the solid fraction and the coordination number are frozen material constants; the sequence below is the hypothesis of the reduction theorem, not an evolution inside the SCF.
+Consider a sequence $(p_c^{(n)},H_W^{(n)},c^{(n)},\nu^{(n)},Z^{(n)})$ with $p>0$ and $\dot\gamma>0$ in the region considered. The index $n$ labels this parameter sequence, not an SCF iteration. In the reference model, $\nu$ and $Z$ are frozen constants (Sections 10.3, 10.4); the sequence is the hypothesis of the reduction theorem.
 
 ## 4.8 Condition A: disappearance of cohesion in the pressure
 
 $$
-\boxed{
-\frac{p_c^{(n)}}p\longrightarrow0.
-}
+\boxed{\frac{p_c^{(n)}}p\longrightarrow0,}
 $$
 
-Then
-
-$$
-p_*^{(n)}=p+p_c^{(n)}
-\longrightarrow p,
-$$
-
-because $p_c^{(n)}=p\cdot(p_c^{(n)}/p)$ and $p$ is held at a positive value along the sequence, or tends to a positive limit as required in Section 4.20.
+so $p_*^{(n)}\to p$, since $p$ stays positive (or has a positive limit, Section 4.20).
 
 ## 4.9 Condition B: disappearance of the tidal stress
 
 $$
 \boxed{
-\frac{
-\rho_p\nu^{(n)}d^2
-\|\operatorname{dev}H_W^{(n)}\|
-}{p}
-\longrightarrow0.
+\frac{\rho_p\nu^{(n)}d^2\|\operatorname{dev}H_W^{(n)}\|}{p}\longrightarrow0,
 }
 $$
 
-Then
-
-$$
-T_{\mathrm{tide}}^{(n)}
-=
-C_T\rho_p\nu^{(n)}d^2\operatorname{dev}H_W^{(n)}
-\longrightarrow 0,
-$$
-
-since $\|T_{\mathrm{tide}}^{(n)}\|=|C_T|\,p\cdot\bigl(\text{displayed quotient}\bigr)$, where $C_T$ is a fixed coefficient, the quotient tends to zero, and $p$ is bounded. Any matrix norm equivalent to the Frobenius norm may be used; the limit zero is independent of that choice.
+so $T^{(n)}_{\rm tide}\to0$, since $\|T^{(n)}_{\rm tide}\|=|C_T|\,p\times$(quotient) with $p$ bounded. Any norm equivalent to Frobenius may be used.
 
 ## 4.10 Condition C: frozen state variables
 
 $$
-\boxed{
-\nu^{(n)}\to\nu_0,
-\qquad
-Z^{(n)}\to Z_0.
-}
+\boxed{\nu^{(n)}\to\nu_0,\qquad Z^{(n)}\to Z_0.}
 $$
 
 ## 4.11 Condition D: constitutive parameters reduce to constants
 
-Require
-
 $$
-\mu_s(\nu^{(n)},Z^{(n)})
-\to\mu_s,
-$$
-
-$$
-\mu_2(\nu^{(n)},Z^{(n)})
-\to\mu_2,
+\mu_s(\nu^{(n)},Z^{(n)})\to\mu_s,\qquad
+\mu_2(\nu^{(n)},Z^{(n)})\to\mu_2,\qquad
+I_0(\nu^{(n)},Z^{(n)})\to I_0,\qquad
+\mu_y(\nu^{(n)},Z^{(n)})\to\mu_s .
 $$
 
-$$
-I_0(\nu^{(n)},Z^{(n)})
-\to I_0.
-$$
-
-The yield coefficient used in Section 4.16 and in the theorem of Section 4.20 is required to satisfy
-
-$$
-\mu_y(\nu^{(n)},Z^{(n)})\to\mu_s
-$$
-
-(in production $\mu_y\equiv\mu_s(\nu_0,Z_0)$, Section 2.8, B2, and this holds trivially).
+The last holds trivially in the reference model, where $\mu_y\equiv\mu_s(\nu_0,Z_0)$ (Section 2.8, B2).
 
 ## 4.12 Condition E: disappearance of cohesive strength
 
 $$
-\boxed{
-\frac{c(\nu^{(n)},Z^{(n)})}{p}
-\longrightarrow0.
-}
+\boxed{\frac{c(\nu^{(n)},Z^{(n)})}{p}\longrightarrow0.}
 $$
 
-Under the two-layer strength of Section 4.3a the condition is imposed on both constants, $\max(c_s^{(n)},c_b^{(n)})/p\to0$; then $c(\mathbf x)/p\to0$ uniformly, because $c$ lies between them.
+Under Section 4.3a this is imposed on both constants, $\max(c_s^{(n)},c_b^{(n)})/p\to0$. Then $c(\mathbf x)/p\to0$ uniformly.
 
 ## 4.13 Condition F: disappearance of pressure regularization
 
-If a pressure regularization with threshold $p_\varepsilon$ is used, so that the regularized pressure is $\tilde p=\max([p]_+,p_\varepsilon)\ge p$ (in production $p_\varepsilon=p_{\min}$), require
-
-$$
-\boxed{
-\frac{p_\varepsilon}{p}\longrightarrow0.
-}
-$$
-
-When that pressure regularization is adopted, the implementation must replace the corresponding $p$ by $\tilde p$ uniformly in the constitutive law, including every denominator and every stress magnitude. The principal formulae of this paper, in which regularization has not been enabled, continue to be written with $p$.
-
-If a shear-rate regularization $\dot\gamma_\varepsilon$ is used, require
-
-$$
-\boxed{
-\frac{\dot\gamma_\varepsilon}{\dot\gamma}
-\longrightarrow0.
-}
-$$
-
-The production rule of Section 2.8 is stricter than a limit statement. At every finite regularization, the stress magnitude, the yield strength, and the denominator of $I_c$ use one and the same $\tilde p=\max([p]_+,p_{\min})$, and $I_c$ uses $p_*=\tilde p+p_c$. The limit $p_\varepsilon/p\to 0$ is the condition under which that regularization disappears from the classical reduction. It is not a licence to regularize only the denominator.
+With a pressure regularization $\tilde p=\max([p]_+,p_\varepsilon)\ge p$ (in the reference model $p_\varepsilon=p_{\min}$), require $\boxed{p_\varepsilon/p\to0}$. With a shear-rate regularization, require $\boxed{\dot\gamma_\varepsilon/\dot\gamma\to0}$. When the pressure regularization is used, $p$ is replaced by $\tilde p$ uniformly in the law, in every denominator and every stress magnitude; the principal formulae are written with $p$. The production rule (Section 2.8) is stricter than a limit statement. At every finite regularization, the stress magnitude, the yield strength, and the denominator of $I_c$ use the same $\tilde p$, with $I_c$ at $p_*=\tilde p+p_c$. The condition $p_\varepsilon/p\to0$ only states when the regularization disappears from the reduction. It is not a licence to regularize the denominator alone.
 
 ---
 
 ## 4.14 Limit of the inertial number
 
-From
-
-$$
-I_c^{(n)}
-=
-\frac{d\dot\gamma}
-{\sqrt{(p+p_c^{(n)})/\rho_p}}
-$$
-
-and
-
-$$
-\frac{p_c^{(n)}}p\to0,
-$$
-
-one has $p+p_c^{(n)}\to p$. The map $x\mapsto x^{-1/2}$ is continuous on a neighbourhood of any $p>0$, so
+$I_c^{(n)}=I\,(p/(p+p_c^{(n)}))^{1/2}$, and the fraction tends to $1$ by Condition A. By continuity of the square root at $1$ (requiring $p>0$),
 
 $$
 \boxed{
-I_c^{(n)}
-\longrightarrow
-\frac{d\dot\gamma}{\sqrt{p/\rho_p}}
-=
-I.
+I_c^{(n)}\longrightarrow\frac{d\dot\gamma}{\sqrt{p/\rho_p}}=I.
 }
 $$
 
-*Expanded limit.* Write
-
-$$
-I_c^{(n)}
-=
-I\cdot
-\left(\frac{p}{p+p_c^{(n)}}\right)^{1/2}.
-$$
-
-The fraction in parentheses tends to $1$, and the square root is continuous at $1$. This step requires $p>0$. On a free surface where $p=0$, the classical $\mu(I)$ law is itself undefined, so there is no reduction in the ordinary sense.
+On a free surface with $p=0$ the classical law is itself undefined, so there is no reduction in the ordinary sense.
 
 ---
 
 ## 4.15 Limit of the friction coefficient
 
-The dynamic friction coefficient of the combined model is
-
-$$
-\mu_d^{(n)}
-=
-\mu_s(\nu^{(n)},Z^{(n)})
-+
-\left[
-\mu_2(\nu^{(n)},Z^{(n)})
--
-\mu_s(\nu^{(n)},Z^{(n)})
-\right]
-\frac{I_c^{(n)}}
-{I_0(\nu^{(n)},Z^{(n)})+I_c^{(n)}}.
-$$
-
-Conditions C and D, together with the conclusion of the previous section, give
-
-$$
-\nu^{(n)}\to\nu_0,
-\qquad
-Z^{(n)}\to Z_0,
-\qquad
-I_c^{(n)}\to I,
-$$
-
-and therefore
-
-$$
-\mu_s(\nu^{(n)},Z^{(n)})\to\mu_s,
-\qquad
-\mu_2(\nu^{(n)},Z^{(n)})\to\mu_2,
-\qquad
-I_0(\nu^{(n)},Z^{(n)})\to I_0.
-$$
-
-The correct continuous mapping has four arguments, because $I_0$ also depends on $n$:
-
-$$
-(a,b,e,c)\mapsto a+(b-a)\frac{c}{e+c},
-$$
-
-which is continuous on the set $e+c>0$. Substituting
-
-$$
-a=\mu_s^{(n)},\quad
-b=\mu_2^{(n)},\quad
-e=I_0^{(n)},\quad
-c=I_c^{(n)}
-$$
-
-and passing to the limit produces
+By Conditions C and D and Section 4.14, $\mu_s^{(n)}\to\mu_s$, $\mu_2^{(n)}\to\mu_2$, $I_0^{(n)}\to I_0$, and $I_c^{(n)}\to I$. The map $(a,b,e,c)\mapsto a+(b-a)c/(e+c)$ is continuous on $e+c>0$. It needs four arguments, because $I_0$ also depends on $n$; freezing $I_0$ first is not enough. Hence
 
 $$
 \boxed{
-\mu_d^{(n)}
-\longrightarrow
-\mu_s+
-(\mu_2-\mu_s)
-\frac{I}{I_0+I}
-=
-\mu_{\mathrm{cl}}(I).
+\mu_d^{(n)}\longrightarrow\mu_s+(\mu_2-\mu_s)\frac{I}{I_0+I}=\mu_{\mathrm{cl}}(I).
 }
 $$
-
-A three-argument map that freezes $I_0$ before the limit is not sufficient for this conclusion. The same four-argument statement is the one required again in Section 4.20.
 
 ---
 
 ## 4.16 Limit of the tidal yield function
 
-The effective shear stress in the combined yield function is
-
-$$
-\tau_{\mathrm{tide}}^{(n)}
-=
-\sqrt{
-\frac12
-(s-T_{\mathrm{tide}}^{(n)}):(s-T_{\mathrm{tide}}^{(n)})
-}.
-$$
-
-By the definition $s=T_{\mathrm{tide}}+\tau_{\mathrm{flow}}$ one has the identity
-
-$$
-s-T_{\mathrm{tide}}^{(n)}=\tau_{\mathrm{flow}}^{(n)}
-$$
-
-at every $n$, and therefore
-
-$$
-\tau_{\mathrm{tide}}^{(n)}
-=
-\|\tau_{\mathrm{flow}}^{(n)}\|_{\mathrm{eq}}
-=
-\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}
-$$
-
-identically. The limit of $\tau_{\mathrm{tide}}^{(n)}$ is the limit of $\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}$ and contains no independent information. This is the observation recorded again in Section 4.20.
-
-If, in addition, a limit stress $s$ exists and $T_{\mathrm{tide}}^{(n)}\to 0$, continuity of the Frobenius norm gives the further identification
+Since $s-T^{(n)}_{\rm tide}=\tau^{(n)}_{\rm flow}$ for every $n$, the effective stress $\tau^{(n)}_{\rm tide}=\sqrt{\tfrac12(s-T^{(n)}_{\rm tide}):(s-T^{(n)}_{\rm tide})}$ equals $\tau^{(n)}_{{\rm flow},\rm eq}$ identically and carries no independent information. If, in addition, a limit stress exists and $T^{(n)}_{\rm tide}\to0$, then
 
 $$
 \boxed{
-\tau_{\mathrm{tide}}^{(n)}
-\longrightarrow
-\sqrt{\frac12 s:s}
-=
-\tau_{{\mathrm{flow}},\mathrm{eq}}.
+\tau_{\mathrm{tide}}^{(n)}\longrightarrow\sqrt{\tfrac12 s:s}=\tau_{{\mathrm{flow}},\mathrm{eq}},
 }
 $$
 
-The two members on the right agree because $s-T_{\mathrm{tide}}\to s$ and $s-T_{\mathrm{tide}}=\tau_{\mathrm{flow}}$ together force $\|s\|_{\mathrm{eq}}=\|\tau_{\mathrm{flow}}\|_{\mathrm{eq}}$ in the limit. From
+the two members agreeing because $s-T_{\rm tide}\to s$. With $c^{(n)}/p\to0$ and $\mu_y^{(n)}\to\mu_s$,
 
 $$
-\frac{c^{(n)}}p\to0,
-\qquad
-\mu_y(\nu^{(n)},Z^{(n)})\to\mu_s
+F^{(n)}_{\rm comb}=\tau^{(n)}_{\rm tide}-c^{(n)}-\mu^{(n)}_yp\longrightarrow\tau_{{\rm flow},\rm eq}-\mu_sp,
 $$
 
-the static yield function has the limit
-
-$$
-F_{\mathrm{comb}}^{(n)}
-\longrightarrow
-\tau_{{\mathrm{flow}},\mathrm{eq}}-\mu_s p.
-$$
-
-*Algebra.* One has $F_{\mathrm{comb}}^{(n)}=\tau_{\mathrm{tide}}^{(n)}-c^{(n)}-\mu_y^{(n)}p$, the cohesive term is $p\cdot(c^{(n)}/p)\to 0$, and $\mu_y^{(n)}p\to\mu_s p$. This is the Drucker–Prager limit of the quasi-static theory, without cohesion and without the tidal extension.
+the Drucker–Prager limit of the quasi-static theory, without cohesion or tide.
 
 ---
 
 ## 4.17 Limit of the dynamic stress
 
-On the flow branch of the combined model, the scalar target is
+The scalar target $c^{(n)}+\mu_d^{(n)}p$ tends to $\mu_{\rm cl}(I)p$ by Condition E and Section 4.15. That is a target, not yet the equivalent stress of the regularized tensor. The regularized law, aligned with $D'$, is
 
 $$
-\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}
-=
-c^{(n)}
-+
-\mu_d^{(n)}p.
-$$
-
-From
-
-$$
-\frac{c^{(n)}}p\to0,
+\boxed{
+\tau_{\mathrm{flow}}^{(n)}=2\eta^{(n)}D',
 \qquad
-\mu_d^{(n)}\to\mu_{\mathrm{cl}}(I),
-$$
-
-one obtains
-
-$$
-\boxed{
-\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}
-\longrightarrow
-\mu_{\mathrm{cl}}(I)p.
+\eta^{(n)}=\frac{c^{(n)}+\mu_d^{(n)}p}{\sqrt{\dot\gamma^2+\dot\gamma_{\varepsilon}^{\,2}}},
 }
 $$
 
-The classical $\mu(I)$ stress ratio is thereby recovered as a target. This line is not yet the equivalent stress of the regularized tensor.
-
-Because the deviator is aligned with $D'$, the corrected regularized constitutive law is written
+whose equivalent stress is $\eta^{(n)}\dot\gamma=(c^{(n)}+\mu_d^{(n)}p)\,\dot\gamma/\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}$, equal to the target only as $\dot\gamma_\varepsilon/\dot\gamma\to0$. Under $c^{(n)}/p\to0$, $\mu_d^{(n)}\to\mu_{\rm cl}(I)$, and $\dot\gamma_\varepsilon/\dot\gamma\to0$, one has $\eta^{(n)}\to\mu_{\rm cl}(I)p/\dot\gamma$. So
 
 $$
 \boxed{
-\tau_{\mathrm{flow}}^{(n)}
-=
-2\eta^{(n)}D',
-}
-$$
-
-where
-
-$$
-\eta^{(n)}
-=
-\frac{
-c^{(n)}+\mu_d^{(n)}p
-}{\sqrt{\dot\gamma^2+\dot\gamma_{\varepsilon}^{\,2}}}.
-$$
-
-The equivalent stress of this tensor is not $c^{(n)}+\mu_d^{(n)}p$. By the calculation of Section 4.0,
-
-$$
-\|\tau_{\mathrm{flow}}^{(n)}\|_{\mathrm{eq}}
-=
-\eta^{(n)}\dot\gamma
-=
-\bigl(c^{(n)}+\mu_d^{(n)}p\bigr)
-\frac{\dot\gamma}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}}.
-$$
-
-It tends to $c^{(n)}+\mu_d^{(n)}p$ only when $\dot\gamma_\varepsilon/\dot\gamma\to 0$. Under the joint hypotheses
-
-$$
-\frac{c^{(n)}}p\to0,
+\tau_{\mathrm{flow}}^{(n)}\longrightarrow2\mu_{\mathrm{cl}}(I)p\frac{D'}{\dot\gamma},
 \qquad
-\mu_d^{(n)}\to\mu_{\mathrm{cl}}(I),
-\qquad
-\dot\gamma_\varepsilon/\dot\gamma\to0,
-$$
-
-one has
-
-$$
-\eta^{(n)}
-\longrightarrow
-\frac{\mu_{\mathrm{cl}}(I)p}{\dot\gamma},
-$$
-
-and therefore
-
-$$
-\boxed{
-\tau_{\mathrm{flow}}^{(n)}
-\longrightarrow
-2\mu_{\mathrm{cl}}(I)p
-\frac{D'}{\dot\gamma}.
+\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}\longrightarrow\mu_{\mathrm{cl}}(I)p,
 }
 $$
 
-Taking the equivalent shear stress,
-
-$$
-\begin{aligned}
-\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}
-&=
-\sqrt{
-\frac12
-\tau_{\mathrm{flow}}^{(n)}:\tau_{\mathrm{flow}}^{(n)}
-}\\
-&\longrightarrow
-2\mu_{\mathrm{cl}}(I)p
-\sqrt{
-\frac{D':D'}{2\dot\gamma^2}
-}.
-\end{aligned}
-$$
-
-The passage of the limit under the square root uses continuity of $A\mapsto\sqrt{\tfrac12 A:A}$ and the tensor limit already obtained. Since
-
-$$
-D':D'=\frac{\dot\gamma^2}{2},
-$$
-
-the expression under the square root equals $1/4$, its square root equals $1/2$, and
-
-$$
-2\mu_{\mathrm{cl}}(I)p\cdot\frac12
-=
-\mu_{\mathrm{cl}}(I)p.
-$$
-
-Hence
-
-$$
-\boxed{
-\tau_{{\mathrm{flow}},\mathrm{eq}}^{(n)}
-\longrightarrow
-\mu_{\mathrm{cl}}(I)p.
-}
-$$
-
-This is the classical $\mu(I)$ relation. The same algebra shows why the factor $2$ in $\tau=2\eta D'$ is indispensable.
+the second by continuity of $A\mapsto\sqrt{\tfrac12A:A}$ and $D':D'=\dot\gamma^2/2$. This is the classical $\mu(I)$ relation, and the factor $2$ is again indispensable.
 
 ---
 
 ## 4.18 Limit of the governing equations
 
-The momentum equation of the combined model is
+The momentum equation of the combined model, with $g_{\rm eff}=\nabla W$, is
 
 $$
-\partial_t(\rho v)
-+
-\nabla\cdot(\rho v\otimes v)
-+2\rho\,\boldsymbol\Omega\times v
-=
-\nabla\cdot\sigma
-+
-\rho\nabla W.
+\partial_t(\rho v)+\nabla\cdot(\rho v\otimes v)+2\rho\,\boldsymbol\Omega\times v=\nabla\cdot\sigma+\rho\nabla W.
 $$
 
-The positive-potential convention $g_{\mathrm{eff}}=\nabla W$ of this paper is in force. If a traditional negative gravitational potential is used instead, the sign of the potential gradient must be rewritten throughout. It is not enough to change this one term. The Coriolis term $2\rho\boldsymbol\Omega\times v$ in the rotating frame agrees with Proposition 5.2. The classical $\mu(I)$ system corresponds to an inertial frame, $\boldsymbol\Omega=\mathbf 0$, in which that term is absent.
+With a negative-potential convention, the sign must be rewritten throughout, not in this term alone. The Coriolis term agrees with Proposition 5.2. The classical system is the inertial-frame case $\boldsymbol\Omega=\mathbf 0$. Since $\partial_t(\rho v)+\nabla\cdot(\rho v\otimes v)=\rho(\partial_tv+(v\cdot\nabla)v)+v(\partial_t\rho+\nabla\cdot(\rho v))$, the conservative and nonconservative forms (Section 5.1) agree on solutions of continuity, not as formal expressions.
 
-*Relation to the nonconservative form.* Expanding the left-hand side gives
+The traditional incompressible model also fixes $\rho=\rho_0>0$, so continuity is equivalent to $\nabla\cdot v=0$. If $\nabla\cdot v=0$ is kept without fixing $\rho$, continuity becomes the passive transport $\partial_t\rho+v\cdot\nabla\rho=0$. That is the **inhomogeneous incompressible** extension: each particle keeps its density. A compressible extension would need an equation of state, which this paper does not have. The production model is of this inhomogeneous type, and Section 9.10 discretizes $\partial_t\rho_K+v\cdot\nabla\rho_K=0$. Neither form is the traditional $\mu(I)$ system unless $\rho=\rho_0$.
 
-$$
-\partial_t(\rho v)+\nabla\cdot(\rho v\otimes v)
-=
-\rho\bigl(\partial_t v+(v\cdot\nabla)v\bigr)
-+
-v\bigl(\partial_t\rho+\nabla\cdot(\rho v)\bigr).
-$$
+With $\sigma=-pI+T_{\rm tide}+\tau_{\rm flow}$, $\nabla\cdot\sigma$ contains $\nabla\cdot T_{\rm tide}$. That term vanishes in the limit only under the compactness hypotheses of Section 4.20, not by pointwise convergence. In the limit, every extension disappears:
 
-The two forms therefore agree on solutions of the continuity equation $\partial_t\rho+\nabla\cdot(\rho v)=0$, which is the form used in Section 5.1. They are not identical as formal differential expressions.
+- the solid fraction and the coordination number are fixed;
+- the tide, the cohesion, and the cohesive pressure vanish;
+- the parameters become constants;
+- the regularizations vanish.
 
-In the limit above, a traditional incompressible dense granular model must also fix $\rho=\rho_0>0$. The continuity equation is then equivalent to $\nabla\cdot v=0$. If the density is not fixed but $\nabla\cdot v=0$ is retained, the continuity equation is equivalent to the passive transport $\partial_t\rho+v\cdot\nabla\rho=0$: the system is the **inhomogeneous incompressible** extension, in which each material particle keeps its density, not a compressible one. (A compressible extension would require an equation of state for $\nabla\cdot v\ne0$, which this paper does not have.) The production model of this paper is of the inhomogeneous incompressible type, and Section 9.10 is its discretization of $\partial_t\rho_K+v\cdot\nabla\rho_K=0$. Neither form can be called the traditional incompressible $\mu(I)$ system directly unless $\rho=\rho_0$.
-
-In that incompressible limit the total stress of the combined model is
-
-$$
-\sigma=-pI+T_{\mathrm{tide}}+\tau_{\mathrm{flow}}.
-$$
-
-The divergence $\nabla\cdot\sigma$ in the momentum equation therefore contains $\nabla\cdot T_{\mathrm{tide}}$. In the limit of this section, $T_{\mathrm{tide}}\to 0$, so that term disappears. Passage of the divergence to the limit is not implied by the pointwise limit alone; the additional compactness hypotheses are stated in Section 4.20.
-
-In the incompressible limit:
-
-- the solid fraction is fixed;
-- the coordination number is fixed;
-- the tidal backstress disappears;
-- cohesion disappears;
-- the cohesive pressure disappears;
-- the state-dependent parameters become constants;
-- the pressure and shear-rate regularizations disappear (Condition F).
-
-The constitutive term therefore becomes
-
-$$
-\sigma
-=
--pI
-+
-2\mu_{\mathrm{cl}}(I)p
-\frac{D'}{\dot\gamma}.
-$$
-
-The governing equations reduce strictly to
+Then
 
 $$
 \boxed{
@@ -5588,208 +2585,91 @@ $$
 \right]
 +\rho\nabla W,\\[8pt]
 \displaystyle
-I=
-\frac{d\dot\gamma}{\sqrt{p/\rho_p}},\\[8pt]
-\displaystyle
-\mu_{\mathrm{cl}}(I)
-=
-\mu_s+
-(\mu_2-\mu_s)\frac{I}{I_0+I}.
+I=\frac{d\dot\gamma}{\sqrt{p/\rho_p}},\qquad
+\mu_{\mathrm{cl}}(I)=\mu_s+(\mu_2-\mu_s)\frac{I}{I_0+I},
 \end{cases}
 }
 $$
 
-This is the traditional $\mu(I)$ system of granular rheology, in the rotating frame if $\boldsymbol\Omega$ is retained and in an inertial frame if $\boldsymbol\Omega=\mathbf 0$.
+the traditional $\mu(I)$ system: in the rotating frame if $\boldsymbol\Omega$ is kept, inertial if $\boldsymbol\Omega=\mathbf 0$.
 
 ---
 
 ## 4.19 The reduction theorem
 
-The preceding results may be summarized as follows.
+The results of Sections 4.14–4.18 are summarized as follows.
 
 ## 4.20 Theorem
 
-Suppose that a sequence of solutions of the combined model satisfies
+Suppose a sequence of solutions of the combined model satisfies:
+
+- $p_c/p\to0$, $\rho_pd^2\|\operatorname{dev}H_W\|/p\to0$, and $c/p\to0$;
+- $\nu\to\nu_0$ and $Z\to Z_0$;
+- $\mu_s,\mu_2,I_0\to$ constants, and $\mu_y\to\mu_s$;
+- $p_\varepsilon/p\to0$ and $\dot\gamma_\varepsilon/\dot\gamma\to0$.
+
+Suppose also that, along the chosen points, $p\to p_0>0$ and $\dot\gamma\to\dot\gamma_0>0$, or at least that both stay in a compact subset of $(0,\infty)$. In the latter case $I$ is formed from the same $p$ and $\dot\gamma$, and the limits below mean differences tending to zero. A positive lower bound alone is not enough for $T_{\rm tide}\to0$ and $\tau_{\rm flow,eq}-\mu_{\rm cl}(I)p\to0$, because the hypotheses control only ratios to $p$. Then
 
 $$
-\frac{p_c}{p}\to0,
+I_c\to I,\qquad
+\mu_d(I_c,\nu,Z)\to\mu_{\mathrm{cl}}(I),\qquad
+T_{\mathrm{tide}}\to0,\qquad
+\tau_{{\mathrm{flow}},\mathrm{eq}}\to\mu_{\mathrm{cl}}(I)p,
 $$
 
-$$
-\frac{\rho_pd^2\|\operatorname{dev}H_W\|}{p}\to0,
-$$
+with $I=d\dot\gamma_0/\sqrt{p_0/\rho_p}$ from the limit fields. Sections 4.14–4.17 are pointwise statements, about values at one point, not a sequence in a function space.
 
-$$
-\frac{c}{p}\to0,
-$$
+**The compactness chain for the momentum equation.** The scalar limit $\tau_{\rm eq}^{(n)}\to\mu_{\rm cl}p$ implies neither convergence of $D'^{(n)}/\dot\gamma^{(n)}$ nor convergence of the differentiated equation. The identity $s-T_{\rm tide}\equiv\tau_{\rm flow}$ (Section 4.16) holds by definition, and its limit adds nothing. After regularization, $\tau_{\rm flow,eq}\to c+\mu_dp$ only if $\dot\gamma_\varepsilon/\dot\gamma\to0$. The map of Section 4.15 has four arguments. The momentum equation converges in distributions only if, on a compact $K\Subset\{p>0\}$ in space-time, all of the following hold:
 
-$$
-\nu\to\nu_0,
-\qquad
-Z\to Z_0,
-$$
+1. $p^{(n)}\ge p_{\min}>0$ and $\dot\gamma^{(n)}\ge\dot\gamma_{\min}>0$ uniformly, with conditions A–F uniform on $K$;
+2. $v^{(n)}\to v$ strongly in $L^2(K)$, and $\nabla v^{(n)}\to\nabla v$, $p^{(n)}\to p$ a.e. (a subsequence suffices under convergence in measure);
+3. $\sigma^{(n)}$ is bounded in $L^{1+\delta}(K)$ for some $\delta>0$, and $\nu^{(n)}\to\nu_0$ strongly.
 
-$$
-\mu_s(\nu,Z)\to\mu_s,
-$$
+Then $\sigma^{(n)}\to\sigma_{\rm cl}=-pI+2\mu_{\rm cl}(I)pD'/\dot\gamma$ in $L^1(K)$ by Vitali's theorem, so $\nabla\cdot\sigma^{(n)}\to\nabla\cdot\sigma_{\rm cl}$ in $\mathcal D'(K)$. The convective term converges by strong $L^2$ convergence ($\rho=\rho_0$), and $\nabla\cdot v=0$ is preserved.
 
-$$
-\mu_2(\nu,Z)\to\mu_2,
-$$
+**Limitations.**
 
-$$
-I_0(\nu,Z)\to I_0,
-$$
-
-$$
-\mu_y(\nu,Z)\to\mu_s,
-$$
-
-$$
-p_\varepsilon/p\to0,
-\qquad
-\dot\gamma_\varepsilon/\dot\gamma\to0,
-$$
-
-and that, along the chosen sequence of points, $p\to p_0>0$ and $\dot\gamma\to\dot\gamma_0>0$, or at least that these quantities remain in a compact subset of $(0,\infty)$. In the latter case $I$ is the classical inertial number formed from the same $p$ and $\dot\gamma$, and the convergences below are understood as differences tending to zero. A positive lower bound alone does not suffice for the absolute limits $T_{\mathrm{tide}}\to0$ and $\tau_{{\mathrm{flow}},\mathrm{eq}}-\mu_{\mathrm{cl}}(I)p\to0$, because the hypotheses on $\operatorname{dev}H_W$ and $c$ control only the ratios to $p$. Then the combined model satisfies
-
-$$
-I_c\to I,
-$$
-
-$$
-\mu_d(I_c,\nu,Z)\to\mu_{\mathrm{cl}}(I),
-$$
-
-$$
-T_{\mathrm{tide}}\to0,
-$$
-
-$$
-\tau_{{\mathrm{flow}},\mathrm{eq}}\to\mu_{\mathrm{cl}}(I)p.
-$$
-
-Here $I=d\dot\gamma_\infty/\sqrt{p_\infty/\rho_p}$ is formed from the limit fields. Sections 4.14–4.17 are pointwise statements: $p$, $\dot\gamma$, and $D'$ are values at the same point, not a sequence of solutions in a function space.
-
-**Strict conditions for convergence of the momentum equation (the compactness chain).** The pointwise constitutive limit $\tau^{(n)}_{\mathrm{eq}}\to\mu_{\mathrm{cl}}p$ is only a scalar convergence. It implies neither convergence of the tensor $D'^{(n)}/\dot\gamma^{(n)}$ nor convergence of the differentiated momentum equation. In Section 4.16 the identity $s-T_{\mathrm{tide}}\equiv\tau_{\mathrm{flow}}$ holds by the definition of $s$. Its limit is a corollary of that identity and contains no independent information. After the regularization of Section 4.17,
-
-$$
-\tau_{\mathrm{flow,eq}}=(c+\mu_d p)\frac{\dot\gamma}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}},
-$$
-
-which tends to $c+\mu_d p$ only when $\dot\gamma_\varepsilon/\dot\gamma\to 0$. The continuous mapping used in Section 4.15 is the four-argument map $(a,b,e,c)\mapsto a+(b-a)\,c/(e+c)$, in which $I_0$ also changes with $n$ and $e+c>0$.
-
-The momentum equation converges in the sense of distributions only under **all** of the following additional hypotheses. Let $K\Subset\{p>0\}$ be a compact set in the space-time region, and assume:
-
-1. $p^{(n)}\ge p_{\min}>0$ and $\dot\gamma^{(n)}\ge\dot\gamma_{\min}>0$ hold uniformly on $K$, and conditions A–F hold uniformly on $K$;
-2. $v^{(n)}\to v$ strongly in $L^2(K)$, and $\nabla v^{(n)}\to\nabla v$ together with $p^{(n)}\to p$ almost everywhere on $K$ (a subsequence suffices if the convergence holds in measure);
-3. $\sigma^{(n)}$ is uniformly bounded in $L^{1+\delta}(K)$ for some $\delta>0$, and $\nu^{(n)}\to\nu_0$ strongly.
-
-Then
-
-$$
-\sigma^{(n)}\to\sigma_{\mathrm{cl}}(\nabla v,p)=-pI+2\mu_{\mathrm{cl}}(I)p\,D'/\dot\gamma
-$$
-
-in $L^1(K)$, by Vitali's theorem: almost-everywhere convergence together with uniform integrability. Hence $\nabla\cdot\sigma^{(n)}\to\nabla\cdot\sigma_{\mathrm{cl}}$ in $\mathcal D'(K)$. The convective term converges by the strong $L^2$ convergence alone ($v^{(n)}\otimes v^{(n)}\to v\otimes v$ in $L^1(K)$, with $\rho=\rho_0$ fixed as in Section 4.18), and $\nabla\cdot v=0$ is preserved.
-
-**Limitations.** (a) Almost-everywhere convergence is a hypothesis, not a conclusion. The stress–strain-rate relation of $\mu(I)$ is in general **not monotone** — there is a region of ill-posedness at small Froude number (Barker et al., 2015 [8]) — so the Minty monotonicity argument is unavailable, and the limit cannot be identified from weak convergence alone. (b) The conclusion is restricted to the interior of a compact set $K\Subset\{p>0\}$. It does not cover the free-surface boundary condition or a plug region where $\dot\gamma=0$. (c) Mode B, which is quasi-static and formally sits at $\dot\gamma=0$, lies outside the hypothesis $\dot\gamma_{\min}>0$. The theorem is therefore vacuous for the production default. It applies only to the active flow region of Mode C.
+1. Almost-everywhere convergence is a hypothesis, not a conclusion. The $\mu(I)$ stress–strain-rate relation is generally **not monotone**: it is ill-posed outside an intermediate range of the inertial number, at both small and large $I$ [8]. Minty's argument is therefore unavailable, and weak convergence does not identify the limit.
+2. The result holds only inside $K\Subset\{p>0\}$. It excludes the free-surface condition and plug regions with $\dot\gamma=0$.
+3. Mode B drops the inertial terms that this momentum equation keeps, and its regularized shear rate, although positive everywhere, has no uniform lower bound: in rigid regions $\dot\gamma\lesssim\dot\gamma_\varepsilon$. For Mode B the theorem therefore gives only the pointwise constitutive limits of Sections 4.14–4.17 in the yielded region; its statement about the momentum equation concerns the dynamic mode.
 
 ---
 
 ## 4.21 Range of validity and the boundary of failure
 
-The reduction above must not be used in the following situations.
+The reduction must not be used in the following situations.
 
 ## 4.22 The low-pressure limit on the free surface, and the singularity at $p=0$
 
-Normal momentum balance on the free surface gives
-
-$$
-p|_\Gamma=p_{\rm ext}+\mathbf n\cdot\boldsymbol\tau\,\mathbf n
-$$
-
-(Corollary 5.3 of Section 5.1). In the absence of external pressure and of a deviatoric stress, or in the tideless low-shear limit, one has $p\to 0$. In that limit the classical inertial number
-
-$$
-I=\frac{d\dot\gamma}{\sqrt{p/\rho_p}}
-$$
-
-has a division by zero in the denominator. One must then retain an effective pressure $p_*=p+p_c>0$, or adopt an explicit pressure regularization.
+Normal balance on the free surface gives $p|_\Gamma=p_{\rm ext}+\mathbf n\cdot\boldsymbol\tau\mathbf n$ (Corollary 5.3). Without external pressure and deviatoric stress (the tideless, low-shear limit), $p\to0$, and $I=d\dot\gamma/\sqrt{p/\rho_p}$ divides by zero. An effective pressure $p_*=p+p_c>0$ or an explicit pressure regularization must then be kept.
 
 ## 4.23 The tidal stress is not negligible
 
-If
+If $\rho_pd^2\|\operatorname{dev}H_W\|\sim p$, Condition B fails, $T_{\rm tide}$ stays of the order of the pressure scale multiplying $\mu$, and there is no reduction.
 
-$$
-\rho_pd^2\|\operatorname{dev}H_W\|
-\sim p,
-$$
-
-the combined model does not reduce to the classical $\mu(I)$ law. Condition B fails, and $T_{\mathrm{tide}}$ remains of the same order as the pressure scale that multiplies $\mu$.
-
-*Magnitude in the bundled configurations.* With $d=d_p$ the grain diameter, the prefactor is $C_T\rho_p\nu_0 d_p^2=3.3\ \mathrm{kg\,m^{-1}}$ ($C_T=1$, $\rho_p=2420\ \mathrm{kg\,m^{-3}}$, $\nu_0=0.54$, $d_p=5$ cm), and $\|\operatorname{dev}H_W\|$ is of the order of $GM/R^3+\omega^2\lesssim 10^{-6}\ \mathrm{s^{-2}}$ on Ryugu, Phobos, and Deimos. Hence $\|\mathbf T_{\rm tide}\|\sim 10^{-6}$ Pa, against interior pressures of tens of pascals and a surface reference pressure $p_{\rm ref}\sim 0.2$–$40$ Pa (Section 10.3). Condition B holds with a margin of at least five orders of magnitude, and the situation of this section does not arise for these bodies. Moreover the yield function uses $s-\mathbf T_{\rm tide}\equiv\boldsymbol\tau_{\rm flow}$ (Section 4.16), so the backstress never enters the yield test directly. The tidal field acts on these bodies through the body force $\mathbf g_{\rm ext}$ in $\mathbf g_{\rm eff}$ (Section 10.4.1, `orbit`), not through $\mathbf T_{\rm tide}$.
+*Order of magnitude for small bodies.* With $d=d_p$ and typical regolith values ($C_T=1$, grain density $\rho_p\approx2420$ kg m⁻³, packing $\nu_0\approx0.54$, $d_p\approx5$ cm), the prefactor is $C_T\rho_p\nu_0d_p^2\approx3.3$ kg m⁻¹. With published masses, radii, and spins, $\|\operatorname{dev}H_W\|\sim GM/R^3+\omega^2\lesssim10^{-6}$ s⁻² for Ryugu, Phobos, and Deimos. Hence $\|\mathbf T_{\rm tide}\|\sim10^{-6}$ Pa, against interior pressures of order $\rho_K|\mathbf g|R\gtrsim10$ Pa and loose-layer pressures $p_{\rm ref}=\rho_{\rm bulk}|\mathbf g|h_s\sim0.2$–$40$ Pa for $h_s$ of 1–5 m (Section 10.3). Condition B holds with at least five orders of magnitude to spare. (B2) compares the flow stress $\boldsymbol\tau_{\rm flow}=\mathbf s-\mathbf T_{\rm tide}$ with the strength, so the tide enters yield as the backstress that shifts $\mathbf s$, through the load $\nabla\cdot\mathbf T_{\rm tide}$ that $\boldsymbol\tau_{\rm flow}$ must balance, and in the repose proxy $\mu_{\rm eff}$ of Section 10.3, which subtracts $\|\mathbf T_{\rm tide}\|_F/\sqrt2$. Each contribution is of order $10^{-6}$ Pa and negligible here. For such bodies the tide acts through $\mathbf g_{\rm ext}$ in $\mathbf g_{\rm eff}$ (Section 10.4.1, orbital schedule), not through $\mathbf T_{\rm tide}$.
 
 ## 4.24 The state variables are still evolving
 
-If $Z$ or $\nu$ varies appreciably in space, then
-
-$$
-\mu_d=\mu_d(I,\nu,Z)
-$$
-
-is not the traditional function of the single variable $I$.
+If $Z$ or $\nu$ varies appreciably in space, $\mu_d=\mu_d(I,\nu,Z)$ is not the traditional function of $I$ alone.
 
 ## 4.25 Static regions
 
-If
-
-$$
-\dot\gamma=0,
-$$
-
-the dynamic $\mu(I)$ formula is not a complete description. One should then use
-
-$$
-\sqrt{\frac12(s-T_{\mathrm{tide}}):(s-T_{\mathrm{tide}})}
-\le c+\mu_y p.
-$$
-
-In the regularized viscoplastic production model (Section 2.8), a static region is not identified by $\dot\gamma=0$, because the regularization makes $\dot\gamma>0$ everywhere. It is identified by the yield function $F_\delta\le 0$, evaluated on the same stress field, together with connectivity to the rigid core (B2–B3 of Section 2.8), with $\mu_y\equiv\mu_s(\nu_0,Z_0)$.
+Where $\dot\gamma=0$, the dynamic formula is incomplete, and the static condition $\sqrt{\tfrac12(s-T_{\rm tide}):(s-T_{\rm tide})}\le c+\mu_yp$ applies. In the regularized reference model $\dot\gamma>0$ everywhere, so static regions are identified not by $\dot\gamma=0$ but by $F_\delta\le0$ on the same stress, together with connectivity to the rigid core (B2–B3), with $\mu_y\equiv\mu_s(\nu_0,Z_0)$.
 
 ---
 
-The final strict conclusion is
-
-$$
-\boxed{
-\text{the combined model is not automatically equal to the classical }\mu(I)\text{ law;}
-}
-$$
-
-$$
-\boxed{
-\text{in the explicit limit in which cohesion, tide, state evolution, and regularization all disappear,}
-}
-$$
-
-$$
-\boxed{
-\text{it reduces, term by term and continuously, to the classical }\mu(I)\text{ rheological equation.}
-}
-$$
-
-This is a reduction that can be written as a formal mathematical proposition. It is not an identity that is absolutely correct without conditions.
+**Conclusion.** The combined model is not automatically the classical $\mu(I)$ law. In the explicit limit where cohesion, tide, state evolution, and regularization all disappear, it reduces to that law term by term and continuously. This is a formal proposition under stated conditions, not an unconditional identity.
 
 # 5. The mixed weak form and the poloidal–toroidal representation of velocity
 
-This chapter constructs the mixed weak form of momentum, incompressibility, and mass transport on the star-shaped domain $\mathcal V=\{r<R(\hat{\boldsymbol\omega},t)\}$, and writes the velocity through a poloidal potential and a toroidal potential. The notation obeys the glossary of Appendix A.1: the stress is the bold tensor $\boldsymbol\sigma$, a direction is $\hat{\boldsymbol\omega}$, and the angular-velocity vector is $\boldsymbol\Omega=\omega\mathbf e_z$. The basic unknowns are $(\mathbf v,p,\rho,R)$.
+This chapter builds the mixed weak form of momentum, incompressibility, and mass transport on the domain $\mathcal V$ of hypothesis (G) (Section 8.0), with the star-shaped special case $\mathcal V=\{r<R(\hat{\boldsymbol\omega},t)\}$. It writes the velocity through poloidal and toroidal potentials. Notation follows Appendix A.1. The unknowns are $(\mathbf v,p,\rho,\Gamma)$, with $\Gamma$ given by $R$ in the star-shaped case.
 
 ---
 
 ## 5.1 Governing equations and the natural boundary term
 
-**Definition 5.1 (Total stress and body acceleration).** Take
+**Definition 5.1 (Total stress and body acceleration).**
 
 $$
 \boldsymbol\sigma=-p\,\mathbf I+\boldsymbol\tau,\qquad
@@ -5797,37 +2677,25 @@ $$
 \mathbf D=\tfrac12(\nabla\mathbf v+\nabla\mathbf v^{\!\top}),
 $$
 
-where $\eta$ is given by Chapter 4. In the combined model,
-
-$$
-\eta=\frac{c+\mu_d(I_c)\,\tilde p}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}},
-$$
-
-with $\tilde p=\max([p]_+,p_{\min})$ the unique regularized pressure of (B1) in Section 2.8 and with $I_c$ evaluated at $p_*=\tilde p+p_c$. In the classical branch, the formal limit $c=0$ and $\dot\gamma_\varepsilon\to 0$ is $\eta=\mu(I)p/\dot\gamma$, so
-
-$$
-\boldsymbol\tau=2\mu(I)\,p\,\mathbf D'/\dot\gamma
-$$
-
-(and $\mathbf D'=\mathbf D$ when the flow is incompressible). The body acceleration is
+with $\eta$ from Chapter 4: in the combined model $\eta=(c+\mu_d(I_c)\tilde p)/\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}$, with $\tilde p$ of (B1) and $I_c$ at $p_*=\tilde p+p_c$. The classical branch ($c=0$, $\dot\gamma_\varepsilon\to0$) is $\boldsymbol\tau=2\mu(I)p\mathbf D'/\dot\gamma$, with $\mathbf D'=\mathbf D$ for incompressible flow. The body acceleration is
 
 $$
 \mathbf g_0=\mathbf g_{\mathrm{RTFP}}-\boldsymbol\Omega\times(\boldsymbol\Omega\times\mathbf x)+\mathbf g_{\mathrm{ext}}
 =\nabla W+\mathbf g_{\mathrm{ext}},\qquad
-W=U+\tfrac12\omega^2(x_1^2+x_2^2).
+W=U+\tfrac12\omega^2(x_1^2+x_2^2),
 $$
 
-The centrifugal acceleration is $-\boldsymbol\Omega\times(\boldsymbol\Omega\times\mathbf x)=\omega^2\mathbf x_\perp$, so the minus sign in $\mathbf g_0$ is required by the positive-potential convention of Section 2.8. The field $\mathbf g_{\mathrm{ext}}$ does not contain the gravitational or centrifugal contributions already accounted for. If $\dot{\boldsymbol\Omega}\ne 0$, the Euler acceleration $-\dot{\boldsymbol\Omega}\times\mathbf x$ is added. That term is not in general a gradient. The weak form of this chapter and the source formulae of Section 6.3 are written through $\nabla\times(\rho\mathbf g_0)$, and they apply to the Euler acceleration in the same way. On the quasi-static route, $\omega(t)$ is prescribed exogenously. The Euler term and the external torque that drives it are omitted as a pair (Section 2.8, B1), and the ratio $|\dot\omega|/\omega^2$ is reported.
+since $-\boldsymbol\Omega\times(\boldsymbol\Omega\times\mathbf x)=\omega^2\mathbf x_\perp$ in the positive-potential convention. $\mathbf g_{\rm ext}$ excludes the self-gravity and centrifugal terms. If $\dot{\boldsymbol\Omega}\ne0$, the Euler acceleration $-\dot{\boldsymbol\Omega}\times\mathbf x$, not a gradient in general, is added. The weak form and the sources of Section 6.3, written through $\nabla\times(\rho\mathbf g_0)$, cover it. On the quasi-static route the Euler term and its driving torque are omitted together, and $|\dot\omega|/\omega^2$ is reported (Section 2.8, B1).
 
-**Proposition 5.2 (Mixed weak form and the natural boundary term).** Suppose $(\mathbf v,p)$ is smooth enough to satisfy the strong form
+**Proposition 5.2 (Mixed weak form and the natural boundary term).** A smooth $(\mathbf v,p)$ satisfies the strong form
 
 $$
 \rho\big(\partial_t\mathbf v+(\mathbf v\cdot\nabla)\mathbf v+2\boldsymbol\Omega\times\mathbf v\big)=\nabla\cdot\boldsymbol\sigma+\rho\mathbf g_0,\qquad
 \nabla\cdot\mathbf v=0\quad\text{in }\mathcal V,\qquad
-\boldsymbol\sigma\mathbf n=\mathbf t_{\mathrm{ext}}\quad\text{on }\Gamma.
+\boldsymbol\sigma\mathbf n=\mathbf t_{\mathrm{ext}}\quad\text{on }\Gamma
 $$
 
-Then, for every $(\mathbf w,q)\in H^1(\mathcal V;\mathbb R^3)\times L^2(\mathcal V)$,
+if and only if, for every $(\mathbf w,q)\in H^1(\mathcal V;\mathbb R^3)\times L^2(\mathcal V)$,
 
 $$
 \boxed{
@@ -5841,37 +2709,13 @@ $$
 \end{aligned}}
 $$
 
-Conversely, a smooth pair $(\mathbf v,p)$ that satisfies this identity satisfies the strong form, including the boundary condition.
+*Proof.* The divergence theorem gives $\int(\nabla\cdot\boldsymbol\sigma)\cdot\mathbf w=\oint\boldsymbol\sigma\mathbf n\cdot\mathbf w-\int\boldsymbol\sigma:\nabla\mathbf w$. By symmetry $\boldsymbol\sigma:\nabla\mathbf w=\boldsymbol\sigma:\mathbf D(\mathbf w)=-p\nabla\cdot\mathbf w+\boldsymbol\tau:\mathbf D(\mathbf w)$. Substituting $\boldsymbol\sigma\mathbf n=\mathbf t_{\rm ext}$, and testing incompressibility with $q$, gives the identity. Conversely, compactly supported $\mathbf w$ recover the momentum equation, after which $\oint(\boldsymbol\sigma\mathbf n-\mathbf t_{\rm ext})\cdot\mathbf w=0$ for all traces gives the boundary condition. ∎
 
-*Proof.* Multiply the momentum equation by $\mathbf w$ and integrate. The divergence theorem gives
+**Corollary 5.3 (Natural realization of the boundary condition).** The traction condition is not an essential constraint on $\mathbf v$. It is the surface term $-\oint\mathbf t_{\rm ext}\cdot\mathbf w$.
 
-$$
-\int_{\mathcal V}(\nabla\cdot\boldsymbol\sigma)\cdot\mathbf w\,dV
-=\oint_\Gamma\boldsymbol\sigma\mathbf n\cdot\mathbf w\,dS
--\int_{\mathcal V}\boldsymbol\sigma:\nabla\mathbf w\,dV.
-$$
-
-Symmetry of $\boldsymbol\sigma$ replaces $\nabla\mathbf w$ by its symmetric part: $\boldsymbol\sigma:\nabla\mathbf w=\boldsymbol\sigma:\mathbf D(\mathbf w)$. Split $\boldsymbol\sigma=-p\mathbf I+\boldsymbol\tau$. Then
-
-$$
-\boldsymbol\sigma:\mathbf D(\mathbf w)=-p\,(\nabla\cdot\mathbf w)+\boldsymbol\tau:\mathbf D(\mathbf w),
-$$
-
-because $\mathbf I:\mathbf D(\mathbf w)=\nabla\cdot\mathbf w$. Substituting $\boldsymbol\sigma\mathbf n=\mathbf t_{\mathrm{ext}}$ produces the momentum terms of the boxed identity. Multiplying the incompressibility equation by $q$ and integrating produces the term in $q$.
-
-In the converse direction, first restrict $\mathbf w$ to be compactly supported in $\mathcal V$. The boundary integral drops, and the fundamental lemma of the calculus of variations returns the momentum equation pointwise. With the momentum equation restored, the remaining identity reduces to
-
-$$
-\oint_\Gamma(\boldsymbol\sigma\mathbf n-\mathbf t_{\mathrm{ext}})\cdot\mathbf w\,dS=0
-$$
-
-for every trace of $\mathbf w$ on $\Gamma$. Hence $\boldsymbol\sigma\mathbf n=\mathbf t_{\mathrm{ext}}$. ∎
-
-**Corollary 5.3 (Natural realization of the boundary condition).** The free-surface traction condition of Chapter 4 is not an essential constraint on $\mathbf v$. It is the surface term $-\oint_\Gamma\mathbf t_{\mathrm{ext}}\cdot\mathbf w\,dS$ of the identity above.
-
-1. On a free surface, $\mathbf t_{\mathrm{ext}}=\mathbf 0$. The surface term vanishes, and $\boldsymbol\sigma\mathbf n=\mathbf 0$ holds automatically as a natural condition.
-2. On a contact surface, $\mathbf t_{\mathrm{ext}}=-p_n\mathbf n+\mathbf t_T$. The normal contact reaction $p_n\ge 0$ and the tangential friction $\mathbf t_T$, subject to $|\mathbf t_T|\le\mu_w p_n$, are supplied by the contact model and enter only through the surface term.
-3. The natural condition splits into normal and tangential components:
+1. **Free surface:** $\mathbf t_{\rm ext}=\mathbf 0$ and $\boldsymbol\sigma\mathbf n=\mathbf 0$ holds naturally.
+2. **Contact:** $\mathbf t_{\rm ext}=-p_n\mathbf n+\mathbf t_T$, where the contact model supplies $p_n\ge0$ and $|\mathbf t_T|\le\mu_wp_n$ through the surface term only.
+3. **Components:**
 
 $$
 \mathbf n\cdot\boldsymbol\tau\mathbf n-p=\mathbf n\cdot\mathbf t_{\mathrm{ext}},\qquad
@@ -5879,54 +2723,24 @@ $$
 =\mathbf t_{\mathrm{ext}}-(\mathbf n\cdot\mathbf t_{\mathrm{ext}})\mathbf n.
 $$
 
-On a free surface this is $p=\mathbf n\cdot\boldsymbol\tau\mathbf n$. The limit $\boldsymbol\tau\to\mathbf 0$ therefore gives $p\to 0$, in agreement with Section 4.22, and no algebraic substitution is required.
+On a free surface $p=\mathbf n\cdot\boldsymbol\tau\mathbf n$, so $\boldsymbol\tau\to\mathbf 0$ gives $p\to0$ (Section 4.22).
 
-**Supplementary equations.** Mass transport and the free-surface kinematics are
-
-$$
-\partial_t\rho+\nabla\cdot(\rho\mathbf v)=0,\qquad
-\partial_tR=v_r-\frac1R\,\nabla_{S^2}R\cdot\mathbf v_S\Big|_{r=R}.
-$$
-
-The kinematic relation is the material condition $\partial_t F+\mathbf v\cdot\nabla F=0$ for $F=r-R(\hat{\boldsymbol\omega},t)$. Here $\mathbf v_S$ is the physical tangential component and $\nabla_{S^2}$ is the gradient on the unit sphere. Explicitly, at fixed time,
+**Supplementary equations.** In general, $\partial_t\rho+\nabla\cdot(\rho\mathbf v)=0$, and $V_n=\mathbf v\cdot\mathbf n$ on $\Gamma$ (Proposition 8.0.7). In the star-shaped parametrization, the material condition $\partial_tF+\mathbf v\cdot\nabla F=0$ for $F=r-R(\hat{\boldsymbol\omega},t)$, with $\nabla F=\mathbf e_r-R^{-1}\nabla_{S^2}R$, gives
 
 $$
-\nabla F=\mathbf e_r-R^{-1}\nabla_{S^2}R,\qquad \partial_t F=-\partial_t R,
-$$
-
-so
-
-$$
--\partial_t R+v_r-R^{-1}\nabla_{S^2}R\cdot\mathbf v_S=0,
-$$
-
-which is the displayed formula. The outward unit normal of the graph $r=R$ is
-
-$$
+\partial_tR=v_r-\frac1R\,\nabla_{S^2}R\cdot\mathbf v_S\Big|_{r=R}
+=\frac{\mathbf v\cdot\mathbf n}{\mathbf n\cdot\mathbf e_r},\qquad
 \mathbf n=\frac{R\mathbf e_r-\nabla_{S^2}R}{\sqrt{R^2+|\nabla_{S^2}R|^2}},\qquad
-\mathbf n\cdot\mathbf e_r=\frac{R}{\sqrt{R^2+|\nabla_{S^2}R|^2}}.
+\mathbf n\cdot\mathbf e_r=\frac{R}{\sqrt{R^2+|\nabla_{S^2}R|^2}},
 $$
 
-Therefore
-
-$$
-\mathbf v\cdot\mathbf n=\frac{R v_r-\nabla_{S^2}R\cdot\mathbf v_S}{\sqrt{R^2+|\nabla_{S^2}R|^2}},
-$$
-
-and division by $\mathbf n\cdot\mathbf e_r$ cancels the common square root and the factor $R$:
-
-$$
-\frac{\mathbf v\cdot\mathbf n}{\mathbf n\cdot\mathbf e_r}
-=v_r-\frac1R\nabla_{S^2}R\cdot\mathbf v_S.
-$$
-
-On the quasi-static route the continuity equation reduces, because $\nabla\cdot\mathbf v=0$ exactly in $\mathbb V_h^\sigma$, to the material transport $\partial_t\rho_K+\mathbf v\cdot\nabla\rho_K=0$. It is frozen inside each geological step and advanced between steps by the Lagrangian core transport of Section 9.10 (hypothesis A-ρL, PO-14). A density held spatially fixed in the body frame while material flows through it (hypothesis A-ρ, available only as the regression option `density_mode = frozen`) violates this equation and leaves a "ghost" gravity where the material used to be. The radius $R$ is obtained from $\partial_t R=\mathbf v\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$, classified by yield, and discretized over a geological step as $d_{\rm pred}$. It is then updated by the geometric subproblem of Section 10.4.3 (see Sections 9.9 and 10.4.1).
+where $\mathbf v_S$ is the physical tangential component. The second form follows because $\mathbf v\cdot\mathbf n=(Rv_r-\nabla_{S^2}R\cdot\mathbf v_S)/\sqrt{R^2+|\nabla_{S^2}R|^2}$. On the quasi-static route $\nabla\cdot\mathbf v=0$ exactly in $\mathbb V_h^\sigma$, so continuity is the material transport $\partial_t\rho_K+\mathbf v\cdot\nabla\rho_K=0$. It is frozen within a step and advanced between steps by Section 9.10 (A-ρL, PO-14). A density fixed in the body frame while material flows through it (A-ρ, the frozen-density variant) violates this equation and leaves a "ghost" gravity. The surface motion is classified by yield, discretized as $d_{\rm pred}$, and updated by Section 10.4.3 (Sections 9.9, 10.4.1).
 
 ---
 
 ## 5.2 The poloidal–toroidal representation of velocity
 
-**Definition 5.4.** For scalar potentials $\Phi$ and $\Psi$, write
+**Definition 5.4.**
 
 $$
 \mathcal P[\Phi]=\nabla\times\nabla\times(\Phi\,\mathbf r),\qquad
@@ -5934,7 +2748,7 @@ $$
 \mathbf v=\mathcal P[\Phi]+\mathcal T[\Psi],\qquad \mathbf r=r\mathbf e_r.
 $$
 
-**Lemma 5.5 (Component formulae).** Let $\Phi=g(r)Y_{\ell m}$ and $\Psi=f(r)Y_{\ell m}$, with $L^2 Y_{\ell m}=\Lambda_\ell Y_{\ell m}$ and $\Lambda_\ell=\ell(\ell+1)$. Then
+**Lemma 5.5 (Component formulae).** For $\Phi=g(r)Y_{\ell m}$, $\Psi=f(r)Y_{\ell m}$, $L^2Y_{\ell m}=\Lambda_\ell Y_{\ell m}$, $\Lambda_\ell=\ell(\ell+1)$:
 
 $$
 \mathcal P[\Phi]=\nabla\big(\partial_r(r\Phi)\big)-\mathbf r\,\Delta\Phi,\qquad
@@ -5945,160 +2759,44 @@ $$
 v_r^{\mathcal P}=\frac{L^2\Phi}{r}=\frac{\Lambda_\ell g}{r}Y_{\ell m},\qquad
 \mathbf v_S^{\mathcal P}=\frac1r\,(rg)'\,\nabla_{S^2}Y_{\ell m},\qquad
 v_r^{\mathcal T}=0,\qquad
-\mathbf v^{\mathcal T}=f\,\nabla_{S^2}Y_{\ell m}\times\mathbf e_r.
+\mathbf v^{\mathcal T}=f\,\nabla_{S^2}Y_{\ell m}\times\mathbf e_r,
 $$
 
-In spherical components, $v^{\mathcal T}_\theta=\dfrac1{\sin\theta}\partial_\varphi\Psi$ and $v^{\mathcal T}_\varphi=-\partial_\theta\Psi$.
+with $v_\theta^{\mathcal T}=\partial_\varphi\Psi/\sin\theta$ and $v_\varphi^{\mathcal T}=-\partial_\theta\Psi$.
 
-*Proof.* The vector identity $\nabla\times\nabla\times\mathbf F=\nabla(\nabla\cdot\mathbf F)-\Delta\mathbf F$ is applied to $\mathbf F=\Phi\mathbf r$. The divergence is
-
-$$
-\nabla\cdot(\Phi\mathbf r)=3\Phi+r\partial_r\Phi,
-$$
-
-because $\nabla\cdot\mathbf r=3$ and $\nabla\Phi\cdot\mathbf r=r\partial_r\Phi$. The Laplacian of the vector field satisfies $\Delta(\Phi\mathbf r)=\mathbf r\,\Delta\Phi+2\nabla\Phi$. Subtraction therefore gives
-
-$$
-\begin{aligned}
-\nabla\times\nabla\times(\Phi\mathbf r)
-&=\nabla(3\Phi+r\partial_r\Phi)-\mathbf r\,\Delta\Phi-2\nabla\Phi\\
-&=\nabla(\Phi+r\partial_r\Phi)-\mathbf r\,\Delta\Phi,
-\end{aligned}
-$$
-
-which is the first identity, since $\partial_r(r\Phi)=\Phi+r\partial_r\Phi$.
-
-The radial component is computed in spherical coordinates. The radial part of $\nabla(\Phi+r\Phi_r)$ is
-
-$$
-\partial_r(\Phi+r\Phi_r)=2\Phi_r+r\Phi_{rr}.
-$$
-
-The spherical Laplacian is
-
-$$
-\Delta\Phi=\Phi_{rr}+\frac{2}{r}\Phi_r-\frac{L^2\Phi}{r^2},
-$$
-
-so the radial component of $\mathbf r\,\Delta\Phi$ is
-
-$$
-r\Delta\Phi=r\Phi_{rr}+2\Phi_r-\frac{L^2\Phi}{r}.
-$$
-
-Subtracting these two expressions cancels $r\Phi_{rr}$ and $2\Phi_r$, and leaves
-
-$$
-v_r^{\mathcal P}=\frac{L^2\Phi}{r}.
-$$
-
-If $\Phi=g(r)Y_{\ell m}$, then $L^2\Phi=\Lambda_\ell g\,Y_{\ell m}$. The tangential part of $\nabla(\partial_r(r\Phi))$ is $r^{-1}\nabla_{S^2}\partial_r(r\Phi)$. For a separated potential, $\partial_r(r\Phi)=(rg)'Y_{\ell m}$, which is the formula for $\mathbf v_S^{\mathcal P}$.
-
-For the toroidal field, $\nabla\Psi=\Psi_r\mathbf e_r+r^{-1}\nabla_{S^2}\Psi$. The cross product with $\mathbf r=r\mathbf e_r$ kills the radial term and leaves $\nabla_{S^2}\Psi\times\mathbf e_r$. In components this is $v_\theta=(1/\sin\theta)\partial_\varphi\Psi$ and $v_\varphi=-\partial_\theta\Psi$, so the radial component vanishes. Both divergences vanish because $\nabla\cdot\nabla\times=0$.
-
-The rigid rotation $\Psi=\omega r\cos\theta$ is a check: $v_\varphi=-\partial_\theta\Psi=\omega r\sin\theta$, which is the azimuthal velocity of rotation at rate $\omega$ about $\mathbf e_z$. ∎
+*Proof.* Apply $\nabla\times\nabla\times\mathbf F=\nabla(\nabla\cdot\mathbf F)-\Delta\mathbf F$ to $\mathbf F=\Phi\mathbf r$, with $\nabla\cdot(\Phi\mathbf r)=3\Phi+r\Phi_r$ and $\Delta(\Phi\mathbf r)=\mathbf r\Delta\Phi+2\nabla\Phi$. This gives $\nabla(\Phi+r\Phi_r)-\mathbf r\Delta\Phi$. Its radial component is $2\Phi_r+r\Phi_{rr}-r\Delta\Phi=L^2\Phi/r$, using $\Delta\Phi=\Phi_{rr}+2\Phi_r/r-L^2\Phi/r^2$. Its tangential part is $r^{-1}\nabla_{S^2}\partial_r(r\Phi)$. For $\mathcal T$, the cross product with $\mathbf r$ kills $\Psi_r\mathbf e_r$. Both are divergence-free because $\nabla\cdot\nabla\times=0$. Check: $\Psi=\omega r\cos\theta$ gives $v_\varphi=\omega r\sin\theta$, a rigid rotation. ∎
 
 **Proposition 5.6 (Uniqueness, the degree $\ell=0$, and the rigid modes).**
 
-1. For $\ell\ge 1$, the coefficient $\Phi_{\ell m}$ is uniquely determined by $v_r$, and the coefficient $\Psi_{\ell m}$ is uniquely determined by $\mathbf r\cdot\nabla\times\mathbf v$.
-2. A purely radial potential $\Phi=f(r)$ or $\Psi=h(r)$, both of degree $\ell=0$, satisfies $\nabla\times(f\mathbf r)=\nabla f\times\mathbf r=\mathbf 0$ and contributes nothing to the velocity. Velocity degrees of freedom therefore contain only $\ell\ge 1$. On an incompressible star-shaped domain, a radial breathing mode of degree $\ell=0$ is forbidden by $\nabla\cdot\mathbf v=0$.
-3. A translation $\mathbf v=\mathbf e$ corresponds to $\Phi=\tfrac12\mathbf e\cdot\mathbf x$, because
+1. For $\ell\ge1$, $\Phi_{\ell m}$ is determined by $v_r$, and $\Psi_{\ell m}$ by $\mathbf r\cdot\nabla\times\mathbf v$.
+2. A purely radial potential ($\ell=0$) gives $\nabla f\times\mathbf r=\mathbf 0$ and contributes no velocity, so the velocity degrees of freedom have $\ell\ge1$. On an incompressible domain containing the origin, a radial breathing mode is forbidden by $\nabla\cdot\mathbf v=0$. If $O\notin\overline{\mathcal V}$, the field $\mathbf e_r/r^2$ is divergence-free on $\mathcal V$. It is not a basis field; it is reached through a solenoidal extension to the enclosing ball (Proposition 8.0.5).
+3. Translation $\mathbf v=\mathbf e$ is $\Phi=\tfrac12\mathbf e\cdot\mathbf x$, and rotation $\mathbf v=\boldsymbol\theta\times\mathbf x$ is $\Psi=\boldsymbol\theta\cdot\mathbf x$. These six modes have $\ell=1$ with radial profile $\propto r$, and they exhaust $\{\mathbf D(\mathbf v)=\mathbf 0\}$.
 
-$$
-\nabla\times\nabla\times\big(\tfrac12(\mathbf e\cdot\mathbf x)\,\mathbf r\big)
-=\nabla\times\big(\tfrac12\mathbf e\times\mathbf x\big)=\mathbf e.
-$$
+*Proof.* (1) $\Phi_{\ell m}=r(v_r)_{\ell m}/\Lambda_\ell$. For $\mathcal T$, $(\nabla\times\mathbf v)_r=-r^{-1}\Delta_{S^2}\Psi=L^2\Psi/r$, so $\mathbf r\cdot\nabla\times\mathbf v=L^2\Psi$. A poloidal field has vanishing radial curl on each harmonic, so the two reconstructions do not interfere.
 
-A rotation $\mathbf v=\boldsymbol\theta\times\mathbf x$ corresponds to $\Psi=\boldsymbol\theta\cdot\mathbf x$. Both families lie at degree $\ell=1$, with radial profile proportional to $r$. Together they are six modes, and they exhaust the solutions of $\mathbf D(\mathbf v)=\mathbf 0$.
+(2) $\nabla\cdot(v_r(r)\mathbf e_r)=r^{-2}(r^2v_r)'$, so $r^2v_r$ is constant. Boundedness at the origin, which lies in the domain on which the potentials are defined (the star-shaped domain, or $B_*$ of Section 8.0), makes it zero.
 
-*Proof of (1).* By Lemma 5.5, $v_r=L^2\Phi/r$. On each harmonic of degree $\ell\ge 1$, $L^2$ acts by the nonzero factor $\Lambda_\ell$, so
+(3) $\nabla\times((\mathbf e\cdot\mathbf x)\mathbf x)=\mathbf e\times\mathbf x$ and $\nabla\times(\mathbf e\times\mathbf x)=2\mathbf e$, so $\mathcal P[\tfrac12\mathbf e\cdot\mathbf x]=\mathbf e$; also $\mathcal T[\boldsymbol\theta\cdot\mathbf x]=\boldsymbol\theta\times\mathbf x$. If $\mathbf D(\mathbf v)=\mathbf 0$, then $\partial_i\partial_jv_k=\partial_iD_{jk}+\partial_jD_{ik}-\partial_kD_{ij}=0$, so $\nabla\mathbf v$ is a constant skew tensor and, on a connected domain, $\mathbf v=\mathbf a+\boldsymbol\theta\times\mathbf x$. ∎
 
-$$
-\Phi_{\ell m}=\frac{r}{\Lambda_\ell}(v_r)_{\ell m}.
-$$
-
-For the toroidal potential, the radial component of the curl is computed from $v_r=0$, $v_\theta=(\sin\theta)^{-1}\partial_\varphi\Psi$, and $v_\varphi=-\partial_\theta\Psi$:
-
-$$
-\begin{aligned}
-(\nabla\times\mathbf v)_r
-&=\frac{1}{r\sin\theta}\Big(\partial_\theta(\sin\theta\, v_\varphi)-\partial_\varphi v_\theta\Big)\\
-&=-\frac{1}{r}\Delta_{S^2}\Psi
-=\frac{L^2\Psi}{r}.
-\end{aligned}
-$$
-
-Hence $\mathbf r\cdot\nabla\times\mathbf v=L^2\Psi$, and $\Psi_{\ell m}$ is likewise unique for $\ell\ge 1$. A poloidal field has vanishing radial curl on each spherical harmonic, so the two reconstructions do not interfere.
-
-*Proof of (2).* If $\Phi=f(r)$, then $\nabla f=f'\mathbf e_r$ is parallel to $\mathbf r$, so $\nabla f\times\mathbf r=\mathbf 0$ and both curls vanish. The same holds for $\Psi=h(r)$. A radial field $\mathbf v=v_r(r)\mathbf e_r$ has
-
-$$
-\nabla\cdot\mathbf v=\frac{1}{r^2}\partial_r(r^2 v_r).
-$$
-
-Incompressibility forces $r^2 v_r$ to be constant. Boundedness at the origin, which lies in the star-shaped domain, forces the constant to vanish, so $v_r=0$.
-
-*Proof of (3).* Let $\Phi=\tfrac12(\mathbf e\cdot\mathbf x)$ with $\mathbf e$ constant, and write $\mathbf x$ for $\mathbf r$. Then
-
-$$
-\nabla\times\big((\mathbf e\cdot\mathbf x)\,\mathbf x\big)
-=\nabla(\mathbf e\cdot\mathbf x)\times\mathbf x
-=\mathbf e\times\mathbf x,
-$$
-
-because $\nabla\times\mathbf x=\mathbf 0$. Hence $\nabla\times(\Phi\mathbf x)=\tfrac12\mathbf e\times\mathbf x$. The second curl of a constant vector crossed into $\mathbf x$ is
-
-$$
-\nabla\times(\mathbf e\times\mathbf x)
-=\mathbf e\,(\nabla\cdot\mathbf x)-(\mathbf e\cdot\nabla)\mathbf x
-=3\mathbf e-\mathbf e=2\mathbf e,
-$$
-
-so $\nabla\times(\tfrac12\mathbf e\times\mathbf x)=\mathbf e$. For the rotation, $\nabla(\boldsymbol\theta\cdot\mathbf x)=\boldsymbol\theta$, and Definition 5.4 gives $\mathcal T[\boldsymbol\theta\cdot\mathbf x]=\boldsymbol\theta\times\mathbf x$.
-
-Both potentials are linear in $\mathbf x$. Linear functions on the sphere are spherical harmonics of degree $\ell=1$, and the radial factor is proportional to $r$, which is the profile $\psi_{\ell 0}(\zeta)\propto\zeta$ of Section 8.1. It remains to see that these six fields exhaust $\{\mathbf v:\mathbf D(\mathbf v)=\mathbf 0\}$ on a connected domain. The condition $D_{ij}=\tfrac12(\partial_i v_j+\partial_j v_i)=0$ implies, by differentiation,
-
-$$
-\partial_k\partial_i v_j
-=\partial_i D_{jk}+\partial_j D_{ik}-\partial_k D_{ij}=0.
-$$
-
-Thus $\nabla\mathbf v$ is constant. Symmetry of $\mathbf D$ forces that constant tensor to be skew, so there is a vector $\boldsymbol\theta$ with $\nabla\mathbf v\,\mathbf h=\boldsymbol\theta\times\mathbf h$. Integration on a connected domain yields $\mathbf v=\mathbf a+\boldsymbol\theta\times\mathbf x$. These are exactly the six modes already represented. ∎
-
-**Proposition 5.7 (Block structure under a spherically symmetric weight).** Let $R$ be constant and let $\rho=\rho(r)$. For $\Phi_a=g_a Y_{\ell m}$ and $\Psi_a=f_a Y_{\ell m}$,
+**Proposition 5.7 (Block structure under a spherically symmetric weight).** Let $R$ be constant and $\rho=\rho(r)$. For $\Phi_a=g_aY_{\ell m}$ and $\Psi_a=f_aY_{\ell m}$,
 
 $$
 \int_{\mathcal V}\rho\,\mathcal P[\Phi_1]\cdot\mathcal P[\Phi_2]\,dV
 =\int_0^R\rho\,\big[\Lambda_\ell^2 g_1 g_2+\Lambda_\ell\,(rg_1)'(rg_2)'\big]\,dr,
-$$
-
-$$
+\qquad
 \int_{\mathcal V}\rho\,\mathcal T[\Psi_1]\cdot\mathcal T[\Psi_2]\,dV
 =\int_0^R\rho\,\Lambda_\ell\,f_1 f_2\,r^2\,dr,
 $$
 
-and the poloidal–toroidal cross term vanishes: $\int_{\mathcal V}\rho\,\mathcal P[\Phi]\cdot\mathcal T[\Psi]\,dV=0$.
+and $\int\rho\,\mathcal P[\Phi]\cdot\mathcal T[\Psi]\,dV=0$.
 
-*Proof.* Insert Lemma 5.5 and integrate in angle. The identity $\int_{S^2}|\nabla_{S^2}Y_{\ell m}|^2\,d\Omega=\Lambda_\ell$, together with $\int_{S^2}Y_{\ell m}^2\,d\Omega=1$, produces the two diagonal formulae after the radial measure $r^2\,dr$ is restored: the radial–radial contribution carries $\Lambda_\ell^2 g_1 g_2/r^2\cdot r^2=\Lambda_\ell^2 g_1 g_2$, and the tangential contribution carries $\Lambda_\ell(rg_1)'(rg_2)'$. For the cross term the integrand reduces to
-
-$$
-\frac1r(rg)'f\ \nabla_{S^2}Y\cdot(\nabla_{S^2}Y'\times\mathbf e_r)
-=\frac1r(rg)'f\ \mathbf e_r\cdot(\nabla_{S^2}Y\times\nabla_{S^2}Y').
-$$
-
-The angular integral is the integral over the closed sphere of $\mathbf e_r\cdot\nabla\times(Y\nabla_{S^2}Y')$, which is the integral of a surface divergence and therefore vanishes. ∎
+*Proof.* Insert Lemma 5.5 and use $\int|\nabla_{S^2}Y|^2d\Omega=\Lambda_\ell$ and $\int Y^2d\Omega=1$. The cross term reduces to $\int_{S^2}\mathbf e_r\cdot(\nabla_{S^2}Y\times\nabla_{S^2}Y')\,d\Omega$, the integral of a surface divergence, which is zero. ∎
 
 ---
 
 ## 5.3 The Newton tangent of the rheological law
 
-For the classical branch $\boldsymbol\tau=2\mu(I)p\,\mathbf D/\dot\gamma$, with $I=d\dot\gamma\sqrt{\rho_p/p}$ ($p>0$) and
-
-$$
-\mu(I)=\mu_s+(\mu_2-\mu_s)\frac{I}{I_0+I},
-$$
-
-the first variation at a base state $(\bar p,\bar{\mathbf D},\bar{\dot\gamma}=\sqrt{2\bar{\mathbf D}:\bar{\mathbf D}},\bar I,\bar\mu=\mu(\bar I))$ is
+For the classical branch $\boldsymbol\tau=2\mu(I)p\mathbf D/\dot\gamma$, with $I=d\dot\gamma\sqrt{\rho_p/p}$ and $\mu(I)=\mu_s+(\mu_2-\mu_s)I/(I_0+I)$, the first variation at a base state $(\bar p,\bar{\mathbf D},\bar{\dot\gamma},\bar I,\bar\mu)$ is
 
 $$
 \delta I=\bar I\Big(\frac{\delta\dot\gamma}{\bar{\dot\gamma}}-\frac{\delta p}{2\bar p}\Big),\qquad
@@ -6114,207 +2812,103 @@ $$
 \Big[\bar p\,\mu'(\bar I)\bar I\Big(\frac{\delta\dot\gamma}{\bar{\dot\gamma}}-\frac{\delta p}{2\bar p}\Big)+\bar\mu\,\delta p\Big].}
 $$
 
-*Derivation.* Write $\boldsymbol\tau=2(\mu p/\dot\gamma)\mathbf D$. The product rule gives
+*Derivation.* $\delta\boldsymbol\tau=2\delta(\mu p/\dot\gamma)\bar{\mathbf D}+2(\bar\mu\bar p/\bar{\dot\gamma})\delta\mathbf D$, with $\delta(\mu p/\dot\gamma)=(p/\dot\gamma)\delta\mu+(\mu/\dot\gamma)\delta p-(\mu p/\dot\gamma^2)\delta\dot\gamma$. Use $\delta\mu=\mu'\delta I$, the logarithmic differential of $I\propto\dot\gamma p^{-1/2}$, and $2\dot\gamma\delta\dot\gamma=4\mathbf D:\delta\mathbf D$. ∎
 
-$$
-\delta\boldsymbol\tau
-=2\,\delta\Big(\frac{\mu p}{\dot\gamma}\Big)\,\bar{\mathbf D}
-+2\frac{\bar\mu\bar p}{\bar{\dot\gamma}}\,\delta\mathbf D.
-$$
-
-The second summand, rewritten by adding and subtracting the projection along $\bar{\mathbf D}$, is the first group of the boxed formula together with the part of the second group that does not contain $\delta\mu$. For the scalar prefactor,
-
-$$
-\delta\Big(\frac{\mu p}{\dot\gamma}\Big)
-=\frac{p}{\dot\gamma}\,\delta\mu+\frac{\mu}{\dot\gamma}\,\delta p-\frac{\mu p}{\dot\gamma^2}\,\delta\dot\gamma,
-$$
-
-evaluated on the base state. The chain rule $\delta\mu=\mu'(\bar I)\,\delta I$ and the logarithmic differential of $I\propto\dot\gamma\,p^{-1/2}$,
-
-$$
-\frac{\delta I}{\bar I}=\frac{\delta\dot\gamma}{\bar{\dot\gamma}}-\frac{\delta p}{2\bar p},
-$$
-
-produce $\delta I$. Differentiating $\dot\gamma^2=2\mathbf D:\mathbf D$ gives $2\dot\gamma\,\delta\dot\gamma=4\mathbf D:\delta\mathbf D$, hence $\delta\dot\gamma=2\mathbf D:\delta\mathbf D/\dot\gamma$. Substituting these three differentials and collecting coefficients of $\delta\mathbf D$ and of $\delta p$ yields the boxed formula. The derivative of the classical friction law is the quotient rule:
-
-$$
-\mu'(I)=\frac{(\mu_2-\mu_s)I_0}{(I_0+I)^2}.
-$$
-
-∎
-
-The tangent operator therefore depends on both velocity and pressure. The derivative $\partial\boldsymbol\tau/\partial\mathbf D$ supplies the Newton matrix of the viscous block. The pressure coupling in the velocity equation is
+The tangent depends on both velocity and pressure. $\partial\boldsymbol\tau/\partial\mathbf D$ gives the Newton matrix of the viscous block, and the pressure coupling is
 
 $$
 \frac{\partial\boldsymbol\tau}{\partial p}
-=\frac{2\bar{\mathbf D}}{\bar{\dot\gamma}}\Big(\bar\mu-\tfrac12\mu'(\bar I)\bar I\Big),
+=\frac{2\bar{\mathbf D}}{\bar{\dot\gamma}}\Big(\bar\mu-\tfrac12\mu'(\bar I)\bar I\Big).
 $$
 
-obtained by retaining only $\delta p$ in the boxed formula: the coefficient of $\delta p$ inside the bracket is $\bar\mu-\tfrac12\mu'(\bar I)\bar I$, and it is multiplied by $2\bar{\mathbf D}/\bar{\dot\gamma}$.
-
-In a local simple shear, where $\bar D_{r\theta}>0$ is the only nonzero entry of $\bar{\mathbf D}$ (and likewise $\bar D_{\theta r}$), one has $\bar{\mathbf D}:\bar{\mathbf D}=2\bar D_{r\theta}^2$, so $\bar{\dot\gamma}=2\bar D_{r\theta}$. Vary $\delta D_{r\theta}$ and $\delta p$, leaving every other component of $\delta\mathbf D$ equal to zero. Then $\bar{\mathbf D}:\delta\mathbf D=2\bar D_{r\theta}\,\delta D_{r\theta}$ and
+*Simple shear.* If $\bar D_{r\theta}=\bar D_{\theta r}$ is the only nonzero entry, then $\bar{\dot\gamma}=2\bar D_{r\theta}$ and $\delta\dot\gamma=2\delta D_{r\theta}$. The first group then vanishes on the $r\theta$ entry, and
 
 $$
-\delta\dot\gamma=\frac{2\cdot 2\bar D_{r\theta}\,\delta D_{r\theta}}{\bar{\dot\gamma}}=2\,\delta D_{r\theta}.
-$$
-
-The first group of the boxed formula, evaluated on the $r\theta$ entry, is
-
-$$
-2\bar\mu\bar p\Big(\frac{\delta D_{r\theta}}{\bar{\dot\gamma}}-\frac{\bar D_{r\theta}\cdot 2\delta D_{r\theta}}{\bar{\dot\gamma}^2}\Big)
-=2\bar\mu\bar p\Big(\frac{\delta D_{r\theta}}{\bar{\dot\gamma}}-\frac{\delta D_{r\theta}}{\bar{\dot\gamma}}\Big)=0,
-$$
-
-because $\bar D_{r\theta}=\bar{\dot\gamma}/2$. The projection terms cancel. The second group contributes its full scalar bracket, since $2\bar D_{r\theta}/\bar{\dot\gamma}=1$:
-
-$$
-\begin{aligned}
-\delta\tau_{r\theta}
-&=\bar p\,\mu'(\bar I)\bar I\Big(\frac{2\delta D_{r\theta}}{\bar{\dot\gamma}}-\frac{\delta p}{2\bar p}\Big)+\bar\mu\,\delta p\\
-&=2\eta_t\,\delta D_{r\theta}+\mathcal K_p\,\delta p,
-\end{aligned}
-$$
-
-with
-
-$$
+\delta\tau_{r\theta}=2\eta_t\,\delta D_{r\theta}+\mathcal K_p\,\delta p,\qquad
 \eta_t=\bar p\,\mu'(\bar I)\bar I/\bar{\dot\gamma},\qquad
-\mathcal K_p=\bar\mu-\tfrac12\mu'(\bar I)\bar I.
+\mathcal K_p=\bar\mu-\tfrac12\mu'(\bar I)\bar I .
 $$
 
-The tangent viscosity $\eta_t$ and the secant viscosity $\eta_0=\bar\mu\bar p/\bar{\dot\gamma}$ are different quantities. The secant law still returns $\tau_{r\theta}=2\eta_0\bar D_{r\theta}=\bar\mu\bar p$, so the equivalent stress remains $\tau_{\mathrm{eq}}=\bar\mu\bar p$.
+The tangent viscosity $\eta_t$ differs from the secant viscosity $\eta_0=\bar\mu\bar p/\bar{\dot\gamma}$, which still returns $\tau_{r\theta}=\bar\mu\bar p$. The combined-model tangent follows in the same way from the derivatives of $\eta(p,\mathbf D)$, with $p_*$ entering only through $I_c$ and the same regularized pressure in every denominator, all from one differentiation.
 
-The tangent of the combined model is obtained in the same way from the derivatives of $\eta(p,\mathbf D)$. The pressure $p_*$ enters only through $I_c$. If pressure regularization is enabled, the same regularized pressure must be used in every corresponding denominator. Every term is assembled from one and the same differentiation.
+**Proposition 5.8 (A local short-wave stability criterion, with the pressure coupling).** Linearize at a uniform base state, $\delta\boldsymbol\tau=\mathbb C:\nabla\delta\mathbf v+\mathbb K_p\delta p$, with $\mathbb C=\partial\boldsymbol\tau/\partial\nabla\mathbf v$ and the symmetric tensor $\mathbb K_p=\partial\boldsymbol\tau/\partial p$ (above). For a plane wave $(\hat{\mathbf v},\hat p)e^{\lambda t+i\mathbf k\cdot\mathbf x}$ with $\mathbf k\cdot\hat{\mathbf v}=0$ and acoustic tensor $\mathsf A(\mathbf k)=k_j\mathbb C_{ijkl}k_l$,
 
-**Proposition 5.8 (A local short-wave stability criterion, with the pressure coupling).** Take a uniform base state and linearize the deviatoric law in both arguments,
-$$
-\delta\boldsymbol\tau=\mathbb C:\nabla\delta\mathbf v+\mathbb K_p\,\delta p,\qquad
-\mathbb C=\frac{\partial\boldsymbol\tau}{\partial\nabla\mathbf v},\qquad
-\mathbb K_p=\frac{\partial\boldsymbol\tau}{\partial p}
-$$
-($\mathbb K_p=\tfrac{2\bar{\mathbf D}}{\bar{\dot\gamma}}\big(\bar\mu-\tfrac12\mu'(\bar I)\bar I\big)$ on the classical branch, Section 5.3; a symmetric tensor). For a plane wave $(\delta\mathbf v,\delta p)=(\hat{\mathbf v},\hat p)\,e^{\lambda t+i\mathbf k\cdot\mathbf x}$ with $\mathbf k\cdot\hat{\mathbf v}=0$, let $\mathsf A(\mathbf k)=k_j\mathbb C_{ijkl}k_l$ be the acoustic tensor. The linearized momentum equation is
 $$
 \rho\lambda\hat{\mathbf v}=-\mathsf A\hat{\mathbf v}+i\,(\mathbb K_p\mathbf k-\mathbf k)\,\hat p .
 $$
-Contracting with $\mathbf k$ and using $\mathbf k\cdot\hat{\mathbf v}=0$ gives $\hat p=i\,(\mathbf k\cdot\mathsf A\hat{\mathbf v})/(|\mathbf k|^2-\mathbf k\cdot\mathbb K_p\mathbf k)$, provided the denominator does not vanish; the pressure is not an independent unknown. Substitution yields
+
+Contracting with $\mathbf k$ gives $\hat p=i(\mathbf k\cdot\mathsf A\hat{\mathbf v})/(|\mathbf k|^2-\mathbf k\cdot\mathbb K_p\mathbf k)$ when the denominator is nonzero, so
+
 $$
 \boxed{\ \rho\lambda\hat{\mathbf v}=-\mathsf Q(\mathbf k)\mathsf A(\mathbf k)\hat{\mathbf v},\qquad
 \mathsf Q(\mathbf k)=\mathbf I-\frac{(\mathbf k-\mathbb K_p\mathbf k)\,\mathbf k^{\!\top}}{|\mathbf k|^2-\mathbf k\cdot\mathbb K_p\mathbf k}.\ }
 $$
-One checks $\mathbf k^{\!\top}\mathsf Q=\mathbf 0$ and $\mathsf Q\mathbf w=\mathbf w$ for $\mathbf w\perp\mathbf k$: $\mathsf Q$ is the projector onto $\mathbf k^\perp$ *along* $(\mathbf I-\mathbb K_p)\mathbf k$. Hence $\lambda$ equals $-1/\rho$ times an eigenvalue of $\mathsf Q\mathsf A$ on the two-dimensional space $\mathbf k^\perp$, and the characteristic equation is of degree at most two.
 
-1. Without pressure dependence, $\mathbb K_p=\mathbf 0$ and $\mathsf Q$ is the orthogonal projector $\mathbb P=\mathbf I-\mathbf k\mathbf k^{\!\top}/|\mathbf k|^2$. A Newtonian fluid, $\mathbb C$ the constant viscosity $\eta_0$, gives $\lambda=-\eta_0|\mathbf k|^2/\rho<0$.
-2. With $\mathbb K_p\ne\mathbf 0$ the projector is oblique. Then $\mathsf Q\mathsf A|_{\mathbf k^\perp}$ need not be similar to a symmetric operator even when $\mathsf A$ is symmetric positive definite, and an eigenvalue with negative real part, that is $\operatorname{Re}\lambda>0$, can occur. This pressure-sensitivity term is the mechanism of the short-wave ill-posedness of $\mu(I)$ identified by Barker et al. (2015) [8]. A criterion built on $\mathbb P\mathsf A$ alone cannot detect it.
-3. Where $|\mathbf k|^2=\mathbf k\cdot\mathbb K_p\mathbf k$ the pressure is not determined by the wave, and the linearized problem degenerates. On the classical branch the eigenvalues of the traceless $\bar{\mathbf D}$ are bounded by $\bar{\dot\gamma}/\sqrt3$, so $|\hat{\mathbf k}\cdot\mathbb K_p\hat{\mathbf k}|\le\tfrac{2}{\sqrt3}\big|\bar\mu-\tfrac12\mu'(\bar I)\bar I\big|$, and the denominator stays positive whenever that bound is below one.
+$\mathsf Q$ is the projector onto $\mathbf k^\perp$ along $(\mathbf I-\mathbb K_p)\mathbf k$: $\mathbf k^{\!\top}\mathsf Q=\mathbf 0$ and $\mathsf Q\mathbf w=\mathbf w$ for $\mathbf w\perp\mathbf k$. So $-\rho\lambda$ is an eigenvalue of $\mathsf Q\mathsf A$ on the two-dimensional $\mathbf k^\perp$.
 
-The criterion holds only in the local plane-wave approximation. A spherical-shell boundary and the curvature of the surface change the spectrum. Its analysis on the regularized production law is proof obligation PO-10.
+1. With $\mathbb K_p=\mathbf 0$, $\mathsf Q$ is the orthogonal projector $\mathbb P$, and a Newtonian fluid gives $\lambda=-\eta_0|\mathbf k|^2/\rho<0$.
+2. With $\mathbb K_p\ne\mathbf 0$ the projector is oblique. $\mathsf Q\mathsf A$ need not be similar to a symmetric operator even for SPD $\mathsf A$, and $\operatorname{Re}\lambda>0$ can occur. This is the short-wave ill-posedness of $\mu(I)$ [8], invisible to a criterion built on $\mathbb P\mathsf A$.
+3. Where $|\mathbf k|^2=\mathbf k\cdot\mathbb K_p\mathbf k$ the pressure is undetermined and the problem degenerates. On the classical branch the eigenvalues of the traceless $\bar{\mathbf D}$ are bounded by $\bar{\dot\gamma}/\sqrt3$, so $|\hat{\mathbf k}\cdot\mathbb K_p\hat{\mathbf k}|\le\tfrac2{\sqrt3}|\bar\mu-\tfrac12\mu'\bar I|$, and the denominator stays positive when that bound is below one.
+
+The criterion is local (plane waves). Boundaries and curvature change the spectrum. Its analysis on the regularized law of (B1) is PO-10.
 
 ---
 
 ## 5.4 Weak projection blocks under poloidal and toroidal test functions
 
-Fix the velocity expansion $\mathbf v=\sum_\alpha u_\alpha\mathbf B_\alpha$, where $\mathbf B_\alpha\in\{\mathcal P[\phi_\alpha],\,\mathcal T[\psi_\alpha]\}$. The potentials $\phi_\alpha$ and $\psi_\alpha$ are given basis functions of degree $\ell\ge 1$, and the index $\alpha$ records the type, the pair $(\ell,m)$, and the radial index.
+Let $\mathbf v=\sum_\alpha u_\alpha\mathbf B_\alpha$ with $\mathbf B_\alpha\in\{\mathcal P[\phi_\alpha],\mathcal T[\psi_\alpha]\}$ of degree $\ell\ge1$, where $\alpha$ records the type, $(\ell,m)$, and the radial index.
 
-**Proposition 5.9 (Test spaces and the block decomposition).** Test functions are taken in three classes.
+**Proposition 5.9 (Test spaces and the block decomposition).** The tests are:
 
-- Poloidal tests $\mathbf w_{\mathrm{pol}}=\mathcal P[\phi_t]$ and toroidal tests $\mathbf w_{\mathrm{tor}}=\mathcal T[\psi_t]$. Both are divergence-free, so $\int p\,\nabla\cdot\mathbf w=0$.
-- Gradient tests $\mathbf w=\nabla\chi$ with $\chi\in H^2(\mathcal V)$ and $\chi|_\Gamma=0$. Then $\nabla\chi|_\Gamma=(\partial_n\chi)\mathbf n$.
+- poloidal $\mathcal P[\phi_t]$ and toroidal $\mathcal T[\psi_t]$ tests, which are divergence-free, so $\int p\nabla\cdot\mathbf w=0$;
+- gradient tests $\nabla\chi$ with $\chi\in H^2$, $\chi|_\Gamma=0$, so $\nabla\chi|_\Gamma=(\partial_n\chi)\mathbf n$.
 
-The weak form of Proposition 5.2 splits as follows.
+The weak form splits into:
 
-**(i) Poloidal equation** (one equation for each $\phi_t$)
-
-$$
-\sum_\beta\Big[M_{P\beta}\dot u_\beta+C_{P\beta}u_\beta\Big]+N_P(\mathbf v;\mathbf v)+K_P(\mathbf v,p)
-=F_P.
-$$
-
-**(ii) Toroidal equation** (one equation for each $\psi_t$)
+**(i)/(ii) Poloidal and toroidal equations** ($X\in\{P,T\}$, one per test):
 
 $$
-\sum_\beta\Big[M_{T\beta}\dot u_\beta+C_{T\beta}u_\beta\Big]+N_T(\mathbf v;\mathbf v)+K_T(\mathbf v,p)
-=F_T.
+\sum_\beta\Big[M_{X\beta}\dot u_\beta+C_{X\beta}u_\beta\Big]+N_X(\mathbf v;\mathbf v)+K_X(\mathbf v,p)=F_X,
 $$
-
-**(iii) Pressure equation** (one equation for each $\chi$)
-
-$$
-\begin{aligned}
-&\int_{\mathcal V}\rho\big(\partial_t\mathbf v+(\mathbf v\cdot\nabla)\mathbf v+2\boldsymbol\Omega\times\mathbf v\big)\cdot\nabla\chi\,dV
-+\int_{\mathcal V}\boldsymbol\tau:\nabla\nabla\chi\,dV
--\int_{\mathcal V}p\,\Delta\chi\,dV\\
-&\qquad=\int_{\mathcal V}\rho\,\mathbf g_0\cdot\nabla\chi\,dV
-+\oint_\Gamma(\mathbf t_{\mathrm{ext}}\cdot\mathbf n)\,\partial_n\chi\,dS.
-\end{aligned}
-$$
-
-For $X\in\{P,T\}$, the test block $\mathbf B_X$ is $\mathcal P[\phi_t]$ or $\mathcal T[\psi_t]$, and
 
 $$
 M_{X\beta}=\int_{\mathcal V}\rho\,\mathbf B_X\cdot\mathbf B_\beta\,dV,\qquad
-C_{X\beta}=2\int_{\mathcal V}\rho\,(\boldsymbol\Omega\times\mathbf B_\beta)\cdot\mathbf B_X\,dV,
+C_{X\beta}=2\int_{\mathcal V}\rho\,(\boldsymbol\Omega\times\mathbf B_\beta)\cdot\mathbf B_X\,dV,\qquad
+N_X=\int_{\mathcal V}\rho\,(\mathbf v\cdot\nabla\mathbf v)\cdot\mathbf B_X\,dV,
 $$
 
 $$
-N_X=\int_{\mathcal V}\rho\,(\mathbf v\cdot\nabla\mathbf v)\cdot\mathbf B_X\,dV,\qquad
-K_X(\mathbf v,p)=\int_{\mathcal V}\boldsymbol\tau(\mathbf v,p):\mathbf D(\mathbf B_X)\,dV,
+K_X(\mathbf v,p)=\int_{\mathcal V}\boldsymbol\tau(\mathbf v,p):\mathbf D(\mathbf B_X)\,dV,\qquad
+F_X=\int_{\mathcal V}\rho\,\mathbf g_0\cdot\mathbf B_X\,dV+\oint_\Gamma\mathbf t_{\mathrm{ext}}\cdot\mathbf B_X\,dS .
 $$
 
+**(iii) Pressure equation** (one per $\chi$):
+
 $$
-F_X=\int_{\mathcal V}\rho\,\mathbf g_0\cdot\mathbf B_X\,dV+\oint_\Gamma\mathbf t_{\mathrm{ext}}\cdot\mathbf B_X\,dS.
+\int_{\mathcal V}\rho\big(\partial_t\mathbf v+(\mathbf v\cdot\nabla)\mathbf v+2\boldsymbol\Omega\times\mathbf v\big)\cdot\nabla\chi\,dV
++\int_{\mathcal V}\boldsymbol\tau:\nabla\nabla\chi\,dV
+-\int_{\mathcal V}p\,\Delta\chi\,dV
+=\int_{\mathcal V}\rho\,\mathbf g_0\cdot\nabla\chi\,dV
++\oint_\Gamma(\mathbf t_{\mathrm{ext}}\cdot\mathbf n)\,\partial_n\chi\,dS.
 $$
 
-The pressure $p\in L^2$ appears in (i) and (ii) only through $\boldsymbol\tau(\mathbf v,p)$, and in (iii) also through $-\int p\,\Delta\chi$. It is an independent unknown, solved simultaneously with $\mathbf v$. The pressure test $q$ in the mixed weak form enforces the constraint. There is no closed scalar equation that contains only the velocity potentials.
+The pressure enters (i)–(ii) only through $\boldsymbol\tau(\mathbf v,p)$, and (iii) also through $-\int p\Delta\chi$. It is an independent unknown solved together with $\mathbf v$. The test $q$ enforces the constraint, and no closed scalar equation in the potentials alone exists.
 
-**Proposition 5.10 (The gradient component vanishes).** Let the velocity space be $\mathbb V_\sigma\oplus\nabla X$, where $X=\{\chi\in H^2:\chi|_\Gamma=0\}$, and assume that the pressure test space satisfies $Q_h\supseteq\Delta X$. The constraint $\int q\,\nabla\cdot\mathbf v=0$, applied to $q=\Delta\chi_v$ for the splitting $\mathbf v=\mathbf v_\sigma+\nabla\chi_v$, gives $\|\Delta\chi_v\|_{L^2}^2=0$, hence $\Delta\chi_v=0$. Together with $\chi_v|_\Gamma=0$, this forces $\chi_v\equiv 0$. The velocity of the solution has no gradient component.
+**Proposition 5.10 (The gradient component vanishes).** With velocity space $\mathbb V_\sigma\oplus\nabla X$, $X=\{\chi\in H^2:\chi|_\Gamma=0\}$, and a pressure test space $Q_h\supseteq\Delta X$, the solution's velocity has no gradient component.
 
-*Proof.* $\nabla\cdot\mathbf v=\Delta\chi_v$. The choice $q=\Delta\chi_v$ yields the norm identity. A function that is harmonic and vanishes on the boundary vanishes identically. ∎
+*Proof.* Split $\mathbf v=\mathbf v_\sigma+\nabla\chi_v$, so $\nabla\cdot\mathbf v=\Delta\chi_v$. Testing with $q=\Delta\chi_v$ gives $\|\Delta\chi_v\|^2=0$. A harmonic $\chi_v$ vanishing on $\Gamma$ is zero. ∎
 
 ---
 
 # 6. Variable density: mass cross-coupling and the baroclinic source
 
-The density is $\rho=\rho_K$ (Section 1.1). The density is transported by the flow (Section 9.10). On the quasi-static route the formulae of this chapter are evaluated with the kernel parameters frozen at the current geological step. For anisotropic cores, $\sigma_k^2(\mathbf x-\mathbf c_k)$ in the formulae below is replaced by $\mathbf S_k(\mathbf x-\mathbf c_k)$ (Section 6.1). This chapter writes every channel through which a variable density couples the poloidal equation to the toroidal equation, as an explicit integral.
+$\rho=\rho_K$ (Section 1.1), transported by the flow (Section 9.10). On the quasi-static route this chapter is evaluated with the kernel parameters frozen at the current step. For anisotropic cores, $\sigma_k^2(\mathbf x-\mathbf c_k)$ is replaced by $\mathbf S_k(\mathbf x-\mathbf c_k)$. Every channel through which a variable density couples the poloidal and toroidal equations is written below as an explicit integral.
 
 ---
 
 ## 6.1 Derivatives of the Cauchy density
 
-Let $q_k(\mathbf x)=1+\sigma_k^2|\mathbf x-\mathbf c_k|^2$ and $\rho_K=\sum_k w_k q_k^{-\alpha_k}$. Differentiation of one summand begins from $\nabla q_k=2\sigma_k^2(\mathbf x-\mathbf c_k)$. The chain rule gives
-
-$$
-\nabla(q_k^{-\alpha_k})=-\alpha_k q_k^{-\alpha_k-1}\nabla q_k=-2\alpha_k\sigma_k^2(\mathbf x-\mathbf c_k)\,q_k^{-\alpha_k-1},
-$$
-
-and therefore
-
-$$
-\nabla\rho_K=-2\sum_k\alpha_k w_k\sigma_k^2(\mathbf x-\mathbf c_k)\,q_k^{-\alpha_k-1}.
-$$
-
-The Hessian follows by the product rule on $(\mathbf x-\mathbf c_k)\,q_k^{-\alpha_k-1}$. The derivative of the vector factor is $\mathbf I$. The derivative of the scalar factor is
-
-$$
-\nabla(q_k^{-\alpha_k-1})=-(\alpha_k+1)q_k^{-\alpha_k-2}\nabla q_k=-2(\alpha_k+1)\sigma_k^2(\mathbf x-\mathbf c_k)\,q_k^{-\alpha_k-2}.
-$$
-
-Collecting the coefficient $-2\alpha_k w_k\sigma_k^2$ already present in the gradient produces
-
-$$
-\nabla^2\rho_K
-=\sum_k w_k\Big[-2\alpha_k\sigma_k^2 q_k^{-\alpha_k-1}\mathbf I
-+4\alpha_k(\alpha_k+1)\sigma_k^4(\mathbf x-\mathbf c_k)(\mathbf x-\mathbf c_k)^{\!\top}q_k^{-\alpha_k-2}\Big].
-$$
-
-The Laplacian is the trace. The identity contributes a factor $3$, and the rank-one term contributes $|\mathbf x-\mathbf c_k|^2$, so
-
-$$
-\Delta\rho_K
-=\sum_k w_k\Big[-6\alpha_k\sigma_k^2 q_k^{-\alpha_k-1}
-+4\alpha_k(\alpha_k+1)\sigma_k^4|\mathbf x-\mathbf c_k|^2 q_k^{-\alpha_k-2}\Big].
-$$
-
-**General (anisotropic) cores.** With $q_k=1+(\mathbf x-\mathbf c_k)^{\!\top}\mathbf S_k(\mathbf x-\mathbf c_k)$ one has $\nabla q_k=2\mathbf S_k(\mathbf x-\mathbf c_k)$ and $\nabla^2q_k=2\mathbf S_k$, so the same chain rule gives
+With $q_k=1+(\mathbf x-\mathbf c_k)^{\!\top}\mathbf S_k(\mathbf x-\mathbf c_k)$ ($\mathbf S_k=\sigma_k^2\mathbf I$ isotropic), $\nabla q_k=2\mathbf S_k(\mathbf x-\mathbf c_k)$, $\nabla^2q_k=2\mathbf S_k$, and the chain rule,
 
 $$
 \nabla\rho_K=-2\sum_k\alpha_kw_k\,q_k^{-\alpha_k-1}\,\mathbf S_k(\mathbf x-\mathbf c_k),
@@ -6325,31 +2919,24 @@ $$
 $$
 
 $$
-\Delta\rho_K=\sum_kw_k\Big[-2\alpha_k q_k^{-\alpha_k-1}\operatorname{tr}\mathbf S_k+4\alpha_k(\alpha_k+1)q_k^{-\alpha_k-2}\,|\mathbf S_k(\mathbf x-\mathbf c_k)|^2\Big],
+\Delta\rho_K=\sum_kw_k\Big[-2\alpha_k q_k^{-\alpha_k-1}\operatorname{tr}\mathbf S_k+4\alpha_k(\alpha_k+1)q_k^{-\alpha_k-2}\,|\mathbf S_k(\mathbf x-\mathbf c_k)|^2\Big].
 $$
 
-which reduce to the formulae above for $\mathbf S_k=\sigma_k^2\mathbf I$. The derivatives with respect to the kernel parameters, used by the refit of Section 9.10, are
+In the isotropic case $\operatorname{tr}\mathbf S_k=3\sigma_k^2$ and $|\mathbf S_k(\mathbf x-\mathbf c_k)|^2=\sigma_k^4|\mathbf x-\mathbf c_k|^2$. The parameter derivatives used by the refit of Section 9.10 are
 
 $$
 \frac{\partial\rho_k}{\partial w_k}=q_k^{-\alpha_k},\qquad
 \frac{\partial\rho_k}{\partial\mathbf c_k}=2\alpha_kw_k\,q_k^{-\alpha_k-1}\,\mathbf S_k(\mathbf x-\mathbf c_k),\qquad
-\frac{\partial\rho_k}{\partial\mathbf S_k}=-\alpha_kw_k\,q_k^{-\alpha_k-1}\,(\mathbf x-\mathbf c_k)(\mathbf x-\mathbf c_k)^{\!\top},
+\frac{\partial\rho_k}{\partial\mathbf S_k}=-\alpha_kw_k\,q_k^{-\alpha_k-1}\,(\mathbf x-\mathbf c_k)(\mathbf x-\mathbf c_k)^{\!\top}.
 $$
 
-the last one as a symmetric matrix-valued derivative (the directional derivative along a symmetric $\delta\mathbf S$ is the Frobenius product with $\delta\mathbf S$). At $\mathbf x=\mathbf c_k$ the $k$-th summand has $\nabla\rho_k=\mathbf 0$ and $\nabla^2\rho_k=-2\alpha_kw_k\mathbf S_k$.
+The last is a symmetric matrix derivative (Frobenius product with $\delta\mathbf S$). At $\mathbf x=\mathbf c_k$ the $k$-th summand has $\nabla\rho_k=\mathbf 0$ and $\nabla^2\rho_k=-2\alpha_kw_k\mathbf S_k$.
 
 ---
 
 ## 6.2 Poloidal–toroidal cross-coupling in the mass block and in the viscous block
 
-**Proposition 6.1 (Selection rule).** Expand the weight, either $\rho$ or $\eta$, as $\sum_{L,M}a_{LM}(r)Y_{LM}$. The bilinear forms between a poloidal field $\mathcal P_{\ell m}$ and a toroidal field $\mathcal T_{\ell'm'}$,
-
-$$
-M_{PT}=\int\rho\,\mathcal P\cdot\mathcal T,\qquad
-K_{PT}=\int 2\eta\,\mathbf D(\mathcal P):\mathbf D(\mathcal T),
-$$
-
-can be nonzero only when the following necessary conditions hold simultaneously:
+**Proposition 6.1 (Selection rule).** Expand the weight ($\rho$ or $\eta$) as $\sum a_{LM}(r)Y_{LM}$. Then $M_{PT}=\int\rho\,\mathcal P\cdot\mathcal T$ and $K_{PT}=\int2\eta\,\mathbf D(\mathcal P):\mathbf D(\mathcal T)$, between $\mathcal P_{\ell m}$ and $\mathcal T_{\ell'm'}$, can be nonzero only if
 
 $$
 \ell+\ell'+L\ \text{is odd},\qquad
@@ -6357,130 +2944,87 @@ $$
 m'=m+M.
 $$
 
-Under a spherically symmetric weight, whose only component has $L=0$, one has $M_{PT}=K_{PT}=0$, and the poloidal and toroidal blocks separate diagonally.
+A spherically symmetric weight ($L=0$ only) gives $M_{PT}=K_{PT}=0$.
 
-*Proof.* Under a spherically symmetric weight, $\mathcal P_{\ell m}$ and $\mathcal T_{\ell m}$ belong to the same representation of total angular momentum $J=\ell$. Their parities are $(-1)^{\ell+1}$ and $(-1)^\ell$, which are opposite, so they are orthogonal in an inner product that conserves $J$. Proposition 5.7 is the direct verification for the mass block. When the weight contains $Y_{LM}$, the parity factor $(-1)^L$ and the triangular rule for Gaunt coefficients give the conditions above, and conservation of $M$ gives $m'=m+M$. ∎
+*Proof.* Under a symmetric weight, $\mathcal P_{\ell m}$ and $\mathcal T_{\ell m}$ have the same total angular momentum $J=\ell$ but opposite parities, $(-1)^{\ell+1}$ and $(-1)^\ell$, so they are orthogonal (Proposition 5.7 verifies this for the mass block). A weight $Y_{LM}$ adds the parity $(-1)^L$, the Gaunt triangle rule, and conservation of $M$. ∎
 
-**Explicit cross expression for the mass block.** For $\Phi=g Y_{\ell m}$ and $\Psi=f Y_{\ell'm'}$,
+For $\Phi=gY_{\ell m}$ and $\Psi=fY_{\ell'm'}$,
 
 $$
 M_{PT}
 =\int_0^R r\,(rg)'\,f
-\Big[\int_{S^2}\rho\ \mathbf e_r\cdot\big(\nabla_{S^2}Y_{\ell m}\times\nabla_{S^2}Y_{\ell'm'}\big)\,d\hat{\boldsymbol\omega}\Big]dr.
+\Big[\int_{S^2}\rho\ \mathbf e_r\cdot\big(\nabla_{S^2}Y_{\ell m}\times\nabla_{S^2}Y_{\ell'm'}\big)\,d\hat{\boldsymbol\omega}\Big]dr,
 $$
 
-The bracket is the integral of the angular structure of $\rho$ against the Poisson bracket of two spherical gradients. Consequently $M_{PT}\ne 0$ holds in general whenever the material has a dipole or a higher angular asymmetry ($L\ge 1$), or whenever the star-shaped boundary $R(\hat{\boldsymbol\omega})$ is not spherically symmetric, so that the domain of integration depends on direction. The poloidal and toroidal equations are then coupled through the mass operator.
+the angular structure of $\rho$ against the Poisson bracket of two spherical gradients. So $M_{PT}\ne0$ in general whenever the material has angular asymmetry ($L\ge1$), or whenever the boundary is not a sphere about $O$ ($R(\hat{\boldsymbol\omega})$ not constant for a star-shaped body; $\mathcal V\ne B_*$ on the general route), because then the integration domain depends on direction.
 
 ---
 
 ## 6.3 The baroclinic source
 
-**Proposition 6.2 (Baroclinic source in weak form).** For an arbitrary smooth vector potential $\mathbf A$ and a test velocity $\mathbf w=\nabla\times\mathbf A$,
+**Proposition 6.2 (Baroclinic source in weak form).** For a smooth vector potential $\mathbf A$ and $\mathbf w=\nabla\times\mathbf A$,
 
 $$
 \boxed{
 \int_{\mathcal V}\rho\,\mathbf g_0\cdot\nabla\times\mathbf A\,dV
 =\int_{\mathcal V}\mathbf A\cdot\nabla\times(\rho\mathbf g_0)\,dV
-+\oint_\Gamma\mathbf n\cdot(\mathbf A\times\rho\mathbf g_0)\,dS.}
++\oint_\Gamma\mathbf n\cdot(\mathbf A\times\rho\mathbf g_0)\,dS,}
 $$
 
-When $\mathbf g_0=\nabla W$, one has $\nabla\times(\rho\nabla W)=\nabla\rho\times\nabla W$.
+and $\nabla\times(\rho\nabla W)=\nabla\rho\times\nabla W$.
 
-*Proof.* The pointwise identity $\nabla\cdot(\mathbf A\times\mathbf F)=\mathbf F\cdot(\nabla\times\mathbf A)-\mathbf A\cdot(\nabla\times\mathbf F)$, applied to $\mathbf F=\rho\mathbf g_0$ and integrated, produces the volume terms. The divergence theorem converts $\int\nabla\cdot(\mathbf A\times\mathbf F)$ into the stated boundary integral. If $\mathbf g_0=\nabla W$, then $\nabla\times(\rho\nabla W)=\nabla\rho\times\nabla W+\rho\nabla\times\nabla W$, and the second summand vanishes. ∎
+*Proof.* Integrate $\nabla\cdot(\mathbf A\times\mathbf F)=\mathbf F\cdot\nabla\times\mathbf A-\mathbf A\cdot\nabla\times\mathbf F$ with $\mathbf F=\rho\mathbf g_0$, and note $\nabla\times\nabla W=0$. ∎
 
-
-**Corollary 6.3 (Poloidal and toroidal sources).** Take $\mathbf A_{\mathrm{pol}}=\nabla\phi_t\times\mathbf r$, so that $\nabla\times\mathbf A_{\mathrm{pol}}=\mathcal P[\phi_t]$, and $\mathbf A_{\mathrm{tor}}=\psi_t\mathbf r$, so that $\nabla\times\mathbf A_{\mathrm{tor}}=\mathcal T[\psi_t]$. With $\mathbf g_0=\nabla W$,
+**Corollary 6.3 (Poloidal and toroidal sources).** With $\mathbf A_{\rm pol}=\nabla\phi_t\times\mathbf r$ (curl $\mathcal P[\phi_t]$), $\mathbf A_{\rm tor}=\psi_t\mathbf r$ (curl $\mathcal T[\psi_t]$), and $\mathbf g_0=\nabla W$,
 
 $$
-\begin{aligned}
 F^{\mathrm{bc}}_{\mathrm{pol}}[\phi_t]
-&=\int_{\mathcal V}\nabla\phi_t\cdot\big[\nabla\rho\,(\mathbf r\cdot\nabla W)-\nabla W\,(\mathbf r\cdot\nabla\rho)\big]\,dV\\
-&\qquad+\oint_\Gamma\rho\,(\nabla\phi_t\times\mathbf r)\cdot(\nabla W\times\mathbf n)\,dS,
-\end{aligned}
+=\int_{\mathcal V}\nabla\phi_t\cdot\big[\nabla\rho\,(\mathbf r\cdot\nabla W)-\nabla W\,(\mathbf r\cdot\nabla\rho)\big]\,dV
++\oint_\Gamma\rho\,(\nabla\phi_t\times\mathbf r)\cdot(\nabla W\times\mathbf n)\,dS,
 $$
 
 $$
 F^{\mathrm{bc}}_{\mathrm{tor}}[\psi_t]
 =\int_{\mathcal V}\psi_t\ \mathbf r\cdot(\nabla\rho\times\nabla W)\,dV
-+\oint_\Gamma\rho\,\psi_t\ \mathbf r\cdot(\nabla W\times\mathbf n)\,dS.
++\oint_\Gamma\rho\,\psi_t\ \mathbf r\cdot(\nabla W\times\mathbf n)\,dS,
 $$
 
-In spherical coordinates,
+using $\mathbf r\times(\nabla\rho\times\nabla W)=\nabla\rho(\mathbf r\cdot\nabla W)-\nabla W(\mathbf r\cdot\nabla\rho)$. Since $\mathbf r\cdot(\nabla\rho\times\nabla W)=r^{-1}\mathbf e_r\cdot(\nabla_{S^2}\rho\times\nabla_{S^2}W)$, only non-parallel angular gradients of $\rho$ and $W$ drive toroidal flow.
 
-$$
-\mathbf r\cdot(\nabla\rho\times\nabla W)=\frac1r\,\mathbf e_r\cdot(\nabla_{S^2}\rho\times\nabla_{S^2}W).
-$$
-
-Only a failure of the angular gradients of $\rho$ and of $W$ to be parallel drives a toroidal flow. The first poloidal formula follows from the vector identity
-
-$$
-\mathbf r\times(\nabla\rho\times\nabla W)=\nabla\rho\,(\mathbf r\cdot\nabla W)-\nabla W\,(\mathbf r\cdot\nabla\rho),
-$$
-
-contracted against $\nabla\phi_t$ after the integration by parts of Proposition 6.2 has been written with $\mathbf A_{\mathrm{pol}}=\nabla\phi_t\times\mathbf r$.
-
-**Proposition 6.4 (Modal selection rule for the baroclinic source).** If the angular harmonics of $\rho$ and of $W$ have degrees $L_1$ and $L_2$, a toroidal source at degree $\ell'$ can be nonzero only when $L_1+L_2+\ell'$ is odd. This is the antisymmetry, under parity, of $\mathbf e_r\cdot(\nabla_{S^2}Y\times\nabla_{S^2}Y')$. When $\rho=\rho(W)$, so that isopycnals and equipotentials coincide, $\nabla\rho\times\nabla W=\mathbf 0$. The volume source vanishes and only the surface term remains.
+**Proposition 6.4 (Modal selection rule for the baroclinic source).** If $\rho$ and $W$ have angular degrees $L_1$ and $L_2$, a toroidal source at degree $\ell'$ requires $L_1+L_2+\ell'$ odd, by the parity antisymmetry of $\mathbf e_r\cdot(\nabla_{S^2}Y\times\nabla_{S^2}Y')$. If $\rho=\rho(W)$ (isopycnals equal equipotentials), the volume source vanishes and only the surface term remains.
 
 ---
 
 # 7. Rotation: Coriolis cross-coupling and the full nonlinear block system
 
----
-
 ## 7.1 The curl identity for the Coriolis term
 
-**Lemma 7.1.** If $\nabla\cdot\mathbf v=0$ and $\boldsymbol\Omega=\omega\mathbf e_z$ is a constant vector, then
-
-$$
-\nabla\times(\boldsymbol\Omega\times\mathbf v)=-(\boldsymbol\Omega\cdot\nabla)\mathbf v=-\omega\,\partial_z\mathbf v.
-$$
-
-*Proof.* The product rule for the curl of a cross product is
-
-$$
-\nabla\times(\boldsymbol\Omega\times\mathbf v)
-=\boldsymbol\Omega\,(\nabla\cdot\mathbf v)-\mathbf v\,(\nabla\cdot\boldsymbol\Omega)+(\mathbf v\cdot\nabla)\boldsymbol\Omega-(\boldsymbol\Omega\cdot\nabla)\mathbf v.
-$$
-
-The first term vanishes by incompressibility. The second and third vanish because $\boldsymbol\Omega$ is constant. The remaining term is $-\omega\partial_z\mathbf v$. ∎
-
+**Lemma 7.1.** If $\nabla\cdot\mathbf v=0$ and $\boldsymbol\Omega=\omega\mathbf e_z$ is constant, then $\nabla\times(\boldsymbol\Omega\times\mathbf v)=-(\boldsymbol\Omega\cdot\nabla)\mathbf v=-\omega\partial_z\mathbf v$. This follows from $\nabla\times(\boldsymbol\Omega\times\mathbf v)=\boldsymbol\Omega(\nabla\cdot\mathbf v)-\mathbf v(\nabla\cdot\boldsymbol\Omega)+(\mathbf v\cdot\nabla)\boldsymbol\Omega-(\boldsymbol\Omega\cdot\nabla)\mathbf v$.
 
 **Proposition 7.2 (Weak form of the Coriolis term).** For $\mathbf w=\nabla\times\mathbf A$,
 
 $$
-\begin{aligned}
 C(\mathbf w,\mathbf v)
-&:=2\int_{\mathcal V}\rho\,(\boldsymbol\Omega\times\mathbf v)\cdot\mathbf w\,dV\\
-&=\int_{\mathcal V}\mathbf A\cdot\big[2\nabla\rho\times(\boldsymbol\Omega\times\mathbf v)-2\omega\rho\,\partial_z\mathbf v\big]\,dV
+:=2\int_{\mathcal V}\rho\,(\boldsymbol\Omega\times\mathbf v)\cdot\mathbf w\,dV
+=\int_{\mathcal V}\mathbf A\cdot\big[2\nabla\rho\times(\boldsymbol\Omega\times\mathbf v)-2\omega\rho\,\partial_z\mathbf v\big]\,dV
 +2\oint_\Gamma\mathbf n\cdot\big(\mathbf A\times\rho\,\boldsymbol\Omega\times\mathbf v\big)\,dS,
-\end{aligned}
 $$
 
-and $C$ is skew in $(\mathbf w,\mathbf v)$: $C(\mathbf w,\mathbf v)=-C(\mathbf v,\mathbf w)$ and $C(\mathbf v,\mathbf v)=0$.
-
-*Proof.* Apply Proposition 6.2 to $\mathbf F=2\rho\,\boldsymbol\Omega\times\mathbf v$. The curl splits as
-
-$$
-\nabla\times(\rho\mathbf F_0)=\nabla\rho\times\mathbf F_0+\rho\nabla\times\mathbf F_0
-$$
-
-with $\mathbf F_0=\boldsymbol\Omega\times\mathbf v$, and Lemma 7.1 replaces $\nabla\times\mathbf F_0$ by $-\omega\partial_z\mathbf v$. Skew-symmetry is the scalar identity $(\boldsymbol\Omega\times\mathbf v)\cdot\mathbf w=-(\boldsymbol\Omega\times\mathbf w)\cdot\mathbf v$. ∎
-
-The Coriolis force therefore does no work. It does not change the energy budget. It only redistributes energy among modes.
+and $C$ is skew: $C(\mathbf w,\mathbf v)=-C(\mathbf v,\mathbf w)$ and $C(\mathbf v,\mathbf v)=0$. (Apply Proposition 6.2 to $2\rho\boldsymbol\Omega\times\mathbf v$ with Lemma 7.1. Skewness is $(\boldsymbol\Omega\times\mathbf v)\cdot\mathbf w=-(\boldsymbol\Omega\times\mathbf w)\cdot\mathbf v$.) The Coriolis force does no work; it only redistributes energy among modes.
 
 ---
 
 ## 7.2 Selection rules and explicit cross coefficients
 
-**Proposition 7.3 (Selection rule).** Let $R$ be constant and let $\rho=\rho(r)$. In a spherical-harmonic expansion, the form $C$ satisfies the following.
+**Proposition 7.3 (Selection rule).** For constant $R$ and $\rho=\rho(r)$:
 
-1. The order $m$ is conserved, because $\boldsymbol\Omega\times$ is invariant under rotations about the $z$-axis.
-2. Poloidal–poloidal blocks and toroidal–toroidal blocks connect only a single degree $\ell$.
-3. A block between a poloidal field of degree $\ell$ and a toroidal field of degree $\ell'$ can be nonzero only under the **necessary** selection rule $\ell'=\ell\pm 1$. The actual coefficient depends on an angular overlap integral and may still vanish.
+1. $m$ is conserved ($\boldsymbol\Omega\times$ is invariant under rotation about $z$);
+2. poloidal–poloidal and toroidal–toroidal blocks connect a single degree $\ell$;
+3. a poloidal-$\ell$/toroidal-$\ell'$ block can be nonzero only if $\ell'=\ell\pm1$. This is necessary, not sufficient, since the overlap integral may vanish.
 
-*Proof.* The map $\boldsymbol\Omega\times$ is a vector operator of rank one. By the Wigner–Eckart theorem the change in total angular momentum $J$ lies in $\{0,\pm 1\}$, and both the poloidal and the toroidal field have $J=\ell$. The parity of a poloidal field is $(-1)^{\ell+1}$ and the parity of a toroidal field is $(-1)^\ell$, while $\boldsymbol\Omega\times$ preserves parity. Fields of the same type are therefore coupled only at $\Delta J=0$, and fields of opposite type only at $\Delta J=\pm 1$. ∎
+*Proof.* $\boldsymbol\Omega\times$ is a rank-one vector operator, so by Wigner–Eckart $\Delta J\in\{0,\pm1\}$. Poloidal and toroidal fields have $J=\ell$ and opposite parities, and $\boldsymbol\Omega\times$ preserves parity. ∎
 
-**Proposition 7.4 (Explicit cross coefficients).** Let $\mathcal V$ be the ball $r<R$ with $R$ constant, and let $\rho=\rho(r)$. Let the poloidal potential be $\Phi=g(r)Y_{\ell m}$ and the toroidal test potential be $\psi_t=f(r)Y_{\ell'm}$, with $\ell'=\ell\pm 1$. Set
+**Proposition 7.4 (Explicit cross coefficients).** On the ball $r<R$ with $\rho=\rho(r)$, $\Phi=gY_{\ell m}$, $\psi_t=fY_{\ell'm}$, and $\ell'=\ell\pm1$, set
 
 $$
 h=\Lambda_\ell g-(rg)',\quad
@@ -6503,68 +3047,27 @@ $$
 
 and $C_{PT}=-C_{TP}^{\!\top}$.
 
-*Derivation.* Take $\mathbf A=\psi_t\mathbf r$ and $\mathbf F=\mathcal P[\Phi]$. Under spherical symmetry of $\rho$, one has $\nabla\rho\parallel\mathbf r$, so the volume term $\mathbf r\cdot(\nabla\rho\times\,\cdot\,)$ vanishes. On the sphere, $\mathbf n\parallel\mathbf r$, so the surface term $\mathbf n\cdot(\psi_t\mathbf r\times\,\cdot\,)$ vanishes as well. Proposition 7.2 therefore reduces to
+*Derivation.* With $\mathbf A=\psi_t\mathbf r$, the volume term with $\nabla\rho\parallel\mathbf r$ and the surface term with $\mathbf n\parallel\mathbf r$ vanish, leaving $C_{TP}=-2\omega\int\rho\psi_t\,\mathbf r\cdot\partial_z\mathbf v\,dV$. By Lemma 5.5, $\mathbf r\cdot\mathbf v=L^2\Phi$ and $v_z=\partial_z\partial_r(r\Phi)-z\Delta\Phi$. So
 
 $$
-C_{TP}=-2\omega\int\rho\,\psi_t\,\mathbf r\cdot\partial_z\mathbf v\,dV.
+\mathbf r\cdot\partial_z\mathbf v=\partial_z(\mathbf r\cdot\mathbf v)-v_z=\partial_z(hY_{\ell m})+r\cos\theta\,(\Delta_\ell g)Y_{\ell m}.
 $$
 
-The radial contraction of a derivative splits as $\mathbf r\cdot\partial_z\mathbf v=\partial_z(\mathbf r\cdot\mathbf v)-v_z$. For a poloidal field, Lemma 5.5 gives $\mathbf r\cdot\mathbf v=L^2\Phi$ and
+The recurrences $\partial_z(hY_{\ell m})=a_{\ell+1,m}\mathcal L^+_\ell h\,Y_{\ell+1,m}+a_{\ell m}\mathcal L^-_\ell h\,Y_{\ell-1,m}$ and $\cos\theta\,Y_{\ell m}=a_{\ell+1,m}Y_{\ell+1,m}+a_{\ell m}Y_{\ell-1,m}$ project onto $Y_{\ell\pm1,m}$. As a check, $h=r^\ell$ gives $\mathcal L^+_\ell h=0$: $\partial_z(r^\ell Y_{\ell m})$ has no degree $\ell+1$. ∎
 
-$$
-\mathbf v=\nabla\big(\partial_r(r\Phi)\big)-\mathbf r\,\Delta\Phi,
-$$
+**Example** ($\rho=1+r^2$, $R=1$, $m=0$):
 
-so the Cartesian component along $\mathbf e_z$ is $v_z=\partial_z\partial_r(r\Phi)-z\Delta\Phi$. Combining these identities,
+- $\ell=1\to2$ with $g=r^2(1+r)$, $f=r^3$: the direct triple integral and the formula both give $-2.1811658591$;
+- $\ell=2\to1$ with $g=r^3(1+r)$, $f=r^2$: both give $-9.6013101430$;
+- $\ell=1\to3$, and the $\ell=1$ poloidal–poloidal block: $O(10^{-16})$, as the selection rule requires.
 
-$$
-\begin{aligned}
-\mathbf r\cdot\partial_z\mathbf v
-&=\partial_z(L^2\Phi)-\partial_z\partial_r(r\Phi)+z\Delta\Phi\\
-&=\partial_z\big(L^2\Phi-\partial_r(r\Phi)\big)+z\Delta\Phi.
-\end{aligned}
-$$
-
-With $\Phi=g(r)Y_{\ell m}$, one has $L^2\Phi=\Lambda_\ell g\,Y_{\ell m}$ and $\partial_r(r\Phi)=(rg)'Y_{\ell m}$, hence
-
-$$
-L^2\Phi-\partial_r(r\Phi)=h Y_{\ell m}.
-$$
-
-The radial Laplacian of a separated harmonic is $\Delta\Phi=(\Delta_\ell g)\,Y_{\ell m}$, and $z=r\cos\theta$, so
-
-$$
-\mathbf r\cdot\partial_z\mathbf v
-=\partial_z(h Y_{\ell m})+r\cos\theta\,(\Delta_\ell g)\,Y_{\ell m}.
-$$
-
-The standard recurrences
-
-$$
-\partial_z\big(h\,Y_{\ell m}\big)
-=a_{\ell+1,m}\,\mathcal L^{+}_\ell h\ Y_{\ell+1,m}
-+a_{\ell m}\,\mathcal L^{-}_\ell h\ Y_{\ell-1,m},
-$$
-
-$$
-\cos\theta\,Y_{\ell m}=a_{\ell+1,m}Y_{\ell+1,m}+a_{\ell m}Y_{\ell-1,m}
-$$
-
-project onto $Y_{\ell\pm 1,m}$ and give the boxed coefficient. The first recurrence is consistent with the gradient formula for the solid harmonic $r^\ell Y_{\ell m}$: if $h=r^\ell$, then $\mathcal L^{+}_\ell h=\ell r^{\ell-1}-\ell r^{\ell-1}=0$, so $\partial_z(r^\ell Y_{\ell m})$ has no component of degree $\ell+1$. ∎
-
-**Example.** Take $\rho=1+r^2$, $R=1$, and $m=0$.
-
-- From $\ell=1$ to $\ell'=2$, with $g=r^2(1+r)$ and $f=r^3$: a direct triple integral gives $-2.1811658591$, and the formula gives $-2.1811658591$.
-- From $\ell=2$ to $\ell'=1$, with $g=r^3(1+r)$ and $f=r^2$: the direct value is $-9.6013101430$, and the formula gives $-9.6013101430$.
-- From $\ell=1$ to $\ell'=3$, and the same-degree poloidal–poloidal block from $\ell=1$ to $\ell'=1$, both are $O(10^{-16})$, in agreement with the selection rule.
-
-**Corollary 7.5 (The toroidal component cannot be omitted).** If $\omega\ne 0$ and if $\mathcal L^{\pm}_\ell h+r\Delta_\ell g$ is not identically zero, the term $C_{TP}\,u_P$ produced in the toroidal equation by the poloidal coefficients is nonzero. The residual of the toroidal equation cannot be cancelled by poloidal coefficients, so the toroidal coefficient $s_{\ell'km}$ must be retained as an independent unknown. The same conclusion applies to the baroclinic volume source $F^{\mathrm{bc}}_{\mathrm{tor}}\ne 0$ of Section 6.3, which is nonzero when the angular gradients of $\rho$ and of $W$ are not parallel: only a toroidal coefficient can carry it.
+**Corollary 7.5 (The toroidal component cannot be omitted).** If $\omega\ne0$ and $\mathcal L^\pm_\ell h+r\Delta_\ell g\not\equiv0$, then $C_{TP}u_P\ne0$ in the toroidal equation. No poloidal coefficient can cancel it, so the toroidal coefficients $s_{\ell'km}$ are independent unknowns. The same holds for the baroclinic $F^{\rm bc}_{\rm tor}\ne0$ when the angular gradients of $\rho$ and $W$ are not parallel.
 
 ---
 
 ## 7.3 The full nonlinear block system
 
-Write the velocity-coefficient vector as $\mathbf u=(\mathbf q,\mathbf s)$, poloidal then toroidal. Items (i) and (ii) of Proposition 5.9 combine into the $2\times 2$ block system
+With $\mathbf u=(\mathbf q,\mathbf s)$ (poloidal, toroidal), items (i)–(ii) of Proposition 5.9 give
 
 $$
 \boxed{
@@ -6583,173 +3086,278 @@ C_{TP}&C_{TT}
 =\begin{pmatrix}F_P\\ F_T\end{pmatrix}.}
 $$
 
-The integrals that define the blocks are those of Proposition 5.9, and they satisfy the following.
-
 | Block | Origin | Symmetry and coupling |
 |---|---|---|
-| $M_{XY}$ | inertia | symmetric positive definite on $\ell\ge 1$; $M_{PT}\ne 0$ comes from an angular asymmetry of the density or of the boundary (Proposition 6.1) |
-| $C_{XY}$ | Coriolis | skew as a whole; $C_{PT}$ and $C_{TP}$ connect $\ell\leftrightarrow\ell\pm 1$ (Propositions 7.3 and 7.4); $C_{PP}$ and $C_{TT}$ stay at the same degree |
-| $K_X$ | viscosity | depends on $(\mathbf u,p)$; $K_{PT}\ne 0$ comes from an angular inhomogeneity of $\eta$ (Proposition 6.1); the Newton tangent is Section 5.3 |
-| $N_X$ | convection | trilinear; poloidal and toroidal components couple to each other |
-| $F_X$ | gravity, centrifugation, baroclinicity, traction | the baroclinic part $F^{\mathrm{bc}}_X$ is Corollary 6.3; the surface traction is Corollary 5.3 |
+| $M_{XY}$ | inertia | SPD on $\ell\ge1$; $M_{PT}\ne0$ from angular asymmetry of density or boundary (Proposition 6.1) |
+| $C_{XY}$ | Coriolis | skew; $C_{PT},C_{TP}$ connect $\ell\leftrightarrow\ell\pm1$ (Propositions 7.3–7.4); $C_{PP},C_{TT}$ at the same degree |
+| $K_X$ | viscosity | depends on $(\mathbf u,p)$; $K_{PT}\ne0$ from angular inhomogeneity of $\eta$; tangent in Section 5.3 |
+| $N_X$ | convection | trilinear; couples poloidal and toroidal |
+| $F_X$ | gravity, centrifugation, baroclinicity, traction | $F^{\rm bc}_X$ by Corollary 6.3; traction by Corollary 5.3 |
 
-The system is solved together with the pressure equation (iii), the constraint $\int q\,\nabla\cdot\mathbf v=0$ (Proposition 5.10), density transport, and the boundary kinematics of Section 5.1. Every basic unknown $(\mathbf v,p,\rho,R)$ appears, and the pressure is an independent unknown.
+It is solved with the pressure equation (iii), the constraint of Proposition 5.10, density transport, and the boundary kinematics of Section 5.1. Every unknown $(\mathbf v,p,\rho,\Gamma)$ appears, and the pressure is independent.
 
-**Geometric connection of moving basis functions, and the ALE weak form.** When the boundary $R(\hat{\boldsymbol\omega},t)$ deforms in time, the basis fields $\mathbf B_\alpha$ depend on $R(t)$ through $\zeta=r/R$ and through the factors $R^2$ and $R$. Their partial time derivative $\partial_t\mathbf B_\alpha$ at fixed $\mathbf x$ induces, inside the inertial term, the volume matrix
+**Moving basis functions and the ALE weak form.** When the basis radius changes in time ($R_*(t)$ on the general route, $R(\hat{\boldsymbol\omega},t)$ in the star-shaped dynamic mode), the basis fields depend on it through $\zeta=r/R$ and the factors $R^2$, $R$. Their time derivative at fixed $\mathbf x$ gives
 
 $$
 (\mathbf G)_{\beta\alpha}=\int_{\mathcal V}\rho\,\mathbf B_\beta\cdot\partial_t\mathbf B_\alpha\,dV,\qquad
 \partial_t\mathbf M_\Gamma=\mathbf G+\mathbf G^{\!\top}+\mathbf M_{\partial\mathcal V}+\mathbf M_{\partial_t\rho},
 $$
 
-where $\mathbf M_{\partial\mathcal V}$ is the Reynolds boundary term of Section 9.1. The matrix $\mathbf G$ is **not** a term that can be absorbed into the surface velocity $\mathbf c$. Its algebraic place depends on the mode.
+with $\mathbf M_{\partial\mathcal V}$ the Reynolds term of Section 9.1. $\mathbf G$ cannot be absorbed into the surface velocity $\mathbf c$.
 
-- **Quasi-static route (Mode B).** The inertial block $\mathbf M$, the connection $\mathbf G$, and the convection $\mathbf N$ are all absent (Section 2.8, B1). At each geological step the Stokes system (8.4′) is reassembled and solved on the currently frozen geometry $R^{(n)}$. Velocity is not carried from one step to the next, so a jump in the geometry requires no modal remapping.
-- **Dynamic free surface.** Take the ALE mesh velocity $\mathbf w_{\rm mesh}(\mathbf x)=(r/R)(\partial_t R)\,\mathbf e_r$, the radial stretch that holds $\hat{\boldsymbol\omega}$ and $\zeta$ fixed. On the boundary, $\mathbf w_{\rm mesh}\cdot\mathbf n=\partial_t R\,(\mathbf n\cdot\mathbf e_r)$, in agreement with Proposition 9.1. The source terms of this paper use the Eulerian weak form in fixed spatial coordinates: $\mathbf G$ is retained as written above, and the inertial convection still uses the physical velocity $\mathbf v$. If an implementation switches to an ALE time derivative, it must at the same time replace $\partial_t|_{\mathbf x}$ by $\partial_t|_{\rm ALE}$ and replace the convective velocity by $\mathbf v-\mathbf w_{\rm mesh}$. That alternative form must not be added again to the fixed-space matrix $\mathbf G$. Because $\nabla\cdot\mathbf w_{\rm mesh}\ne 0$, the Reynolds boundary term, $\mathbf G$, and the density term must still be assembled explicitly and included in the source $\boldsymbol{\mathcal S}$ of Section 9.1.
+- **Quasi-static route.** $\mathbf M$, $\mathbf G$, and $\mathbf N$ are all absent. (8.4′) is reassembled each step on the frozen geometry. Velocity is not carried across steps, so a geometry jump needs no modal remap.
+- **Dynamic free surface.** The ALE velocity is $\mathbf w_{\rm mesh}=(r/R)(\partial_tR)\mathbf e_r$, which fixes $\hat{\boldsymbol\omega}$ and $\zeta$, with $\mathbf w_{\rm mesh}\cdot\mathbf n=\partial_tR\,(\mathbf n\cdot\mathbf e_r)$ (Proposition 9.1). The sources here use the fixed-space Eulerian form: $\mathbf G$ is kept, and convection uses $\mathbf v$. An ALE formulation must switch the time derivative and the convective velocity ($\mathbf v-\mathbf w_{\rm mesh}$) together, and must not add $\mathbf G$ again. Since $\nabla\cdot\mathbf w_{\rm mesh}\ne0$, the Reynolds term, $\mathbf G$, and the density term are still assembled into $\boldsymbol{\mathcal S}$ (Section 9.1).
 
-**Remark (geometry of the boundary terms).** When $R=R(\hat{\boldsymbol\omega})$, the analytic reductions of Section 7.2 (Propositions 7.3 and 7.4, which assume $R$ constant and $\rho=\rho(r)$) no longer apply. The domain of integration and the normal $\mathbf n$ depend on direction, and every block must be integrated directly on $\mathcal V(R)$ by the integrals of Proposition 5.9.
+For non-constant $R$, or a general body, the reductions of Section 7.2 do not apply, and every block is integrated directly on $\mathcal V$ by Proposition 5.9.
 
 ---
 
 ## 7.4 Rigid modes and solvability
 
-**Proposition 7.6.** On the six rigid modes of Proposition 5.6, the viscous block and the pressure-coupling block both vanish. Consequently:
+**Proposition 7.6.** The viscous and pressure-coupling blocks vanish on the six rigid modes. Hence:
 
-1. A necessary condition for the quasi-static problem (with $M\dot{\mathbf u}$ and $N$ omitted) to have a solution is that the external force do no work on the rigid modes:
+1. **Necessary condition.** The quasi-static problem (without $M\dot{\mathbf u}$ and $N$) needs zero external work on the rigid modes:
 
 $$
 \int_{\mathcal V}\rho\,\mathbf g_0\,dV+\oint_\Gamma\mathbf t_{\mathrm{ext}}\,dS=\mathbf 0,\qquad
 \int_{\mathcal V}\rho\,\mathbf x\times\mathbf g_0\,dV+\oint_\Gamma\mathbf x\times\mathbf t_{\mathrm{ext}}\,dS=\mathbf 0.
 $$
 
-The resultant of self-gravity vanishes identically. The centrifugal force requires the centre of mass to lie on the axis of rotation and that axis to be a principal axis of inertia ($I_{xz}=I_{yz}=0$).
+Self-gravity has zero resultant. The centrifugal force needs the centre of mass on the spin axis and that axis principal ($I_{xz}=I_{yz}=0$).
 
-2. The solution is determined only up to a rigid mode. It is fixed by the six constraints $\int_{\mathcal V}\rho\,\mathbf v\,dV=\mathbf 0$ and $\int_{\mathcal V}\rho\,\mathbf x\times\mathbf v\,dV=\mathbf 0$.
+2. **Gauge.** The solution is fixed only up to a rigid mode, by $\int\rho\mathbf v=\mathbf 0$ and $\int\rho\mathbf x\times\mathbf v=\mathbf 0$.
 
-*Proof.* For item 1, take $\mathbf w$ to be a rigid mode. Then $\mathbf D(\mathbf w)=\mathbf 0$ and $\nabla\cdot\mathbf w=0$, so the stress term and the pressure term of Proposition 5.2 both vanish. Only the external-force terms remain, and they must vanish. For item 2, the rigid modes are the kernel of the viscous block, and additional constraints are required to determine the solution. ∎
+(Take $\mathbf w$ rigid in Proposition 5.2: the stress and pressure terms vanish. The rigid modes span the kernel of the viscous block.)
 
 ## 7.5 Range of validity
 
-The block system of this chapter is the complete dynamic weak form for $(\mathbf v,p,\rho,R)$. It imposes no geometric restriction on $\mathbf v$: the poloidal potential and the toroidal potential are present simultaneously, and the pressure enters as an independent unknown through $\boldsymbol\tau(\mathbf v,p)$ and through $-p\,\nabla\cdot\mathbf w$. The map $\mu(I)$ is not monotone in $\mathbf D$, so this chapter does not assert existence or uniqueness for the continuous problem. Discrete solvability of the block system depends on an inf–sup condition for the discrete spaces and on local well-posedness of the constitutive law. Those questions are treated separately in the discrete model from Chapter 8 onward. **The production route uses only the viscous block and the load block of this chapter.** The quasi-static system (8.4′) drops $M\dot{\mathbf u}$, the convective block, and the Coriolis block. (The Coriolis acceleration acts only on the eroded packets of Mode C, Section 2.8b, whose speeds are many orders of magnitude larger.) The density is frozen within a geological step and transported between steps (hypothesis A-ρL, Section 9.10). The pressure is supplied independently by the Poisson problem of Section 8.7. The full block system is used only in the dynamic mode (Section 9.9).
+The block system is the complete dynamic weak form for $(\mathbf v,p,\rho,\Gamma)$. It places no geometric restriction on $\mathbf v$: both potentials are present, and the pressure is independent. Since $\mu(I)$ is not monotone in $\mathbf D$, no continuous existence or uniqueness is claimed. Discrete solvability depends on an inf–sup condition and on local well-posedness of the law (Chapter 8 on).
 
-**Summary.** At the continuous level the model states, in full, the governing equations and the natural boundary conditions for a poloidal–toroidal double potential, a variable density, Coriolis coupling, and an independent pressure. At the discrete level, both the quasi-static route and the dynamic mode are given an algebraic form under Track A (a global solve) and under Track B (a spherical-harmonic block-diagonal surrogate; Appendix A.4). The deeper analytic consequences of a non-monotone rheology, and discrete well-posedness, are delimited by explicitly registered proof obligations (PO-1, PO-11, and PO-12; the dynamic mode adds PO-2 and PO-4; Track B is PO-8). Those obligations are not proved, and every conclusion that depends on them is marked. Within the scientific scope of a computational self-consistent field, the model closes. Its self-consistency is limited to the hypotheses and proof obligations that have been registered.
+**The quasi-static route uses only the viscous and load blocks.** (8.4′) drops $M\dot{\mathbf u}$, convection, and Coriolis; the Coriolis acceleration acts only on the far faster Mode C packets (Section 2.8b). The density is frozen within a step and transported between steps (A-ρL, Section 9.10). The pressure comes from Section 8.7. The full system serves only the dynamic mode (Section 9.9).
+
+At the continuous level the governing equations and natural boundary conditions are complete. Discretely, both routes have an algebraic form under Track A (global solve) and Track B (block-diagonal surrogate; Appendix A.4). Non-monotone rheology and discrete well-posedness are delimited by registered obligations (PO-1, PO-11, PO-12; dynamic: PO-2, PO-4; Track B: PO-8), and every dependent conclusion is marked.
 
 ---
 
 # 8. Radial Galerkin reduction and spatial assembly
 
-This chapter projects the continuous mixed weak form of Chapters 5–7 (Propositions 5.2, 5.9, and 5.10, and the full block system of Section 7.3) onto a finite-dimensional space $\mathbb V_h\times\mathbb Q_h$. The radial direction uses $K=4$ Jacobi modes and the angular direction uses a spherical-harmonic expansion. Both are Galerkin truncations. The resulting system is a reduced model of the three-dimensional problem, not an identity transformation of it. Symbols, spaces, and trace spaces obey Appendix A of this paper (A.1 for disambiguation of symbols, A.2 for function spaces and trace spaces).
+This chapter projects the weak form of Chapters 5–7 onto finite-dimensional $\mathbb V_h\times\mathbb Q_h$, with $K=4$ Jacobi modes in radius and spherical harmonics in angle. Both are Galerkin truncations: the result is a reduced model, not an identity transformation. Symbols and spaces follow Appendix A.1–A.2.
 
 ---
 
-## 8.1 The star-shaped domain and the Jacobi radial basis
+## 8.0 General geometry: removing the star-shaped hypothesis
 
-**Definition 8.1 (Geometry).** Let $R\in C^3(S^2\times[0,T])$ satisfy $0<R_{\min}\le R\le R_{\max}$. The material domain is the star-shaped set
+This section states the geometric hypothesis of the whole model and the general route that every chapter uses. Proposition 8.0.1 shows that a radial parametrization cannot be stretched to a body that is not star-shaped, whatever the constants or origin. 8.0.2 records the routes that do not work. 8.0.3 gives the general route (G1)–(G10), which is normative in Chapters 2, 4, 5, 8, 9, and 10. Formulas in a radial function $R(\hat{\boldsymbol\omega})$ remain only as the star-shaped special case, used for consistency checks and by the dynamic mode of Chapter 9 (N6).
+
+**Hypothesis (G).** $\mathcal V\subset\mathbb R^3$ is a bounded, connected, open polyhedral domain with Lipschitz boundary $\Gamma=\partial\mathcal V$, a closed, consistently oriented, embedded triangulation with vertices $\mathbf X_i$ and outward normal $\mathbf n$ (Section 1.1). It may have any genus. Its boundary $\Gamma$ may have several components, while $\mathcal V$ itself is connected; the inner components of $\Gamma$ bound sealed cavities $C_1,\dots,C_{N_c}$. The origin $O$ is the centre of mass (Section 10.4.4, 8b). $O\in\mathcal V$ is not assumed, only $O\notin\Gamma$. Write
 
 $$
-\mathcal V(R)=\{(r,\hat{\boldsymbol\omega}):0\le r<R(\hat{\boldsymbol\omega},t),\ \hat{\boldsymbol\omega}\in S^2\},\qquad
-\zeta=\frac{r}{R(\hat{\boldsymbol\omega},t)}\in[0,1).
+R_*:=\max_{\Gamma}|\mathbf x|,\qquad B_*:=\{|\mathbf x|<R_*\}\supset\mathcal V .
 $$
 
-**Definition 8.2 (Radial basis).** For $\ell\ge 1$ and $k=0,1,2,3$,
+### 8.0.1 Why the radial form cannot be extended
+
+**Proposition 8.0.1 (Star-shapedness is the sign of $\mathbf n\cdot\mathbf e_r$).** Let $\mathcal V$ satisfy (G) and suppose it is not star-shaped about $O$: there are $\mathbf x\in\mathcal V$ and $t\in(0,1)$ with $t\mathbf x\notin\overline{\mathcal V}$ (if $O\notin\overline{\mathcal V}$, every $\mathbf x$ and small $t$ qualify). Then there is an open set $\Sigma\subset S^2$ of directions with
+
+$$
+\Gamma^-:=\{\mathbf y\in\Gamma:\ \mathbf n(\mathbf y)\cdot\mathbf e_r(\mathbf y)<0\},\qquad
+\int_{\Gamma^-}\frac{|\mathbf n\cdot\mathbf e_r|}{|\mathbf y|^2}\,dS\ \ge\ |\Sigma|>0 ,
+$$
+
+so $\Gamma^-$ has positive area. Conversely, if $\mathbf n\cdot\mathbf e_r\ge c_0>0$ a.e., then $O\in\mathcal V$, every ray from $O$ crosses $\Gamma$ once, and $\mathcal V$ is star-shaped about $O$.
+
+*Proof.* $E=\mathbb R^3\setminus\overline{\mathcal V}$ and $\mathcal V$ are open. So there is an open cone $\Sigma$ of directions whose rays have a point of $E$ at some $s_1$ and a point of $\mathcal V$ at some $s_2>s_1$; between them the ray enters $\mathcal V$ through $\Gamma$. Rays through edges or vertices, or lying in a face plane, form a null set. So for almost every $\hat{\boldsymbol\omega}\in\Sigma$ the entry is a transversal crossing of a face interior, where $\mathbf e_r$ points inward and $\mathbf n\cdot\mathbf e_r<0$. The radial projection maps $\Gamma^-$ onto almost all of $\Sigma$ with area Jacobian $|\mathbf n\cdot\mathbf e_r|/|\mathbf y|^2\le\operatorname{dist}(O,\Gamma)^{-2}$, which gives the bound and $|\Gamma^-|>0$. Conversely, crossings alternate between exit and entry, and $\mathbf n\cdot\mathbf e_r>0$ makes every crossing an exit. If $O\notin\overline{\mathcal V}$, a ray from $O$ that meets $\mathcal V$ enters it first, and by the first part such entries occupy a set of positive area with $\mathbf n\cdot\mathbf e_r<0$, which the hypothesis excludes. So $O\in\overline{\mathcal V}$, hence $O\in\mathcal V$ because $O\notin\Gamma$ by (G). A ray from an interior $O$ ends outside, so its crossings reduce to a single exit. ∎
+
+**Corollary 8.0.2.** On a body that is not star-shaped about $O$, each of the following radial constructions is undefined, multivalued, or unbounded on a positive-area part of $\Gamma$, whatever the constants:
+
+- $R(\hat{\boldsymbol\omega})$, $\zeta=r/R$, and a velocity basis whose potentials carry $R(\hat{\boldsymbol\omega})$;
+- $\mathbf n=(R\mathbf e_r-\nabla_{S^2}R)/\sqrt{R^2+|\nabla_{S^2}R|^2}$ and $j=R^2/(\mathbf n\cdot\mathbf e_r)$ (Section 9.0);
+- $\partial_tR=\mathbf v\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$ (Proposition 9.1);
+- a radial increment $d/(\mathbf n\cdot\mathbf e_r)$ and a CFL bound divided by $\mathbf n\cdot\mathbf e_r$;
+- a radial depth $R(\hat{\boldsymbol\omega})-r$ and its gradient;
+- any condition $\mathbf n\cdot\mathbf e_r\ge c_0$.
+
+Moving the origin does not help. The rotating frame pins it to the centre of mass, and a body with empty kernel $\{\mathbf z:\mathcal V\text{ star-shaped about }\mathbf z\}$ is not star-shaped about any point. The radial parametrization must be replaced, not relaxed.
+
+### 8.0.2 Routes that do not work
+
+**(N1) A multi-sheet radial function.** Write the crossings as $R_1<\dots<R_{2J(\hat{\boldsymbol\omega})}$ and apply Sections 8.1–8.2 shell by shell. $J$ jumps on directions grazing $\Gamma$ ($\mathbf n\cdot\mathbf e_r=0$). There two sheets meet with $R_{2j}-R_{2j-1}\asymp\operatorname{dist}(\hat{\boldsymbol\omega},\partial\Sigma_j)^{1/2}$, so $|\nabla_{S^2}R_j|\to\infty$, $R_j\notin W^{1,\infty}$, and the shell coordinate $\zeta_j=(r-R_{2j-1})/(R_{2j}-R_{2j-1})$ has an unbounded Jacobian. The separated fields end on the cone over the grazing curve and do not join continuously, so they do not span a subspace of $H^1(\mathcal V)$. Every $1/(\mathbf n\cdot\mathbf e_r)$ is evaluated where it vanishes. On a polyhedron the grazing curve is a set of silhouette edges, with the same discontinuity. **Does not work.**
+
+**(N2) A different centre.** The kernel of a polyhedron is the intersection of the inner half-spaces of its faces (a linear program decides if it is empty). A centre $\mathbf z$ in it, with the frame origin kept at the centre of mass, makes Sections 8.1–10 hold with $\mathbf z$ for $O$. This enlarges the admissible class but does not remove the restriction. Bent or overhanging bodies, caves, and contact binaries with an offset narrow neck have empty kernels, and kernels can empty during an evolution. **Partial route only.**
+
+**(N3) A union of star-shaped pieces.** Couple pieces $\mathcal V_m$, star-shaped about $\mathbf z_m$, across interior interfaces by mortar or Nitsche conditions. Feasible for a fixed partition. But the partition is not unique and must be rebuilt as $\Gamma$ evolves, and the core connectivity of (B3) and the surface transport cross the interfaces. **Not adopted.**
+
+**(N4) A global map to the ball.** A diffeomorphism $F:B\to\mathcal V$ with the contravariant Piola transform $\mathbf v=(DF\hat{\mathbf w}/\det DF)\circ F^{-1}$ preserves solenoidality and normal flux exactly. However, such a map exists only for genus $0$ without cavities, its constants grow without bound across thin necks, and building $F$ for an evolving polyhedron has no closed form. **Correct within its class; not adopted.**
+
+**(N5) A change of topology.** No fixed-triangulation route, including the adopted one, represents fission, cave closure, or merging. That needs an implicit surface (level set) and a different Chapter 3 pipeline. **Not covered:** a self-intersecting update is rejected, and persistent rejection ends the run with the status *geometry invalid* (Section 10.4.3).
+
+**(N6) The dynamic modal transport.** Sections 9.1 and 9.3–9.8 transport modal surface fields by a spherical-harmonic transform in $\hat{\boldsymbol\omega}$, which needs a bijection $\Gamma\to S^2$. For genus $0$ a conformal map exists, but A-M would have to be restated for it; for genus $>0$ none exists. **This (unimplemented) mode stays star-shaped.**
+
+### 8.0.3 The general route
+
+**(G1) The enclosing-ball basis.** Build the basis of Definitions 8.2 and 8.5 with the constant radius $R_*$,
+
+$$
+\Phi=R_*^2\sum q_{\ell km}\,\psi_{\ell k}(r/R_*)\,Y_{\ell m},\qquad
+\Psi=R_*\sum s_{\ell km}\,\psi_{\ell k}(r/R_*)\,Y_{\ell m},
+$$
+
+restricted to $\mathcal V$. Every field is exactly divergence-free on $\mathbb R^3\setminus\{0\}$, Lipschitz on $B_*$ (Proposition 8.4, constant $R$), and defined on all of $\mathcal V$ whether or not $O\in\mathcal V$.
+
+**Proposition 8.0.3 (Linear independence on any open set).** A finite combination $\mathbf v$ of these fields that vanishes on a nonempty open $\mathcal O$ has all coefficients zero. Hence $\mathbf M_\Gamma=\int_{\mathcal V}\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,dV$ is SPD for $0<\rho_{\min}\le\rho\le\rho_{\max}$, and Lemma 8.12 holds on $\mathcal V$.
+
+*Proof.* Each potential is a sum of terms $r^nY_{\ell m}(\mathbf x/r)$ with $n\ge1$ (Proposition 8.3(3)). These are real-analytic on the connected set $\mathbb R^3\setminus\{0\}$, so $\mathbf v\equiv\mathbf 0$ there, in particular on $\{r<R_*\}$. Proposition 8.7 with $R\equiv R_*$ then gives $\mathbf q=\mathbf s=\mathbf 0$. Lemma 8.12 used only linear independence on $\mathcal V$. ∎
+
+**Proposition 8.0.4 (Rigid modes and the rank of the constraint).** With $R\equiv R_*$, the six rigid motions are exactly the $\ell=1$, $k=0$ modes (Proposition 5.6(3)), and $\operatorname{rank}\mathbf C_{\rm rigid}=6$ for every $\mathcal V$ of positive volume.
+
+*Proof.* On rigid modes, the pairing of the rows of $\mathbf C_{\rm rigid}$ with a second rigid motion is $\int_{\mathcal V}\rho(\mathbf a'+\boldsymbol\theta'\times\mathbf x)\cdot(\mathbf a+\boldsymbol\theta\times\mathbf x)\,dV$. This is the $L^2(\rho)$ Gram matrix of the rigid motions, which is positive definite because a rigid motion vanishing on an open set is zero. ∎
+
+The star-shaped exceptions — rigid motions outside $\mathbb V_h^\sigma$ (Section 8.5) and the $\ell=1$ case of Proposition 8.4 — do not arise.
+
+**Proposition 8.0.5 (Completeness; sealed cavities).** Assume the family is complete in $H^1_\sigma(B_*)$ (Section 8.9).
+
+1. If $\Gamma$ is connected, the restrictions are dense in $H^1_\sigma(\mathcal V)$.
+2. With sealed cavities, density holds after adding the flux modes $\mathbf v_j=\nabla|\mathbf x-\mathbf z_j|^{-1}$, $\mathbf z_j\in C_j$.
+
+*Proof (sketch).* A field of $H^1_\sigma(\mathcal V)$ with zero flux through every component of $\Gamma$ has a solenoidal $H^1$ extension to $B_*$, by solving a divergence problem in each component of $B_*\setminus\overline{\mathcal V}$ (Bogovskii operator on Lipschitz domains [13, Ch. III]). Approximate and restrict. A connected $\Gamma$ has zero flux by the divergence theorem. Each $\mathbf v_j$ is harmonic on $\overline{\mathcal V}$ with flux $\pm4\pi$ through $\partial C_j$ and $0$ through the other cavities. Being divergence-free in $\mathcal V$, it carries the opposite flux through the outer component of $\Gamma$: the outer surface moves in by the volume the cavity loses, as incompressibility requires. Subtracting $\sum_jc_j\mathbf v_j$ with the matching $c_j$ removes every cavity flux, and then the outer flux vanishes too by the divergence theorem, so the extension above applies. An incompressible body with a collapsing cavity carries such fluxes, but a field extended into the cavity cannot. ∎
+
+*Conditioning.* The restricted family is independent but not uniformly stable. Fields small on $\mathcal V$ and large on $B_*\setminus\mathcal V$ are the near-kernel of the restriction, so $\operatorname{cond}\mathbf M_\Gamma$ and $\operatorname{cond}\mathbf K$ grow with $L_{\max}$, quickly for elongated or bilobed bodies. Remedy: orthonormalize on $\mathcal V$ by a Cholesky factor of the $\eta$-free Gram matrix (computable exactly, Propositions 8.14–8.15) and report the condition number. Gaunt sparsity (Proposition 8.9) is lost, because the angular weight is the indicator of $\mathcal V$ on each sphere, so $\mathbf M_\Gamma$ and $\mathbf K$ are dense.
+
+**(G2) The volume quadrature: ray segments from $O$.**
+
+$$
+\int_{\mathcal V}f\,dV=\int_{S^2}\sum_{s=1}^{J(\hat{\boldsymbol\omega})}\int_{r_s^-(\hat{\boldsymbol\omega})}^{r_s^+(\hat{\boldsymbol\omega})}f(r\hat{\boldsymbol\omega})\,r^2\,dr\,d\Omega,
+$$
+
+with the segments of the RTFP ray from the field point $O$ (Section 3.6), and $r_1^-=0$ iff $O\in\mathcal V$. The rule is the angular rule times radial nodes per segment: Gauss–Jacobi with weight $r^2$ when $r_s^-=0$, Gauss–Legendre on $fr^2$ otherwise. All weights are positive. The star-shaped special case is $J\equiv1$, $r^-_1=0$, $r^+_1=R(\hat{\boldsymbol\omega})$. The endpoints jump or behave like a square root at silhouette directions, so a fixed angular rule converges slowly. Subdivide the cut angular cells, or tetrahedralize $\mathcal V$. Polynomial integrands (the $\eta$-free matrices of the even basis) are exact by Proposition 8.15.
+
+**(G3) The pressure datum by Nitsche's method [17].** With $R_*$ the pressure functions do not vanish on $\Gamma$, so $p_\Gamma$ is imposed weakly. With $\mathbf f=\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau$ and one global length $h_N=R_*$, seek $p_h\in\mathbb Q_h$ with $a_N(p_h,q)=\ell_N(q)$ for all $q\in\mathbb Q_h$:
+
+$$
+\begin{aligned}
+a_N(p,q)&=\int_{\mathcal V}\nabla p\cdot\nabla q\,dV-\oint_\Gamma\big(\partial_np\,q+p\,\partial_nq\big)\,dS+\frac{\gamma_N}{h_N}\oint_\Gamma p\,q\,dS,\\
+\ell_N(q)&=\int_{\mathcal V}\mathbf f\cdot\nabla q\,dV-\oint_\Gamma(\mathbf f\cdot\mathbf n)\,q\,dS-\oint_\Gamma p_\Gamma\,\partial_nq\,dS+\frac{\gamma_N}{h_N}\oint_\Gamma p_\Gamma\,q\,dS .
+\end{aligned}
+$$
+
+*Consistency.* If $\Delta p=\nabla\cdot\mathbf f$ and $p=p_\Gamma$ on $\Gamma$, then $\int\nabla p\cdot\nabla q-\oint\partial_np\,q=\int\mathbf f\cdot\nabla q-\oint\mathbf f\cdot\mathbf n\,q$, and the other terms coincide. At equilibrium $\nabla p=\mathbf f$ and the two flux terms cancel. On $\Gamma$, $\mathbf f$ means its interior trace $\mathbf f^-=\rho_K\mathbf g_{\rm eff}^-+(\nabla\cdot\boldsymbol\tau)^-$, the limit from inside $\mathcal V$ at the relative interior of each face. The interior identities of Section 8.7 for $\nabla\cdot\mathbf T_{\rm tide}$ and $\nabla\cdot\boldsymbol\tau_{\rm flow}$ hold in this one-sided sense, and the basis is analytic across $\Gamma$ (Proposition 8.0.3), so $(\nabla\cdot\boldsymbol\tau_{\rm flow})^-=\eta\Delta\mathbf v+2\mathbf D\nabla\eta$ is evaluated directly at boundary quadrature points. Edges and vertices are a null set of $\Gamma$.
+
+**Proposition 8.0.6 (Discrete coercivity).** Let $C_N:=\max\{h_N\|\partial_nq\|^2_{L^2(\Gamma)}/\|\nabla q\|^2_{L^2(\mathcal V)}:\ q\in\mathbb Q_h,\ \nabla q\ne\mathbf 0\}$, a generalized eigenvalue of size at most $\dim\mathbb Q_h$. (A $q$ with $\nabla q=\mathbf 0$ is constant on the connected $\mathcal V$ and has $\partial_nq=0$, so $h_N\|\partial_nq\|^2\le C_N\|\nabla q\|^2$ holds for every $q\in\mathbb Q_h$.) If $\gamma_N>2C_N$, then
+
+$$
+a_N(q,q)\ge\tfrac12\|\nabla q\|^2_{L^2(\mathcal V)}+\frac{\gamma_N-2C_N}{h_N}\|q\|^2_{L^2(\Gamma)},
+$$
+
+and the discrete problem is uniquely solvable.
+
+*Proof.* $2ab\le\delta a^2+b^2/\delta$ with $a=\sqrt{h_N}\|\partial_nq\|$, $b=\|q\|/\sqrt{h_N}$, and $\delta=1/(2C_N)$ gives $2\oint|\partial_nq\,q|\le\tfrac12\|\nabla q\|^2+2C_N\|q\|^2_\Gamma/h_N$. The right-hand side is a norm on $H^1$ by Friedrichs' inequality. ∎
+
+The continuous problem of Section 8.7 holds on every Lipschitz $\mathcal V$; only the discretization changes. In the star-shaped case the vanishing-trace basis may be kept.
+
+**(G4) The surface: vertices and normal increments.** $\Gamma$ is carried by its vertices, with fixed connectivity. Define
+
+$$
+\mathbf A_i:=\frac{\partial\,\mathrm{Vol}}{\partial\mathbf X_i}=\frac13\sum_{f\ni i}A_f\mathbf n_f,\qquad
+\mathbf N_i:=\mathbf A_i/|\mathbf A_i|,\qquad A_i=\tfrac13\sum_{f\ni i}A_f .
+$$
+
+*Proof of the identity.* $\mathrm{Vol}=\tfrac16\sum_f\mathbf X_a\cdot(\mathbf X_b\times\mathbf X_c)$, so $\partial\mathrm{Vol}/\partial\mathbf X_i=\tfrac16\sum_{f\ni i}\mathbf X_b\times\mathbf X_c$ for oriented faces $(i,b,c)$. Also $A_f\mathbf n_f=\tfrac12(\mathbf X_b\times\mathbf X_c+\mathbf X_i\times\mathbf X_b+\mathbf X_c\times\mathbf X_i)$, and $\sum_{f\ni i}(\mathbf X_b-\mathbf X_c)=\mathbf 0$ around a closed ring. ∎
+
+An update is $\mathbf X_i\leftarrow\mathbf X_i+d_i\mathbf N_i$. Then $\partial\mathrm{Vol}/\partial d_i=|\mathbf A_i|$ exactly, and
+
+$$
+(D\mathcal M)_i=\rho_K(\mathbf X_i)\,|\mathbf A_i| ,
+$$
+
+exact for constant density and first-order otherwise. In the star-shaped special case a radial increment $\delta R_i$ has normal part $d_i=(\mathbf N_i\cdot\mathbf e_r)\delta R_i$. The radial node is only a reparametrization, and the general route never divides by $\mathbf N\cdot\mathbf e_r$.
+
+**Proposition 8.0.7 (Kinematics in normal form).** The material condition for $\Gamma(t)$ is $V_n=\mathbf v\cdot\mathbf n$, where $V_n$ is the normal speed; tangential motion of the parametrization is free. In the star-shaped case $V_n=(\mathbf n\cdot\mathbf e_r)\partial_tR$, which is Proposition 9.1. (A material surface moves with the material normally, and tangential motion is a relabelling. For $\mathbf X=R\hat{\boldsymbol\omega}$, $\dot{\mathbf X}\cdot\mathbf n=\partial_tR\,(\hat{\boldsymbol\omega}\cdot\mathbf n)$.)
+
+*Clearance.* Normal offsets can collide across thin gaps or fold concave regions. With $t_i^\pm$ the distance along $\pm\mathbf N_i$ to the next crossing of $\Gamma$ (two first-hit queries; $t_i^+=\infty$ if unobstructed), the admissible increments satisfy
+
+$$
+-\theta_g\,t_i^-\le d_i\le\theta_g\,t_i^+,\qquad\theta_g\in(0,\tfrac12),
+$$
+
+linear rows of $\mathcal A_{\rm lin}$ (Section 10.4.3). They keep the update embedded, which is what the geometry needs; no condition on $\mathbf n\cdot\mathbf e_r$ enters. The self-intersection test is kept as the outer check.
+
+**(G5) Surface transport of $\rho_s$.** The layer is carried as vertex masses $m_i=\rho_{s,i}A_i$, along the tangential slip $\mathbf v_T=\chi_A(\mathbf v_{\rm sl}-(\mathbf v_{\rm sl}\cdot\mathbf n)\mathbf n)|_\Gamma$.
+
+- **Foot point:** trace the geodesic of $-\tau_n\mathbf v_T(\mathbf X_a)$ on the piecewise-flat surface, straight within a face and unfolded across edges.
+- **Value:** barycentric interpolation of $\rho_s$ in the face that contains the foot point.
+- **Jacobian:** $\mathcal J_a\approx1-\tau_n\nabla_\Gamma\!\cdot\mathbf v_T+\tau_n^2\det(\nabla_\Gamma\mathbf v_T)$, with $\nabla_\Gamma\mathbf v_T$ fitted on the vertex ring in a tangent frame.
+- **After the normal update:** $\rho_{s,i}=m_i/A_i^{\rm new}$. This accounts for the area change $\rho_sHV_n$ ($H$ the mean curvature) in $\partial^\bullet_t\rho_s+\rho_s\nabla_\Gamma\!\cdot\mathbf v_\Gamma=J_{\rm dep}-J_{\rm ero}$.
+
+Single-valuedness needs $\tau_n\|\nabla_\Gamma\mathbf v_T\|_\infty\le\theta_{\rm ch}$. In the star-shaped case $j\,d\Omega=dS$, and this is Section 9.2.
+
+**(G6) The depth.** $d(\mathbf x)=\operatorname{dist}(\mathbf x,\Gamma)$, $\nabla d=-\mathbf n(\pi(\mathbf x))$ a.e., and $|\nabla d|=1$ off the medial axis (a null set), from BVH closest-point queries (Section 4.3a).
+
+**(G7) The classification mesh.**
+
+$$
+\mathcal X_Y=\mathcal X_{\rm vol}\cup\{\mathbf X_i-\xi_q\,t_i^-\mathbf N_i:\ q=1,\dots,N_r\}\cup\{\mathbf X_i\},\qquad0<\xi_1<\dots<\xi_{N_r}<1 .
+$$
+
+Adjacency joins successive probes on a normal, probes of equal $q$ on mesh-adjacent vertices, and each point to its $k$ nearest points of $\mathcal X_{\rm vol}$ along segments inside $\mathcal V$ (any-hit query). The core, tie rule, and $\chi_{Y,i}$ are those of (B3), and the radial mesh of (B3) is the star-shaped instance.
+
+**(G8) The frame realignment.** Step 8b is a rigid motion of the vertices, $\mathbf X_i\leftarrow\mathbf Q(\mathbf X_i-\mathbf x_{\rm cm})$, and of the cores. There is no resampling, $\rho_s$ stays on its vertices, and the mass is unchanged to rounding, so $E_{\rm frame}=0$. The radial resampling of the star-shaped special case, its error, and PO-13 do not arise.
+
+**(G9) The runout.** A packet lands at the first crossing of its drift segment with $\Gamma$. The surface point below $\mathbf x$ is $\pi(\mathbf x)$, and the escape radii use $\max_\Gamma|\mathbf x|$. Relief and deposits are normal thicknesses with $(D\mathcal M)_i$ of (G4).
+
+**(G10) Time-step bounds.** $\Delta t_{\rm CFL}=\theta_{\rm CFL}h_{\Gamma,\min}/\max_{\{i:\chi_{Y,i}=1\}}|\mathbf v_{{\rm sl},i}\cdot\mathbf N_i|$ and $\Delta t_{\rm char}=\theta_{\rm ch}/\|\nabla_\Gamma\mathbf v_T\|_\infty$.
+
+**What does not depend on star-shapedness:**
+
+- the gravity of Chapters 1–3, which already allows nonconvex polyhedra with cavities (Section 1.1) and builds every ray's segments from its crossings (Section 3.6);
+- the rheology of Chapter 4;
+- the slope and anti-overhang rows (face normals, face gravity);
+- the core transport of Section 9.10;
+- the shear rate of Section 10.2.3 and the friction-angle chain of Section 10.3.
+
+---
+
+## 8.1 The domain and the Jacobi radial basis
+
+**Definition 8.1 (Domain and radial coordinate).** The domain is $\mathcal V$ of hypothesis (G). The basis lives on the enclosing ball $B_*\supset\mathcal V$, with the radial coordinate
+
+$$
+\zeta=\frac{r}{R_*}\in[0,1),\qquad R_*=\max_\Gamma|\mathbf x|,
+$$
+
+and every integral is taken over $\mathcal V$ (Section 8.0, G1–G2). Propositions 8.3, 8.4, and 8.8 describe the basis on $B_*$, and Propositions 8.0.3–8.0.5 transfer it to $\mathcal V$. In this chapter $R$ denotes $R_*$ unless stated otherwise.
+
+*Star-shaped special case.* For $R\in C^3(S^2\times[0,T])$ with $0<R_{\min}\le R\le R_{\max}$, $\mathcal V(R)=\{0\le r<R(\hat{\boldsymbol\omega},t)\}$, and the basis may instead use $\zeta=r/R(\hat{\boldsymbol\omega},t)$. Where a statement below depends on a non-constant $R(\hat{\boldsymbol\omega})$, it concerns only this special case.
+
+**Definition 8.2 (Radial basis).** For $\ell\ge1$ and $k=0,1,2,3$,
 
 $$
 \boxed{\ \psi_{\ell k}(\zeta)=\zeta^{\ell}\,P_k^{(0,\,2\ell+2)}(2\zeta-1),\qquad \Lambda_\ell=\ell(\ell+1),\ }
 $$
 
-where $P_k^{(\alpha,\beta)}$ is the standard Jacobi polynomial.
+with $P_k^{(\alpha,\beta)}$ the standard Jacobi polynomial.
 
 **Proposition 8.3 (Orthogonality, endpoint values, and the power structure).**
 
-1. $\displaystyle\int_0^1\psi_{\ell j}\,\psi_{\ell k}\,\zeta^2\,d\zeta=\dfrac{\delta_{jk}}{2k+2\ell+3}$.
-2. $\psi_{\ell k}(1)=1$, $\psi_{\ell k}'(1)=\ell+k(k+2\ell+3)$, and $\psi_{\ell k}''(1)$ is the quantity $\kappa_{\ell k}$ tabulated in Section 10.2.1.
-3. $\psi_{\ell k}(\zeta)=\sum_{j=0}^{k}a_{\ell kj}\,\zeta^{\ell+j}$, with
+1. $\int_0^1\psi_{\ell j}\psi_{\ell k}\zeta^2\,d\zeta=\delta_{jk}/(2k+2\ell+3)$.
+2. $\psi_{\ell k}(1)=1$, $\psi'_{\ell k}(1)=\ell+k(k+2\ell+3)$, and $\psi''_{\ell k}(1)=\kappa_{\ell k}$ (tabulated in Section 10.2.1).
+3. $\psi_{\ell k}=\sum_{j=0}^ka_{\ell kj}\zeta^{\ell+j}$ with $a_{\ell k0}=(-1)^k\binom{k+2\ell+2}{k}$ and $a_{\ell kk}=\binom{2k+2\ell+2}{k}\ne0$. For $\ell=1$ the constant terms are $1,-5,15,-35$ and the leading coefficients $1,6,28,120$.
 
-$$
-a_{\ell k0}=(-1)^k\binom{k+2\ell+2}{k},\qquad
-a_{\ell kk}=\binom{2k+2\ell+2}{k}\ne 0.
-$$
+*Proof.* (1) With $x=2\zeta-1$, $\psi_{\ell j}\psi_{\ell k}\zeta^2d\zeta=2^{-(2\ell+3)}(1+x)^{2\ell+2}P_jP_k\,dx$, which is the Jacobi weight $\alpha=0$, $\beta=2\ell+2$. For $\alpha=0$ the squared norm is $h_k=2^{\alpha+\beta+1}/(2k+\alpha+\beta+1)=2^{2\ell+3}/(2k+2\ell+3)$, since the Gamma ratio is $1$. (2) $P_k^{(0,\beta)}(1)=1$, and $\frac{d}{dx}P_k^{(\alpha,\beta)}=\tfrac12(k+\alpha+\beta+1)P_{k-1}^{(\alpha+1,\beta+1)}$ with $P^{(1,\beta+1)}_{k-1}(1)=k$, so $P_k'(1)=\tfrac12k(k+\beta+1)$ and $\psi'(1)=\ell+2P'(1)$. (3) $P_k^{(0,\beta)}(-1)=(-1)^k\binom{k+\beta}{k}$ gives the lowest coefficient. The leading coefficient $2^{-k}\binom{2k+\alpha+\beta}{k}$ is multiplied by $2^k$ under $x=2\zeta-1$. ∎
 
-The constant term equals $(-1)^k$ only for $k=0$. The binomial factor is required by the standard normalization of $P_k^{(0,2\ell+2)}$ and by the explicit polynomials of Section 10.1. For $\ell=1$ the constant terms are $1,-5,15,-35$ and the leading coefficients are $1,6,28,120$.
+The reversed order $(2\ell+2,0)$ would give the weight $(1-x)^{2\ell+2}$, which does not match $\zeta^{2\ell+2}$ from $\zeta^2d\zeta\cdot\zeta^{2\ell}$, and is not used.
 
-*Proof of (1).* Set $x=2\zeta-1$, so $\zeta=(1+x)/2$ and $d\zeta=dx/2$. Then
-
-$$
-\psi_{\ell j}\psi_{\ell k}\zeta^2\,d\zeta
-=2^{-(2\ell+3)}(1+x)^{2\ell+2}P_j^{(0,2\ell+2)}(x)P_k^{(0,2\ell+2)}(x)\,dx,
-$$
-
-because $\zeta^{2\ell+2}=2^{-(2\ell+2)}(1+x)^{2\ell+2}$ and the extra factor $\tfrac12$ comes from $d\zeta$. The weight $(1-x)^{\alpha}(1+x)^{\beta}$ with $\alpha=0$ and $\beta=2\ell+2$ is exactly the Jacobi weight of these polynomials. Its squared norm is
-
-$$
-h_k
-=\frac{2^{\alpha+\beta+1}}{2k+\alpha+\beta+1}
-\cdot
-\frac{\Gamma(k+\alpha+1)\Gamma(k+\beta+1)}{k!\,\Gamma(k+\alpha+\beta+1)}.
-$$
-
-With $\alpha=0$, one has $\Gamma(k+1)=k!$ and $\Gamma(k+\beta+1)=\Gamma(k+\alpha+\beta+1)$, so the Gamma ratio equals $1$. The remaining factor is $h_k=2^{2\ell+3}/(2k+2\ell+3)$. Multiplication by $2^{-(2\ell+3)}$ produces $1/(2k+2\ell+3)$.
-
-*Proof of (2).* The endpoint value of the Jacobi polynomial is $P_k^{(\alpha,\beta)}(1)=\binom{k+\alpha}{k}$. For $\alpha=0$ this equals $1$, so $\psi_{\ell k}(1)=1$. The derivative identity
-
-$$
-\frac{d}{dx}P_k^{(\alpha,\beta)}(x)=\frac12(k+\alpha+\beta+1)P_{k-1}^{(\alpha+1,\beta+1)}(x)
-$$
-
-and $P_{k-1}^{(1,\beta+1)}(1)=\binom{k}{k-1}=k$ give, at $x=1$ and $\alpha=0$,
-
-$$
-P_k'(1)=\frac12 k(k+\beta+1).
-$$
-
-Differentiating $\psi(\zeta)=\zeta^\ell P(2\zeta-1)$ therefore yields
-
-$$
-\psi'(1)=\ell\cdot P(1)+2P'(1)=\ell+k(k+\beta+1).
-$$
-
-The parameter $\beta=2\ell+2$ converts the second summand into $k(k+2\ell+3)$.
-
-*Proof of (3).* The evaluation $P_k^{(\alpha,\beta)}(-1)=(-1)^k\binom{k+\beta}{k}$ follows by retaining, in the binomial expansion, the unique term that does not vanish at $x=-1$. With $\alpha=0$ and $\beta=2\ell+2$,
-
-$$
-P_k^{(0,2\ell+2)}(-1)=(-1)^k\binom{k+2\ell+2}{k}.
-$$
-
-The change of argument $x=2\zeta-1$ does not alter the constant term, and multiplication by $\zeta^\ell$ shifts every power by $\ell$, so the lowest coefficient is $a_{\ell k0}=P_k^{(0,2\ell+2)}(-1)$. The leading coefficient of $P_k^{(\alpha,\beta)}$ is $2^{-k}\binom{2k+\alpha+\beta}{k}$. Substituting $x=2\zeta-1$, whose leading term is $2\zeta$, multiplies by $2^k$ and cancels $2^{-k}$. The leading coefficient of $\psi_{\ell k}$ is therefore $\binom{2k+2\ell+2}{k}$, which is nonzero. ∎
-
-The opposite parameter order $(2\ell+2,0)$ produces the weight $(1-x)^{2\ell+2}$. That weight does not match the weight $\zeta^{2\ell+2}$ obtained from the spherical volume element $\zeta^2\,d\zeta$ multiplied by $\zeta^{2\ell}$. It is not used.
-
-**Proposition 8.4 (Regularity at the centre; proof obligation PO-3, see Appendix A.5).** [Weak integrability of the rheology at the centre: when $\ell=1$ and $R$ is not constant, $\nabla\mathbf v=O(r^{-1})$ fails to lie in $L^\infty$. If $\mathbf D\sim r^{-1}$, then $\dot\gamma\sim r^{-1}$, the viscosity satisfies $\eta\propto 1/\dot\gamma\sim r$, the deviatoric stress $\boldsymbol\tau=2\eta\mathbf D$ is $O(1)$, and the strain-energy density $\boldsymbol\tau:\mathbf D(\mathbf w)$ is $O(r^{-1})$. Against the volume measure $r^2\,dr$ one has $\int_0^\varepsilon r\,dr<\infty$, so the strain energy of the weak form is locally weakly integrable in a neighbourhood of the origin and the algebraic matrix entries can be assembled. This is not an existence or uniqueness theorem for a weak solution of the continuous or discrete problem. If a strong rheological solution is required, one may switch to the optional even basis $\psi^{\rm ev}$ (Appendix A.2; valid only when $R$ is constant).] For $\ell\ge 1$, $k\le 3$, and $R\in C^3(S^2)$, the basis fields
+**Proposition 8.4 (Regularity at the centre; PO-3).** For $\ell\ge1$, $k\le3$, and $R$ either the constant $R_*$ or (star-shaped special case) a function in $C^3(S^2)$, the fields
 
 $$
 \mathbf V_{\ell km}=\nabla\times\nabla\times\big(R^2\psi_{\ell k}Y_{\ell m}\,\mathbf r\big),\qquad
 \mathbf W_{\ell km}=\nabla\times\big(R\,\psi_{\ell k}Y_{\ell m}\,\mathbf r\big)
 $$
 
-belong to $H^1(\mathcal V)$. The toroidal field $\mathbf W_{\ell km}$ is Lipschitz near the origin. The poloidal field $\mathbf V_{\ell km}$ is Lipschitz near the origin when $R$ is constant or when $\ell\ge 2$. Only when $\ell=1$ and $R$ is not constant is it merely bounded in a neighbourhood of the origin, with gradient of order $O(r^{-1})$ (the gradient lies in $L^2$ and not in $L^\infty$).
+are in $H^1(\mathcal V)$, and $\mathbf W$ is Lipschitz near the origin. $\mathbf V$ is Lipschitz near the origin when $R$ is constant, which is the general route, or $\ell\ge2$. Only for $\ell=1$ with non-constant $R$ (star-shaped special case) is it merely bounded, with gradient $O(r^{-1})$ (in $L^2$, not $L^\infty$). In that case $\mathbf D\sim r^{-1}$, $\eta\propto1/\dot\gamma\sim r$, $\boldsymbol\tau=O(1)$, and $\boldsymbol\tau:\mathbf D(\mathbf w)=O(r^{-1})$, which is integrable against $r^2dr$. So the matrix entries can be assembled, though this is not an existence theorem. A strong solution can use the even basis $\psi^{\rm ev}$ (Appendix A.2, constant $R$ only).
 
-*Proof.* By Proposition 8.3(3), inside the ball $r<R_{\min}$,
+*Proof.* Inside $r<R_{\min}$, $R^2\psi_{\ell k}(r/R)Y_{\ell m}=\sum_ja_{\ell kj}R^{2-n}r^nY_{\ell m}$ with $n=\ell+j\ge1$. Each term is homogeneous of degree $n$, so $\mathcal P[\Phi_n]=(n+1)\nabla\Phi_n-\mathbf r\Delta\Phi_n$ is homogeneous of degree $n-1$ with $|\nabla\mathcal P[\Phi_n]|\le Cr^{n-2}$. Hence $\int_0^\varepsilon r^{2n-2}dr<\infty$, and the field is Lipschitz for $n\ge2$. The case $n=1$ is $\ell=1$, $j=0$, $\Phi_1=aRrY_{1m}$: linear if $R$ is constant, otherwise $\mathcal P[\Phi_1]$ is direction-dependent of degree $0$. The toroidal $\mathcal T[\Psi_n]=\nabla\Psi_n\times\mathbf r$ has degree $n\ge1$ and a bounded gradient. ∎
 
-$$
-R^2\psi_{\ell k}(r/R)Y_{\ell m}=\sum_j a_{\ell kj}R^{2-n}r^{n}Y_{\ell m},\qquad n=\ell+j\ge 1.
-$$
-
-Each term is a homogeneous function $\Phi_n=r^n h_n(\hat{\boldsymbol\omega})$ of degree $n$, with $h_n=a_{\ell kj}R^{2-n}Y_{\ell m}\in C^3$. Lemma 5.5 gives
-
-$$
-\mathcal P[\Phi_n]=\nabla(\partial_r(r\Phi_n))-\mathbf r\,\Delta\Phi_n=(n+1)\nabla\Phi_n-\mathbf r\,\Delta\Phi_n,
-$$
-
-which is homogeneous of degree $n-1$. Its gradient is homogeneous of degree $n-2$, so $|\nabla\mathcal P[\Phi_n]|\le C r^{n-2}$. Then
-
-$$
-\int_0^\varepsilon r^{2(n-2)}r^2\,dr=\int_0^\varepsilon r^{2n-2}\,dr<\infty
-$$
-
-because $n\ge 1$, and the field lies in $H^1$. For $n\ge 2$ the gradient is bounded, so the field is Lipschitz. The case $n=1$ occurs only for $\ell=1$ and $j=0$. Then $\Phi_1=a\,R(\hat{\boldsymbol\omega})\,r\,Y_{1m}$. If $R$ is constant this is a linear function and $\mathcal P[\Phi_1]$ is a constant vector. If $R$ is not constant, $\mathcal P[\Phi_1]$ is homogeneous of degree zero and depends on direction, so its gradient is $O(r^{-1})$. For the toroidal field, $\Psi_n=r^n R^{1-n}Y_{\ell m}a$ gives $\mathcal T[\Psi_n]=\nabla\Psi_n\times\mathbf r$, of degree $n\ge 1$, with bounded gradient. ∎
-
-The factor $\zeta^\ell$ makes the lowest power of $\Phi$ exactly $n=\ell$. When $R$ is constant, $r^\ell Y_{\ell m}$ is a harmonic polynomial in $\mathbf x$ and is therefore smooth. Every remaining term, of degree $n>\ell$, may contain an odd power and is only finitely smooth. Proposition 8.4 is precisely the $H^1$ conclusion at that degree of smoothness. The law $\mu(I)$ needs a finite $\dot\gamma$ at the centre. Except for the case $\ell=1$ with nonconstant $R$ already stated, one has $\mathbf D\in L^\infty$.
+For constant $R$ the lowest term $r^\ell Y_{\ell m}$ is a harmonic polynomial. The higher terms may contain odd powers of $r$ and are only finitely smooth, which is exactly the $H^1$ statement above. Except for $\ell=1$ with non-constant $R$, $\mathbf D\in L^\infty$, as $\mu(I)$ needs.
 
 ---
 
@@ -6760,50 +3368,43 @@ The factor $\zeta^\ell$ makes the lowest power of $\Phi$ exactly $n=\ell$. When 
 $$
 \boxed{
 \begin{aligned}
-\Phi(\mathbf x,t)&=R^2(\hat{\boldsymbol\omega},t)\sum_{\ell=1}^{L_{\max}}\sum_{m=-\ell}^{\ell}\sum_{k=0}^{3}q_{\ell km}(t)\,\psi_{\ell k}(\zeta)\,Y_{\ell m}(\hat{\boldsymbol\omega}),\\
-\Psi(\mathbf x,t)&=R(\hat{\boldsymbol\omega},t)\sum_{\ell,m,k}s_{\ell km}(t)\,\psi_{\ell k}(\zeta)\,Y_{\ell m}(\hat{\boldsymbol\omega}),
+\Phi(\mathbf x,t)&=R_*^2\sum_{\ell=1}^{L_{\max}}\sum_{m=-\ell}^{\ell}\sum_{k=0}^{3}q_{\ell km}(t)\,\psi_{\ell k}(r/R_*)\,Y_{\ell m}(\hat{\boldsymbol\omega}),\\
+\Psi(\mathbf x,t)&=R_*\sum_{\ell,m,k}s_{\ell km}(t)\,\psi_{\ell k}(r/R_*)\,Y_{\ell m}(\hat{\boldsymbol\omega}),
 \end{aligned}}
+\qquad
+\mathbf v=\sum_{\ell,m,k}\big(q_{\ell km}\mathbf V_{\ell km}+s_{\ell km}\mathbf W_{\ell km}\big)\quad\text{on }\mathcal V.
 $$
 
-$$
-\mathbf v=\mathcal P[\Phi]+\mathcal T[\Psi]=\sum_{\ell,m,k}\big(q_{\ell km}\mathbf V_{\ell km}+s_{\ell km}\mathbf W_{\ell km}\big).
-$$
+In the star-shaped special case $R_*$ may be replaced by $R(\hat{\boldsymbol\omega},t)$ (factors $R^2$ and $R$ in front, $\zeta=r/R$), which makes the basis follow the boundary.
 
-The vector of velocity degrees of freedom is $\mathbf u=(\mathbf q,\mathbf s)$, with $[q]=[s]=\mathrm T^{-1}$. **The meaning of $K=4$** is that each pair $(\ell,m)$ and each potential keeps four radial modes, so each pair $(\ell,m)$ has eight velocity degrees of freedom. The total number is
+**Cavity flux modes.** If $\Gamma$ has inner components (sealed cavities $C_1,\dots,C_{N_c}$, hypothesis (G)), the velocity space is augmented by the flux modes of Proposition 8.0.5,
 
 $$
-N_u=8\sum_{\ell=1}^{L_{\max}}(2\ell+1)=8L_{\max}(L_{\max}+2).
+\mathbf v=\sum_{\ell,m,k}\big(q_{\ell km}\mathbf V_{\ell km}+s_{\ell km}\mathbf W_{\ell km}\big)+\sum_{j=1}^{N_c}c_j\,\mathbf v_j,\qquad
+\mathbf v_j=R_*^{3}\,\nabla|\mathbf x-\mathbf z_j|^{-1}\quad(\mathbf z_j\in C_j),
 $$
 
-Degree $\ell=0$ carries no velocity degree of freedom (Proposition 5.6(2)). Every matrix inversion is restricted to $\ell\ge 1$. The fields $\mathbf V_{\ell km}$ and $\mathbf W_{\ell km}$ are exactly divergence-free (Lemma 5.5). Their dependence on $R$ enters every integral and is not frozen at the nodes.
+with $[c_j]=\mathrm T^{-1}$. Each $\mathbf v_j$ is harmonic and divergence-free on $\overline{\mathcal V}$, with $\mathbf D(\mathbf v_j)=R_*^3\nabla\nabla|\mathbf x-\mathbf z_j|^{-1}$ traceless. The augmented family stays linearly independent on $\mathcal V$: a combination vanishing on $\mathcal V$ vanishes, by analyticity, on $\mathbb R^3$ minus $\{0,\mathbf z_1,\dots,\mathbf z_{N_c}\}$, and near $\mathbf z_j$ only $\mathbf v_j$ is unbounded (the ball fields are bounded on bounded sets), so every $c_j=0$ and Proposition 8.0.3 applies to the rest. The $N_c$ coefficients enter $\mathbf K$, $\mathbf M_\Gamma$, $\mathbf B_{\rm rb}$, and the loads as a dense border of $N_c$ rows and columns; the modes are not polynomial along rays (Lemma 8.13), so their strain samples are evaluated pointwise. A body without cavities has $N_c=0$. Omitting the modes on a body with cavities is admissible only under the additional hypothesis that every cavity keeps its volume within a step, and that hypothesis must then be stated.
+
+The degrees of freedom are $\mathbf u=(\mathbf q,\mathbf s)$, with $[q]=[s]=\mathrm T^{-1}$. **$K=4$** means four radial modes per $(\ell,m)$ and per potential, so eight per $(\ell,m)$, and
+
+$$
+N_u=8\sum_{\ell=1}^{L_{\max}}(2\ell+1)+N_c=8L_{\max}(L_{\max}+2)+N_c.
+$$
+
+$\ell=0$ carries no velocity (Proposition 5.6(2)), so every inversion is on $\ell\ge1$. The fields are exactly divergence-free (Lemma 5.5). The shape of $\mathcal V$ enters every integral through the integration domain (and, in the star-shaped variant, through $R(\hat{\boldsymbol\omega})$), never through values frozen at the nodes.
 
 ---
 
 ## 8.3 The global kinetic-energy mass operator
 
-**Definition 8.6.** $(\mathbf M_\Gamma)_{\alpha\beta}=\int_{\mathcal V(R)}\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,dV$, where $\mathbf B_\alpha\in\{\mathbf V_{\ell km},\mathbf W_{\ell km}\}$.
+**Definition 8.6.** $(\mathbf M_\Gamma)_{\alpha\beta}=\int_{\mathcal V}\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,dV$, with $\mathbf B_\alpha\in\{\mathbf V_{\ell km},\mathbf W_{\ell km}\}$.
 
-**Proposition 8.7 (Symmetric positive definiteness)** [complete proof; independent of any proof obligation]. Let $0<\rho_{\min}\le\rho\le\rho_{\max}$ and let $R\in C^3$. Then $\mathbf M_\Gamma$ is symmetric, and for every $\mathbf u\ne\mathbf 0$,
+**Proposition 8.7 (Symmetric positive definiteness)** [complete proof]. For $0<\rho_{\min}\le\rho\le\rho_{\max}$ and $R$ either the constant $R_*$ or a function in $C^3(S^2)$, $\mathbf M_\Gamma$ is symmetric, and $\mathbf u^{\!\top}\mathbf M_\Gamma\mathbf u=\int\rho|\mathbf v|^2\ge\rho_{\min}\|\mathbf v\|^2_{L^2}>0$ for $\mathbf u\ne\mathbf 0$.
 
-$$
-\mathbf u^{\!\top}\mathbf M_\Gamma\mathbf u=\int_{\mathcal V}\rho|\mathbf v|^2\,dV\ge\rho_{\min}\|\mathbf v\|_{L^2}^2>0.
-$$
+*Proof.* Suppose $\mathbf v=\mathbf 0$ on $\mathcal V$. On the general route the potentials are sums of $r^nY_{\ell m}$, real-analytic on $\mathbb R^3\setminus\{0\}$ (Proposition 8.3(3)), so $\mathbf v=\mathbf 0$ on the ball $r<R_*$; in the star-shaped case $\mathcal V$ contains the ball $r<R_{\min}$. Write $R_{\min}=R_*$ on the general route. Then $L^2\Phi=rv_r=0$ and $L^2\Psi=0$, so in $r<R_{\min}$ both potentials depend on $r$ only. Equating coefficients of $r^n$ gives $R^{2-n}H_n(\hat{\boldsymbol\omega})=c_n$ with $H_n=\sum_{\ell\le n,m}(\sum_ka_{\ell k,n-\ell}q_{\ell km})Y_{\ell m}$, which has no $\ell=0$ part. The spherical mean of $H_n=c_nR^{n-2}$ forces $c_n=0$, because $\langle R^{n-2}\rangle>0$, so $H_n=0$. Hence $\sum_kq_{\ell km}\psi_{\ell k}\equiv0$, and the $\psi_{\ell k}$ have distinct degrees, so $q_{\ell km}=0$. With $R^{1-n}$ in place of $R^{2-n}$, the same gives $s_{\ell km}=0$. ∎
 
-*Proof.* Symmetry and positive semi-definiteness are immediate from the definition. Suppose $\mathbf v=\mathbf 0$. Proposition 5.6(1) gives $L^2\Phi=r v_r=0$ and $L^2\Psi=0$, so inside the ball $r<R_{\min}$ the potentials $\Phi=\Phi_0(r)$ and $\Psi=\Psi_0(r)$ depend only on $r$. Equating coefficients of $r^n$ in $\Phi$, one has $R^{2-n}H_n(\hat{\boldsymbol\omega})=c_n$, where
-
-$$
-H_n=\sum_{\ell\le n,\,m}\Big(\sum_k a_{\ell k,\,n-\ell}q_{\ell km}\Big)Y_{\ell m}
-$$
-
-contains no component of degree $\ell=0$. Hence $H_n=c_n R^{n-2}$. The spherical mean of both sides, using $R>0$ so that $\langle R^{n-2}\rangle>0$, forces $c_n=0$, and therefore $H_n=0$. Spherical harmonics are linearly independent, so for every $(\ell,m)$ and every $n\ge\ell$,
-
-$$
-\sum_k a_{\ell k,\,n-\ell}q_{\ell km}=0.
-$$
-
-That is, the polynomial $\sum_k q_{\ell km}\psi_{\ell k}(\zeta)$ vanishes identically. The functions $\psi_{\ell 0},\ldots,\psi_{\ell 3}$ have distinct degrees and are linearly independent, so $q_{\ell km}=0$. The same argument with $R^{1-n}$ in place of $R^{2-n}$ gives $s_{\ell km}=0$. ∎
-
-**Proposition 8.8 (Spherically symmetric reference geometry; diagonal blocks)** [complete proof; independent of any proof obligation]. Let $R\equiv R_0$ be constant and let $\rho=\rho(r)$. Then $\mathbf M_\Gamma$ is block diagonal in $(\ell,m)$, the poloidal and toroidal fields do not couple, and, by Proposition 5.7,
+**Proposition 8.8 (Spherically symmetric reference geometry; diagonal blocks)** [complete proof]. For $R\equiv R_0$ and $\rho=\rho(r)$, $\mathbf M_\Gamma$ is block diagonal in $(\ell,m)$ with no poloidal–toroidal coupling. By Proposition 5.7,
 
 $$
 \boxed{
@@ -6816,7 +3417,7 @@ $$
 \end{aligned}}
 $$
 
-where $g_i=R_0^2\psi_{\ell i}(r/R_0)$ and $f_i=R_0\psi_{\ell i}(r/R_0)$. Each block is $4\times 4$. At constant density $\rho=\rho_0$,
+with $g_i=R_0^2\psi_{\ell i}(r/R_0)$ and $f_i=R_0\psi_{\ell i}(r/R_0)$, giving $4\times4$ blocks. At constant density,
 
 $$
 \mathbf M^P_\ell=\rho_0 R_0^5\,\Lambda_\ell\big(\Lambda_\ell\tilde{\mathbf N}_\ell+\tilde{\mathbf P}_\ell\big),\qquad
@@ -6825,12 +3426,12 @@ $$
 
 $$
 (\tilde{\mathbf N}_\ell)_{ij}=\int_0^1\psi_{\ell i}\psi_{\ell j}\,d\zeta,\qquad
-(\tilde{\mathbf P}_\ell)_{ij}=\int_0^1(\zeta\psi_{\ell i})'(\zeta\psi_{\ell j})'\,d\zeta.
+(\tilde{\mathbf P}_\ell)_{ij}=\int_0^1(\zeta\psi_{\ell i})'(\zeta\psi_{\ell j})'\,d\zeta .
 $$
 
-The toroidal block is strictly diagonal in the Jacobi basis (Proposition 8.3(1)). The poloidal block is not diagonal, but $\tilde{\mathbf N}_\ell$ and $\tilde{\mathbf P}_\ell$ are symmetric positive definite, because the families $\psi_{\ell i}$ and $(\zeta\psi_{\ell i})'$ are linearly independent. Numerical values are given in Section 10.1. Every block entry is an $L^2$ polynomial (quadratic for the poloidal block, linear for the toroidal block). This is why $\mathbf M_\Gamma$ is an angular differential operator and not a nodal local constant.
+The toroidal block is diagonal (Proposition 8.3(1)). The poloidal block is not, but $\tilde{\mathbf N}_\ell$ and $\tilde{\mathbf P}_\ell$ are SPD, because $\psi_{\ell i}$ and $(\zeta\psi_{\ell i})'$ are independent. Numerical values are in Section 10.1. Each entry is an $L^2$ polynomial, which is why $\mathbf M_\Gamma$ is an angular differential operator, not a nodal constant.
 
-**Proposition 8.9 (A general star-shaped surface; Gaunt coupling).** When $R=R(\hat{\boldsymbol\omega})$, or when $\rho$ depends on angle, the angular integral in $(\mathbf M_\Gamma)_{\alpha\beta}$ contains the product of a weight $w(\hat{\boldsymbol\omega})$ with $Y_{\ell m}Y_{\ell'm'}$ and with their surface gradients. If $w=\sum_{L,M}w_{LM}Y_{LM}$, a block between $(\ell,m)$ and $(\ell',m')$ can be nonzero only under the Gaunt conditions
+**Proposition 8.9 (A general star-shaped surface; Gaunt coupling).** When $R=R(\hat{\boldsymbol\omega})$ or $\rho$ depends on angle, the angular integrals contain a weight $w=\sum w_{LM}Y_{LM}$ times $Y_{\ell m}Y_{\ell'm'}$ and their surface gradients. A block is nonzero only under the Gaunt conditions
 
 $$
 \int Y_{\ell m}Y_{\ell'm'}Y_{LM}\,d\Omega\ne 0
@@ -6840,7 +3441,7 @@ $$
 M=-m-m'.
 $$
 
-If the weight is band-limited ($w_{LM}=0$ for $L>L_w$), then $\mathbf M_\Gamma$ is a strictly banded sparse block matrix, with block bandwidth $|\ell-\ell'|\le L_w$. For a general smooth $R$ and $\rho$, the coefficients $w_{LM}$ decay in $L$ and may be truncated to a numerical bandwidth at a tolerance $\varepsilon_w$. Cross blocks between poloidal and toroidal fields obey the selection rule of Proposition 6.1 (parity: $\ell+\ell'+L$ odd).
+A band-limited weight ($w_{LM}=0$ for $L>L_w$) gives block bandwidth $|\ell-\ell'|\le L_w$. For smooth $R,\rho$ the $w_{LM}$ decay and may be truncated at a tolerance $\varepsilon_w$. Poloidal–toroidal blocks follow Proposition 6.1 ($\ell+\ell'+L$ odd). On the general route the weight is the indicator of $\mathcal V$ on each sphere, which is not band-limited, so $\mathbf M_\Gamma$ and $\mathbf K$ are dense.
 
 ---
 
@@ -6856,16 +3457,22 @@ $$
 
 $$
 \mathbb Q_h=\operatorname{span}\{\psi_{\ell k}(\zeta)Y_{\ell m}\},\qquad
-0\le\ell\le L_p,\quad 0\le k\le K_p-1.
+0\le\ell\le L_p,\quad 0\le k\le K_p-1 .
 $$
 
-The pressure space includes $\ell=0$, the hydrostatic component. The pressure layer extends the notation by $\psi_{0k}(\zeta):=P_k^{(0,1/2)}(2\zeta^2-1)$, an even polynomial in $\zeta$ of degree $2k$. A radial factor of degree $\ell=0$ must be even in $r$: an odd power $\zeta^{2j+1}=r^{2j+1}/R(\hat{\boldsymbol\omega})^{2j+1}$ multiplies the constant $Y_{00}$ and gives a conical point at $r=0$, whose gradient depends on the direction of approach. The functions $\psi_{0k}$ are orthogonal under $\zeta^2d\zeta$ on $[0,1]$ (substitute $s=\zeta^2$ in the Jacobi weight $s^{1/2}$). These modes of degree $\ell=0$ are used only for pressure and do not enter the velocity basis. The remaining truncations satisfy $L_p\le L_{\max}$ and $K_p\le K$. Matching $X_h$ with $\mathbb Q_h$ is the inf–sup proof obligation PO-2, which this paper does not claim to have proved. Every function in $\mathbb V_h^\sigma$ is exactly divergence-free, so $b(\mathbf w,q)\equiv 0$ for $\mathbf w\in\mathbb V_h^\sigma$.
+The pressure space includes $\ell=0$ (hydrostatic), with $\psi_{0k}:=P_k^{(0,1/2)}(2\zeta^2-1)$, even in $\zeta$ of degree $2k$ and orthogonal under $\zeta^2d\zeta$ (substitute $s=\zeta^2$). An odd power $\zeta^{2j+1}$ times $Y_{00}$ would give a conical point at $r=0$. These $\ell=0$ modes are for pressure only. $L_p\le L_{\max}$ and $K_p\le K$. Matching $X_h$ with $\mathbb Q_h$ is the unproved inf–sup obligation PO-2. Every $\mathbf w\in\mathbb V_h^\sigma$ has $b(\mathbf w,q)\equiv0$.
 
-**Geometric connection of moving basis functions.** The quasi-static route has no inertial block, and $\mathbf G$ does not appear. In the dynamic mode, $\mathbf G$ and the ALE convection $\mathbf N_{\rm ALE}$ of the relative velocity $\mathbf v_{\rm rel}=\mathbf v-\mathbf w_{\rm mesh}$ are those of Section 7.3. They must be assembled explicitly inside $\mathbf N(\mathbf u)$ and inside the inertial block of $\mathbf A_{\sigma\sigma}$.
+**Moving basis functions.** The quasi-static route has no inertial block and no $\mathbf G$. In the dynamic mode, $\mathbf G$ and the ALE convection of $\mathbf v-\mathbf w_{\rm mesh}$ (Section 7.3) are assembled explicitly inside $\mathbf N(\mathbf u)$ and the inertial block.
 
-**Projection onto test functions.** Testing the weak form of Proposition 5.2 with $\mathbf w=\mathbf V_{\ell km}$, with $\mathbf W_{\ell km}$, and with $\nabla\chi_h$ produces the three groups of Proposition 5.9: poloidal (i), toroidal (ii), and pressure (iii). Write the full velocity coefficient as $\tilde{\mathbf u}=(\mathbf u,\mathbf x)$, where $\mathbf x$ holds the coefficients of $\chi_h$ and $\mathbf p$ holds the pressure coefficients.
+**Projection onto test functions.** Testing Proposition 5.2 with $\mathbf V_{\ell km}$, $\mathbf W_{\ell km}$, and $\nabla\chi_h$ gives groups (i)–(iii) of Proposition 5.9. Write $\tilde{\mathbf u}=(\mathbf u,\mathbf x)$ with $\mathbf x$ the $\chi_h$ coefficients, and $\mathbf p$ for the pressure coefficients.
 
-**The global system** [discrete solvability holds only if the proof obligations PO-1 and PO-2 hold]. The blocks below are defined by the integrals of Proposition 5.9: $M_{X\beta}$ (inertia), $C_{X\beta}$ (Coriolis), $N_X$ (convection), $K_X(\mathbf v,p)$ (viscosity, including $\boldsymbol\tau(\mathbf v,p)=2\eta(p,\mathbf D)\mathbf D$), and $F_X$ (gravity, centrifugation, baroclinicity, traction, and the load $\mathbf T_{\rm tide}$).
+**The global system** [solvable only under PO-1 and PO-2]. The blocks are the integrals of Proposition 5.9:
+
+- $M_{X\beta}$, inertia;
+- $C_{X\beta}$, Coriolis;
+- $N_X$, convection;
+- $K_X(\mathbf v,p)$, viscosity, including $\boldsymbol\tau=2\eta(p,\mathbf D)\mathbf D$;
+- $F_X$: gravity, centrifugation, baroclinicity, traction, and $\mathbf T_{\rm tide}$.
 
 $$
 \boxed{
@@ -6875,10 +3482,11 @@ $$
 \end{pmatrix}
 \begin{pmatrix}\tilde{\mathbf u}\\ \mathbf p\end{pmatrix}
 =\begin{pmatrix}\mathbf f_{\rm ext}\\ \mathbf 0\end{pmatrix},}
+\qquad
+\mathbf A=\begin{pmatrix}\mathbf A_{\sigma\sigma}&\mathbf A_{\sigma g}\\ \mathbf A_{g\sigma}&\mathbf A_{gg}\end{pmatrix},
 $$
 
 $$
-\mathbf A=\begin{pmatrix}\mathbf A_{\sigma\sigma}&\mathbf A_{\sigma g}\\ \mathbf A_{g\sigma}&\mathbf A_{gg}\end{pmatrix},\qquad
 \mathbf A_{\sigma\sigma}
 =\begin{pmatrix}
 \mathbf M_{PP}/\Delta t+\mathbf C_{PP}+\mathbf K_{PP}&
@@ -6886,38 +3494,30 @@ $$
 \mathbf M_{TP}/\Delta t+\mathbf C_{TP}+\mathbf K_{TP}&
 \mathbf M_{TT}/\Delta t+\mathbf C_{TT}+\mathbf K_{TT}
 \end{pmatrix}
-+\mathbf N(\mathbf u),
-$$
-
-$$
++\mathbf N(\mathbf u),\qquad
 \mathbf B=\begin{pmatrix}\mathbf 0&\mathbf B_g\end{pmatrix},\quad
-(\mathbf B_g)_{q\chi}=\int_{\mathcal V}q\,\Delta\chi\,dV,\qquad
-\mathbf f_{\rm ext}=\big(\mathbf F_P,\mathbf F_T,\mathbf F_g\big).
+(\mathbf B_g)_{q\chi}=\int_{\mathcal V}q\,\Delta\chi\,dV,
 $$
 
-The quotient $\mathbf M_{XY}/\Delta t$ is the time-discrete inertial term. It is set to zero on the quasi-static route; see (8.4′). The dependence of $\mathbf K_{XY}$ on $(\mathbf u,p)$ is linearized by the Newton tangent of Section 5.3. The structure of the blocks is as follows.
+with $\mathbf f_{\rm ext}=(\mathbf F_P,\mathbf F_T,\mathbf F_g)$. $\mathbf M/\Delta t$ is the time-discrete inertia, zero on the quasi-static route. $\mathbf K(\mathbf u,p)$ is linearized by Section 5.3. Block structure:
 
 | Block | Structure and origin |
 |---|---|
-| $\mathbf M_{PP},\mathbf M_{TT}$ | diagonal in $(\ell,m)$ on a spherically symmetric geometry (Proposition 8.8); a Gaunt band on a general geometry (Proposition 8.9) |
-| $\mathbf M_{PT}$ | zero on a spherically symmetric geometry; nonzero when $\rho$ or $R$ is angularly inhomogeneous (Proposition 6.1) |
-| $\mathbf C_{PT},\mathbf C_{TP}$ | connect $\ell\leftrightarrow\ell\pm 1$ at fixed $m$ (Proposition 7.3); coefficients in Proposition 7.4; the Coriolis form is skew as a whole |
-| $\mathbf K_{XY}$ | viscous blocks depending on $(\mathbf u,p)$; $\mathbf K_{PT}\ne 0$ comes from an angular inhomogeneity of $\eta$ |
-| $\mathbf F_X$ | baroclinic terms in Proposition 6.2, Corollary 6.3, and Proposition 6.4; surface traction is a natural boundary term (Corollary 5.3) |
+| $\mathbf M_{PP},\mathbf M_{TT}$ | diagonal in $(\ell,m)$ on a spherically symmetric geometry (Proposition 8.8); Gaunt band otherwise (Proposition 8.9) |
+| $\mathbf M_{PT}$ | zero under spherical symmetry; nonzero for angularly inhomogeneous $\rho$ or boundary (Proposition 6.1) |
+| $\mathbf C_{PT},\mathbf C_{TP}$ | $\ell\leftrightarrow\ell\pm1$ at fixed $m$ (Propositions 7.3–7.4); skew as a whole |
+| $\mathbf K_{XY}$ | depend on $(\mathbf u,p)$; $\mathbf K_{PT}\ne0$ from angular inhomogeneity of $\eta$ |
+| $\mathbf F_X$ | baroclinic terms (Proposition 6.2, Corollary 6.3, Proposition 6.4); traction natural (Corollary 5.3) |
 
-The Jacobian of the Newton iteration is
+The Newton Jacobian is
 
 $$
-\begin{pmatrix}
-\mathbf A_T&-\mathbf B^{\!\top}+\mathbf K_p\\
-\mathbf B&\mathbf 0
-\end{pmatrix},\qquad
-\mathbf K_p=\frac{\partial\mathbf K}{\partial\mathbf p}.
+\begin{pmatrix}\mathbf A_T&-\mathbf B^{\!\top}+\mathbf K_p\\ \mathbf B&\mathbf 0\end{pmatrix},\qquad \mathbf K_p=\partial\mathbf K/\partial\mathbf p\ne0 .
 $$
 
-The dependence $\eta=\eta(p,\mathbf D)$ makes $\mathbf K_p\ne 0$. Pressure appears in both $\mathbf A$ and $\mathbf B$, so the Jacobian is not in general a symmetric saddle-point matrix.
+It is not in general a symmetric saddle-point matrix.
 
-**The quasi-static production system (8.4′).** The quasi-static route (Section 2.8, B1) restricts the system above by $\mathbf M=\mathbf N=\mathbf C=\mathbf 0$ and $\mathbf G=\mathbf 0$, and takes the velocity space to be the exactly divergence-free space $\mathbb V_h^\sigma$ directly. The conclusion $\mathbf x=\mathbf 0$ of Proposition 8.10 is adopted here as a choice of space, not as a hypothesis of a theorem. Testing the weak form of Proposition 5.2 with $\mathbf w=\mathbf B_\alpha\in\mathbb V_h^\sigma$ makes $\int p\,\nabla\cdot\mathbf w$ vanish exactly, and one obtains
+**The quasi-static system (8.4′).** Set $\mathbf M=\mathbf N=\mathbf C=\mathbf G=\mathbf 0$ and take the velocity space $\mathbb V_h^\sigma$ directly; the conclusion $\mathbf x=\mathbf 0$ of Proposition 8.10 is adopted as a choice of space. Testing with $\mathbf B_\alpha\in\mathbb V_h^\sigma$ removes $\int p\nabla\cdot\mathbf w$ exactly:
 
 $$
 \boxed{
@@ -6936,71 +3536,59 @@ F_\alpha&=\int_{\mathcal V}\rho_K\,\mathbf g_{\rm eff}(\omega_n)\cdot\mathbf B_\
 \end{aligned}}
 $$
 
-The matrix $\mathbf B_{\rm rb}$ is that of Section 8.5 and of Appendix A.3. Its rows are $\int\rho_K\mathbf B_\alpha\,dV$ and $\int\rho_K\mathbf x\times\mathbf B_\alpha\,dV$. Pressure enters $\mathbf K$ only through $\eta(\tilde p,\mathbf D)$, and it is determined by the Poisson problem of Section 8.7. The nonlinear coupling of the two is closed by the Picard iteration of Section 10.4.2. Because the velocity space is exactly divergence-free, this system **does not need** a velocity–pressure inf–sup condition. The obligation PO-2 constrains only the fully implicit benchmark below. Integrals use the angular quadrature of Section 9.4 and Gauss–Jacobi quadrature in radius for the weight $\zeta^{2\ell+2}$. The tensor $\mathbf D(\mathbf B_\alpha)$ is evaluated analytically, pointwise, from Lemma 5.5.
+$\mathbf B_{\rm rb}$ (Section 8.5, Appendix A.3) has rows $\int\rho_K\mathbf B_\alpha$ and $\int\rho_K\mathbf x\times\mathbf B_\alpha$. Pressure enters $\mathbf K$ only through $\eta(\tilde p,\mathbf D)$. It comes from Section 8.7, and the coupling is closed by the primal–dual iteration of Section 10.4.2, which does not assemble $\mathbf K(\eta)$; the linear solves of this section serve as the fixed-viscosity check of that section and for a Newton polish. The velocity space is exactly divergence-free, so **no** inf–sup condition is needed; PO-2 concerns only the fully implicit benchmark. Integrals use the ray-segment rule of Section 8.0 (G2): an angular rule times radial nodes on each segment of the ray from $O$. $\mathbf D(\mathbf B_\alpha)$ is evaluated analytically from Lemma 5.5.
 
-**Lemma 8.12 (Well-posedness of the quasi-static system).** Assume $\rho_K\ge\rho_{\min}>0$, $\eta\ge\eta_{\rm lo}>0$ almost everywhere (Section 2.8), that $\mathcal V$ is connected, and that $\operatorname{rank}\mathbf B_{\rm rb}=6$. Then $\mathbf K(\eta)$ is symmetric positive definite on $\ker\mathbf B_{\rm rb}$, and (8.4′) has a unique solution. For every $\gamma_{\rm AL}>0$, the matrix $\mathbf K_\gamma:=\mathbf K+\gamma_{\rm AL}\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb}$ is symmetric positive definite on the whole space, and replacing $\mathbf K$ by $\mathbf K_\gamma$ does not change the solution of (8.4′).
+**Lemma 8.12 (Well-posedness of the quasi-static system).** Assume $\rho_K\ge\rho_{\min}>0$ and $\eta\ge\eta_{\rm lo}>0$ a.e., that $\mathcal V$ is connected, and that $\operatorname{rank}\mathbf B_{\rm rb}=6$. Then $\mathbf K(\eta)$ is SPD on $\ker\mathbf B_{\rm rb}$, and (8.4′) has a unique solution. For every $\gamma_{\rm AL}>0$, $\mathbf K_\gamma:=\mathbf K+\gamma_{\rm AL}\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb}$ is SPD, and replacing $\mathbf K$ by it does not change the solution.
 
-*Proof.* Symmetry follows from the definition. The energy identity
+*Proof.* $\mathbf u^{\!\top}\mathbf K\mathbf u=\int2\eta|\mathbf D(\mathbf v)|^2\ge2\eta_{\rm lo}\|\mathbf D\|^2$, so zero energy forces $\mathbf v=\mathbf a+\boldsymbol\theta\times\mathbf x$. With $\mathbf B_{\rm rb}\mathbf u=\mathbf 0$, $\int\rho_K|\mathbf v|^2=\mathbf a\cdot\int\rho_K\mathbf v+\boldsymbol\theta\cdot\int\rho_K\mathbf x\times\mathbf v=0$, so $\mathbf v=\mathbf 0$ and, by independence, $\mathbf u=\mathbf 0$. Full row rank makes the saddle system nonsingular. For $\mathbf K_\gamma$: zero energy forces $\mathbf B\mathbf u=\mathbf 0$ and then $\mathbf u=\mathbf 0$, and solutions satisfy $\mathbf B\mathbf u=\mathbf 0$. ∎
 
-$$
-\mathbf u^{\!\top}\mathbf K\mathbf u=\int 2\eta\,|\mathbf D(\mathbf v)|^2\,dV\ge 2\eta_{\rm lo}\|\mathbf D(\mathbf v)\|_{L^2}^2
-$$
+**Range-space solution.** With $\gamma_{\rm AL}:=\|\operatorname{diag}\mathbf K\|_\infty/\|\operatorname{diag}(\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb})\|_\infty$:
 
-shows that a vanishing energy forces $\mathbf D(\mathbf v)=\mathbf 0$. On a connected domain, $\mathbf v=\mathbf a+\boldsymbol\theta\times\mathbf x$. If in addition $\mathbf B_{\rm rb}\mathbf u=\mathbf 0$, then
+1. solve $\mathbf K_\gamma$ for seven right-hand sides ($\mathbf F$ and the six columns of $\mathbf B_{\rm rb}^{\!\top}$) by one block PCG, preconditioned with the inverse $8\times8$ diagonal blocks per $(\ell,m)$ (Appendix A.4). "Seven" counts right-hand sides; the iteration count is set by the tolerance;
+2. this gives $\mathbf y_0=\mathbf K_\gamma^{-1}\mathbf F$ and $\mathbf Y=\mathbf K_\gamma^{-1}\mathbf B_{\rm rb}^{\!\top}$;
+3. solve the $6\times6$ SPD system $(\mathbf B_{\rm rb}\mathbf Y)\boldsymbol\lambda=\mathbf B_{\rm rb}\mathbf y_0$;
+4. set $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$.
 
-$$
-\int\rho_K|\mathbf v|^2\,dV
-=\mathbf a\cdot\int\rho_K\mathbf v\,dV+\boldsymbol\theta\cdot\int\rho_K\mathbf x\times\mathbf v\,dV=0.
-$$
+The contrast $\eta_{\rm hi}/\eta_{\rm lo}$ sets the PCG count, and both are reported. Newton (Section 5.3) is optional; the default is Picard.
 
-The bound $\rho_K\ge\rho_{\min}$ forces $\mathbf v=\mathbf 0$, and linear independence of the basis forces $\mathbf u=\mathbf 0$. Thus $\mathbf K$ is positive definite on $\ker\mathbf B$. Combined with the full row rank of $\mathbf B$, the saddle-point system is nonsingular. This is the standard conclusion. If $\mathbf u^{\!\top}\mathbf K_\gamma\mathbf u=0$, then $\mathbf B\mathbf u=\mathbf 0$ and $\mathbf u^{\!\top}\mathbf K\mathbf u=0$, so $\mathbf u=\mathbf 0$. A solution of (8.4′) satisfies $\mathbf B\mathbf u=\mathbf 0$, hence $\gamma_{\rm AL}\mathbf B^{\!\top}\mathbf B\mathbf u=\mathbf 0$, and the solution is unchanged. ∎
+**Direct solution.** For moderate $N_u$ the range-space solution may use dense factorizations instead of PCG: $\mathbf K(\eta)$ is assembled from per-point Gram matrices of the strain rows (computed once per geometry), $\mathbf K_\gamma$ and the $6\times6$ Schur complement are factored by Cholesky, and $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$ is formed exactly. The pressure stiffness of Section 8.7 is factored once per geometry. The same volume points carry the loads, viscosity, rigid rows, and the Poisson problem.
 
-**Solution by the range-space method, exact up to the iteration tolerance.** Set
+**Quadrature and resolution.** By Lemma 8.13 the $\eta$-free strain products $\mathbf D(\mathbf B_\alpha):\mathbf D(\mathbf B_\beta)$ are polynomials of degree at most $2(L_{\max}+K-2)$ in $r$ along each ray, so $N_r\ge L_{\max}+K$ radial nodes per segment integrate them exactly; the angular rule must likewise match $L_{\max}$, and the silhouette error of (G2) is controlled separately. An under-resolved rule adds an error that convergence of the nonlinear iteration does not remove. A truncation at small $L_{\max}$ cannot represent a localized shear band, so the stress, the classification (B2)–(B3), and the chain of Section 10.3 are then resolution-limited; the refinement tests of Section 8.9 decide this.
 
-$$
-\gamma_{\rm AL}:=\|\operatorname{diag}\mathbf K\|_\infty\big/\|\operatorname{diag}(\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb})\|_\infty.
-$$
-
-Solve with $\mathbf K_\gamma$ for **seven right-hand sides**, $\mathbf F$ and the six columns of $\mathbf B_{\rm rb}^{\!\top}$, by PCG preconditioned with the block-diagonal inverse $\mathbf K_{\gamma,B1}^{-1}$ (the inverse of one $8\times 8$ principal sub-block for each $(\ell,m)$; Appendix A.4). The seven solves are run as one block (multi-right-hand-side) PCG, so that each application of $\mathbf K_\gamma$ advances all seven vectors at once. ("Seven" counts right-hand sides, not iterations; the number of iterations is set by the tolerance.) This produces $\mathbf y_0=\mathbf K_\gamma^{-1}\mathbf F$ and $\mathbf Y=\mathbf K_\gamma^{-1}\mathbf B_{\rm rb}^{\!\top}\in\mathbb R^{N_u\times 6}$. Solve the $6\times 6$ symmetric positive-definite system $(\mathbf B_{\rm rb}\mathbf Y)\boldsymbol\lambda=\mathbf B_{\rm rb}\mathbf y_0$, and set $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$. The spatial contrast $\eta_{\rm hi}/\eta_{\rm lo}$ determines the number of PCG iterations and must be reported together with that number. Newton acceleration, using the tangent of Section 5.3, is optional. The default is Picard.
-
-**Implementation and production resolution.** The implementation realizes (8.4′) directly, without PCG.
-
-- *Domain.* The Stokes domain is the star domain $r<R_{\rm SH}(\hat{\boldsymbol\omega})$ of the spherical-harmonic fit of degree `stokes.l_surface` to the vertex radii of the polyhedron. A fit whose largest relative misfit exceeds `geometry.sh_fit_tol` rejects the step.
-- *Quadrature.* The volume points are a product rule: `n_theta` Gauss–Legendre nodes in $\cos\theta$, `n_phi` equally spaced azimuths, and `n_radial` Gauss–Jacobi nodes with weight $\zeta^2$ along each ray, at $\mathbf x=\zeta R_{\rm SH}(\hat{\boldsymbol\omega})\hat{\boldsymbol\omega}$. The same points carry the loads, the viscosity, the rigid-body rows, and the pressure Poisson problem of Section 8.7.
-- *Solve.* $\mathbf K(\eta)$ is assembled densely from per-point Gram matrices of the strain rows, which are computed once per geometry. With $\gamma_{\rm AL}$ as above, $\mathbf K_\gamma$ and the $6\times6$ Schur complement are factored by dense Cholesky, and $\mathbf u=\mathbf y_0-\mathbf Y\boldsymbol\lambda$ is formed exactly. The pressure stiffness is factored once per geometry.
-- *Bundled projects.* $L_{\max}=2$ ($N_u=64$), $4\times8$ directions $\times\,3$ radial nodes ($96$ points), `l_surface` $=4$ with `sh_fit_tol` $=0.25$, and a pressure space with $L_p=3$, $K_p=3$. A 3-point Gauss–Jacobi rule is exact only up to degree $5$ in $\zeta$, and the $4\times8$ rule up to degree $7$ in each angle, whereas the strain products of the basis with the factors of $R_{\rm SH}$ exceed both. The matrices of (8.4′) and of Section 8.7 are therefore integrated inexactly. The implementation does not tie the quadrature to $L_{\max}$ or `l_surface`, and no refinement study ($E_{4\to8}$, $L_{\max}$) has been made. The rotational residual of Section 2.15(b) is $0.25$–$0.62$ in these runs. The stress field, the yield classification of (B2)–(B3), and the friction-angle chain of Section 10.3 are correspondingly coarse: a degree-2 global flow cannot represent a localized shear band.
-
-**Matrix-free application of $\mathbf K(\eta)$ (efficient realization; not implemented).** The viscosity changes at every Picard round and is far from spherically symmetric (it jumps across yield surfaces), so the angular bandwidth of $\mathbf K(\eta)$ is in practice the full $L_{\max}$, and an assembled $\mathbf K$ costs $O(N_qN_u^2)$ per Picard round and $O(N_u^2)$ memory, with $N_u=8L_{\max}(L_{\max}+2)$ and $N_q=O(N_rL_{\max}^2)$. PCG needs only the product
+**Matrix-free application of $\mathbf K(\eta)$.** The viscosity changes with every nonlinear update and jumps across yield surfaces, so $\mathbf K(\eta)$ has full angular bandwidth. Assembly costs $O(N_qN_u^2)$ per round and $O(N_u^2)$ memory, with $N_q=O(N_rL_{\max}^2)$. PCG needs only
 
 $$
-(\mathbf K\mathbf u)_\alpha=\sum_{q}w_q\,2\eta(\mathbf x_q)\,\mathbf D(\mathbf B_\alpha)(\mathbf x_q):\mathbf D(\mathbf v)(\mathbf x_q),
-\qquad \mathbf v=\textstyle\sum_\beta u_\beta\mathbf B_\beta .
+(\mathbf K\mathbf u)_\alpha=\sum_{q}w_q\,2\eta(\mathbf x_q)\,\mathbf D(\mathbf B_\alpha)(\mathbf x_q):\mathbf D(\mathbf v)(\mathbf x_q).
 $$
 
-On the tensor quadrature $\{(\zeta_j,\hat{\boldsymbol\omega}_a)\}$ of Section 9.4, every component of $\mathbf D(\mathbf B_\beta)$ at a point is a finite sum of terms (polynomial in $\zeta_j$) $\times$ ($Y_{\ell m}$, $\nabla_{S^2}Y_{\ell m}$, or $\operatorname{Hess}_{S^2}Y_{\ell m}$ at $\hat{\boldsymbol\omega}_a$) $\times$ (a pointwise factor built from $R$, $\nabla_{S^2}R$, $\operatorname{Hess}_{S^2}R$ at $\hat{\boldsymbol\omega}_a$), as in the derivation of Proposition 10.2. The product is therefore three sweeps: (1) synthesis of $\mathbf D(\mathbf v)$ by scalar, vector, and tensor spherical-harmonic transforms on each of the $N_r$ radial layers, followed by the pointwise $R$-factors; (2) multiplication by $2\eta w_q$; (3) the transposed sweep, which is an analysis. With the standard associated-Legendre transform and an FFT in $\varphi$, one application costs $O(n_fN_rL_{\max}^3)$, where $n_f$ is a fixed number of scalar transforms (independent of $L_{\max}$), and needs $O(N_q)$ memory. The result is the same matrix–vector product, up to rounding, as with the assembled matrix. For the seven right-hand sides of the block PCG, the Legendre stage becomes a matrix–matrix product with $7n_f$ columns, which suits matrix hardware. When matrix hardware of reduced precision is used for this stage, the outer residual of criterion (b) of Section 2.15 is still computed in double precision with the full operator, so the acceptance decision is unaffected. The $8\times8$ diagonal blocks of the preconditioner are obtained in one batched pass over the same quadrature, at cost $O(64\,N_{\ell m}N_q)$. A cheaper, spectrally equivalent alternative for moderate contrast is the block diagonal computed with the angular mean $\bar\eta(\zeta)$ of the viscosity. The iteration count then grows with the contrast $\eta_{\rm hi}/\eta_{\rm lo}$, and it must be reported (Section 8.9).
+By Lemma 8.13, along the ray of direction $\hat{\boldsymbol\omega}_q$ each component of $\mathbf D(\mathbf v)$ is $\sum_m r^m\,(\mathbb A_m(\hat{\boldsymbol\omega}_q)\mathbf u)$, a polynomial in $r$ whose coefficients are scalar, vector, and tensor spherical-harmonic syntheses of $\mathbf u$ ($Y$, $\nabla_{S^2}Y$, $\operatorname{Hess}_{S^2}Y$). One application is three sweeps:
 
-**Relation to the fully implicit system.** The global system that retains inertia, convection, Coriolis coupling, and an independent pressure is the **theoretical benchmark** of the dynamic free-surface mode. The quasi-static route does not solve it. The system (8.4′) is its exact restriction in the quasi-static limit. The production model contains neither an elastic strain nor an equation of state. Pressure is the multiplier of the incompressibility constraint.
+1. synthesis of the $r^m$-coefficients of $\mathbf D(\mathbf v)$ at every quadrature direction, then Horner evaluation at the radial nodes of each segment;
+2. multiplication by $2\eta w_q$;
+3. the transposed sweep: radial moments $\sum_iw_ir_i^m(\cdot)$ per ray, then an analysis.
 
-**Proposition 8.10 (Conditional discrete pressure-recovery theorem; conditional on the hypothesis $\mathbb Q_h\supseteq\Delta X_h$ and on the proof obligation PO-2)** [depends on PO-2: the inf–sup matching $\mathbb Q_h\supseteq\Delta X_h$]. If $\mathbb Q_h\supseteq\Delta X_h$ (the hypothesis of Proposition 5.10), then $\mathbf x=\mathbf 0$ and the velocity contains only components from $\mathbb V_h^\sigma$. If in addition $\mathbb Q_h=\Delta X_h$, then $\mathbf B_g$ is square and nonsingular. The pressure coefficients are then determined by the discrete form of (iii), $\mathbf B_g^{\!\top}\mathbf p=\mathbf A_{g\sigma}\mathbf u-\mathbf F_g$, and they return to the velocity equation through $\eta(p,\mathbf D)$. Pressure is an unknown solved simultaneously with velocity. The two form one nonlinear system.
+With associated-Legendre transforms and an FFT in $\varphi$ on a tensor angular rule, this costs $O(n_f(m_{\max}+1)L_{\max}^3+N_q)$ ($n_f$ fixed) with $O(N_q)$ memory, and it equals the assembled product up to rounding. For seven right-hand sides the Legendre stage becomes a matrix–matrix product with $7n_f$ columns, suited to matrix hardware. In reduced precision, the outer residual of 2.15(b) is still computed in double with the full operator. The $8\times8$ preconditioner blocks take one batched pass ($O(64N_{\ell m}N_q)$). A cheaper, spectrally equivalent alternative for moderate contrast uses the angular mean $\bar\eta(\zeta)$; the iteration count then grows with the contrast and is reported (Section 8.9).
 
-*Proof.* The constraint $\mathbf B\tilde{\mathbf u}=\mathbf 0$ means $\int q\,\Delta\chi_h=0$ for every $q\in\mathbb Q_h$. The choice $q=\Delta\chi_h$ gives $\Delta\chi_h=0$, and $\chi_h|_\Gamma=0$ then gives $\chi_h=0$ (Proposition 5.10). The entries of $\mathbf B_g$ are $\int q\,\Delta\chi$. When $\mathbb Q_h=\Delta X_h$, this matrix is the Gram matrix of $\Delta X_h$. It is positive definite, hence nonsingular. ∎
+**Relation to the fully implicit system.** The system with inertia, convection, Coriolis, and independent pressure is the theoretical benchmark of the dynamic mode. The quasi-static route does not solve it; (8.4′) is its exact quasi-static restriction. There is no elastic strain or equation of state, and pressure is the incompressibility multiplier.
+
+**Proposition 8.10 (Conditional discrete pressure recovery; depends on PO-2).** If $\mathbb Q_h\supseteq\Delta X_h$, then $\mathbf x=\mathbf 0$ and the velocity lies in $\mathbb V_h^\sigma$. If $\mathbb Q_h=\Delta X_h$, then $\mathbf B_g$ is square and nonsingular, and the pressure is determined by $\mathbf B_g^{\!\top}\mathbf p=\mathbf A_{g\sigma}\mathbf u-\mathbf F_g$. It returns to the velocity equation through $\eta(p,\mathbf D)$, so pressure and velocity form one nonlinear system.
+
+*Proof.* $\mathbf B\tilde{\mathbf u}=\mathbf 0$ with $q=\Delta\chi_h$ gives $\chi_h=0$ (Proposition 5.10). For $\mathbb Q_h=\Delta X_h$, $\mathbf B_g$ is the Gram matrix of $\Delta X_h$, which is positive definite. ∎
 
 ---
 
 ## 8.5 The rigid-body kernel and its algebraic constraints
 
-A rigid motion, whether a translation or a rotation, satisfies $\mathbf D(\mathbf w)=\mathbf 0$ (Proposition 5.6(3)). For a discrete velocity of degree $\ell\ge 1$, the six linear functionals
+Rigid motions have $\mathbf D=\mathbf 0$ (Proposition 5.6(3)). The six functionals
 
 $$
 \boxed{
-\begin{aligned}
-(\mathbf C_{\rm rigid})_{a\alpha}&=\int_{\mathcal V}\rho\,\mathbf B_\alpha\cdot\mathbf e_a\,dV,\\
-(\mathbf C_{\rm rigid})_{3+a,\alpha}&=\int_{\mathcal V}\rho\,(\mathbf x\times\mathbf B_\alpha)\cdot\mathbf e_a\,dV,
-\end{aligned}
+(\mathbf C_{\rm rigid})_{a\alpha}=\int_{\mathcal V}\rho\,\mathbf B_\alpha\cdot\mathbf e_a\,dV,\qquad
+(\mathbf C_{\rm rigid})_{3+a,\alpha}=\int_{\mathcal V}\rho\,(\mathbf x\times\mathbf B_\alpha)\cdot\mathbf e_a\,dV,
 \quad a=1,2,3}
 $$
 
-enforce zero momentum and zero angular momentum through $\mathbf C_{\rm rigid}\mathbf u=\mathbf 0$. With a Lagrange multiplier $\boldsymbol\lambda=(\boldsymbol\lambda_P,\boldsymbol\lambda_L)\in\mathbb R^6$, the full system is
+impose zero momentum and angular momentum. With a multiplier $\boldsymbol\lambda\in\mathbb R^6$, the system becomes
 
 $$
 \begin{pmatrix}
@@ -7012,7 +3600,7 @@ $$
 =\begin{pmatrix}\mathbf f_{\rm ext}\\ \mathbf 0\\ \mathbf 0\end{pmatrix}.
 $$
 
-**Proposition 8.11 (The constraint matrix on a spherically symmetric reference geometry)** [the matrix entries are exact integrals; solvability of the global system that contains this constraint depends on PO-1]. Let $R\equiv R_0$ and $\rho=\rho(r)$, and take the real spherical harmonics $Y_{1,a}=\sqrt{3/4\pi}\,\hat\omega_a$ for $a=x,y,z$. Only modes of degree $\ell=1$ appear, and
+**Proposition 8.11 (The constraint matrix on a spherically symmetric reference geometry)** [exact entries; solvability of the full system depends on PO-1]. For $R\equiv R_0$, $\rho=\rho(r)$, and $Y_{1,a}=\sqrt{3/4\pi}\,\hat\omega_a$, only $\ell=1$ modes appear:
 
 $$
 C_{{\rm P},a}\big|_{q_{1ka}}
@@ -7021,125 +3609,53 @@ C_{{\rm L},a}\big|_{s_{1ka}}
 =\frac{4\sqrt{3\pi}}{3}\int_0^{R_0}\rho\,f_k\,r^3\,dr,
 $$
 
-where $g_k=R_0^2\psi_{1k}(r/R_0)$ and $f_k=R_0\psi_{1k}(r/R_0)$. Every other entry vanishes. At constant density $\rho_0$,
+with $g_k=R_0^2\psi_{1k}(r/R_0)$ and $f_k=R_0\psi_{1k}(r/R_0)$, and all other entries zero. At constant density,
 
 $$
-C_{{\rm P},a}\big|_{q_{1ka}}
-=\frac{4\sqrt{3\pi}}{3}\,\rho_0 R_0^4
-\quad(k=0,1,2,3),\qquad
-C_{{\rm L},a}\big|_{s_{1ka}}
-=\frac{4\sqrt{3\pi}}{15}\,\rho_0 R_0^5\,\delta_{k0}.
+C_{{\rm P},a}\big|_{q_{1ka}}=\frac{4\sqrt{3\pi}}{3}\,\rho_0 R_0^4\quad(k=0,\dots,3),\qquad
+C_{{\rm L},a}\big|_{s_{1ka}}=\frac{4\sqrt{3\pi}}{15}\,\rho_0 R_0^5\,\delta_{k0},
 $$
 
-Hence $\mathrm{rank}\,\mathbf C_{\rm rigid}=6$. The angular-momentum row contains only $k=0$, by Jacobi orthogonality:
+so $\operatorname{rank}\mathbf C_{\rm rigid}=6$. The angular-momentum row contains only $k=0$, because $\int_0^1\psi_{1k}\zeta^3d\zeta=\int_0^1\psi_{1k}\psi_{10}\zeta^2d\zeta=\delta_{k0}/5$.
 
-$$
-\int_0^1\psi_{1k}\zeta^3\,d\zeta
-=\int_0^1\zeta^4 P_k^{(0,4)}(2\zeta-1)\,d\zeta
-=\delta_{k0}/5.
-$$
+*Proof.* For $gY_{1,z}$ with $c=\sqrt{3/4\pi}$, Lemma 5.5 gives $v_r=2(g/r)c\cos\theta$ and $v_\theta=-c(rg)'\sin\theta/r$. So $v_z=c[2(g/r)\cos^2\theta+((rg)'/r)\sin^2\theta]$, and $\int_{S^2}v_z\,d\Omega=c\tfrac{8\pi}{3}(2g/r+g')$, with $c\cdot8\pi/3=4\sqrt{3\pi}/3$. Multiply by $\rho r^2dr$. At constant density, $2rg+r^2g'=(gr^2)'$ integrates to $g(R_0)R_0^2=R_0^4$, since $\psi_{1k}(1)=1$. For $fY_{1,z}$, $v_\varphi=cf\sin\theta$ and $\int(\mathbf x\times\mathbf v)\cdot\mathbf e_z\,d\Omega=c\tfrac{8\pi}{3}fr$, so $\int_0^{R_0}f_kr^3dr=R_0^5\int\psi_{1k}\zeta^3d\zeta$. All other degrees and types vanish by orthogonality against the constants $\mathbf e_a$. ∎
 
-*Proof.* For the poloidal mode $g(r)Y_{1,z}$ of degree $\ell=1$, write $c=\sqrt{3/(4\pi)}$ and $Y_{1,z}=c\cos\theta$. Lemma 5.5 gives $v_r=2(g/r)Y_{1,z}$ and $\mathbf v_S=r^{-1}(rg)'\nabla_{S^2}Y_{1,z}$. Since $\nabla_{S^2}(\cos\theta)=-\sin\theta\,\mathbf e_\theta$,
+**A non-spherical body.** On the general route ($R\equiv R_*$) the rigid motions are exactly the $\ell=1$, $k=0$ modes, with $\operatorname{rank}\mathbf C_{\rm rigid}=6$ for any body (Proposition 8.0.4). For the star-shaped basis with non-constant $R$, $\Phi=RrY_{1m}$ is not linear, and the rigid motions need not lie in $\mathbb V_h^\sigma$. $\mathbf C_{\rm rigid}$ is still defined by its integrals, and its rank and the smallest singular value of the viscous block are reported each outer step (Appendix A.3). Fixing (b), $q_{1m0}=s_{1m0}=0$, equals (a) only for constant $R$ and $\rho=\rho(r)$. Otherwise (a) is used.
 
-$$
-v_\theta=-\frac{(rg)'}{r}\,c\sin\theta,\qquad v_\varphi=0.
-$$
-
-The Cartesian component is $v_z=v_r\cos\theta-v_\theta\sin\theta$, so
-
-$$
-v_z=c\Big[2\frac{g}{r}\cos^2\theta+\frac{(rg)'}{r}\sin^2\theta\Big].
-$$
-
-The angular integrals $\int_{S^2}\cos^2\theta\,d\Omega=4\pi/3$ and $\int_{S^2}\sin^2\theta\,d\Omega=8\pi/3$, together with $(rg)'/r=g/r+g'$, collapse the bracket to
-
-$$
-\int_{S^2}v_z\,d\Omega=c\cdot\frac{8\pi}{3}\Big(2\frac{g}{r}+g'\Big).
-$$
-
-The prefactor simplifies by $\sqrt{3/(4\pi)}\cdot 8\pi/3=4\sqrt{3\pi}/3$. Multiplication by the radial measure $\rho r^2\,dr$ produces the momentum row. At constant density the integrand $2rg+r^2 g'$ is $(gr^2)'$, and
-
-$$
-\int_0^{R_0}(gr^2)'\,dr=g(R_0)R_0^2.
-$$
-
-Every basis function satisfies $\psi_{1k}(1)=1$, so $g_k(R_0)=R_0^2$ and $g_k(R_0)R_0^2=R_0^4$, independently of $k$.
-
-For the toroidal mode $f(r)Y_{1,z}$, the velocity is a rotation about the $z$-axis, $v_\varphi=cf\sin\theta$. The angular-momentum density contributes
-
-$$
-\int_{S^2}(\mathbf x\times\mathbf v)\cdot\mathbf e_z\,d\Omega
-=c\cdot\frac{8\pi}{3}\,f r,
-$$
-
-and the radial integral against $\rho r^2\,dr$ is the angular-momentum row. At constant density, $f_k=R_0\psi_{1k}(r/R_0)$ and $r=R_0\zeta$ give
-
-$$
-\int_0^{R_0}f_k r^3\,dr=R_0^5\int_0^1\psi_{1k}\zeta^3\,d\zeta.
-$$
-
-The mode $\psi_{10}(\zeta)=\zeta$ is the Jacobi function of index $k=0$ at $\ell=1$, and Proposition 8.3(1) with weight $\zeta^2$ yields
-
-$$
-\int_0^1\psi_{1k}\zeta^3\,d\zeta
-=\int_0^1\psi_{1k}\psi_{10}\zeta^2\,d\zeta
-=\frac{\delta_{k0}}{5},
-$$
-
-because the normalization constant at $\ell=1$, $k=0$ is $2\cdot 0+2\cdot 1+3=5$. Multiplication by $4\sqrt{3\pi}/3$ produces the factor $4\sqrt{3\pi}/15$.
-
-Every other degree, and every field of the wrong type, integrates to zero by orthogonality of spherical harmonics against the constant vectors $\mathbf e_a$. Momentum projects only onto the poloidal fields of degree $\ell=1$. Under a spherically symmetric density, a toroidal field of degree $\ell=1$ has no net momentum. A poloidal mode has no $e_\varphi$ component and no angular momentum. ∎
-
-**A general star-shaped surface.** When $R$ is not constant, the mode $\Phi=R\,r\,Y_{1m}$ of indices $\ell=1$, $k=0$ is no longer a linear function. The six rigid motions need not lie in $\mathbb V_h^\sigma$. They coincide with the six modes of indices $\ell=1$, $k=0$ only when $R$ is constant. The definition of $\mathbf C_{\rm rigid}$, as an integral against discrete functions, is unchanged. Whether it has full rank, and the smallest singular value of the viscous block, must be reported at every outer step (Appendix A.3). The alternative fixing (b), namely $q_{1m0}=s_{1m0}=0$, is equivalent to (a) only when $R$ is constant and $\rho=\rho(r)$. In every other case one uses (a).
-
-**Solvability (Proposition 7.6).** The quasi-static problem requires compatibility of the resultant force and of the resultant torque: $\int\rho\mathbf g_0\,dV+\oint\mathbf t_{\rm ext}\,dS=\mathbf 0$, together with the corresponding torque condition. If the condition fails, the problem has no static solution. The incompatibility must be reported. It cannot be absorbed by the multiplier $\boldsymbol\lambda$.
+**Solvability (Proposition 7.6).** The quasi-static problem needs a compatible resultant force, $\int\rho\mathbf g_0+\oint\mathbf t_{\rm ext}=\mathbf 0$, and torque. Otherwise there is no static solution, and the incompatibility is reported; it cannot be absorbed by $\boldsymbol\lambda$.
 
 ---
 
 ## 8.6 Free-surface kinematics and the mass constraint
 
-The surface is defined by $F=r-R(\hat{\boldsymbol\omega},t)=0$. The kinematic condition is $\partial_t F+\mathbf v\cdot\nabla F=0$, with $\nabla F=\mathbf e_r-R^{-1}\nabla_{S^2}R$ and with $\nabla_{S^2}$ the gradient on the unit sphere. At $r=R$ one obtains, as in Proposition 9.1 and as already expanded in Section 5.1,
+The material condition for $\Gamma(t)$ is
 
 $$
-\boxed{\ 
-\partial_t R
-=v_r-\frac1R\nabla_{S^2}R\cdot\mathbf v_S\Big|_{r=R}
-=\frac{\mathbf v\cdot\mathbf n}{\mathbf n\cdot\mathbf e_r}.\ }
+\boxed{\ V_n=\mathbf v\cdot\mathbf n\quad\text{on }\Gamma\ }
 $$
 
-The reduction $\partial_t R\approx v_r$ is legitimate only on a sphere, or when tangential transport is neglected. The surface velocities $v_r$ and $\mathbf v_S$ are recovered from $\mathbf u$ by the trace formulae of Section 10.2.2. The mass constraint
+(Proposition 8.0.7), discretized by the normal increments of (G4) with the velocity trace $\mathbf v(\mathbf X_i)$ of Section 10.2.2. The mass constraint $\int_{\mathcal V}\rho\,dV=M$ is evaluated by the ray-segment rule (G2), or exactly for the $\rho_b$ part by Proposition 8.15, with $\partial\mathcal M/\partial d_i=\rho_K(\mathbf X_i)|\mathbf A_i|$. It fixes the mean normal increment, which the kinematics does not advance. The meanings of time in the dynamic and static regimes (Sections 9.9, 10.4.1) must not be mixed.
 
-$$
-\int_{S^2}\int_0^{R(\hat{\boldsymbol\omega},t)}\rho\,r^2\,dr\,d\Omega=M
-$$
-
-determines the component of degree $\ell=0$ in $R$ (Appendix A.3). That component is not advanced by the kinematic equation. The meanings of time in the dynamic and static regimes are those of Sections 9.9 and 10.4.1. They must not be mixed.
+*Star-shaped special case.* With $F=r-R(\hat{\boldsymbol\omega},t)$ the same condition reads $\partial_tR=v_r-R^{-1}\nabla_{S^2}R\cdot\mathbf v_S|_{r=R}=\mathbf v\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$ (Proposition 9.1), and $\partial_tR\approx v_r$ holds only on a sphere or without tangential transport. The mass constraint then fixes the $\ell=0$ part of $R$.
 
 ---
 
 ## 8.7 Pressure recovery: an independent scalar pressure-Poisson weak form
 
-**Physical basis.** The quasi-static momentum equation $\nabla\cdot\boldsymbol\sigma+\rho_K\mathbf g_{\rm eff}=\mathbf 0$, with $\boldsymbol\sigma=-p\mathbf I+\boldsymbol\tau$, gives $\nabla p=\mathbf f$, where
+**Physical basis.** The quasi-static balance with $\boldsymbol\sigma=-p\mathbf I+\boldsymbol\tau$ gives $\nabla p=\mathbf f:=\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau$, with $\boldsymbol\tau=\mathbf T_{\rm tide}+\boldsymbol\tau_{\rm flow}$. In general $\nabla\times\mathbf f=\nabla\rho_K\times\nabla W+\nabla\times(\nabla\cdot\boldsymbol\tau)\ne\mathbf 0$, markedly so for a rotating body. The irrotational part is carried by $p$. The rotational part of the load (the baroclinic source, Section 6.3) drives the flow and is balanced by the rotational part of $\nabla\cdot\boldsymbol\tau$; that balance is (8.4′), so at exact equilibrium $\mathbf f$ is a gradient. The pressure is therefore the $L^2$ projection of $\mathbf f$ onto gradients, the Poisson problem below. It is **independent of the velocity–pressure saddle system**, and it gives a continuous $p^{k+1}$ at every Picard round (Section 10.4.2).
 
-$$
-\mathbf f:=\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau,\qquad
-\boldsymbol\tau=\mathbf T_{\rm tide}+\boldsymbol\tau_{\rm flow}.
-$$
-
-In general $\mathbf f$ is not a gradient: $\nabla\times\mathbf f=\nabla\rho_K\times\nabla W+\nabla\times(\nabla\cdot\boldsymbol\tau)\ne\mathbf 0$, and the failure is pronounced for a rotating asteroid. The irrotational part is carried by the pressure. The rotational part of the load $\rho_K\mathbf g_{\rm eff}$, which is the baroclinic source of Section 6.3, drives the double-potential flow and is balanced by the rotational part of $\nabla\cdot\boldsymbol\tau$. That balance is exactly the content of (8.4′), so at an exact equilibrium $\mathbf f$ is a gradient. The pressure is therefore taken to be the $L^2$ projection of $\mathbf f$ onto gradient fields, which is the scalar Poisson problem below. The problem is **independent of the velocity–pressure saddle-point system**. At every round of the Picard iteration in Section 10.4.2 it supplies a continuous pressure $p^{k+1}$ on the whole field.
-
-**Strong form and boundary data.** The normal component of the free-surface traction $\boldsymbol\sigma\mathbf n=\mathbf t_{\rm ext}$ supplies the Dirichlet datum
+**Boundary datum.** The normal traction gives
 
 $$
 p|_\Gamma=p_\Gamma
 :=\mathbf n\cdot\boldsymbol\tau\,\mathbf n-\mathbf n\cdot\mathbf t_{\rm ext}
 \ \overset{\mathbf t_{\rm ext}=-p_{\rm ext}\mathbf n}{=}\
-p_{\rm ext}+\mathbf n\cdot\mathbf T_{\rm tide}\mathbf n+\mathbf n\cdot\boldsymbol\tau_{\rm flow}\mathbf n.
+p_{\rm ext}+\mathbf n\cdot\mathbf T_{\rm tide}\mathbf n+\mathbf n\cdot\boldsymbol\tau_{\rm flow}\mathbf n .
 $$
 
-(The tangential component of the traction is a consistency condition on $\mathbf v$; see Section 10.2.3. It does not constrain $p$.)
+The tangential traction is a consistency condition on $\mathbf v$ (Section 10.2.3), not on $p$.
 
-**Weak form.** Write $p=p_b+p_0$, where $p_b$ is any $H^1$ lifting of $p_\Gamma$. Seek $p_0\in H^1_0(\mathcal V)$ such that
+**Weak form.** With $p=p_b+p_0$ and an $H^1$ lifting $p_b$ of $p_\Gamma$, seek $p_0\in H^1_0(\mathcal V)$ with
 
 $$
 \boxed{\ 
@@ -7149,290 +3665,289 @@ $$
 \qquad\forall q\in H^1_0(\mathcal V).\ }
 $$
 
-Because $q|_\Gamma=0$, no traction integral $\oint_\Gamma(\ldots)\,q\,dS$ appears on the right-hand side. Traction enters through the Dirichlet datum $p_\Gamma$. Writing the same identity for a general $q\in H^1$ as a “boundary-integral term” would introduce the dimensionally inconsistent integral $\oint\mathbf t_{\rm ext}\cdot\mathbf n\,q\,dS$ and would require the unknown $\partial_n p$. That form is not used. The left-hand side is the inner product of $H^1_0$. The Poincaré inequality gives coercivity, so the Lax–Milgram theorem guarantees that **the solution exists and is unique**. There is no free constant, in contrast with the mixed system of Section 8.4.
+Since $q|_\Gamma=0$, traction enters only through $p_\Gamma$. A form with general $q\in H^1$ would bring in the dimensionally inconsistent $\oint\mathbf t_{\rm ext}\cdot\mathbf n\,q$ and the unknown $\partial_np$, and is not used. The left side is the $H^1_0$ inner product, so Poincaré and Lax–Milgram give **existence and uniqueness**, with no free constant (unlike Section 8.4).
 
-**Discretization (shifted Jacobi and spherical-harmonic scalar basis, with a vanishing trace).**
+**Discretization (general route).** With $\zeta=r/R_*$ the pressure space is
 
 $$
-\mathbb Q_h^0
-=\operatorname{span}\{\,(1-\zeta^2)\,P_k^{(0,1/2)}(2\zeta^2-1)\,Y_{00}\,\}
+\mathbb Q_h
+=\operatorname{span}\{\,P_k^{(0,1/2)}(2\zeta^2-1)\,Y_{00}\,\}
 \ \cup\
-\operatorname{span}\{\,(1-\zeta)\,\psi_{\ell k}(\zeta)\,Y_{\ell m}\,\}_{\ell\ge1},
-\quad 0\le\ell\le L_p,\ 0\le k\le K_p-1.
+\operatorname{span}\{\,\psi_{\ell k}(\zeta)\,Y_{\ell m}\,\}_{\ell\ge1},
+\quad 0\le\ell\le L_p,\ 0\le k\le K_p-1,
 $$
 
-The factors $(1-\zeta^2)$ and $(1-\zeta)$ make every basis function vanish on $\Gamma$. For $\ell\ge 1$, $\psi_{\ell k}$ is the function of Section 8.1; the factor $\zeta^\ell$ it contains vanishes at the centre to the order of the harmonic. Degree $\ell=0$ is reserved for pressure, and its radial factor is the even polynomial of Section 8.4 times $(1-\zeta^2)=(1-\zeta)(1+\zeta)$. The hydrostatic pressure of a self-gravitating body behaves as $p_0-c\,r^2$ near the centre, where gravity vanishes, so $\partial_r p(0)=0$; the even factor reproduces this and keeps $\nabla\tilde p$, which enters the right-hand side through $\nabla\eta$, free of a conical point. For a uniform sphere the exact hydrostatic pressure $c(R^2-r^2)$ is the $k=0$ mode. The boundary lifting is $p_b=\sum_{\ell,m}\hat p_{\ell m}\,\zeta^{\ell}Y_{\ell m}$, where the coefficients $\hat p_{\ell m}$ are the spherical-harmonic analysis of the nodal values $p_\Gamma(\hat{\boldsymbol\omega}_a)$, using the quadrature of step 1 in Section 9.4. The stiffness matrix $(\mathbf K_p)_{ab}=\int_{\mathcal V}\nabla\phi_a\cdot\nabla\phi_b\,dV$ is symmetric positive definite and is solved by PCG with a block-diagonal preconditioner. The quadrature is the same as the assembly of $\mathbf M_\Gamma$: Gauss–Jacobi in radius and spherical quadrature in angle.
+restricted to $\mathcal V$. Its functions do not vanish on $\Gamma$, so the datum $p_\Gamma$ is imposed by the Nitsche form of Section 8.0 (G3), with no lifting; Proposition 8.0.6 gives unique solvability for $\gamma_N>2C_N$. For $\ell\ge1$, $\zeta^\ell$ vanishes at the centre to the order of the harmonic. The $\ell=0$ factor is even, matching the hydrostatic $p_0-cr^2$ near the centre ($\partial_rp(0)=0$), so $\nabla\tilde p$, which enters through $\nabla\eta$, has no conical point. The Nitsche matrix is SPD and is factored once per geometry or solved by block-diagonal PCG, on the volume points of (G2).
 
-**Interior data for the right-hand side (every field is evaluated at interior quadrature points).**
+*Star-shaped special case (vanishing trace).* With $\zeta=r/R(\hat{\boldsymbol\omega})$ the factors $(1-\zeta^2)$ for $\ell=0$ and $(1-\zeta)$ for $\ell\ge1$ make the basis vanish on $\Gamma$, and the weak form above applies with a lifting $p_b=\sum\hat p_{\ell m}\zeta^\ell Y_{\ell m}$ ($\hat p_{\ell m}$ the spherical-harmonic analysis of $p_\Gamma$). For a uniform sphere, $c(R^2-r^2)$ is then the $k=0$ mode.
 
-- The effective gravity $\mathbf g_{\rm eff}=\nabla U+\omega^2\mathbf x_\perp$ is the interior RTFP gradient. The gradient converges classically and does not require a finite-part Hessian. Step 1 of Section 10.4.4 must therefore compute $\nabla U$ on the additional interior quadrature set $\mathcal X_{\rm vol}$.
-- For $\nabla\cdot\mathbf T_{\rm tide}$, the interior density $\rho_K$ is smooth. The deviator satisfies
+**Interior data for the right-hand side** (all at interior quadrature points):
 
-$$
-\big(\nabla\cdot\operatorname{dev} H_W\big)_i
-=\partial_j\partial_i\partial_j W-\frac13\partial_i(\Delta W)
-=\partial_i\Delta W-\frac13\partial_i\Delta W
-=\frac23\partial_i\Delta W,
-$$
+- $\mathbf g_{\rm eff}=\nabla U+\omega^2\mathbf x_\perp$ is the interior RTFP gradient, classically convergent with no finite part. Step 1 of Section 10.4.4 therefore computes $\nabla U$ on $\mathcal X_{\rm vol}$.
+- $(\nabla\cdot\operatorname{dev}H_W)_i=\partial_i\Delta W-\tfrac13\partial_i\Delta W=\tfrac23\partial_i\Delta W$. In the interior ($\vartheta=1$) $\Delta W=2\omega^2-4\pi G\rho_K$, and the centrifugal Hessian is constant. So
 
-so $\nabla\cdot\operatorname{dev} H_W=\tfrac23\nabla\Delta W$. In the interior, where the solid angle is the full sphere ($\vartheta=1$), $\Delta U=-4\pi G\rho_K$ and the centrifugal potential $\tfrac12\omega^2(x_1^2+x_2^2)$ has Laplacian $2\omega^2$. Hence $\Delta W=2\omega^2-4\pi G\rho_K$. The centrifugal Hessian is constant, so it contributes nothing to $\nabla\Delta W$, and $\nabla\Delta W=-4\pi G\nabla\rho_K$. Therefore
+  $$
+  \nabla\cdot\mathbf T_{\rm tide}=-\frac{8\pi}{3}G\,C_T\rho_p\nu_0 d_p^2\,\nabla\rho_K,
+  $$
 
-$$
-\nabla\cdot\operatorname{dev} H_W=-\frac{8\pi}{3}G\nabla\rho_K,
-$$
+  with $\nabla\rho_K$ from Section 6.1 and no third derivative. This is an interior identity. As a one-sided limit from inside it also holds at the relative interior of every face, which is the trace the Nitsche boundary term of (G3) needs; it does not hold for the spherical finite part on $\Gamma$ ($\vartheta=\tfrac12$), which is used only for the surface stress of Section 10.3.
+- Incompressibility gives $\nabla\cdot(2\mathbf D)=\Delta\mathbf v$, so $\nabla\cdot\boldsymbol\tau_{\rm flow}=\eta\Delta\mathbf v+2\mathbf D\nabla\eta$. Here $\mathbf v$ is the current iterate. At a new geological step, the previous step's converged coefficients are reused on the new geometry, and the first step uses $\mathbf u^0=\mathbf 0$, which gives the generalized hydrostatic pressure including the tide. $\eta$ and $\nabla\eta$ are frozen at $(\tilde p^k,\mathbf D(\mathbf u^k))$, with $\nabla\tilde p=\mathbf 1_{\{p>p_{\min}\}}\nabla p$ and, for Section 4.3a, $\partial_c\eta\,\nabla c=\nabla c/\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}$ (zero when $c_s=c_b$). The start value affects only the iteration count, not the converged solution.
 
-and, with $\mathbf T_{\rm tide}=C_T\rho_p\nu_0 d_p^2\operatorname{dev} H_W$,
-
-$$
-\nabla\cdot\mathbf T_{\rm tide}=-\frac{8\pi}{3}G\,C_T\rho_p\nu_0 d_p^2\,\nabla\rho_K.
-$$
-
-The gradient $\nabla\rho_K$ is that of Section 6.1. No third derivative of the Hessian is required. This identity is an interior identity. On the boundary, $\vartheta\ne 1$, and the face-centre evaluation of Section 10.3 is used for the stress itself.
-- For the flow stress, incompressibility gives $\nabla\cdot(2\mathbf D)=\Delta\mathbf v$. Indeed,
-
-$$
-\big(\nabla\cdot(\nabla\mathbf v+\nabla\mathbf v^{\!\top})\big)_i
-=\Delta v_i+\partial_i(\nabla\cdot\mathbf v)=\Delta v_i.
-$$
-
-If $\boldsymbol\tau_{\rm flow}=2\eta\mathbf D$, the product rule yields
-
-$$
-\nabla\cdot\boldsymbol\tau_{\rm flow}=\eta\,\Delta\mathbf v+2\mathbf D\,\nabla\eta.
-$$
-
-The velocity is the Stokes solution $\mathbf u^k$ of the previous Picard round. At the start of a geological step the converged coefficients of the previous geological step are reused, without change, on the new geometry. The first geological step takes $\mathbf u^0=\mathbf 0$, hence $\boldsymbol\tau_{\rm flow}=\mathbf 0$, and $p$ is then the generalized hydrostatic pressure that includes the tide. The viscosity $\eta$ and its gradient $\nabla\eta$ are frozen at $(\tilde p^k,\mathbf D(\mathbf u^k))$ and are computed from $\eta(c,\tilde p,\mathbf D)$ by the chain rule, with $\nabla\tilde p=\mathbf 1_{\{p>p_{\min}\}}\nabla p$ and, for the two-layer strength of Section 4.3a, the additional term $\partial_c\eta\,\nabla c=\nabla c/\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}$, which vanishes when $c_s=c_b$. The initial value affects only the number of Picard iterations. It does not affect the converged solution.
-
-**Coupling to the velocity (Picard iteration).** Inside one geological step, iterate $k=0,1,\ldots$: from the frozen pair $(\mathbf u^k,\tilde p^k)$, solve the present problem for $p^{k+1}$; from $\tilde p^{k+1}$ and $\mathbf D(\mathbf u^k)$, assemble $\mathbf K(\eta^{k+1/2})$ and solve (8.4′) for $\mathbf u^{k+1}$; stop when criterion (a) of Section 2.15 holds. The algorithm is Section 10.4.2. At convergence, $(\mathbf u,p)$ satisfies both the divergence-free Galerkin momentum equation and the present Poisson problem, which is the quasi-static equilibrium of one and the same stress. Convergence of this fixed-point iteration is not proved (PO-11). Failure to converge is judged by criterion (a) of Section 2.15. The pressure passed downstream is $\tilde p=\max([p]_+,p_{\min})$ (Section 2.8, B5), and the fraction of the domain in tension must be reported. The strong residual $\mathbf r_{\rm rot}:=\mathbf f-\nabla p$ vanishes at a continuous exact solution. On a discrete solution it measures the rotational part of $\mathbf f$ that has not been absorbed by the Galerkin projection onto $\mathbb V_h^\sigma$. It converges as $K$ and $L_{\max}$ increase, and it is reported as a resolution indicator under criterion (b) of Section 2.15.
-
-**Relation to Section 8.4.** On the quasi-static route the velocity is given by (8.4′) and the pressure is given by the present section. The Picard iteration closes the two as one nonlinear system. The fully implicit saddle-point system of Section 8.4, which retains inertia and an independent pressure, and Proposition 8.10, are only the theoretical benchmark of the dynamic mode. They are not solved inside the quasi-static loop.
+**Coupling.** The velocity at frozen pressure (8.4′) and this pressure problem form one fixed point. Section 10.4.2 computes it by the primal–dual iteration, updating the pressure every $N_p$ iterations; stop by criterion (a) of Section 2.15. The fixed-viscosity Picard map (from $(\mathbf u^k,\tilde p^k)$ solve this problem for $p^{k+1}$, then assemble $\mathbf K(\eta^{k+1/2})$ and solve (8.4′) for $\mathbf u^{k+1}$) has the same fixed points and serves as a check. At convergence $(\mathbf u,p)$ satisfies both the Galerkin momentum equation and this Poisson problem: the equilibrium of one stress. Convergence of the pressure fixed point is not proved (PO-11, PO-19). The pressure passed on is $\tilde p$ (B5), with the tensile fraction reported. $\mathbf r_{\rm rot}:=\mathbf f-\nabla p$ vanishes at an exact solution. Discretely it measures the rotational part of $\mathbf f$ not absorbed by $\mathbb V_h^\sigma$, converges with $K$ and $L_{\max}$, and is reported under 2.15(b). The fully implicit system and Proposition 8.10 are only the dynamic benchmark and are not solved in the quasi-static loop.
 
 ---
 
 ## 8.8 The internal gravitational load
 
-The gravitational field, with the positive-potential convention $\mathbf g=\nabla U$ of the Notation section,
+With $\mathbf g=\nabla U=G\int\rho(\mathbf y)(\mathbf y-\mathbf x)|\mathbf x-\mathbf y|^{-3}d\mathbf y$, pointing toward the mass, the internal gravity depends on the internal density. It is not determined by the surface alone. A surface-only evaluation is an approximation, valid only for a known fixed density, a thin shell, a precomputed multipole expansion, or a separately corrected internal mass change. The load is
 
 $$
-\mathbf g(\mathbf x)=\nabla U(\mathbf x)=G\int_{\mathcal V}\rho(\mathbf y)\frac{\mathbf y-\mathbf x}{|\mathbf x-\mathbf y|^3}\,d\mathbf y,
+\boxed{\ (\mathbf F_g)_\alpha=\int_{\mathcal V}\rho\,\mathbf g_{\rm RTFP}\cdot\mathbf B_\alpha\,dV\ }
 $$
 
-points from the field point toward the mass. It depends on the internal density. If only the surface $R(\hat{\boldsymbol\omega})$ is known and $\rho$ is not, the internal gravity is not unique. A surface RTFP evaluation is an approximation only when the density is known and fixed, when the mass is concentrated in a thin shell, when a precomputed multipole expansion is used, or when a change of the internal mass is corrected separately. The entries of the load vector are
+against every test of degree $\ell\ge1$. The same load can be written through surface fluxes.
+
+**Proposition 8.16 (Loads as surface fluxes).** For $\mathbf v\in\mathbb V_h^\sigma$,
 
 $$
-\boxed{\ (\mathbf F_g)_\alpha=\int_{\mathcal V}\rho\,\mathbf g_{\rm RTFP}\cdot\mathbf B_\alpha\,dV,\ }
+\int_{\mathcal V}\rho_K\nabla W\cdot\mathbf v\,dV=\oint_\Gamma\rho_KW\,(\mathbf v\cdot\mathbf n)\,dS-\int_{\mathcal V}W\,\nabla\rho_K\cdot\mathbf v\,dV,
 $$
 
-integrated over $\mathcal V(R)$ and against every test function of degree $\ell\ge 1$.
+$$
+\int_{\mathcal V}\mathbf T_{\rm tide}:\mathbf D(\mathbf v)\,dV=C_T\rho_p\nu_0d_p^2\Big[\oint_\Gamma(H_W^-\mathbf n)\cdot\mathbf v\,dS+4\pi G\int_{\mathcal V}\nabla\rho_K\cdot\mathbf v\,dV\Big],
+$$
+
+where $H_W^-=H_W^{\rm FP}-2\pi G\rho_K\,\mathbf n\otimes\mathbf n$ is the interior trace on the relative interior of each face (Proposition 2.7.1(5)).
+
+*Proof.* The first is the divergence theorem with $\nabla\cdot\mathbf v=0$. For the second, $\operatorname{dev}H_W:\mathbf D=H_W:\nabla\mathbf v$ because $\mathbf D$ is traceless and $H_W$ symmetric; integrating by parts with interior boundary traces gives $\oint(H_W^-\mathbf n)\cdot\mathbf v-\int\nabla\Delta W\cdot\mathbf v$, and $\nabla\Delta W=-4\pi G\nabla\rho_K$ in the interior (Section 8.7). ∎
+
+Both surface integrands are defined almost everywhere on $\Gamma$: Proposition 2.7.1(5) holds at every point of a face's relative interior, not only at its centre, and edges and vertices are a null set of $\Gamma$. Near an edge the interior trace $H_W^-$ grows only logarithmically, which is integrable, and the integration by parts is valid because $\nabla H_W$ is $O(\operatorname{dist}^{-1})$ near edges and vertices, integrable in three dimensions. For a uniform body both loads are therefore surface integrals of face fields; interior gravity at $\mathcal X_{\rm vol}$ is then needed only as the scalar $W$ for the pressure, and hence the strength. A face-centre (one-point) rule integrates a log-singular trace without an a-priori error bound, so the surface form must be refined toward edges, or checked against the volume form, before it replaces it.
 
 ---
 
 ## 8.9 Rigour and the error report
 
-The radial Jacobi truncation ($K=4$) and the angular spherical-harmonic truncation ($L_{\max}$) are both Galerkin truncations. Convergence to the three-dimensional problem is possible only as $K\to\infty$ and $L_{\max}\to\infty$, and only if the basis is complete. A finite $K$ is not equivalent to the original problem. Every run must report the following.
+$K=4$ and $L_{\max}$ are Galerkin truncations. They converge to the three-dimensional problem only as both grow, and only if the basis is complete. Every run must report:
 
-1. Convergence in $K$, through $E_{4\to 8}=\|\mathbf u_8-\mathbf u_4\|/\|\mathbf u_8\|$, and convergence in $L_{\max}$.
-2. On the quasi-static route: the viscosity contrast $\eta_{\rm hi}/\eta_{\rm lo}$, the number of preconditioned PCG iterations, the number of Picard iterations, and the residuals of criteria (a) and (b) in Section 2.15. In the dynamic mode: $\mathrm{cond}(\mathbf M_\Gamma|_{\ell\ge 1})$ (Proposition 8.7) and the condition number of each block in $\ell$.
-3. The relative rigid-body multiplier $\varepsilon_\lambda$ of criterion (b) in Section 2.15, together with $\operatorname{rank}\mathbf B_{\rm rb}$ and its smallest singular value.
-4. The strong residual $\|\mathbf r_{\rm rot}\|$ (Section 8.7). The dynamic fully implicit benchmark also reports a numerical inf–sup indicator of the pressure space (PO-2, not proved).
-5. The tangential traction inconsistency $\delta_{na}$ (Section 10.2.3).
-6. The RTFP gravitational error.
-7. When Track B is used (Appendix A.4), the quantities $\varepsilon_B$ and $\mathbf r_B$.
+1. convergence in $K$ ($E_{4\to8}=\|\mathbf u_8-\mathbf u_4\|/\|\mathbf u_8\|$) and in $L_{\max}$;
+2. quasi-static: $\eta_{\rm hi}/\eta_{\rm lo}$, the primal–dual iteration count, the number of pressure updates, and the residuals (a), (b) of Section 2.15. Dynamic: $\operatorname{cond}(\mathbf M_\Gamma|_{\ell\ge1})$ and the per-$\ell$ block condition numbers;
+3. $\varepsilon_\lambda$, $\operatorname{rank}\mathbf B_{\rm rb}$, and its smallest singular value;
+4. $\|\mathbf r_{\rm rot}\|$ (Section 8.7); the dynamic benchmark also reports a numerical inf–sup indicator (PO-2);
+5. the tangential traction inconsistency $\delta_{na}$ (Section 10.2.3);
+6. the RTFP gravity error;
+7. with Track B (Appendix A.4), $\varepsilon_B$ and $\mathbf r_B$;
+8. the geometry of Section 8.0: the condition number of the $\eta$-free Gram matrix on $\mathcal V$, $C_N$ and $\gamma_N$, and the smallest clearance ratio $\min_i|d_i|/t_i^\pm$.
 
-*Implementation.* Each step record carries $\eta_{\rm lo}$, $\eta_{\rm hi}$, the number of Picard sweeps, the achieved Picard change, $\varepsilon^{\rm weak}_{\rm mom}$, $\varepsilon_\lambda$, and the rotational residual (items 2–4; there are no PCG iterations, since the solve is direct). The smallest normalized singular value of $\mathbf B_{\rm rb}$ is checked against `stokes.rigid_sigma_min` when the operators are built, and a smaller value stops the run; it is not recorded. Items 1, 5, and 6 are not produced, and Track B is not used on the quasi-static route.
+A smallest normalized singular value of $\mathbf B_{\rm rb}$ below a configured threshold means the rigid constraint is numerically rank-deficient, and the step stops.
 
-The resulting mixed two-dimensional and three-dimensional discrete system is a reduced model subject to stated hypotheses and to error control. It is not an unconditional, zero-error reduction of the original three-dimensional free-boundary problem.
+The mixed two- and three-dimensional system is a reduced model under stated hypotheses and error control, not an unconditional zero-error reduction of the three-dimensional free-boundary problem.
+
+---
+
+## 8.10 Ray structure of the velocity operators
+
+The gravity pipeline of Chapter 3 rests on four principles, which this section and Section 10.4.2 carry over to the rheology:
+
+- **(R1) Geometry–parameter factorization.** The segment table depends on geometry only, and the parameters $\theta$ enter afterwards (Proposition 3.15.1).
+- **(R2) Separation of angle and radius.** Along a ray every quantity is a direction-only factor ($\mathbf u_q$, $T(\mathbf u_q)$, $s_k(\mathbf u_q)$) times a one-dimensional integral over the segment endpoints, in closed form when the integrand is elementary ($\alpha=1$).
+- **(R3) Fusion.** One traversal gives $U$, $\nabla U$, and $H$.
+- **(R4) Linearity and incremental reuse.** The fields are sums over rays, and only dirty rays change (Proposition 3.15.2).
+
+**Lemma 8.13 (Homogeneous structure along a ray).** For the $R_*$ basis of Definition 8.5 there are finite exponent sets $\mathfrak M_\alpha\subset\{0,\dots,L_{\max}+K-2\}$ and direction-only tensors $\mathbb A_{\alpha m}(\hat{\boldsymbol\omega})$ with
+
+$$
+\mathbf D(\mathbf B_\alpha)(r\hat{\boldsymbol\omega})=\sum_{m\in\mathfrak M_\alpha}r^m\,\mathbb A_{\alpha m}(\hat{\boldsymbol\omega}),
+$$
+
+and $\mathbf B_\alpha$ has the same form with exponents raised by one. (The cavity flux modes of Section 8.2 are not of this form and are sampled pointwise.)
+
+*Proof.* Poloidal terms $\Phi_n=r^nh_n$ ($n=\ell+j$) give $\mathcal P[\Phi_n]$ homogeneous of degree $n-1$ and $\mathbf D$ of degree $n-2$; the only $n=1$ case is linear for constant $R$, with $\mathbf D=0$. Toroidal $\mathcal T[\Psi_n]=\nabla\Psi_n\times\mathbf x$ has degree $n$, so $\mathbf D$ has degree $n-1\le L_{\max}+K-2$. ∎
+
+**Proposition 8.14 (Exact radial integration of the $\eta$-free operators).** For the stiffness at $\eta\equiv1$, $\mathbf G_{\alpha\beta}:=\int_{\mathcal V}2\mathbf D(\mathbf B_\alpha):\mathbf D(\mathbf B_\beta)\,dV$, for the $\rho_b$ kinetic-energy operator, and for the rigid rows, the radial integrals of the ray-segment rule (G2) are exact:
+
+$$
+\mathbf G_{\alpha\beta}=\sum_qw_q\sum_s\sum_{m,m'}2\,\mathbb A_{\alpha m}(\hat{\boldsymbol\omega}_q):\mathbb A_{\beta m'}(\hat{\boldsymbol\omega}_q)\,
+\frac{(r_s^+)^{m+m'+3}-(r_s^-)^{m+m'+3}}{m+m'+3}+E_{\rm ang},
+$$
+
+with only the angular error $E_{\rm ang}$. For a Cauchy core along the ray from $O$, $w_ks_k^{-\alpha_k}D_k(r)^{-\alpha_k}$ with $D_k=(r-b_k)^2+d_k^2$ (Lemma 1.4′), the moments $\mathcal M^{(\beta)}_m:=\int_{r^-}^{r^+}r^mD_k^{-\beta}dr$ satisfy
+
+$$
+\boxed{\ \mathcal M^{(\beta)}_m=\mathcal M^{(\beta-1)}_{m-2}+2b_k\,\mathcal M^{(\beta)}_{m-1}-(b_k^2+d_k^2)\,\mathcal M^{(\beta)}_{m-2}\qquad(m\ge2),\ }
+$$
+
+with base cases
+
+- $\mathcal M^{(\beta)}_0$ by Section 3.3 (closed form for integer $\beta$; the arctangent of Section 3.2 for $\beta=1$);
+- $\mathcal M^{(\beta)}_1=b_k\mathcal M^{(\beta)}_0+[D_k^{1-\beta}]/(2-2\beta)$ for $\beta\ne1$, and $b_k\mathcal M^{(1)}_0+\tfrac12[\log D_k]$ for $\beta=1$.
+
+Every $\rho_K$-weighted $\eta$-free entry is therefore an RTFP radial integral with a polynomial prefactor.
+
+*Proof.* Lemma 8.13 makes the $\rho_b$ integrand polynomial in $r$. The recurrence follows from $r^2=D_k+2b_kr-(b_k^2+d_k^2)$, multiplied by $r^{m-2}D_k^{-\beta}$; the base $\mathcal M_1$ from $r=(r-b_k)+b_k$. ∎
+
+The recurrence is used only for $m\le2(L_{\max}+K)$. Its forward stability is checked against direct quadrature for each $(b_k,d_k)$ range (PO-18).
+
+**Proposition 8.15 (Exact surface formula for the even basis).** With $\psi^{\rm ev}$ (Appendix A.2) and $R_*$, every component of $\mathbf B_\alpha$ and $\mathbf D(\mathbf B_\alpha)$ is a polynomial in $\mathbf x$ ($\psi^{\rm ev}_{10}=\zeta$ keeps the rigid modes). For $P=\sum_dP_d$ with $P_d$ homogeneous of degree $d$,
+
+$$
+\boxed{\ \int_{\mathcal V}P\,dV=\sum_d\frac1{d+3}\sum_f(\mathbf x\cdot\mathbf n_f)\int_fP_d\,dS ,\ }
+$$
+
+where $\mathbf x\cdot\mathbf n_f$ is constant on each planar face, so a degree-$d$ triangle rule is exact. The following are therefore exact for any genus, any cavities, and any position of $O$, with no angular quadrature and no silhouette error:
+
+- $\mathbf G$;
+- $\mathbf M_\Gamma$ and $\mathbf B_{\rm rb}$ with $\rho_b$;
+- the Nitsche pressure matrices (G3), when the pressure space is also built from the even radial factors, so that its functions are polynomials in $\mathbf x$;
+- the volume, centre of mass, and inertia.
+
+*Proof.* $\nabla\cdot(\mathbf xP_d)=(d+3)P_d$ (Euler), then the divergence theorem. ∎
+
+This is RTFP's dimensional reduction in exact form: the geometric stage becomes face integrals of fixed polynomials. Only $\eta$-weighted and core-weighted integrals still need volume quadrature, and the $\eta$-weighted ones are never assembled by the solver of Section 10.4.2.
 
 ---
 
 # 9. Conservative transport on the surface and the semi-Lagrangian advance
 
-This chapter obeys the normative conventions of Appendix A (A.1–A.4). The velocity degrees of freedom are the poloidal and toroidal coefficients $\mathbf u=(\mathbf q,\mathbf s)$ (Section 7.3). The conserved variable $\mathbf m$ is tied to the velocity coefficients by the global mass operator $\mathbf M_\Gamma(R,\rho)$. Track A is the reference. Track B is a local approximation whose truncation error is stated explicitly.
+This chapter follows Appendix A (A.1–A.4). The degrees of freedom are $\mathbf u=(\mathbf q,\mathbf s)$ (Section 7.3). The conserved variable $\mathbf m$ is tied to them by $\mathbf M_\Gamma(R,\rho)$. Track A is the reference; Track B is a local approximation with a stated truncation error.
 
-**Range of application (mandatory).** Transport of the modal momentum $\mathbf m$ (Section 9.1), the explicit source update (Section 9.3), and mass recovery (Sections 9.4–9.5) **belong only to the dynamic free-surface mode, which retains inertia**. The quasi-static route (Sections 2.8 and 10.4) does not carry, transport, or remap $\mathbf m$. At each geological step the velocity is recomputed implicitly from (8.4′), so the route is not subject to the explicit source-step restriction of Section 9.3. The quasi-static route uses only Section 9.0 of this chapter (surface geometry and the parametric surface velocity $\mathbf c$), Section 9.2 (semi-Lagrangian backtracking and the Jacobian conservation correction), which it uses for the surface density $\rho_s$ of Mode C (Section 2.8), and Section 9.10 (Lagrangian transport of the density cores). In that use the eight fields of Section 9.2 are replaced by the single scalar field $\rho_s$, and $\mathbf c$ is the velocity of the active region relative to the rigid core, $\chi_A\mathbf v_{{\rm sl},S}/R$.
+**Range of application (mandatory).** Transport of $\mathbf m$ (9.1), the explicit source update (9.3), and mass recovery (9.4–9.5) **belong only to the dynamic free-surface mode, which keeps inertia**. The quasi-static route never carries, transports, or remaps $\mathbf m$: its velocity is recomputed from (8.4′) each step, so it has no explicit source-step limit. It uses only:
+
+- the semi-Lagrangian transport of the single field $\rho_s$ of Mode C on the triangulated surface, along the tangential slip $\mathbf v_T$ relative to the core, with the Jacobian correction (Section 8.0, G5; Section 9.2);
+- Section 9.10, the core transport, which is posed on $\mathcal V$ and needs no surface parametrization.
 
 ---
 
 ## 9.0 Surface geometry and the material velocity on the surface
 
-The free surface $\Gamma$ is $X(\hat{\boldsymbol\omega},t)=R(\hat{\boldsymbol\omega},t)\,\hat{\boldsymbol\omega}$, with $\hat{\boldsymbol\omega}\in S^2$. Star-shapedness makes $\hat{\boldsymbol\omega}$ a global parameter of $\Gamma$. No atlas is required. If $\nabla_{S^2}$ is the gradient on the unit sphere and $\mathbf e_r=\hat{\boldsymbol\omega}$, then
+*Scope.* The modal transport of Sections 9.1 and 9.3–9.8 needs a bijection $\Gamma\to S^2$ and therefore has no general form (Section 8.0, N6). It is stated for the star-shaped special case and belongs only to the dynamic mode. Sections 9.0–9.2 give that parametrization; the quasi-static route uses Section 8.0 (G4, G5) instead.
+
+$\Gamma$ is $X=R(\hat{\boldsymbol\omega},t)\hat{\boldsymbol\omega}$, and star-shapedness makes $\hat{\boldsymbol\omega}$ a global parameter, so no atlas is needed. The normal and $\mathbf n\cdot\mathbf e_r=R/\sqrt{R^2+|\nabla_{S^2}R|^2}\ge c_0>0$ are as in Section 5.1. The induced metric is $g_{\theta\theta}=R^2+R_\theta^2$, $g_{\varphi\varphi}=R^2\sin^2\theta+R_\varphi^2$, $g_{\theta\varphi}=R_\theta R_\varphi$. The area element is $dS=J_\Gamma\,d\theta\,d\varphi=j\,d\Omega$ with
 
 $$
-\mathbf n=\frac{R\,\mathbf e_r-\nabla_{S^2}R}{\sqrt{R^2+|\nabla_{S^2}R|^2}},\qquad
-\mathbf n\cdot\mathbf e_r=\frac{R}{\sqrt{R^2+|\nabla_{S^2}R|^2}}\ \ge c_0>0.
+j(\hat{\boldsymbol\omega},t)=R\sqrt{R^2+|\nabla_{S^2}R|^2}=\frac{R^2}{\mathbf n\cdot\mathbf e_r},\qquad J_\Gamma=j\sin\theta .
 $$
 
-In spherical coordinates $(\theta,\varphi)$ the induced metric is
+The zeros of $J_\Gamma$ at the poles are a coordinate artefact. Points are unit vectors $\hat{\boldsymbol\omega}$, and $j$ is the conserved density.
 
-$$
-g_{\theta\theta}=R^2+R_\theta^2,\quad
-g_{\varphi\varphi}=R^2\sin^2\theta+R_\varphi^2,\quad
-g_{\theta\varphi}=R_\theta R_\varphi.
-$$
-
-The area element is $dS=J_\Gamma\,d\theta\,d\varphi=j\,d\Omega$, where the area density relative to solid angle is
-
-$$
-j(\hat{\boldsymbol\omega},t)=R\sqrt{R^2+|\nabla_{S^2}R|^2}=\frac{R^2}{\mathbf n\cdot\mathbf e_r},\qquad
-J_\Gamma=j\sin\theta.
-$$
-
-The vanishing of $J_\Gamma$ at $\theta=0,\pi$ is only a coordinate singularity. The discretization represents points by the unit vector $\hat{\boldsymbol\omega}$ and uses $j$ as the conserved density.
-
-**Proposition 9.1 (Parametric velocity of a material point on the surface).** A material point of the surface satisfies the kinematic condition of Section 5.1. The velocity of its parametric trajectory $\hat{\boldsymbol\omega}(t)$ is
+**Proposition 9.1 (Parametric velocity of a material point on the surface).** A material surface point $X(t)=R(\hat{\boldsymbol\omega}(t),t)\hat{\boldsymbol\omega}(t)$ has
 
 $$
 \boxed{\ 
 \mathbf c:=\dot{\hat{\boldsymbol\omega}}=\frac1R\,\mathbf v_S\big|_{r=R},\qquad
 \partial_t R+\mathbf c\cdot\nabla_{S^2}R=v_r\big|_{r=R},\ }
+\qquad
+\partial_tR=\frac{\mathbf v\cdot\mathbf n}{\mathbf n\cdot\mathbf e_r},
 $$
 
-where $\mathbf v_S$ is the physical tangential component of $\mathbf v|_\Gamma$ inside $\hat{\boldsymbol\omega}^{\perp}$. Equivalently, $\partial_t R=v_r-R^{-1}\nabla_{S^2}R\cdot\mathbf v_S$. In terms of the physical surface gradient $\nabla_S=R^{-1}\nabla_{S^2}$, this is $\partial_t R+\mathbf v_S\cdot\nabla_S R=v_r$. Furthermore,
+with $\mathbf v_S$ the tangential part of $\mathbf v|_\Gamma$. Equivalently $\partial_tR+\mathbf v_S\cdot\nabla_SR=v_r$, with $\nabla_S=R^{-1}\nabla_{S^2}$.
 
-$$
-\partial_t R=\frac{\mathbf v\cdot\mathbf n}{\mathbf n\cdot\mathbf e_r}.
-$$
+*Proof.* $\mathbf v=(\partial_tR+\nabla_{S^2}R\cdot\dot{\hat{\boldsymbol\omega}})\hat{\boldsymbol\omega}+R\dot{\hat{\boldsymbol\omega}}$. The radial part is the kinematic condition, and the tangential part gives $\mathbf c$. The last identity is that of Section 5.1. ∎
 
-*Proof.* A material point is $X(t)=R(\hat{\boldsymbol\omega}(t),t)\,\hat{\boldsymbol\omega}(t)$. Differentiation gives
-
-$$
-\mathbf v=(\partial_t R+\nabla_{S^2}R\cdot\dot{\hat{\boldsymbol\omega}})\,\hat{\boldsymbol\omega}+R\dot{\hat{\boldsymbol\omega}}.
-$$
-
-The radial component is the kinematic condition. The tangential component gives $\mathbf c=\mathbf v_S/R$. The last identity follows by writing
-
-$$
-\mathbf v\cdot\mathbf n=\frac{R v_r-\nabla_{S^2}R\cdot\mathbf v_S}{\sqrt{R^2+|\nabla_{S^2}R|^2}}
-$$
-
-and dividing by the expression for $\mathbf n\cdot\mathbf e_r$, as in Section 5.1. ∎
-
-The last identity is the same geometric relation as $d_{\rm pred}=(\mathbf u\cdot\mathbf n+\Delta h_C)/(\mathbf n\cdot\mathbf e_r)$ in Section 2.8. It converts a normal displacement into a radial increment.
+The last identity is the same normal-to-radial conversion as the radial $d_{\rm pred}$ of Section 2.8.
 
 ---
 
 ## 9.1 Conserved variables and the transport equation
 
-**Definition 9.2 (Conserved variables).** Take the radial basis of Section 8.1 and the expansion of Section 8.2, with $\mathbf u=(q_{\ell km},s_{\ell km})$ and $1\le\ell\le L_{\max}$. The mass operator is
+**Definition 9.2 (Conserved variables).** With the basis of Sections 8.1–8.2, $\mathbf m:=\mathbf M_\Gamma(R,\rho)\mathbf u$, where $(\mathbf M_\Gamma)_{\alpha\beta}=\int_{\mathcal V}\rho\mathbf B_\alpha\cdot\mathbf B_\beta\,dV$.
+
+**Conversion operators.** These are surface nodes $\hat{\boldsymbol\omega}_a$ with weights $w_a$, and
 
 $$
-(\mathbf M_\Gamma)_{\alpha\beta}=\int_{\mathcal V(R)}\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,dV,\qquad
-\mathbf m:=\mathbf M_\Gamma(R,\rho)\,\mathbf u.
+\mathbf W_1=\operatorname{diag}(w_a),\quad \mathbf W_8=\mathbf W_1\otimes\mathbf I_8,\quad
+(\mathbf S_1)_{ai}=Y_i(\hat{\boldsymbol\omega}_a)\ (i=(\ell,m),\ 1\le\ell\le L_{\max}),\quad
+\mathbf S=\mathbf S_1\otimes\mathbf I_8,\quad
+\mathbf S^*_{\rm quad}:=\mathbf S^{\!\top}\mathbf W_8 .
 $$
 
-**Conversion operators (defined as matrices, and thereby made unique).** Let $\{\hat{\boldsymbol\omega}_a\}_{a=1}^{N_S}$ be the surface quadrature nodes, with positive weights $w_a$. The single-field weight matrix is $\mathbf W_1=\operatorname{diag}(w_a)$. The eight-field nodal weight matrix is fixed as $\mathbf W_8=\mathbf W_1\otimes\mathbf I_8$. The spherical-harmonic synthesis matrix $\mathbf S_1\in\mathbb R^{N_S\times N_{\ell m}}$ has entries $(\mathbf S_1)_{ai}=Y_i(\hat{\boldsymbol\omega}_a)$, where $i=(\ell,m)$ and $1\le\ell\le L_{\max}$. The eight-field synthesis matrix is $\mathbf S=\mathbf S_1\otimes\mathbf I_8$, and the coefficient vector is fixed in the order “spherical-harmonic index first, the eight components $(X,k)$ contiguous”. If an implementation uses field-major order, it must switch to the equivalent $\mathbf I_8\otimes\mathbf S_1$ and rewrite every block-diagonal factor and every analysis matrix in the same way. The quadrature analysis matrix is $\mathbf S^*_{\rm quad}:=\mathbf S^{\!\top}\mathbf W_8$. When the quadrature is exact for polynomials of degree $2L_{\max}$, one has $\mathbf S_1^{\top}\mathbf W_1\mathbf S_1=\mathbf I$, hence $\mathbf S^*_{\rm quad}\mathbf S=\mathbf I$. Everywhere below, $\mathbf W$ means the definite matrix $\mathbf W_8$.
+Coefficients are ordered harmonic index first, with the eight $(X,k)$ components contiguous. Field-major order uses $\mathbf I_8\otimes\mathbf S_1$, with every factor rewritten to match. For a quadrature exact to degree $2L_{\max}$, $\mathbf S^*_{\rm quad}\mathbf S=\mathbf I$. Below, $\mathbf W$ means $\mathbf W_8$.
 
-**Hypothesis (A-M; PO-4 is not proved).** Treating $\mathbf M_\Gamma\mathbf u$ as a variable transported along surface characteristics is a modelling hypothesis based on operator splitting. It is not a lossless transformation of the three-dimensional weak form.
+**Hypothesis (A-M; PO-4 is not proved).** Transporting $\mathbf M_\Gamma\mathbf u$ along surface characteristics is a modelling hypothesis based on operator splitting, not a lossless transformation of the weak form.
 
-On the subspace $\ell\ge 1$, $\mathbf M_\Gamma$ is symmetric positive definite. It is defined and inverted only on the velocity-mode space of degree $\ell\ge 1$ (Section 8.2 and Definition 8.6). The double potential of degree $\ell=0$ contributes nothing to the velocity (Proposition 5.6(2)), so $\mathbf M_\Gamma$ has no row or column of degree $\ell=0$, and there is no inversion of a singular row. When $R$ is spherically symmetric and $\rho=\rho(r)$, the operator is block diagonal in $(\ell,m)$ and the poloidal and toroidal parts decouple (Proposition 5.7). In general it is a banded sparse block matrix, whose bandwidth is fixed by the angular harmonic degrees of $R$ and of $\rho$ (Proposition 6.1). For each type $X\in\{P,T\}$ and each radial index $k\in\{0,1,2,3\}$ — eight surface fields in all — the standard spherical-harmonic transform is $m_{X,k}(\hat{\boldsymbol\omega})=\sum_{\ell m}m_{X,\ell km}Y_{\ell m}(\hat{\boldsymbol\omega})$, with $m_{X,\ell km}=\oint_{S^2}m_{X,k}Y_{\ell m}\,d\Omega$. By orthonormality of the real spherical harmonics, this map is a two-sided isometric isomorphism of the band-limited space $L^2(S^2)$ (Parseval’s identity). It is not to be confused with conservation of physical kinetic energy. The surface fields are
+$\mathbf M_\Gamma$ is SPD and is defined and inverted only on $\ell\ge1$; there is no $\ell=0$ row, since $\ell=0$ carries no velocity. It is block diagonal for spherical $R$ and $\rho(r)$ (Proposition 5.7), and banded in general (Proposition 6.1). For each $X\in\{P,T\}$ and $k\in\{0,\dots,3\}$, the eight surface fields $m_{X,k}(\hat{\boldsymbol\omega})=\sum_{\ell\ge1,|m|\le\ell}m_{X,\ell km}Y_{\ell m}$ are linked to their coefficients by the standard transform. That transform is an isometry of band-limited $L^2(S^2)$ (Parseval), not conservation of kinetic energy.
 
-$$
-m_{X,k}(\hat{\boldsymbol\omega})=\sum_{\ell\ge 1,\,|m|\le\ell}m_{X,\ell km}\,Y_{\ell m}(\hat{\boldsymbol\omega}),
-$$
-
-eight fields in all.
-
-**Transport equation.** Along a material point of the surface, the conservation form is
+**Transport equation.** Along surface material points,
 
 $$
 \boxed{\ 
-\partial_t(j\,m_{X,k})+\nabla_{S^2}\cdot(j\,\mathbf c\,m_{X,k})=j\,\mathcal S_{X,k}.\ }
-$$
-
-The source is obtained by differentiating the block system of Section 7.3 in time, at $\mathbf m=\mathbf M_\Gamma\mathbf u$:
-
-$$
+\partial_t(j\,m_{X,k})+\nabla_{S^2}\cdot(j\,\mathbf c\,m_{X,k})=j\,\mathcal S_{X,k},\ }
+\qquad
 \boldsymbol{\mathcal S}
 =(\partial_t\mathbf M_\Gamma-\mathbf G)\,\mathbf u
 -\mathbf C\mathbf u
 -\mathbf K(\mathbf u,p)
 -\mathbf N(\mathbf u,\mathbf u)
-+\mathbf F.
++\mathbf F,
 $$
 
-The derivative $\partial_t\mathbf M_\Gamma$ comes from the time dependence of $R$ and of $\rho$. It contains the Reynolds boundary term
+obtained by differentiating the system of Section 7.3 at $\mathbf m=\mathbf M_\Gamma\mathbf u$. $\partial_t\mathbf M_\Gamma$ has three parts:
 
-$$
-\oint_\Gamma\rho\,(\mathbf B_\alpha\cdot\mathbf B_\beta)\,(\partial_t R)\,(\mathbf n\cdot\mathbf e_r)\,dS
-=\int_{S^2}\rho\,(\mathbf B_\alpha\cdot\mathbf B_\beta)\,R^2\partial_t R\,d\Omega,
-$$
+- the Reynolds term $\oint\rho(\mathbf B_\alpha\cdot\mathbf B_\beta)(\partial_tR)(\mathbf n\cdot\mathbf e_r)\,dS=\int_{S^2}\rho(\mathbf B_\alpha\cdot\mathbf B_\beta)R^2\partial_tR\,d\Omega$;
+- the basis-deformation term $\int\rho(\partial_t\mathbf B_\alpha\cdot\mathbf B_\beta+\mathbf B_\alpha\cdot\partial_t\mathbf B_\beta)$;
+- the $\partial_t\rho$ term.
 
-the basis-deformation term $\int_{\mathcal V}\rho\,(\partial_t\mathbf B_\alpha\cdot\mathbf B_\beta+\mathbf B_\alpha\cdot\partial_t\mathbf B_\beta)\,dV$, and the term in $\partial_t\rho$. Define $(\mathbf G)_{\beta\alpha}=\int_{\mathcal V}\rho\,\mathbf B_\beta\cdot\partial_t\mathbf B_\alpha\,dV$. The basis-connection term in the coefficient equation is therefore $\mathbf G\mathbf u$, while the geometric source in the equation for the conserved variable must be $(\partial_t\mathbf M_\Gamma-\mathbf G)\mathbf u$. One must not count both $\partial_t\mathbf M_\Gamma\mathbf u$ and $\mathbf G\mathbf u$. In the fixed-space Eulerian form used here, $\mathbf N$ uses $\mathbf v$. One must not substitute $\mathbf v-\mathbf w_{\rm mesh}$ into the same term. A switch to the ALE form must switch the time derivative and the basis derivatives together with it. In a static SCF, $\mathbf G\equiv\mathbf 0$. The definitions of $\mathbf C$, $\mathbf K$, $\mathbf N$, and $\mathbf F$ are those of Sections 5.4 and 7.3.
+With $(\mathbf G)_{\beta\alpha}=\int\rho\mathbf B_\beta\cdot\partial_t\mathbf B_\alpha$, the coefficient equation carries $\mathbf G\mathbf u$ and the conserved-variable source carries $(\partial_t\mathbf M_\Gamma-\mathbf G)\mathbf u$. **Never count both.** In the fixed-space Eulerian form $\mathbf N$ uses $\mathbf v$, not $\mathbf v-\mathbf w_{\rm mesh}$; an ALE form switches the time derivative and the basis derivatives together. In a static SCF $\mathbf G\equiv\mathbf 0$. $\mathbf C,\mathbf K,\mathbf N,\mathbf F$ are those of Sections 5.4 and 7.3.
 
-**Model hypothesis A-M (operator splitting).** The equation $\mathbf M_\Gamma\dot{\mathbf u}+\cdots=\mathbf F$ of Section 7.3 takes the Eulerian derivative at fixed $\hat{\boldsymbol\omega}$. This chapter uses its split form: first translate $\mathbf m$ along surface material points (pure transport, $\mathcal S=0$), then accumulate $\boldsymbol{\mathcal S}$ at the arrival point. **Convection is not counted twice.** Translation of $\mathbf m$ along surface material points at velocity $\mathbf c$ already carries the tangential convection on the surface. (The quasi-static route does not transport $\mathbf m$. This paragraph concerns only the dynamic mode.) In the dynamic free-surface mode, the nonlinear convective term $\mathbf N$ inside $\boldsymbol{\mathcal S}$ must be the residual relative convection left after the tangential surface convection has been removed. Write it $\mathbf N_{\rm rel}$, so that $\mathbf N=\mathbf N_{\rm rel}+\mathcal A(\mathbf c)\mathbf m$, where $\mathcal A(\mathbf c)\mathbf m$ is the part already carried by the transport step. Otherwise the same convective effect is counted twice. After that subtraction, the splitting is consistent of order one (Lie) or of order two (Strang) in the time step. **The statement holds only after the repeated convection has been removed.** Without the subtraction there is a model error of order $O(1)$. The splitting error $E_{\rm split}$ is entered in the error budget of Section 9.8. It is a modelling choice, not a consequence of the Galerkin residual.
+**Model hypothesis A-M (operator splitting).** The equation of Section 7.3 takes the Eulerian derivative at fixed $\hat{\boldsymbol\omega}$. The split form first translates $\mathbf m$ along surface material points ($\mathcal S=0$), then adds $\boldsymbol{\mathcal S}$ at the arrival point. **Convection is not counted twice:** the translation at $\mathbf c$ already carries the tangential surface convection. So $\mathbf N$ in $\boldsymbol{\mathcal S}$ must be the residual relative convection $\mathbf N_{\rm rel}$, with $\mathbf N=\mathbf N_{\rm rel}+\mathcal A(\mathbf c)\mathbf m$. After that subtraction the splitting is first order (Lie) or second order (Strang); without it there is an $O(1)$ model error. $E_{\rm split}$ enters the budget of Section 9.8 and is a modelling choice. This paragraph concerns the dynamic mode only.
 
 ---
 
 ## 9.2 Semi-Lagrangian backtracking
 
-Semi-Lagrangian schemes [3] follow the characteristics backward from the grid. For a grid point $\hat{\boldsymbol\omega}_a$, integrate the backward characteristic $\dot{\hat{\boldsymbol\omega}}=\mathbf c(\hat{\boldsymbol\omega},t)$ on the sphere, with $\hat{\boldsymbol\omega}(t^{n+1})=\hat{\boldsymbol\omega}_a$, preserving $|\hat{\boldsymbol\omega}|=1$:
+Semi-Lagrangian schemes [3] follow characteristics backward. From $\hat{\boldsymbol\omega}(t^{n+1})=\hat{\boldsymbol\omega}_a$, with $\mathcal N(\mathbf x)=\mathbf x/|\mathbf x|$ preserving $|\hat{\boldsymbol\omega}|=1$,
 
 $$
 \hat{\boldsymbol\omega}_m
 =\mathcal N\!\Big[\hat{\boldsymbol\omega}_a-\tfrac{\Delta t}{2}\mathbf c(\hat{\boldsymbol\omega}_a,t^n)\Big],\qquad
 \hat{\boldsymbol\omega}_d
-=\mathcal N\!\Big[\hat{\boldsymbol\omega}_a-\Delta t\,\mathbf c(\hat{\boldsymbol\omega}_m,t^{n+1/2})\Big],
+=\mathcal N\!\Big[\hat{\boldsymbol\omega}_a-\Delta t\,\mathbf c(\hat{\boldsymbol\omega}_m,t^{n+1/2})\Big].
 $$
 
-where $\mathcal N(\mathbf x)=\mathbf x/|\mathbf x|$. If only the velocity at $t^n$ is available, the scheme is a first-order approximation and must not be claimed to be of second order. Ray intersection in the RayBackend is used only to locate the triangle that contains $\hat{\boldsymbol\omega}_d$. A surface projection on that element is then required before $\hat{\boldsymbol\omega}_d$ is a valid departure point.
-
-Inside the triangle $\{\hat{\boldsymbol\omega}_1,\hat{\boldsymbol\omega}_2,\hat{\boldsymbol\omega}_3\}$, take barycentric coordinates $\lambda_i$ and interpolate all eight fields at once:
+With only the velocity at $t^n$ the scheme is first order and must not be called second order. RayBackend only locates the triangle containing $\hat{\boldsymbol\omega}_d$, and a surface projection then gives a valid departure point. All eight fields are interpolated barycentrically, $m^d_{X,k}=\sum_i\lambda_im_{X,k}(\hat{\boldsymbol\omega}_i)$. Discrete conservation of $\int j\,m\,d\Omega$ uses the Jacobian $\mathcal J_a=|\det\partial\hat{\boldsymbol\omega}_d/\partial\hat{\boldsymbol\omega}|$ on the tangent space of $S^2$; a determinant of the embedded vectors is meaningless. The map must be single-valued and fold-free at the mesh scale, $\Delta t\|\nabla\mathbf c\|_\infty<1$; otherwise $\Delta t$ is reduced. The source-free update is
 
 $$
-m^d_{X,k}=\sum_{i=1}^3\lambda_i\,m_{X,k}(\hat{\boldsymbol\omega}_i).
+j^{n+1}_a\,m^{n+1,*}_a=\mathcal J_a\,j^{n}_d\,m^d .
 $$
 
-The conservation correction, which secures discrete conservation of $\int j\,m\,d\Omega$, uses the Jacobian of the characteristic map,
+**Transport of $\rho_s$ on the quasi-static route.** The same scheme runs on the triangulated surface (Section 8.0, G5):
 
-$$
-\mathcal J_a=\Big|\det\frac{\partial\hat{\boldsymbol\omega}_d}{\partial\hat{\boldsymbol\omega}}\Big|_{\hat{\boldsymbol\omega}_a},
-$$
+- the foot point is first order, the geodesic of $-\tau_n\mathbf v_T(\mathbf X_a)$ with $\tau_n=\lambda\Delta t_n$, since only the step-$n$ velocity exists;
+- $\rho_s$ is interpolated barycentrically in the face containing the foot point;
+- the Jacobian is the truncated expansion $\mathcal J_a\approx1-\tau_n\nabla_\Gamma\!\cdot\mathbf v_T+\tau_n^2\det(\nabla_\Gamma\mathbf v_T)$, with $\nabla_\Gamma\mathbf v_T$ fitted by least squares on the vertex ring in a tangent frame;
+- interpolation and truncation lose a little mass, so one global factor restores $\sum_aA_a\rho_{s,a}$ exactly; its size is reported. It spreads a local error over the layer, a departure from strictly local conservation;
+- after the normal update $\rho_{s,i}=m_i/A_i^{\rm new}$; the Mode C source $\tau_n(\bar J_{\rm dep}-\bar J_{\rm ero})$ with the step averages over $\tau_n$ of Section 2.8 is added once (it is the exact exponential erosion over $\tau_n$), the relief ledger of Section 2.8c is applied, and $\rho_s$ is clipped at zero.
 
-with the determinant taken on the tangent space of $S^2$. A determinant of the embedded vectors has no meaning. The characteristic map is required to be single-valued and free of folds at the mesh scale in use, in the sense that the Lipschitz constant satisfies $\Delta t\,\|\nabla\mathbf c\|_\infty<1$. Otherwise the departure point is not unique and $\Delta t$ must be reduced. The source-free update is
-
-$$
-j^{n+1}_a\,m^{n+1,*}_a=\mathcal J_a\,j^{n}_d\,m^d.
-$$
-
-**Implementation for $\rho_s$ (quasi-static route).** The surface density is advanced with the first-order departure point $\hat{\boldsymbol\omega}_d=\mathcal N[\hat{\boldsymbol\omega}_a-\tau_n\mathbf c(\hat{\boldsymbol\omega}_a)]$, $\tau_n=\lambda\Delta t_n$, since only the velocity of step $n$ is available. The vertex values of $j\rho_s$ are interpolated barycentrically in the spherical triangle that contains the foot point, and the Jacobian is the truncated expansion $\mathcal J_a\approx 1-\tau_n\nabla_{S^2}\!\cdot\mathbf c+\tau_n^2\det(\nabla_{S^2}\mathbf c)$, with $\nabla_{S^2}\mathbf c$ fitted by least squares on the vertex ring. Because both the interpolation and the truncated Jacobian lose a little mass, one global factor restores $\sum_a j_a\Omega_a\rho_{s,a}$ exactly; its relative size is reported (`transport_fix`). This global factor redistributes a local transport error over the whole layer, and it is a departure from a strictly local conservation. The Mode C source is added after the transport, and $\rho_s$ is clipped at zero.
+In the star-shaped special case the foot point is $\hat{\boldsymbol\omega}_d=\mathcal N[\hat{\boldsymbol\omega}_a-\tau_n\mathbf c(\hat{\boldsymbol\omega}_a)]$ with $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$, and $j\rho_s$ is interpolated in the spherical triangle.
 
 ---
 
 ## 9.3 Source update and splitting
 
-The explicit source update (Lie splitting) is
+The explicit (Lie) update is
 
 $$
 j^{n+1}_a\,m_a^{n+1}
 =\mathcal J_a\,j^{n}_d\,m^d_a
-+\Delta t\,j^{n+1}_a\,\boldsymbol{\mathcal S}_a^{n}.
++\Delta t\,j^{n+1}_a\,\boldsymbol{\mathcal S}_a^{n},
 $$
 
-Every term of $\boldsymbol{\mathcal S}_a^n$ is assembled as in Section 9.1. The velocity $\mathbf u^n$ is the one recovered globally at the previous step (Section 9.4). If the source is stiff, in the sense that $\Delta t\,\|\partial\boldsymbol{\mathcal S}/\partial\mathbf m\|$ is not small, one must reduce $\Delta t$ or subcycle. This paper does not introduce a locally implicit source update. Such an update would approximate $\mathbf M_\Gamma^{-1}$ locally, which is an undeclared Track B.
+with every term of $\boldsymbol{\mathcal S}^n_a$ as in Section 9.1 and $\mathbf u^n$ from the previous global recovery (Section 9.4). If $\Delta t\|\partial\boldsymbol{\mathcal S}/\partial\mathbf m\|$ is not small, reduce $\Delta t$ or subcycle. A locally implicit source would approximate $\mathbf M_\Gamma^{-1}$ locally, an undeclared Track B, and is not used.
 
 ---
 
-## 9.4 Global mass recovery (the production route, Track A)
+## 9.4 Global mass recovery (the reference route, Track A)
 
-After transport and the source update, one has a set of nodal fields $\{m_{X,k}(\hat{\boldsymbol\omega}_a)\}$. The velocity coefficients must be recovered by the following global procedure.
+After transport and source, the velocity coefficients are recovered from the nodal fields $\{m_{X,k}(\hat{\boldsymbol\omega}_a)\}$ in three steps.
 
-**Step 1 (analysis).** Perform a spherical-harmonic analysis with a quadrature that is exact, on the sphere, for polynomials of degree $2L_{\max}$ (Gauss–Legendre in latitude times a uniform grid in $\varphi$, or a Lebedev rule):
-
-$$
-m_{X,\ell km}
-=\sum_a w_a\,m_{X,k}(\hat{\boldsymbol\omega}_a)\,Y_{\ell m}(\hat{\boldsymbol\omega}_a),\qquad
-1\le\ell\le L_{\max}.
-$$
-
-**Step 2 (gauge of the potential at $\ell=0$).** The potentials $\Phi$ and $\Psi$ of degree $\ell=0$ do not contribute to the velocity (Proposition 5.6). The operator $\mathbf M_\Gamma$ itself contains only rows and columns of degree $\ell\ge 1$ (Definition 8.6) and does not contain $\ell=0$. The gauge is
+**Step 1 (analysis).** With a quadrature exact to degree $2L_{\max}$ on the sphere (Gauss–Legendre in latitude times uniform $\varphi$, or Lebedev),
 
 $$
-q_{0km}=s_{0km}=0,\qquad m_{X,0km}:=0.
+m_{X,\ell km}=\sum_aw_a\,m_{X,k}(\hat{\boldsymbol\omega}_a)\,Y_{\ell m}(\hat{\boldsymbol\omega}_a),\qquad1\le\ell\le L_{\max}.
 $$
 
-Discarding degree $\ell=0$ is, on the dual space, the orthogonal projection $\mathcal P_{\ge 1}$. It is the mean-removal (direct-current removal) orthogonal projection of the standard $L^2(S^2)$ on the sphere, not a low-pass filter. Cross-degree coupling induced by a non-spherical $R$ can leak a small component of degree $\ell=0$ into the transported surface field. The quantity $\|(I-\mathcal P_{\ge 1})\mathbf m\|$ is the modal truncation error induced by geometric asphericity. The content $m^{\rm spur}_{X,0k}$ of degree $\ell=0$ produced by the analysis is discarded. Its norm $\|\mathbf m^{\rm spur}\|/\max\{\|\mathbf m\|,\varepsilon_m\}$ is a diagnostic of transport self-consistency. If $\|\mathbf m\|=0$ and the numerator is zero, the diagnostic is taken to be $0$; otherwise the step is judged to have failed. The diagnostic must lie below the configured tolerance, or the transport step is judged to have failed.
+**Step 2 ($\ell=0$ gauge).** $q_{0km}=s_{0km}=0$ and $m_{X,0km}:=0$. Dropping $\ell=0$ is the orthogonal mean-removal projection $\mathcal P_{\ge1}$ of $L^2(S^2)$, not a low-pass filter. A non-spherical $R$ can leak a small $\ell=0$ component into the transported field. $\|(I-\mathcal P_{\ge1})\mathbf m\|$ is that asphericity truncation error, and the spurious content is discarded. Its relative norm $\|\mathbf m^{\rm spur}\|/\max\{\|\mathbf m\|,\varepsilon_m\}$ is a self-consistency diagnostic, taken as $0$ when both numerator and $\|\mathbf m\|$ vanish. It must stay below tolerance, or the step has failed.
 
-**Step 3 (global solve).** Solve the saddle-point system with the rigid-body constraint (Proposition 5.6, Proposition 8.11, and Appendix A.3),
+**Step 3 (global solve).**
 
 $$
 \boxed{
@@ -7444,7 +3959,7 @@ $$
 =\begin{pmatrix}\mathbf m\\ \mathbf 0\end{pmatrix}.}
 $$
 
-The rows of $\mathbf B_{\rm rb}\in\mathbb R^{6\times N_u}$ are $\int_{\mathcal V}\rho\,\mathbf B_\alpha\,dV$ and $\int_{\mathcal V}\rho\,\mathbf x\times\mathbf B_\alpha\,dV$. The operator $\mathbf M_\Gamma$ is symmetric positive definite. The saddle-point system is well posed if and only if the rigid-body block has full algebraic rank, $\operatorname{rank}(\mathbf B_{\rm rb})=6$. When $R$ is constant and $\rho=\rho(r)$, Proposition 8.11 guarantees that rank. When $R$ is not spherical, the rank is determined by the geometry and by the weight. It must be checked numerically at every outer step, together with the smallest singular value of $\mathbf B_{\rm rb}$. One does not assume in advance that rigid motions lie in the discrete space. The multiplier
+It is well posed iff $\operatorname{rank}\mathbf B_{\rm rb}=6$. This is guaranteed for constant $R$ and $\rho(r)$ (Proposition 8.11). Otherwise it is checked numerically each outer step, with the smallest singular value; rigid motions are not assumed to lie in the discrete space. The multiplier
 
 $$
 \boldsymbol\lambda
@@ -7452,7 +3967,7 @@ $$
 \mathbf B_{\rm rb}\mathbf M_\Gamma^{-1}\mathbf m
 $$
 
-is the **projection multiplier** that orthogonally projects $\mathbf m$, in the $\mathbf M_\Gamma^{-1}$ inner product, onto $\ker(\mathbf B_{\rm rb}\mathbf M_\Gamma^{-1})$. It is not a residual that “must vanish”. A nonzero $\boldsymbol\lambda$ means only that $\mathbf m$ contains a rigid momentum or angular momentum that the projection can remove. By itself it is not a failure criterion. The monitored quantity is the relative size of the projection correction (the rigid-body correction residual)
+projects $\mathbf m$, $\mathbf M_\Gamma^{-1}$-orthogonally, onto $\ker(\mathbf B_{\rm rb}\mathbf M_\Gamma^{-1})$. A nonzero $\boldsymbol\lambda$ only means that removable rigid momentum was present; it is not a failure by itself. The monitored quantity is
 
 $$
 E_{\rm rb}
@@ -7461,74 +3976,44 @@ E_{\rm rb}
 \in[0,1],
 $$
 
-where $\|\mathbf a\|_{\mathbf M_\Gamma^{-1}}^2=\mathbf a^{\!\top}\mathbf M_\Gamma^{-1}\mathbf a$. The identity
+with $\|\mathbf a\|^2_{\mathbf M_\Gamma^{-1}}=\mathbf a^{\!\top}\mathbf M_\Gamma^{-1}\mathbf a$. From $(\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda)^{\!\top}\mathbf M_\Gamma^{-1}(\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda)=\boldsymbol\lambda^{\!\top}\mathbf B_{\rm rb}\mathbf u=0$ one gets the Pythagorean identity $\|\mathbf m\|^2=\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|^2+\|\mathbf m_{\rm rb}\|^2$, hence $E_{\rm rb}\le1$. Any other norm must be declared and use the same zero-denominator rule. The step is abnormal only when $E_{\rm rb}$ exceeds tolerance, i.e. when the transport or source produced non-negligible parasitic rigid momentum. The recovery is the constrained projection
 
 $$
-(\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda)^{\!\top}\mathbf M_\Gamma^{-1}(\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda)
-=\boldsymbol\lambda^{\!\top}\mathbf B_{\rm rb}\mathbf u=0
+\mathbf u=\mathcal R_{\rm rb}(\mathbf m)=\mathbf M_\Gamma^{-1}(\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda),
 $$
 
-gives the Pythagorean relation $\|\mathbf m\|^2=\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|^2+\|\mathbf m_{\rm rb}\|^2$, all norms being $\mathbf M_\Gamma^{-1}$ norms, so $E_{\rm rb}\le 1$. The same zero-denominator regularization must be used in any other norm, and the norm must be declared. The step is judged abnormal only when $E_{\rm rb}$ exceeds the configured tolerance, that is, when the rigid component dominates and the transport or the source has produced a non-negligible parasitic rigid momentum. After recovery, the synchronous momentum that corresponds exactly to the physical velocity is $\mathbf m_{\rm rb}:=\mathbf M_\Gamma\mathbf u=\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$. In the dynamic mode, every recovery must be followed by the state synchronization $\mathbf m^{(n+1/2)}\leftarrow\mathbf m_{\rm rb}^{(n+1/2)}$. Subsequent transport and multi-step cycles carry the momentum $\mathbf m_{\rm rb}$ from which the parasitic rigid momentum has been removed, so that numerical rigid drift does not accumulate without bound.
+so $\mathbf m\ne\mathbf M_\Gamma\mathbf u$ when $\boldsymbol\lambda\ne\mathbf 0$. The synchronous momentum is $\mathbf m_{\rm rb}:=\mathbf M_\Gamma\mathbf u=\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$. In the dynamic mode, every recovery is followed by $\mathbf m^{(n+1/2)}\leftarrow\mathbf m_{\rm rb}^{(n+1/2)}$, so rigid drift does not accumulate. $\Delta\mathbf m_{\rm rb}$ enters the budget of Section 9.8 through $E_{\rm rb}$. The system is solved by PCG on the Schur complement, preconditioned with $\mathbf M_{B1}^{-1}$ (Section 9.5), exactly up to the CG tolerance.
 
-**Meaning of the constrained recovery.** The system defines the constrained orthogonal projection
-
-$$
-\mathbf u=\mathcal R_{\rm rb}(\mathbf m)=\mathbf M_\Gamma^{-1}(\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda).
-$$
-
-When $\boldsymbol\lambda\ne\mathbf 0$, the recovered $\mathbf u$ does not satisfy $\mathbf m=\mathbf M_\Gamma\mathbf u$. It applies to the conserved variable an $\mathbf M_\Gamma^{-1}$-orthogonal correction that removes parasitic rigid momentum. The momentum correction $\Delta\mathbf m_{\rm rb}=\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$ is entered in the error budget of Section 9.8 through $E_{\rm rb}$.
-
-The system is solved by preconditioned conjugate gradients on the Schur complement. The preconditioner is the block-diagonal inverse $\mathbf M_{B1}^{-1}$ of Track B1 (Section 9.5). The number of iterations after preconditioning is controlled by $\|\mathbf M_{B1}^{-1}\mathbf E\|$. The solution is exact up to the CG tolerance. It is not an approximation.
-
-**Assembly of $\mathbf M_\Gamma$.** In the blocks $(\ell,m)$ and $(\ell',m')$,
-
-$$
-(\mathbf M_\Gamma)_{\alpha\beta}
-=\int_{S^2}\!\int_0^{R(\hat{\boldsymbol\omega})}\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,r^2\,dr\,d\Omega.
-$$
-
-The radial integral uses Gauss–Jacobi quadrature for the Jacobi weight corresponding to $\zeta^{2\ell+2}$. The angular integral uses the same quadrature as step 1. The degrees of the spherical-harmonic expansions of $R$ and of $\rho$ determine the bandwidth. The selection rule of Proposition 6.1 locates the nonzero blocks.
-
+**Assembly of $\mathbf M_\Gamma$.** $(\mathbf M_\Gamma)_{\alpha\beta}=\int_{S^2}\int_0^R\rho\,\mathbf B_\alpha\cdot\mathbf B_\beta\,r^2dr\,d\Omega$, with Gauss–Jacobi in radius ($\zeta^{2\ell+2}$) and the step-1 angular rule. The bandwidth is set by the harmonic degrees of $R$ and $\rho$, and the nonzero blocks by Proposition 6.1.
 
 ---
 
 ## 9.5 Track B: the block-diagonal surrogate and its truncation error
 
-**Definition 9.3 (Track B is the B1 block-diagonal surrogate).** Take
+**Definition 9.3 (Track B is the B1 block-diagonal surrogate).**
 
 $$
 \mathbf M_B:=\mathbf M_{B1}=\operatorname{blockdiag}_{(\ell,m)}\mathbf M_{\ell m,\ell m},\qquad
 \mathbf u_B:=\mathbf M_B^{-1}\mathbf m,
 $$
 
-where, for each $(\ell,m)$, the block $\mathbf M_{\ell m,\ell m}\in\mathbb R^{8\times 8}$ is the diagonal principal sub-block of $\mathbf M_\Gamma$ (four poloidal radial modes and four toroidal radial modes; on a general geometry it includes the intra-block cross entries of $\mathbf M_{PT}$). The principal sub-block inherits the symmetric positive definiteness of $\mathbf M_\Gamma$, so $\mathbf M_B$ is symmetric positive definite and invertible block by block. The residual operator $\mathbf E:=\mathbf M_\Gamma-\mathbf M_B$ contains only the Gaunt coupling blocks that cross between distinct pairs $(\ell,m)$. This paper defines no nodal (pointwise) approximation; see PO-8. An implementation must not retain such a code path.
+with each $8\times8$ block the principal sub-block of $\mathbf M_\Gamma$ (four poloidal and four toroidal modes, including intra-block $\mathbf M_{PT}$ entries on a general geometry). It inherits positive definiteness, so it is invertible block by block. $\mathbf E:=\mathbf M_\Gamma-\mathbf M_B$ contains only the Gaunt blocks between distinct $(\ell,m)$. No nodal approximation is defined (PO-8), and none may remain in an implementation.
 
-**Properties.** (i) If $R$ is constant and $\rho=\rho(r)$, then $\mathbf E=\mathbf 0$, and the unconstrained solution of Track B agrees with that of Track A to the last bit (Proposition 8.8). (ii) On a general geometry, $\mathbf M_B^{-1}\mathbf M_\Gamma$ is similar to the symmetric positive-definite matrix
+**Properties.**
 
-$$
-\mathbf M_B^{-1/2}\mathbf M_\Gamma\mathbf M_B^{-1/2}
-=\mathbf I+\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2},
-$$
+1. For constant $R$ and $\rho(r)$, $\mathbf E=\mathbf 0$, and unconstrained Track B equals Track A to the last bit (Proposition 8.8).
+2. In general, $\mathbf M_B^{-1}\mathbf M_\Gamma$ is similar to $\mathbf I+\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}$, which is SPD. Its spectrum is **positive real**, so there is no sign-change divergence. The departure from $1$ is measured by $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$. This is estimated each outer step (e.g. by power iteration); its dependence on asphericity is unproved (PO-8).
+3. $\mathbf M_B^{-1}$ is also the PCG preconditioner of Section 9.4, with condition number $\kappa(\mathbf I+\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2})$.
 
-so its spectrum consists of **positive real numbers**. There is no divergence by a change of sign. The size of the departure from $1$ is controlled by the computable quantity $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$. The dependence of that quantity on the degree of asphericity is not proved (PO-8). The implementation must report an estimate of it, for example by power iteration, at every outer step. (iii) The inverse $\mathbf M_B^{-1}$ is at the same time the preconditioner of the PCG applied to $\mathbf M_\Gamma$ in Section 9.4. The preconditioned condition number is $\kappa(\mathbf I+\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2})$.
-
-**Theorem 9.4 (Truncation error)** [the identity and the a-posteriori bound are proved; an empirical upper bound for $\varepsilon_B$, and the domain of applicability, belong to PO-8, on which this theorem does not depend]. Define the modal truncation operator
-
-$$
-\mathbf E_B^{\rm solve}:=\mathbf M_B^{-1}-\mathbf M_\Gamma^{-1},
-$$
-
-and write $\mathbf u_B:=\mathbf M_B^{-1}\mathbf m$ for the unconstrained Track B recovery. The constrained Track A solution is $\mathbf u=\mathcal R_{\rm rb}(\mathbf m)=\mathbf M_\Gamma^{-1}(\mathbf m-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda)$. The **constrained orthogonal decomposition** holds exactly:
+**Theorem 9.4 (Truncation error)** [identity and a-posteriori bound proved; an empirical bound on $\varepsilon_B$ and its domain belong to PO-8]. With $\mathbf E_B^{\rm solve}:=\mathbf M_B^{-1}-\mathbf M_\Gamma^{-1}$ and the constrained Track A solution $\mathbf u=\mathcal R_{\rm rb}(\mathbf m)$,
 
 $$
 \boxed{
 \mathbf u_B-\mathbf u
-=\mathbf E_B^{\rm solve}\,\mathbf m+\mathbf M_\Gamma^{-1}\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda
-=\big(\mathbf M_B^{-1}-\mathbf M_\Gamma^{-1}\big)\mathbf m
-+\mathbf M_\Gamma^{-1}\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda.}
+=\mathbf E_B^{\rm solve}\,\mathbf m+\mathbf M_\Gamma^{-1}\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda,}
 $$
 
-The first term is the truncation error of the mass operator. The second is the difference induced by the rigid-body projection, and it is measured by $E_{\rm rb}$. Let $\mathbf u_0:=\mathbf M_\Gamma^{-1}\mathbf m$ be the unconstrained Track A solution. For the **unconstrained** part, the following identity and a-posteriori bound hold:
+the first term being the mass-operator truncation and the second the rigid projection (measured by $E_{\rm rb}$). With $\mathbf u_0:=\mathbf M_\Gamma^{-1}\mathbf m$,
 
 $$
 \boxed{
@@ -7539,69 +4024,54 @@ $$
 \le\frac{\|\mathbf m-\mathbf M_\Gamma\mathbf u_B\|}{\lambda_{\min}(\mathbf M_\Gamma|_{\ell\ge 1})}.}
 $$
 
-*Proof.* The two factorizations
+*Proof.* $\mathbf M_B^{-1}-\mathbf M_\Gamma^{-1}=\mathbf M_B^{-1}\mathbf E\mathbf M_\Gamma^{-1}=\mathbf M_\Gamma^{-1}\mathbf E\mathbf M_B^{-1}$, and $\mathbf M_\Gamma(\mathbf u_B-\mathbf u_0)=\mathbf M_\Gamma\mathbf u_B-\mathbf m$. ∎
 
-$$
-\mathbf M_B^{-1}-\mathbf M_\Gamma^{-1}
-=\mathbf M_B^{-1}(\mathbf M_\Gamma-\mathbf M_B)\mathbf M_\Gamma^{-1}
-=\mathbf M_\Gamma^{-1}(\mathbf M_\Gamma-\mathbf M_B)\mathbf M_B^{-1}
-$$
-
-applied to $\mathbf m$ give the identity. The second form of the difference gives $\mathbf M_\Gamma(\mathbf u_B-\mathbf u_0)=\mathbf M_\Gamma\mathbf u_B-\mathbf m$. The Euclidean norm and the smallest eigenvalue of $\mathbf M_\Gamma$ on $\ell\ge 1$ give the bound. ∎
-
-(In the unconstrained case, $\mathbf u_B-\mathbf u_0=\mathbf E_B^{\rm solve}\mathbf m$.) The computable a-posteriori quantity is $\mathbf r_B=\mathbf m-\mathbf M_\Gamma\mathbf u_B$, one sparse matrix–vector product. Corollary: $\mathbf u_B=\mathbf u_0$ if and only if $\mathbf E\mathbf u_0=\mathbf 0$. Whenever Track B is used, one must report $\varepsilon_B:=\|\mathbf r_B\|/\max\{\|\mathbf m\|,\varepsilon_m\}$ (the zero-momentum case is handled as in Appendix A.4) and its distribution in $\ell$. The result must not be called “exact” or “equivalent”, except on a spherically symmetric geometry, as stated above.
+The computable residual is $\mathbf r_B=\mathbf m-\mathbf M_\Gamma\mathbf u_B$, one sparse matrix–vector product, and $\mathbf u_B=\mathbf u_0$ iff $\mathbf E\mathbf u_0=\mathbf 0$. With Track B, report $\varepsilon_B:=\|\mathbf r_B\|/\max\{\|\mathbf m\|,\varepsilon_m\}$ (zero-momentum convention of Appendix A.4) and its $\ell$-distribution. Track B is never called "exact" or "equivalent" except under spherical symmetry.
 
 **Rules of use (the Track B red line).**
 
-1. The domain of applicability of Track B is decided by the measured $\varepsilon_B$ and by $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$ against configured thresholds. If a threshold is exceeded, that outer step must fall back to Track A.
-2. Any convergence conclusion drawn under Track B must be recovered again under Track A and accepted there (Section 10.4.2).
-3. The production reference is Track A.
+1. Applicability is decided by the measured $\varepsilon_B$ and $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$ against thresholds. If either exceeds its threshold, that outer step falls back to Track A.
+2. Any convergence conclusion under Track B must be reproduced and accepted under Track A (Section 10.4.2).
+3. The reference is Track A.
 
 ---
 
 ## 9.6 The role of the RayBackend
 
-The RayBackend locates surface elements and computes intersections for the backward characteristics. It does not compute transport fluxes, source matrices, or the mass operator. Once a ray has returned one face, all eight fields are read from that face. The number of ray intersections is unchanged. The cost of interpolation and of the local source grows linearly with the number of fields.
+RayBackend locates surface elements and intersections for the backward characteristics. It computes no fluxes, sources, or mass operator. One returned face serves all eight fields, so the ray count does not change, and the interpolation and source cost grow linearly with the number of fields.
 
 ---
 
 ## 9.7 Computational complexity
 
-Let $N_S$ be the number of surface nodes, $B$ the number of triangles in the BVH, $N_{\rm ray}$ the number of rays per node, $N_{\rm hit}$ the average number of hit faces, and $N_f$ the number of transported fields per node: $N_f=2K$ ($K$ poloidal and $K$ toroidal radial modes, Section 9.1), so $N_f=8$ at $K=4$.
-
-**Local part** (intersection, interpolation, explicit source of Section 9.3):
+With $N_S$ surface nodes, $B$ BVH triangles, $N_{\rm ray}$ rays per node, $N_{\rm hit}$ mean hit faces, and $N_f=2K=8$ fields, the local part (intersection, interpolation, explicit source) is
 
 $$
 C_{\rm local}
 =O\!\big[N_S N_{\rm ray}(\log B+N_{\rm hit})+(c_{\rm int}+c_{\rm src})\,N_fN_S\big],
 $$
 
-where $c_{\rm int}$ and $c_{\rm src}$ are the per-field costs of the barycentric interpolation and of one explicit source evaluation. The source update is explicit (Section 9.3), so there is no inner iteration count.
-
-**Comparison with a single radial mode** (local part only). The ray intersections are shared by all fields (Section 9.6). Measured per node in units of one field's interpolation and source, $K=4$ costs $N_f=8$ against $2$ for $K=1$, so
+with no inner iteration because the source is explicit. Relative to a single radial mode,
 
 $$
 \frac{C_{K=4}}{C_{K=1}}
-=\frac{N_{\rm ray}(\log B+N_{\rm hit})+8\,(c_{\rm int}+c_{\rm src})}{N_{\rm ray}(\log B+N_{\rm hit})+2\,(c_{\rm int}+c_{\rm src})}\in[1,4].
+=\frac{N_{\rm ray}(\log B+N_{\rm hit})+8\,(c_{\rm int}+c_{\rm src})}{N_{\rm ray}(\log B+N_{\rm hit})+2\,(c_{\rm int}+c_{\rm src})}\in[1,4],
 $$
 
-The ratio is close to one when ray intersection dominates and approaches four when the per-field work dominates.
+near one when intersection dominates and near four when per-field work dominates. The global part (Track A only) costs:
 
-**Global part** (peculiar to Track A): spherical-harmonic analysis and synthesis cost $O(N_S L_{\max}^2)$ (a fast transform reduces this to $O(L_{\max}^2\log L_{\max})$ per field). A sparse matrix–vector product with $\mathbf M_\Gamma$ costs $O(N_u\cdot b)$, where $b$ is the block bandwidth. With $N_{\rm it}$ iterations of PCG, the total is $O(N_{\rm it} N_u b)$. Track B (the B1 block-diagonal surrogate) removes this term, at the price of the error in Theorem 9.4.
+- $O(N_SL_{\max}^2)$ for analysis and synthesis, or $O(L_{\max}^2\log L_{\max})$ per field with a fast transform;
+- $O(N_ub)$ per product with $\mathbf M_\Gamma$, for block bandwidth $b$, hence $O(N_{\rm it}N_ub)$ in PCG.
+
+Track B removes the global term at the cost of the error in Theorem 9.4.
 
 ---
 
 ## 9.8 The error budget
 
-The error components have different dimensions. **It is forbidden** to add absolute residuals directly. The total error budget is a sum of dimensionless relative quantities,
+Absolute residuals of different dimension **must not** be added. The budget is a sum of relative quantities $\operatorname{rel}_\varepsilon(a;b):=\|a\|/\max\{\|b\|,\varepsilon_b\}$, with $\varepsilon_b$ in the denominator's units and the same norm above and below, so it stays defined at zero load and zero velocity.
 
-$$
-\operatorname{rel}_{\varepsilon}(a;b):=\|a\|/\max\{\|b\|,\varepsilon_b\},
-$$
-
-where each $\varepsilon_b$ has the dimension of the corresponding denominator, and the numerator and the denominator of one term use the same norm. The budget remains defined at zero load and at zero velocity.
-
-**Quasi-static route (each geological step):**
+**Quasi-static route (each step):**
 
 $$
 \begin{aligned}
@@ -7617,17 +4087,22 @@ E_{\rm total}^{\rm qs}
 \end{aligned}
 $$
 
-- $\varepsilon_{\rm mom}^{\rm weak}$ and $\varepsilon_\lambda$ are the Galerkin momentum residual and the rigid-body incompatibility of criterion (b) in Section 2.15, for the unique stress field.
-- $\varepsilon_{\rm pic}^{\rm achieved}$ is the relative increment actually attained at the last Picard round (criterion (a) of Section 2.15).
-- $\mathbf r_{\rm rot}$ is the strong residual of Section 8.7, a resolution indicator.
-- $E_{\rm frame}$ is the error of radius resampling, and of the interpolation of $\rho_s$ and $\bar\varepsilon_p$, in the frame realignment of step 8 in Section 10.4.4. It is defined as $\|R'-R'_{\rm ref}\|_\infty$, the difference between the realigned radius and a reference resampled by fine-grid rays. If the reference is absent, the quantity is registered as PO-13.
-- $\mathbf u_B-\mathbf u$ is nonzero only when (8.4′) is solved approximately by Track B (Appendix A.4). On Track A it is defined to be zero.
-- $\delta_{na}$ is the traction inconsistency of Section 10.2.3, and $D_{\rm ref}>0$ is a configured reference scale.
-- $e_{\rho,n}$ is the relative $L^2$ misfit between the refitted Cauchy density and the transported density (Section 9.10.5). By Proposition 9.10.1 it controls the gravity defect caused by the finite kernel representation. It is zero by definition when `density_mode = frozen`, in which case the ghost-gravity defect of Section 9.10.1 is **not** measured and the run must be labelled accordingly.
+- $\varepsilon^{\rm weak}_{\rm mom}$ and $\varepsilon_\lambda$ are from 2.15(b).
+- $\varepsilon^{\rm achieved}_{\rm pic}$ is the last Picard increment (2.15(a)).
+- $\mathbf r_{\rm rot}$ is the strong residual of Section 8.7.
+- $E_{\rm frame}$ is the error of the frame realignment. On the general route the realignment is an exact rigid motion of vertices and cores, so $E_{\rm frame}=0$ (Section 8.0, G8). Only a radial resampling in the star-shaped special case would make it a resampling error, $\|R'-R'_{\rm ref}\|_\infty$ against a fine-ray reference (PO-13).
+- $\mathbf u_B-\mathbf u$ is zero on Track A.
+- $\delta_{na}$ is the traction inconsistency of 10.2.3, with $D_{\rm ref}>0$ configured.
+- $e_{\rho,n}$ is the density refit misfit of 9.10.5, which controls the gravity defect by Proposition 9.10.1. It is zero by definition in the frozen-density variant A-ρ, where the ghost gravity is **not** measured and the result must be labelled so.
 
-The following are reported separately and are not added to the expression above: the geometric projection departure $E_{\rm proj}:=\|d_*-d_{\rm pred}\|_{w,\mathcal A}/\max\{\|d_{\rm pred}\|_{w,\mathcal A},\varepsilon_d\}$ (the part of the SOCP correction that has no corresponding flow; it is a model error of the sequential convex projection), the mass slack $|s_{M*}|/M$, the core mass-closure factor $|\xi_n|$ (Section 9.10.4), the fraction in tension, the movable area fraction, $\mathrm{Ek}^{-1}$, and $\varepsilon_{\rm Euler}$ (Section 2.8, B1).
+Reported separately, not added:
 
-**Dynamic free-surface mode (each physical step):**
+- the projection departure $E_{\rm proj}:=\|d_*-d_{\rm pred}\|_{w,\mathcal A}/\max\{\|d_{\rm pred}\|_{w,\mathcal A},\varepsilon_d\}$, the part of the SOCP correction with no corresponding flow, a model error of the projection;
+- the mass slack $|s_{M*}|/M$ and the closure factor $|\xi_n|$;
+- the tensile fraction and the movable area fraction;
+- $\mathrm{Ek}^{-1}$ and $\varepsilon_{\rm Euler}$.
+
+**Dynamic mode (each physical step):**
 
 $$
 \begin{aligned}
@@ -7638,25 +4113,18 @@ E_{\rm total}^{\rm dyn}
 &\qquad+\operatorname{rel}_{\varepsilon}(\mathbf u_B-\mathbf u;\mathbf u)
 +\operatorname{rel}_{\varepsilon}(E_{\rm split};\mathbf m)
 +\operatorname{rel}_{\varepsilon}(E_{\rm remap};\mathbf m)
-+\frac{\delta_{na}}{\max\{D_{\rm ref},\varepsilon_{na}\}}.
++\frac{\delta_{na}}{\max\{D_{\rm ref},\varepsilon_{na}\}},
 \end{aligned}
 $$
 
-In the $\mathbf M_\Gamma^{-1}$ norm, the rigid-body term equals $E_{\rm rb}$. On Track A, the term $\mathbf u_B-\mathbf u$ is defined to be zero.
+In the $\mathbf M_\Gamma^{-1}$ norm the rigid term equals $E_{\rm rb}$.
 
-- $\mathbf r_{\rm mom}$ is the momentum (equilibrium) residual of the global system in Section 8.4, and $\mathbf f_{\rm ext}$ is its load.
-- $E_{\ell=0}$ is the mean-truncation error induced by geometric asphericity. The recovery $\mathcal R_{\rm rb}$ is defined only on the space $\ell\ge 1$, so a quantity that contains $\ell=0$ is **not** substituted into it. The error $E_{\ell=0}$ is defined by the Euclidean norm on the dual space of modal coefficients:
+- $\mathbf r_{\rm mom}$ is the momentum residual of Section 8.4, with load $\mathbf f_{\rm ext}$.
+- $E_{\ell=0}:=\|(\mathbf I-\mathcal P_{\ge1})\mathbf m\|_2=\sqrt{\sum_{X,k}|m_{X,0k0}|^2}$ is the asphericity mean-truncation. Since $\mathcal R_{\rm rb}$ is defined only on $\ell\ge1$, nothing containing $\ell=0$ is fed into it.
+- $E_{\rm split}=\|\mathbf m^{\rm split}-\mathbf m^{\rm ref}\|_2$ is measured against refined substeps (Lie $O(\Delta t)$, Strang $O(\Delta t^2)$; PO-4).
+- $E_{\rm remap}=\|\mathbf m^{\rm remap}-\mathbf m^{\rm cons,new}\|_2$ is the error of $\mathbf m^{\rm new}=\int_{\mathcal V^{\rm new}}\rho\mathbf B^{\rm new}_\alpha\cdot\mathbf v^{\rm old}$, where $\mathbf v^{\rm old}$ is continued analytically to $\zeta>1$ on $\mathcal V^{\rm new}\setminus\mathcal V^{\rm old}$ (PO-4 if no reference).
 
-$$
-E_{\ell=0}:=\|(\mathbf I-\mathcal P_{\ge 1})\mathbf m\|_2
-=\sqrt{\sum_{X,k}|m_{X,0k0}|^2}.
-$$
-
-- $E_{\rm split}$ is the operator-splitting error of hypothesis A-M, defined as the difference $\|\mathbf m^{\rm split}-\mathbf m^{\rm ref}\|_2$ between one transport-plus-source step and a reference computed with refined substeps (Lie of order $O(\Delta t)$, Strang of order $O(\Delta t^2)$; PO-4).
-- $E_{\rm remap}$ is the error, in the dynamic mode, of the modal remapping $\mathbf m^{\rm new}=\int_{\mathcal V^{\rm new}}\rho\,\mathbf B_\alpha^{\rm new}\cdot\mathbf v^{\rm old}\,dV$ after a change of geometry. On $\mathcal V^{\rm new}\setminus\mathcal V^{\rm old}$, the old velocity $\mathbf v^{\rm old}$ is evaluated by analytic continuation of its modal polynomial to $\zeta>1$. The error is $\|\mathbf m^{\rm remap}-\mathbf m^{\rm cons,new}\|_2$. The reference is a refined remapping. If it is absent, the quantity is registered as PO-4.
-- Discrete truncation errors are not added to the expression above. They are $E_{\rm radial}$, the radial truncation at $K=4$; $E_{\rm angular}$, the truncation at $L_{\max}$; $E_{\rm char}=O(\Delta t^p)$; $E_{\rm interp}=O(h_\Gamma^2)$; the aliasing $E_{\rm alias}$; and $E_{\rm RTFP}$. Each is reported separately by a refinement experiment in mesh or in order, through the relative difference $\|\mathbf u_{\rm fine}-\mathbf u\|/\|\mathbf u_{\rm fine}\|$, for example $E_{4\to 8}$.
-
-At fixed $K=4$ and $L_{\max}$, one may say only that the discrete solution converges to that reduced model. It does not converge to the full three-dimensional solution. Convergence must be tested by comparison with $K=8$ and with a higher $L_{\max}$, through $E_{4\to 8}=\|\mathbf u_8-\mathbf u_4\|/\|\mathbf u_8\|$.
+Discrete truncations are reported by refinement experiments, not added: $E_{\rm radial}$ ($K=4$), $E_{\rm angular}$ ($L_{\max}$), $E_{\rm char}=O(\Delta t^p)$, $E_{\rm interp}=O(h_\Gamma^2)$, $E_{\rm alias}$, and $E_{\rm RTFP}$, each through $\|\mathbf u_{\rm fine}-\mathbf u\|/\|\mathbf u_{\rm fine}\|$ (e.g. $E_{4\to8}$). At fixed $K$ and $L_{\max}$ the discrete solution converges only to the reduced model, not to the three-dimensional solution. Convergence is tested against $K=8$ and higher $L_{\max}$.
 
 ---
 
@@ -7664,34 +4132,31 @@ At fixed $K=4$ and $L_{\max}$, one may say only that the discrete solution conve
 
 | | Dynamic free surface | Quasi-static route (Modes B and C) |
 |---|---|---|
-| Time variable | physical time $t$; the step is limited by inertia and by the explicit source of Section 9.3 | geological time $t_n$, with $t_{n+1}=t_n+\lambda\Delta t_n$; $\Delta t_n$ is limited only by the geometric CFL of the movable region, by the erosional flux, and by the resolution of the spin table (Section 10.4.1) |
-| Velocity | recovered from the transported modal momentum $\mathbf m$ (Section 9.4) | the instantaneous Stokes creep velocity, computed implicitly at each step by (8.4′) and Section 8.7; not carried across steps |
-| Inertial terms | retained | omitted entirely ($\mathbf M=\mathbf N=\mathbf C=\mathbf 0$) |
-| Evolution of $R$ | $\partial_t R+\mathbf c\cdot\nabla_{S^2}R=v_r$ (Proposition 9.1) | $\partial_t R=\chi_Y\,\mathbf v_{\rm sl}\cdot\mathbf n/(\mathbf n\cdot\mathbf e_r)$ plus the Mode C flux, discretized over $\Delta t_n$ as $d_{\rm pred}$, then corrected by the SOCP, which also relieves the promoted vertices (Section 2.8c) |
-| Update of $R$ | integrated with $\partial_t R$ | $R^{(n+1)}=R^{(n)}+\lambda\mathbf d_*$ (on the locked set, $d_*=0$) |
-| Transport | eight modal fields $\mathbf m$ | the surface density $\rho_s$ only (Section 9.2) |
-| Density $\rho_K$ | transported with the flow | frozen within a step; cores advanced between steps by 2-jet transport along $\chi_Y\mathbf v_{\rm sl}$, mass closure, and adaptive refit (Section 9.10) |
-| Spin | exogenously prescribed $\omega(t)$ | exogenously prescribed $\omega(t)$, frozen at $\omega_n$ on each step |
+| Time variable | physical $t$; step limited by inertia and the explicit source (9.3) | geological $t_n$, $t_{n+1}=t_n+\lambda\Delta t_n$; limited by the movable-region CFL, the erosional flux, and the spin table (10.4.1) |
+| Velocity | recovered from transported $\mathbf m$ (9.4) | instantaneous creep velocity from (8.4′) and 8.7 each step; not carried |
+| Inertial terms | retained | omitted ($\mathbf M=\mathbf N=\mathbf C=\mathbf 0$) |
+| Evolution of $\Gamma$ | $\partial_t R+\mathbf c\cdot\nabla_{S^2}R=v_r$ (Proposition 9.1; star-shaped only) | $V_n=\chi_Y\,\mathbf v_{\rm sl}\cdot\mathbf n$ plus the Mode C flux, discretized as the normal increment $d_{\rm pred}$, then corrected by the SOCP, which also relieves promoted vertices (2.8c) |
+| Update | integrated with $\partial_tR$ | $\mathbf X_i\leftarrow\mathbf X_i+\lambda d_{*,i}\mathbf N_i$; $d_*=0$ on the locked set |
+| Transport | eight modal fields $\mathbf m$ | $\rho_s$ only (Section 8.0, G5) |
+| Density $\rho_K$ | transported with the flow | frozen per step; cores advanced between steps by 2-jet transport along $\chi_Y\mathbf v_{\rm sl}$, mass closure, adaptive refit (9.10) |
+| Spin | prescribed $\omega(t)$ | prescribed $\omega(t)$, frozen at $\omega_n$ |
 
-The two modes must not be mixed inside one loop. The stage-equilibrium condition of the quasi-static route is that the movable set is empty and that the mechanical acceptance test holds (criterion (c) of Section 2.15).
+The two modes must not be mixed in one loop. Quasi-static stage equilibrium is an empty movable set together with the mechanical acceptance test (2.15(c)).
 
 ---
 
 ## 9.10 Lagrangian transport and adaptive refit of the Cauchy density cores (hypothesis A-ρL)
 
-Hypothesis A-ρL (Lagrangian cores) is stated here; the alternative A-ρ, in which $\rho_K$ is spatially fixed in the body frame, is the configuration `frozen` below. The hypothesis applies to the quasi-static route (Modes B and C). The configuration item `density_mode` takes the values `lagrangian_cores` (default) and `frozen` (hypothesis A-ρ, for regression comparison). The item `core_shape` takes the values `anisotropic` (default; full metric $\mathbf S_k$) and `isotropic` ($\mathbf S_k=\sigma_k^2\mathbf I$; the isotropic projection is defined in 9.10.3).
+Hypothesis A-ρL (Lagrangian cores) applies to the quasi-static route. The alternative A-ρ, a density fixed in the body frame, is kept only as a comparison variant (Section 9.10.1 shows its defect). Two shape classes of cores are admitted:
+
+- *anisotropic* cores, with a full SPD metric $\mathbf S_k$ (the reference choice);
+- *isotropic* cores, $\mathbf S_k=\sigma_k^2\mathbf I$, with the projection of Section 9.10.3.
 
 ### 9.10.1 The requirement, and the size of the ghost-gravity error
 
-Mass conservation $\partial_t\rho+\nabla\cdot(\rho\mathbf v)=0$ together with the exactly divergence-free velocity of $\mathbb V_h^\sigma$ is equivalent to the material transport
+With an exactly divergence-free velocity, mass conservation is the material transport $\partial_t\rho_K+\mathbf v\cdot\nabla\rho_K=0$ (Section 4.18). A density fixed in the body frame while material flows through it has a defect that grows secularly without bound, $\|\delta\rho\|_\infty\approx t\|\mathbf v_{\rm adv}\cdot\nabla\rho_K\|_\infty$: the dense rock has left, but its gravity stays. The following bound, used as the refit's acceptance metric, turns density defects into gravity defects.
 
-$$
-\partial_t\rho_K+\mathbf v\cdot\nabla\rho_K=0
-$$
-
-(Section 4.18). A density that is held fixed in the body frame while material flows through it violates this equation. After a time $t$ the defect grows secularly, $\|\delta\rho\|_{L^\infty}\approx t\,\|\mathbf v_{\rm adv}\cdot\nabla\rho_K\|_{L^\infty}$, without bound: the high-density rock has left, but its density, and hence its gravity, remains where it was. The following bound converts any density defect into a gravity defect. It is used below as the acceptance metric of the refit.
-
-**Proposition 9.10.1 (From density defect to gravity defect).** Let $\delta\rho\in L^\infty(V)$ be supported in $V$, $\delta U=G\int_V\delta\rho(\mathbf y)|\mathbf x-\mathbf y|^{-1}d\mathbf y$, $\delta\mathbf g=\nabla\delta U$, and $R_{\rm eq}=(3|V|/4\pi)^{1/3}$. Then
+**Proposition 9.10.1 (From density defect to gravity defect).** For $\delta\rho\in L^\infty(V)$ supported in $V$, $\delta\mathbf g=\nabla\delta U$ with $\delta U=G\int_V\delta\rho|\mathbf x-\mathbf y|^{-1}$, and $R_{\rm eq}=(3|V|/4\pi)^{1/3}$,
 
 $$
 \sup_{\mathbf x\in\mathbb R^3}|\delta\mathbf g(\mathbf x)|\le 4\pi G R_{\rm eq}\,\|\delta\rho\|_{L^\infty(V)},
@@ -7699,33 +4164,33 @@ $$
 \|\delta\mathbf g\|_{L^2(\mathbb R^3)}\le 4\pi G\,C_S\,|V|^{1/3}\,\|\delta\rho\|_{L^2(V)},
 $$
 
-with the sharp Sobolev constant $C_S=3^{-1/2}(2/\pi)^{2/3}\approx 0.4273$ of $\|f\|_{L^6(\mathbb R^3)}\le C_S\|\nabla f\|_{L^2(\mathbb R^3)}$.
+with the sharp Sobolev constant $C_S=3^{-1/2}(2/\pi)^{2/3}\approx0.4273$ of $\|f\|_{L^6}\le C_S\|\nabla f\|_{L^2}$.
 
-*Proof.* (i) $|\delta\mathbf g(\mathbf x)|\le G\|\delta\rho\|_\infty\int_V|\mathbf x-\mathbf y|^{-2}d\mathbf y$. Among sets of volume $|V|$, the integral of the radially decreasing function $|\mathbf x-\mathbf y|^{-2}$ is largest for the ball of radius $R_{\rm eq}$ centred at $\mathbf x$ (bathtub principle), where it equals $\int_0^{R_{\rm eq}}4\pi r^{-2}r^2\,dr=4\pi R_{\rm eq}$. (ii) $-\Delta\delta U=4\pi G\delta\rho$ in $\mathcal D'(\mathbb R^3)$, and $\delta U=O(r^{-1})$, $\nabla\delta U=O(r^{-2})$ at infinity, so integration by parts gives $\|\nabla\delta U\|_2^2=4\pi G\int\delta\rho\,\delta U\le4\pi G\|\delta\rho\|_{6/5}\|\delta U\|_6\le4\pi G\|\delta\rho\|_{6/5}C_S\|\nabla\delta U\|_2$. Finally Hölder's inequality on $V$ gives $\|\delta\rho\|_{6/5}\le|V|^{1/3}\|\delta\rho\|_2$. ∎
+*Proof.* (i) $|\delta\mathbf g|\le G\|\delta\rho\|_\infty\int_V|\mathbf x-\mathbf y|^{-2}$. By the bathtub principle this integral is largest for the ball of radius $R_{\rm eq}$ about $\mathbf x$, where it equals $4\pi R_{\rm eq}$. (ii) $-\Delta\delta U=4\pi G\delta\rho$ with the decay at infinity gives $\|\nabla\delta U\|_2^2=4\pi G\int\delta\rho\,\delta U\le4\pi G\|\delta\rho\|_{6/5}C_S\|\nabla\delta U\|_2$, and Hölder gives $\|\delta\rho\|_{6/5}\le|V|^{1/3}\|\delta\rho\|_2$. ∎
 
 ### 9.10.2 The advection velocity
 
-The density is advected by the **same masked slip velocity that moves the surface** in (B4) of Section 2.8:
+The density moves with the **same masked slip velocity that moves the surface** (B4):
 
 $$
 \mathbf v_{\rm adv}(\mathbf x):=\chi_Y(\mathbf x)\,\mathbf v_{\rm sl}(\mathbf x),\qquad \tau_n:=\lambda\Delta t_n ,
 $$
 
-where $\chi_Y(\mathbf x)\in\{0,1\}$ is the movability indicator of the cell of the classification mesh $\mathcal X_Y$ that contains $\mathbf x$ (0 on the rigid core $\mathcal U_{\rm core}$, 1 elsewhere; Section 2.8, B3), and $\mathbf v_{\rm sl}$ is synthesized pointwise from the converged modal coefficients (Proposition 10.2 and Lemma 5.5; $\nabla\mathbf v_{\rm sl}$ is analytic in the same way). The velocity is frozen during the geological step, as it is for $d_{\rm pred}$. The mask is mandatory, for three reasons. It makes density and topography move with one and the same velocity field. It suppresses the regularization creep inside the core, which would otherwise accumulate in $\rho_K$ although it is excluded from the geometry. And it preserves the stage fixed point: if $\mathcal A^{(n)}=\varnothing$, then $\chi_Y\equiv 0$ in the body, $\mathbf v_{\rm adv}\equiv\mathbf 0$, and the density does not change (criterion (c) of Section 2.15 remains a genuine fixed point). The unmasked $\mathbf v_{\rm sl}$ is exactly divergence-free. The mask breaks this only across the core boundary, and the resulting mass discrepancy is closed in 9.10.4 and reported.
+with $\chi_Y(\mathbf x)$ the movability of the classification cell containing $\mathbf x$ (0 on $\mathcal U_{\rm core}$), and $\mathbf v_{\rm sl}$, $\nabla\mathbf v_{\rm sl}$ synthesized analytically (Lemma 5.5, Section 10.2), frozen over the step. The mask is mandatory, for three reasons:
+
+1. density and topography move with one field;
+2. the core's regularization creep, excluded from the geometry, does not accumulate in $\rho_K$;
+3. the stage fixed point survives: $\chi_Y\equiv0$ on $\mathcal X_Y$ gives $\mathbf v_{\rm adv}\equiv\mathbf 0$, so 2.15(c) stays a true fixed point.
+
+The mask breaks exact solenoidality only across the core boundary. The resulting mass discrepancy is closed in 9.10.4 and reported.
 
 ### 9.10.3 Level 0: exact 2-jet transport of every core
 
-Write $\rho_K=\sum_k\rho_k$. The transport equation is linear, so transporting every component $\rho_k$ separately transports the sum exactly. Each component is a *material component*, like a dyed fraction of the rock.
+The transport is linear, so transporting each $\rho_k$ transports the sum. Each core is a material component, like a dyed fraction of the rock.
 
-**Lemma 9.10.2 (Critical points and Hessians are transported).** Let $\Phi$ be a $C^2$ diffeomorphism, $\tilde\rho=\rho\circ\Phi^{-1}$, $\nabla\rho(\mathbf c)=\mathbf 0$, $\mathbf c'=\Phi(\mathbf c)$, and $\mathbf F=\nabla\Phi(\mathbf c)$. Then $\tilde\rho(\mathbf c')=\rho(\mathbf c)$, $\nabla\tilde\rho(\mathbf c')=\mathbf 0$, and
+**Lemma 9.10.2 (Critical points and Hessians are transported).** For a $C^2$ diffeomorphism $\Phi$, $\tilde\rho=\rho\circ\Phi^{-1}$, $\nabla\rho(\mathbf c)=\mathbf 0$, $\mathbf c'=\Phi(\mathbf c)$, and $\mathbf F=\nabla\Phi(\mathbf c)$: $\tilde\rho(\mathbf c')=\rho(\mathbf c)$, $\nabla\tilde\rho(\mathbf c')=\mathbf 0$, and $\nabla^2\tilde\rho(\mathbf c')=\mathbf F^{-\top}\nabla^2\rho(\mathbf c)\mathbf F^{-1}$. (Chain rule with $\boldsymbol\psi=\Phi^{-1}$; the term with $\nabla\rho(\mathbf c)$ vanishes.)
 
-$$
-\nabla^2\tilde\rho(\mathbf c')=\mathbf F^{-\top}\,\nabla^2\rho(\mathbf c)\,\mathbf F^{-1}.
-$$
-
-*Proof.* Put $\boldsymbol\psi=\Phi^{-1}$, so $\nabla\boldsymbol\psi(\mathbf c')=\mathbf F^{-1}$. The chain rule gives $\nabla\tilde\rho=(\nabla\boldsymbol\psi)^{\!\top}\nabla\rho\circ\boldsymbol\psi$, which vanishes at $\mathbf c'$, and $\partial_i\partial_j\tilde\rho=\partial_i\psi_a\,\partial_j\psi_b\,(\partial_a\partial_b\rho)\circ\boldsymbol\psi+(\partial_a\rho)\circ\boldsymbol\psi\;\partial_i\partial_j\psi_a$. The second term vanishes at $\mathbf c'$ because $\nabla\rho(\mathbf c)=\mathbf 0$. ∎
-
-The point $\mathbf c_k$ is the critical point of $\rho_k$, with $\rho_k(\mathbf c_k)=w_k$ and $\nabla^2\rho_k(\mathbf c_k)=-2\alpha_kw_k\mathbf S_k$ (Section 6.1). Matching value, critical point, and Hessian of the transported component gives the **jet update**
+With $\rho_k(\mathbf c_k)=w_k$ and $\nabla^2\rho_k(\mathbf c_k)=-2\alpha_kw_k\mathbf S_k$ (Section 6.1), matching value, critical point, and Hessian gives the **jet update**
 
 $$
 \boxed{\ 
@@ -7736,17 +4201,16 @@ w_k'=w_k,\qquad
 \mathbf F_k=\nabla\Phi_{\tau_n}(\mathbf c_k).\ }
 $$
 
-The centre of every core therefore moves exactly with the material at the core, and its metric is squeezed and sheared exactly by the local deformation gradient.
+Each centre moves exactly with the material, and each metric is deformed exactly by the local deformation gradient.
 
 **Proposition 9.10.3 (Properties of the jet update).**
-1. *Local exactness.* The updated kernel agrees with $\rho_k\circ\Phi_{\tau_n}^{-1}$ to second order at $\mathbf c_k'$. The defect is $O(|\mathbf x-\mathbf c_k'|^3)$ and is proportional to $\nabla^2\Phi_{\tau_n}$, because the Cauchy kernel is even about its centre and has no third-order term of its own.
-2. *Affine flows are reproduced exactly.* If $\mathbf v_{\rm adv}=\mathbf a+\mathbf L\mathbf x$ on the support, then $\rho_k\circ\Phi^{-1}$ is again a Cauchy kernel, and it equals the updated kernel identically.
-3. *Volume and definiteness.* If $\operatorname{tr}\nabla\mathbf v_{\rm adv}=0$ along the path, then $\det\mathbf F_k=1$, so $\det\mathbf S_k'=\det\mathbf S_k$: the core volume $\{q_k\le\text{const}\}$ is preserved. $\mathbf S_k'$ is symmetric positive definite.
-4. *Fixed point.* If $\mathbf v_{\rm adv}\equiv\mathbf 0$, then $\theta'=\theta$.
 
-*Proof.* (1) follows from Lemma 9.10.2 and the Taylor expansion of both functions at $\mathbf c_k'$. (2) For affine $\Phi(\mathbf x)=\mathbf F\mathbf x+\mathbf b$, one has $(\Phi^{-1}(\mathbf x)-\mathbf c)^{\!\top}\mathbf S(\Phi^{-1}(\mathbf x)-\mathbf c)=(\mathbf x-\mathbf c')^{\!\top}\mathbf F^{-\top}\mathbf S\mathbf F^{-1}(\mathbf x-\mathbf c')$. (3) Liouville's formula gives $\det\mathbf F=\exp\int\operatorname{tr}\nabla\mathbf v\,dt=1$. Congruence preserves positive definiteness. (4) is immediate. ∎
+1. *Local exactness.* The update agrees with $\rho_k\circ\Phi^{-1}_{\tau_n}$ to second order at $\mathbf c_k'$. The defect is $O(|\mathbf x-\mathbf c_k'|^3)$ and proportional to $\nabla^2\Phi_{\tau_n}$, since the kernel is even about its centre.
+2. *Affine flows.* For $\mathbf v_{\rm adv}=\mathbf a+\mathbf L\mathbf x$ the update is exact, because $(\Phi^{-1}\mathbf x-\mathbf c)^{\!\top}\mathbf S(\Phi^{-1}\mathbf x-\mathbf c)=(\mathbf x-\mathbf c')^{\!\top}\mathbf F^{-\top}\mathbf S\mathbf F^{-1}(\mathbf x-\mathbf c')$.
+3. *Volume and definiteness.* If $\operatorname{tr}\nabla\mathbf v_{\rm adv}=0$, then $\det\mathbf F_k=1$ (Liouville), so $\det\mathbf S_k'=\det\mathbf S_k$. $\mathbf S_k'$ is SPD by congruence.
+4. *Fixed point.* $\mathbf v_{\rm adv}\equiv\mathbf 0$ gives $\theta'=\theta$.
 
-*Example.* For a random traceless affine field, the defect of item 2 is $4\times10^{-16}$ and $\det\mathbf S'/\det\mathbf S=1$ to rounding. For the nonlinear divergence-free field $\mathbf v=(\sin y+z^2,\ \tfrac12\cos z+xz,\ -0.3x^2+\sin y)$ with $\tau=0.2$, the maximum defect at distance $r$ from $\mathbf c'$ is $8.2\times10^{-3}$, $8.6\times10^{-4}$, $1.2\times10^{-4}$, $1.4\times10^{-5}$ for $r=0.2,\,0.1,\,0.05,\,0.025$, which is the third-order decay of item 1.
+*Example.* A random traceless affine field gives a defect of $4\times10^{-16}$ and $\det\mathbf S'/\det\mathbf S=1$. For $\mathbf v=(\sin y+z^2,\tfrac12\cos z+xz,-0.3x^2+\sin y)$ and $\tau=0.2$, the maximum defect at $r=0.2,0.1,0.05,0.025$ is $8.2\times10^{-3}$, $8.6\times10^{-4}$, $1.2\times10^{-4}$, $1.4\times10^{-5}$: third order.
 
 **Time discretization (second order for the frozen velocity).**
 
@@ -7757,48 +4221,53 @@ $$
 \mathbf L_k=\operatorname{dev}\nabla\mathbf v_{\rm adv}(\mathbf c_k^{\rm mid}).
 $$
 
-The deviatoric projection removes rounding from the trace, so $\det\mathbf F_k=1$ in exact arithmetic. The matrix exponential is required: the Cayley form $(\mathbf I-\tfrac\tau2\mathbf L)^{-1}(\mathbf I+\tfrac\tau2\mathbf L)$ preserves volume only when $\det\mathbf L=0$ in three dimensions. The single-valuedness condition $\tau_n\|\nabla\mathbf v_{\rm adv}(\mathbf c_k)\|\le\theta_{\rm ch}<1$ is enforced through $\Delta t_{\rm core}$ of Section 10.4.1.
+The deviatoric projection makes $\det\mathbf F_k=\exp(\tau_n\operatorname{tr}\mathbf L_k)=1$ exactly. The exponential is required: for a trace-free $\mathbf L$ and $\mathbf A=\tfrac{\tau_n}{2}\mathbf L$, the Cayley form $(\mathbf I-\mathbf A)^{-1}(\mathbf I+\mathbf A)$ has determinant $(1+e_2(\mathbf A)+\det\mathbf A)/(1+e_2(\mathbf A)-\det\mathbf A)$ in 3-D ($e_2$ the second invariant), which is $1$ only if $\det\mathbf L=0$. The trace removed by $\operatorname{dev}$ is not physical compression. The flow is isochoric, and $\operatorname{tr}\nabla\mathbf v_{\rm adv}\ne0$ arises only where the mask $\chi_Y$ cuts the field at the core boundary. Its mass effect is closed by Level 1 (Section 9.10.4) and measured locally by $e_\rho$, which triggers the local refit of Level 2 (Section 9.10.5). The single-valuedness condition $\tau_n\|\nabla\mathbf v_{\rm adv}\|\le\theta_{\rm ch}<1$ is enforced by $\Delta t_{\rm core}$ (Section 10.4.1).
 
-**Anchored cores.** If $\mathbf c_k\notin\mathcal V^{(n)}$ (a core centred outside the body, which represents only a tail), or if $\chi_Y(\mathbf c_k)=0$, the velocity at the centre is either undefined or masked. The core is then *anchored* ($\theta_k'=\theta_k$), and its part inside the body is corrected only by Levels 1–2.
+**Anchored cores.** A core centred outside $\mathcal V^{(n)}$ (a tail only), or with $\chi_Y(\mathbf c_k)=0$, has an undefined or masked centre velocity. It is anchored ($\theta_k'=\theta_k$) and corrected only by Levels 1–2. **Isotropic option.** With isotropic cores, $\sigma_k'^2:=(\det\mathbf S'_k)^{1/3}=\sigma_k^2$ preserves volume, and the anisotropic part of the deformation becomes a model error measured by Level 2.
 
-**Isotropic option.** With `core_shape = isotropic`, the metric is projected after the jet update, $\sigma_k'^2:=(\det\mathbf S_k')^{1/3}=\sigma_k^2$, which preserves the core volume. The anisotropic part of the deformation is then a model error, measured by the misfit indicator of Level 2.
-
-**Why moments are not matched.** A natural alternative would match the mass, centroid, and second moment of each component over $V$. For the default exponent $\alpha_k=1$, the mass of a core inside a body of size $L$ grows linearly with radius, so the core region $|\mathbf y-\mathbf c_k|\lesssim\sigma_k^{-1}$ carries only a fraction $O((\sigma_kL)^{-1})$ of the component's mass. Moreover the second moment over $\mathbb R^3$ diverges for every $\alpha_k\le\tfrac52$. The moments over $V$ are then dominated by the geometry of $V$, not by $\mathbf c_k$ and $\mathbf S_k$, and matching them is ill-conditioned. Jet matching is local and exact, which is why it is used.
+**Why moments are not matched.** For $\alpha_k=1$ a core's mass inside a body of size $L$ grows linearly with radius, so the core region holds only $O((\sigma_kL)^{-1})$ of the mass, and the second moment over $\mathbb R^3$ diverges for every $\alpha_k\le\tfrac52$. Moments over $V$ are dominated by the geometry, not by $\mathbf c_k,\mathbf S_k$, so matching them is ill-conditioned. Jet matching is local and exact.
 
 ### 9.10.4 Level 1: mass closure (always)
 
-After the geometric update of step 8a, evaluate $\mathcal M(V^{(n+1)},\theta')$ with the same evaluator as the mass row of Section 2.13, and set
+After step 8a, with the evaluator of the Section 2.13 mass row,
 
 $$
-\xi_n:=\frac{\mathsf M_{\rm tot}^{n+1}}{\mathcal M(V^{(n+1)},\theta')}-1,\qquad w_k''=(1+\xi_n)\,w_k'\quad(\text{all }k).
+\xi_n:=\frac{\mathsf M_{\rm tot}^{n+1}}{\mathcal M(V^{(n+1)},\theta')}-1,\qquad w_k''=(1+\xi_n)\,w_k'\quad(\text{all }k),
 $$
 
-Then $\mathcal M(V^{(n+1)},\theta'')=\mathsf M_{\rm tot}^{n+1}$ exactly (it is linear in the weights). By Proposition 3.15.1(b), every gravitational field scales by $1+\xi_n$ at no cost. The total mass $\mathsf M_{\rm tot}^{n+1}$ changes only through $J_{\rm ext}$ (Section 2.8). The quantity $|\xi_n|$ is a diagnostic. Sources of a nonzero $\xi_n$ are the mask at the core boundary, the tail defect of Level 0, the $O(\tau_n^2)$ splitting between the jet update and the geometric update, and the slack $s_{M*}$ of the SOCP. If $|\xi_n|>\varepsilon_\xi$ (configured, for example $10^{-3}$), Level 2 is triggered.
+which restores the mass exactly (linearity in the weights). With $\rho_b=0$ every core field scales by $1+\xi_n$; that reuse matters only when the geometry is unchanged, because after a geometric update the fields are re-evaluated anyway (Proposition 3.15.1(b)). $\mathsf M_{\rm tot}$ changes only through $J_{\rm ext}$. Nonzero $\xi_n$ comes from the mask at the core boundary, the Level 0 tail defect, the $O(\tau_n^2)$ jet/geometry splitting, and the SOCP slack. $|\xi_n|>\varepsilon_\xi$ (e.g. $10^{-3}$) triggers Level 2.
 
-*Implementation with a matrix density.* With the constant term $\rho_b$ of Section 1.1, the implementation keeps $\rho_b$ as a material constant and closes the mass on the cores alone:
+*With a matrix density $\rho_b>0$.* $\rho_b$ is kept constant, and the mass is closed on the cores:
+
 $$
-\xi_n:=\frac{\mathsf M_{\rm tot}^{n+1}-\rho_b|V^{(n+1)}|}{\mathcal M(V^{(n+1)},\theta')-\rho_b|V^{(n+1)}|}-1,\qquad w_k''=(1+\xi_n)w_k'.
+\xi_n:=\frac{\mathsf M_{\rm tot}^{n+1}-\rho_b|V^{(n+1)}|}{\mathcal M(V^{(n+1)},\theta')-\rho_b|V^{(n+1)}|}-1,\qquad w_k''=(1+\xi_n)w_k' .
 $$
-Two consequences follow. First, $\xi_n$ is relative to the core mass, not to the total mass, so a total-mass discrepancy is amplified by the ratio of the total mass to the core mass, and a core whose mass is a small fraction of the body absorbs a large relative change (the closure is skipped only when the core mass falls below $10^{-12}$ of the total). Second, since $\rho_b$ is not scaled, the fields do not scale by $1+\xi_n$, and Proposition 3.15.1(b) does not apply: the fields are re-evaluated. In the bundled Phobos forecast $|\xi_n|\le 2.3\times10^{-4}$. After a Level 2 refit, which holds the quadrature mass, the closure is applied once more to restore the exact mass.
+
+Consequences:
+
+- $\xi_n$ is relative to the core mass, so a total-mass discrepancy is amplified by the total-to-core mass ratio. The closure is skipped below a core mass of $10^{-12}$ of the total.
+- Only the core part of the fields scales by $1+\xi_n$; the matrix part $\rho_b\Phi_V$ does not. With per-kernel partial sums (Proposition 3.15.1(b)) the rescaled field still costs $O(|\mathcal X|K)$ on an unchanged geometry.
+
+After a Level 2 refit the closure is applied once more.
 
 ### 9.10.5 Level 2: adaptive least-squares refit (triggered)
 
-*Target.* On the volume quadrature points $\mathbf x_q\in\mathcal V^{(n+1)}$ of Section 9.4 (weights $\omega_q$), the transported density is evaluated semi-Lagrangian-wise and **exactly in space**:
+*Target.* On the volume nodes $\mathbf x_q\in\mathcal V^{(n+1)}$ (weights $\omega_q$), the transported density is evaluated semi-Lagrangian-wise and **exactly in space**:
 
 $$
 \tilde\rho_q:=\rho_K\big(\mathbf X_d(\mathbf x_q);\theta^{(n)}\big),\qquad
 \mathbf X_d(\mathbf x)=\mathbf x-\tau_n\mathbf v_{\rm adv}\big(\mathbf x-\tfrac{\tau_n}{2}\mathbf v_{\rm adv}(\mathbf x)\big).
 $$
 
-The old density is an analytic function on all of $\mathbb R^3$, so there is no interpolation error, only the trajectory error $O(\tau_n^3)$ per step. (Velocities at departure points outside $\mathcal V^{(n)}$ are taken at the nearest point of $\mathcal V^{(n)}$ along the ray from the origin.)
+The old density is analytic on $\mathbb R^3$, so the only error is the $O(\tau_n^3)$ trajectory error per step. Velocities at departure points outside $\mathcal V^{(n)}$ are taken at the closest point $\pi(\mathbf x)\in\Gamma^{(n)}$ (Section 8.0, G6).
 
-*Misfit indicator (always computed and reported):*
+*Misfit indicator* (always reported):
 
 $$
-e_{\rho,n}:=\frac{\big(\sum_q\omega_q(\rho_K(\mathbf x_q;\theta)-\tilde\rho_q)^2\big)^{1/2}}{\big(\sum_q\omega_q\tilde\rho_q^2\big)^{1/2}} .
+e_{\rho,n}:=\frac{\big(\sum_q\omega_q(\rho_K(\mathbf x_q;\theta)-\tilde\rho_q)^2\big)^{1/2}}{\big(\sum_q\omega_q\tilde\rho_q^2\big)^{1/2}} ,
 $$
 
-By Proposition 9.10.1, $e_{\rho,n}$ times $4\pi GC_S|V|^{1/3}\|\tilde\rho\|_{L^2}$ bounds the $L^2$ gravity defect of the projection, up to quadrature error.
+which by Proposition 9.10.1 bounds the $L^2$ gravity defect, times $4\pi GC_S|V|^{1/3}\|\tilde\rho\|_{L^2}$, up to quadrature.
 
 *Problem.* If $e_{\rho,n}>\varepsilon_\rho$ or $|\xi_n|>\varepsilon_\xi$, solve
 
@@ -7807,9 +4276,16 @@ $$
 \quad\text{s.t.}\quad\mathcal M_h(V^{(n+1)},\theta)=\mathsf M_{\rm tot}^{n+1},
 $$
 
-over $\theta=\{w_k,\mathbf c_k,\mathbf S_k\}$, with $\alpha_k$ fixed, $\mathbf S_k=\mathbf L_k\mathbf L_k^{\!\top}$ parametrized by a Cholesky factor with logarithmic diagonal (so every iterate is positive definite), $\mathbf P$ a diagonal scaling to the natural units of each parameter, and Levenberg–Marquardt damping $\mu_{\rm LM}$. Use Gauss–Newton steps with the analytic parameter derivatives of Section 6.1. Each step assembles $\mathbf J^{\!\top}\mathbf W\mathbf J$ ($p\times p$, with $p=10K$ for anisotropic and $5K$ for isotropic cores) by one GPU reduction over the quadrature points, and solves the $(p+1)\times(p+1)$ KKT system that includes the linearized mass constraint. Accept a step only if the objective decreases; otherwise increase $\mu_{\rm LM}$. Stop when $e_\rho\le\varepsilon_\rho/2$, or when the relative decrease falls below $10^{-3}$. Warm-starting from the jet result keeps the number of iterations small, because Level 0 is already exact to second order at every moving core.
+with:
 
-*Non-amplification of errors.* Let $\mathcal P_n:\rho\mapsto\rho\circ\Phi_{\tau_n}^{-1}$ be the exact transport. If $\Phi_{\tau_n}$ is volume-preserving and maps the material domain onto itself, $\mathcal P_n$ is an isometry of $L^2$. Writing $e^n=\rho_K^n-\rho^n_{\rm true}$,
+- unknowns $\theta=\{w_k,\mathbf c_k,\mathbf S_k\}$, $\alpha_k$ fixed;
+- $\mathbf S_k=\mathbf L_k\mathbf L_k^{\!\top}$ by a Cholesky factor with logarithmic diagonal, so every iterate is SPD;
+- a diagonal unit scaling $\mathbf P$ and Levenberg–Marquardt damping $\mu_{\rm LM}$;
+- Gauss–Newton steps with the analytic derivatives of Section 6.1. Each step assembles $\mathbf J^{\!\top}\mathbf W\mathbf J$ ($p=10K$ anisotropic, $5K$ isotropic) by one GPU reduction, and solves the $(p+1)$ KKT system with the linearized mass row.
+
+A step is accepted only if the objective decreases; otherwise $\mu_{\rm LM}$ is increased. Stop at $e_\rho\le\varepsilon_\rho/2$ or a relative decrease below $10^{-3}$. Warm-starting from Level 0, already second-order exact at each core, keeps the iterations few.
+
+*Non-amplification.* If the exact transport $\mathcal P_n:\rho\mapsto\rho\circ\Phi^{-1}_{\tau_n}$ is volume-preserving and maps the material domain onto itself, it is an $L^2$ isometry. With $e^n=\rho_K^n-\rho^n_{\rm true}$,
 
 $$
 \|e^{n+1}\|_{L^2}\le\|\rho_K^{n+1}-\mathcal P_n\rho_K^n\|_{L^2}+\|\mathcal P_n e^n\|_{L^2}
@@ -7818,90 +4294,74 @@ $$
 \|e^N\|_{L^2}\le\|e^0\|_{L^2}+\sum_{n<N}\delta_n ,
 $$
 
-where $\delta_n$ is the per-step projection defect measured by $e_{\rho,n}$. The density error therefore accumulates at most additively. It does not grow exponentially, and it does not grow secularly when no material moves. (The hypotheses — exact trajectories and a material domain — are idealizations; the departures from them are the trajectory error, the mask at the core boundary, and Mode C, which are reported through $\xi_n$.)
+with $\delta_n$ the per-step defect measured by $e_{\rho,n}$. The error accumulates at most additively, never exponentially, and not at all when nothing moves. The idealizations (exact trajectories, a material domain) fail through the trajectory error, the mask, and Mode C, which are reported through $\xi_n$.
 
-### 9.10.6 Level 3: change of the number of cores (optional, `core_adapt = on`; not implemented)
+### 9.10.6 Level 3: change of the number of cores (optional)
 
-*Implementation status.* Level 3 and its configuration items (`core_adapt`, $\varepsilon_{\rm split}$, $\varepsilon_{\rm merge}$, $K_{\max}$) are not implemented; the number of cores is fixed for a run. The rules below are the specification.
+Without Level 3, $K$ is fixed for the run. $K$ Cauchy kernels cannot represent a core stretched into a long tongue. Level 3, with tolerances $\varepsilon_{\rm split}$, $\varepsilon_{\rm merge}$ and a cap $K_{\max}$, adapts $K$. With the partition $\psi_k=|\rho_k|/\sum_j|\rho_j|$ and per-core misfit $e_k=\|\psi_k(\rho_K-\tilde\rho)\|/\|\psi_k\tilde\rho\|$ after Level 2:
 
-A sum of $K$ Cauchy kernels cannot represent a core that is stretched into a long tongue, however its parameters are chosen. Let $\psi_k=|\rho_k|/\sum_j|\rho_j|$ be the partition of unity of the cores, and $e_k=\|\psi_k(\rho_K-\tilde\rho)\|/\|\psi_k\tilde\rho\|$ the misfit attributed to core $k$ after Level 2.
+- **Split.** If $e_k>\varepsilon_{\rm split}$ and $K<K_{\max}$, replace core $k$ by two cores with the same $\alpha_k$:
+  - centres $\mathbf c_k\pm\tfrac12\lambda_1^{-1/2}\mathbf e_1$, with $(\lambda_1,\mathbf e_1)$ the smallest eigenpair of $\mathbf S_k$ (the long axis);
+  - metrics $\mathbf S_k+3\lambda_1\mathbf e_1\mathbf e_1^{\!\top}$ (half the width along $\mathbf e_1$);
+  - a common weight $\bar w$ that preserves the core's mass inside $\mathcal V^{(n+1)}$ (linear in $\bar w$).
 
-- **Split.** If $e_k>\varepsilon_{\rm split}$ and $K<K_{\max}$, replace core $k$ by two cores with the same $\alpha_k$. Their centres are $\mathbf c_k\pm\tfrac12\lambda_1^{-1/2}\mathbf e_1$, where $(\lambda_1,\mathbf e_1)$ is the smallest eigenpair of $\mathbf S_k$ (the long axis). Their metrics are $\mathbf S_k+3\lambda_1\mathbf e_1\mathbf e_1^{\!\top}$ (half the width along $\mathbf e_1$). Their common weight $\bar w$ is chosen so that the two new cores together carry the mass of the old one inside $\mathcal V^{(n+1)}$, $\mathcal M_k(\bar w)=\mathcal M_k(w_k)$ (linear in $\bar w$, one extra mass evaluation), so that the split does not disturb the other cores through Level 1. Then apply Level 2 with $K+1$ cores.
-- **Merge.** If two cores $i,j$ with $\alpha_i=\alpha_j$ satisfy $(\mathbf c_i-\mathbf c_j)^{\!\top}(\mathbf S_i^{-1}+\mathbf S_j^{-1})^{-1}(\mathbf c_i-\mathbf c_j)<\varepsilon_{\rm merge}$, replace them by one core at the weight-averaged centre, with the weight-averaged metric and the weight that preserves the mass of the pair inside $\mathcal V^{(n+1)}$ (as for a split). Then apply Level 2.
-- **Acceptance.** A change of topology is accepted only if $e_\rho$ decreases by the configured factor and $\rho_K\ge\rho_{\min}$ still holds on the quadrature points. Otherwise the change is reverted. Every change is logged. A change of $K$ invalidates the per-kernel partial sums of Proposition 3.15.1(b), but not the segment table.
+  Then apply Level 2 with $K+1$ cores.
+- **Merge.** If $\alpha_i=\alpha_j$ and $(\mathbf c_i-\mathbf c_j)^{\!\top}(\mathbf S_i^{-1}+\mathbf S_j^{-1})^{-1}(\mathbf c_i-\mathbf c_j)<\varepsilon_{\rm merge}$, replace the pair by one core with weight-averaged centre and metric and the pair's mass. Then apply Level 2.
+- **Acceptance.** A change is kept only if $e_\rho$ drops by the configured factor and $\rho_K\ge\rho_{\min}$ still holds at the nodes; otherwise it is reverted. Every change is logged. A change of $K$ invalidates the per-kernel partial sums of Proposition 3.15.1(b), not the segment table.
 
 ### 9.10.7 Placement in the loop, frame realignment, and cost
 
-- **Step 5b (prediction, after the Stokes solution and the yield classification):** Level 0 gives $\theta^{\rm pred}$. The SOCP of step 7 uses $\rho_{\rm cand}:=\rho_K(\cdot;\theta^{\rm pred})$ in its mass row and in $D\mathcal M$ (Sections 2.13 and 10.4.3). This is necessary: with the old density, a flow that carries dense material outward would be compensated by a spurious geometric correction. If $\lambda$ is reduced in an outer retry, Level 0 is recomputed with the new $\tau_n$ (cost $O(K)$).
-- **Step 8c (closure, after the geometric update 8a and before the realignment 8b):** Levels 1, 2, and 3. The realignment computes the centre of mass and the inertia tensor with the **updated** density.
-- **Step 8b(ii)/(iv):** $\mathbf c_k\leftarrow\mathbf c_k-\mathbf x_{\rm cm}$, then $\mathbf c_k\leftarrow\mathbf Q\mathbf c_k$ **and** $\mathbf S_k\leftarrow\mathbf Q\mathbf S_k\mathbf Q^{\!\top}$. The metric must rotate with the frame, because $(\mathbf x-\mathbf c)^{\!\top}\mathbf S(\mathbf x-\mathbf c)=(\mathbf x'-\mathbf c')^{\!\top}\mathbf Q\mathbf S\mathbf Q^{\!\top}(\mathbf x'-\mathbf c')$ for $\mathbf x'=\mathbf Q\mathbf x$.
-- **Gravity after the update:** $\theta$ changed and the mesh did not change in 8c, so step 1 of the next geological step re-evaluates the fields from the cached segment table (Proposition 3.15.1) without ray traversal for the density change. Retracing is driven only by the geometric change (Proposition 3.15.2).
-- **Mode C.** The relocation of loose material by erosion and deposition stays geometric (through $\Delta h_C^*$ and the local density $\rho_K|_\Gamma$, Section 2.8). The cores describe the bulk rock transported by $\mathbf v_{\rm adv}$.
+- **Step 6b (prediction, after the classification and the step size).** Level 0 gives $\theta^{\rm pred}$. The SOCP of step 7 uses $\rho_{\rm cand}=\rho_K(\cdot;\theta^{\rm pred})$ in its mass row and $D\mathcal M$. With the old density, an outward flow of dense material would be offset by a spurious geometric correction. An outer retry with smaller $\lambda$ recomputes Level 0 ($O(K)$).
+- **Step 8c (after 8a, before 8b).** Levels 1–3. The realignment then uses the **updated** density.
+- **Step 8b(ii)/(iv).** $\mathbf c_k\leftarrow\mathbf Q(\mathbf c_k-\mathbf x_{\rm cm})$ **and** $\mathbf S_k\leftarrow\mathbf Q\mathbf S_k\mathbf Q^{\!\top}$; the metric must rotate with the frame.
+- **Gravity.** Only $\theta$ changed in 8c, so the next step 1 re-evaluates from the cached segment table without traversal (Proposition 3.15.1). Retracing is driven by geometry alone (Proposition 3.15.2).
+- **Mode C.** Loose-material relocation stays geometric (via $\Delta h_C^*$ and $\rho_K|_\Gamma$). The cores carry the bulk rock.
 
-**Cost per step.** Level 0: $K$ pointwise syntheses of $\mathbf v$ and $\nabla\mathbf v$ and $K$ exponentials of $3\times3$ matrices. Level 1: one mass integral. Level 2 (only when triggered): $N_{\rm GN}$ reductions of $O(N_qp^2)$ and $(p+1)$-dimensional solves. Field re-evaluation: passes W3–W4 of Section 3.15 only. All of this is small compared with one Picard round.
+**Cost per step:**
 
-**Reported quantities (every step):** $|\xi_n|$, $e_{\rho,n}$, the number of Gauss–Newton iterations, the number of anchored cores, the core displacements $|\mathbf c_k'-\mathbf c_k|$, the condition numbers $\kappa(\mathbf S_k)$, $\min_q\rho_K(\mathbf x_q)/\rho_{\min}$, and every split or merge.
+- Level 0: $K$ pointwise syntheses of $\mathbf v,\nabla\mathbf v$ and $K$ $3\times3$ matrix exponentials;
+- Level 1: one mass integral;
+- Level 2, when triggered: $N_{\rm GN}$ reductions of $O(N_qp^2)$ and $(p+1)$-dimensional solves;
+- field update: passes W3–W4 only.
+
+All of this is small beside one Picard round.
+
+**Reported every step:**
+
+- $|\xi_n|$ and $e_{\rho,n}$;
+- the Gauss–Newton count and the number of anchored cores;
+- the core displacements $|\mathbf c_k'-\mathbf c_k|$ and $\kappa(\mathbf S_k)$;
+- $\min_q\rho_K(\mathbf x_q)/\rho_{\min}$;
+- every split or merge.
 
 ---
 
 # 10. The $K=4$ closure and the geometric SCF coupling
 
-The radial Galerkin truncation is locked at order $K=4$. The meaning is that each spherical-harmonic index $(\ell,m)$ and each velocity potential — the poloidal potential $\Phi$ and the toroidal potential $\Psi$ — keeps four radial modes. Each pair $(\ell,m)$ therefore has eight velocity degrees of freedom, and the velocity-coefficient vector is $\mathbf u=(\mathbf q,\mathbf s)$ (Section 8.2). The radial basis is uniformly the shifted Jacobi family that depends on $\ell$,
+The radial truncation is fixed at $K=4$: four radial modes per $(\ell,m)$ and per potential, so eight velocity degrees of freedom per $(\ell,m)$. The basis and expansion are those of Sections 8.1–8.2, with the same coefficients $(q_{\ell km},s_{\ell km})$ and no rescaling. Derivatives produced by the time or direction dependence of $R$ are accounted for by the source $\boldsymbol{\mathcal S}$ of Chapter 9 and by the traces of Section 10.2. Contents:
 
-$$
-\psi_{\ell k}(\zeta)=\zeta^{\ell}P_k^{(0,\,2\ell+2)}(2\zeta-1),\qquad
-\zeta=\frac{r}{R(\hat{\boldsymbol\omega},t)},\quad k=0,1,2,3.
-$$
-
-The potentials expand as
-
-$$
-\Phi=R^2\sum_{\ell\ge 1,\,m,k}q_{\ell km}\,\psi_{\ell k}(\zeta)\,Y_{\ell m},\qquad
-\Psi=R\sum_{\ell\ge 1,\,m,k}s_{\ell km}\,\psi_{\ell k}(\zeta)\,Y_{\ell m}.
-$$
-
-This chapter and Chapter 8 use the same coefficients $(q_{\ell km},s_{\ell km})$. There is no further rescaling. Derivative terms produced when $R$ changes in time or in direction are accounted for explicitly by the source $\boldsymbol{\mathcal S}$ of Chapter 9 and by the trace formulae of Section 10.2.
-
-The contents are as follows. Section 10.1 gives the analytic structure and the condition numbers of the mass blocks on a fixed reference geometry. Section 10.2 gives the velocity trace on a general star-shaped surface, the surface-invariant shear rate, and the traction condition. Section 10.3 generates the friction angle from the shear rate. Section 10.4 gives the geometric increment subproblem and the SCF loop.
+- 10.1, mass-block structure and conditioning on a fixed reference geometry;
+- 10.2, the surface velocity trace (general route, with the star-shaped basis as a special case), the surface shear rate, and the traction condition;
+- 10.3, the friction angle from the shear rate;
+- 10.4, the geometric subproblem and the SCF loop.
 
 ---
 
 ## 10.1 Diagonal blocks and basis orthogonality on a fixed reference geometry
 
-This section takes the fixed reference sphere $R\equiv R_0$ and the constant density $\rho\equiv\rho_0$, and on that reference geometry it makes the mass blocks of Section 8.3 explicit. They are used for unit tests and for the construction of preconditioners. A production problem with variable geometry or variable density must be reassembled from the general definition of Section 8.3 (Propositions 8.7 and 8.9), and symmetric positive definiteness must be rechecked at every outer step.
+On the reference sphere $R\equiv R_0$ with $\rho\equiv\rho_0$, the mass blocks of Section 8.3 are explicit. They serve as consistency checks and preconditioners. A general body is assembled from Section 8.3 on $\mathcal V$ (Propositions 8.0.3, 8.7, 8.9), with positive definiteness rechecked every outer step.
 
-**Proposition 10.1 (Diagonal blocks and basis orthogonality on the reference geometry) [conditional closure of the fixed-reference block in PO-6].** Let $R\equiv R_0$, $\rho\equiv\rho_0$, $\ell\ge 1$, and $\Lambda=\ell(\ell+1)$.
+**Proposition 10.1 (Diagonal blocks on the reference geometry) [conditional closure of PO-6].** For $R\equiv R_0$, $\rho\equiv\rho_0$, $\ell\ge1$, and $\Lambda=\ell(\ell+1)$:
 
-1. **Orthogonality.**
+1. $\int_0^1\psi_{\ell j}\psi_{\ell k}\zeta^2d\zeta=\delta_{jk}/(2k+2\ell+3)$ (Proposition 8.3(1));
+2. $\mathbf M^T_\ell=\rho_0R_0^5\Lambda\operatorname{diag}\big(\tfrac1{2\ell+3},\tfrac1{2\ell+5},\tfrac1{2\ell+7},\tfrac1{2\ell+9}\big)$, which is strictly diagonal;
+3. $\mathbf M^P_\ell=\rho_0R_0^5\Lambda(\Lambda\tilde{\mathbf N}_\ell+\tilde{\mathbf P}_\ell)$ with $\tilde{\mathbf N}_\ell$, $\tilde{\mathbf P}_\ell$ of Proposition 8.8, both SPD;
+4. blocks between distinct $(\ell,m)$, and poloidal–toroidal blocks, vanish (Proposition 5.7), so $\mathbf M_\Gamma=\operatorname{blockdiag}(\mathbf M^P_\ell,\mathbf M^T_\ell)$ and its extreme eigenvalues on $\ell\ge1$ come from the blocks;
+5. the $\ell=0$ block vanishes and enters no inversion.
 
-$$
-\int_0^1\psi_{\ell j}\,\psi_{\ell k}\,\zeta^2\,d\zeta=\frac{\delta_{jk}}{2k+2\ell+3}.
-$$
+*Proof.* Item 2: $\Lambda\rho_0\int f_if_jr^2dr$ with $f_i=R_0\psi_{\ell i}(r/R_0)$ equals $\rho_0R_0^5\Lambda\int\psi_{\ell i}\psi_{\ell j}\zeta^2d\zeta$. Item 3: $rg_i=R_0^3\zeta\psi_{\ell i}$ and $(rg_i)'=R_0^2(\zeta\psi_{\ell i})'$. $\tilde{\mathbf N}_\ell$ and $\tilde{\mathbf P}_\ell$ are Gram matrices of independent families: $(\zeta\psi)'=0$ forces $\zeta\psi$ constant, hence $\psi=0$. ∎
 
-2. **The toroidal block is strictly diagonal.** The toroidal kinetic-energy mass block of a single pair $(\ell,m)$ is
-
-$$
-\mathbf M^T_\ell
-=\rho_0 R_0^5\,\Lambda\,
-\operatorname{diag}\!\Big(\frac1{2\ell+3},\ \frac1{2\ell+5},\ \frac1{2\ell+7},\ \frac1{2\ell+9}\Big).
-$$
-
-3. **The poloidal block.**
-
-$$
-\mathbf M^P_\ell
-=\rho_0 R_0^5\,\Lambda\big(\Lambda\,\tilde{\mathbf N}_\ell+\tilde{\mathbf P}_\ell\big),\qquad
-(\tilde{\mathbf N}_\ell)_{ij}=\int_0^1\psi_{\ell i}\psi_{\ell j}\,d\zeta,\quad
-(\tilde{\mathbf P}_\ell)_{ij}=\int_0^1(\zeta\psi_{\ell i})'(\zeta\psi_{\ell j})'\,d\zeta.
-$$
-
-The matrices $\tilde{\mathbf N}_\ell$ and $\tilde{\mathbf P}_\ell$ are symmetric positive definite, so $\mathbf M^P_\ell$ is symmetric positive definite.
-4. **Decoupling between blocks.** Mass blocks between distinct pairs $(\ell,m)$, and between poloidal and toroidal fields, vanish (Proposition 5.7). Hence $\mathbf M_\Gamma=\operatorname{blockdiag}(\mathbf M^P_{\ell},\mathbf M^T_{\ell})$, and the smallest and largest eigenvalues of $\mathbf M_\Gamma$ on $\ell\ge 1$ are determined by the individual blocks.
-5. The block of degree $\ell=0$ vanishes identically and takes part in no inversion.
-
-*Proof.* Item 1 is Proposition 8.3(1). For item 2, the toroidal entry is $\Lambda\rho_0\int f_i f_j r^2\,dr$ (Proposition 5.7). With $f_i=R_0\psi_{\ell i}(r/R_0)$ and $r=R_0\zeta$, this is $\rho_0 R_0^5\Lambda\int\psi_{\ell i}\psi_{\ell j}\zeta^2\,d\zeta$, which is diagonal by item 1. The four denominators are $2k+2\ell+3$ for $k=0,1,2,3$. For item 3, the poloidal block of Proposition 5.7 is $\Lambda^2\int\rho\,g_i g_j\,dr+\Lambda\int\rho\,(rg_i)'(rg_j)'\,dr$. With $g_i=R_0^2\psi_{\ell i}(r/R_0)$, one has $rg_i=R_0^3\zeta\psi_{\ell i}$ and $(rg_i)'=R_0^2(\zeta\psi_{\ell i})'$. The change of variables produces the displayed formula. The matrix $\tilde{\mathbf N}_\ell$ is the Gram matrix of the linearly independent functions $\psi_{\ell i}$. The matrix $\tilde{\mathbf P}_\ell$ is the Gram matrix of $(\zeta\psi_{\ell i})'$. The condition $(\zeta\psi)'=0$ means that $\zeta\psi$ is constant, hence $\psi=0$ as a polynomial, so the family is linearly independent. Item 4 is Proposition 5.7. ∎
-
-**Analytic matrices at $\ell=1$.** From $\psi_{10}=\zeta$, $\psi_{11}=6\zeta^2-5\zeta$, $\psi_{12}=28\zeta^3-42\zeta^2+15\zeta$, and $\psi_{13}=120\zeta^4-252\zeta^3+168\zeta^2-35\zeta$,
+**Analytic matrices at $\ell=1$.** With $\psi_{10}=\zeta$, $\psi_{11}=6\zeta^2-5\zeta$, $\psi_{12}=28\zeta^3-42\zeta^2+15\zeta$, and $\psi_{13}=120\zeta^4-252\zeta^3+168\zeta^2-35\zeta$,
 
 $$
 \tilde{\mathbf N}_1
@@ -7921,15 +4381,13 @@ $$
 $$
 
 $$
-\mathbf M^T_1
-=2\rho_0 R_0^5\operatorname{diag}\!\Big(\frac15,\frac17,\frac19,\frac1{11}\Big),\qquad
-\mathbf M^P_1
-=2\rho_0 R_0^5\big(2\tilde{\mathbf N}_1+\tilde{\mathbf P}_1\big).
+\mathbf M^T_1=2\rho_0 R_0^5\operatorname{diag}\!\Big(\frac15,\frac17,\frac19,\frac1{11}\Big),\qquad
+\mathbf M^P_1=2\rho_0 R_0^5\big(2\tilde{\mathbf N}_1+\tilde{\mathbf P}_1\big),
 $$
 
-(The toroidal block at $\ell=2$ is $6\rho_0 R_0^5\operatorname{diag}(\tfrac17,\tfrac19,\tfrac1{11},\tfrac1{13})$. The poloidal matrix is computed from the same integral definition.)
+and $\mathbf M^T_2=6\rho_0R_0^5\operatorname{diag}(\tfrac17,\tfrac19,\tfrac1{11},\tfrac1{13})$.
 
-**Condition numbers ($4\times 4$ blocks).** The table below gives $2$-norm condition numbers computed from the exact rational Gram matrix after conversion to float64. The two monomial comparison bases are used only for the condition-number comparison, passed through the same formulae, and take part in no assembly: the fixed powers $\zeta^2,\ldots,\zeta^5$ for every $\ell$, and the powers $\zeta^{\ell},\ldots,\zeta^{\ell+3}$ that span the same space as $\psi_{\ell0},\ldots,\psi_{\ell3}$.
+**Condition numbers ($4\times4$ blocks, 2-norm, exact rational Gram matrices in float64).** Two monomial comparison bases are used only for comparison: fixed $\zeta^2,\dots,\zeta^5$, and the same-span $\zeta^\ell,\dots,\zeta^{\ell+3}$.
 
 $$
 \begin{array}{c|ccccc}
@@ -7942,21 +4400,27 @@ $$
 \end{array}
 $$
 
-In the fixed monomial basis $\zeta^{1+i}$, $i=1,\dots,4$, the $L^2$ mass matrix $\int\zeta^{1+i}\zeta^{1+j}\zeta^2\,d\zeta=\big(1/(i+j+5)\big)_{i,j=1}^4$ has condition number $2.35\times 10^6$. In the Jacobi basis the corresponding $L^2$ mass matrix $\int\psi_i\psi_j\zeta^2\,d\zeta$ is diagonal, with condition number $(2\ell+9)/(2\ell+3)\le 11/5$. Against the fixed monomials the condition number of the kinetic-energy mass block falls from about $10^5$ to about $25$–$30$ (and to at most $16$ after diagonal scaling), about four orders of magnitude; against the monomials $\zeta^{\ell},\dots,\zeta^{\ell+3}$ of the same span the gain grows with $\ell$, to seven orders at $\ell=10$.
+The $L^2$ mass matrix in $\zeta^{1+i}$, $i=1..4$, namely $(1/(i+j+5))$, has condition number $2.35\times10^6$. In the Jacobi basis it is diagonal with condition number $(2\ell+9)/(2\ell+3)\le11/5$. Against fixed monomials the kinetic-energy block improves from about $10^5$ to 25–30 (at most 16 after diagonal scaling); against same-span monomials the gain reaches seven orders at $\ell=10$. The gain is **within a block**. Block scales grow like $\Lambda_\ell^2\sim\ell^4$, so $\operatorname{cond}(\mathbf M_\Gamma|_{\ell\ge1})$ still grows with $L_{\max}$, which the block-diagonal preconditioner $\mathbf M_{B1}^{-1}$ (Section 9.4) handles.
 
-The improvement is **inside a block**. The eigenvalue scale of blocks at different $\ell$ grows like $\Lambda_\ell^2\sim\ell^4$, so the global condition number $\operatorname{cond}(\mathbf M_\Gamma|_{\ell\ge 1})$ still grows with $L_{\max}$. That growth is handled by the block-diagonal preconditioner of Section 9.4, whose preconditioner is $\mathbf M_{B1}^{-1}$, the inverse of each $(\ell,m)$ block.
-
-**Link to Section 10.2.** The next section needs the value and the derivatives of $\psi_{\ell k}$ at $\zeta=1$. They come from Proposition 8.3(2): $\psi_{\ell k}(1)=1$, $\sigma_{\ell k}=\psi_{\ell k}'(1)=\ell+k(k+2\ell+3)$, and the second derivative $\kappa_{\ell k}=\psi_{\ell k}''(1)$ is tabulated in Section 10.2.1. The symbols $\Lambda_\ell$, $Y_{\ell m}$, $R(\hat{\boldsymbol\omega},t)$, and $\nabla=\nabla_{S^2}$ keep the meanings fixed in this section and in Chapter 8.
+Section 10.2 uses $\psi_{\ell k}(1)=1$, $\sigma_{\ell k}=\psi'_{\ell k}(1)$, and $\kappa_{\ell k}=\psi''_{\ell k}(1)$ (Proposition 8.3(2), Section 10.2.1), with $\nabla=\nabla_{S^2}$.
 
 ---
 
 ## 10.2 Free-surface velocity, the surface-invariant shear rate, and the traction condition
 
-The velocity coefficients, the radial basis, and the expansion used in this section are those of Sections 8.1–8.2: $\Phi=R^2\sum q_{\ell km}\psi_{\ell k}(r/R)Y_{\ell m}$ and $\Psi=R\sum s_{\ell km}\psi_{\ell k}(r/R)Y_{\ell m}$, with star-shaped boundary $R=R(\hat{\boldsymbol\omega},t)$. Write $\Lambda=\ell(\ell+1)$, and write $\nabla:=\nabla_{S^2}$ and $\Delta:=\Delta_{S^2}$ for the operators on the unit sphere.
+The coefficients, basis, and expansion are those of Sections 8.1–8.2, with $\nabla:=\nabla_{S^2}$ and $\Delta:=\Delta_{S^2}$.
 
-### 10.2.1 Surface trace of the radial basis
+**General route.** The enclosing-ball fields are analytic on $\mathbb R^3\setminus\{0\}$ (Proposition 8.0.3), so their trace and strain rate on $\Gamma$ are pointwise values. At a surface point $\mathbf x=r\hat{\boldsymbol\omega}\in\Gamma$ ($r>0$ by (G)), Lemma 5.5 with $g=R_*^2\psi_{\ell k}(r/R_*)$ and $f=R_*\psi_{\ell k}(r/R_*)$ gives
 
-For $\psi_{\ell k}(\zeta)=\zeta^\ell P_k^{(0,2\ell+2)}(2\zeta-1)$, write $\sigma_{\ell k}:=\psi'_{\ell k}(1)$ and $\kappa_{\ell k}:=\psi''_{\ell k}(1)$. Symbolic computation has verified $\psi_{\ell k}(1)=1$, and
+$$
+\mathbf v(\mathbf x)=\sum_{\ell,m,k}\Big[q_{\ell km}\Big(\frac{\Lambda_\ell g}{r}Y_{\ell m}\,\mathbf e_r+\frac{(rg)'}{r}\nabla Y_{\ell m}\Big)+s_{\ell km}\,f\,\nabla Y_{\ell m}\times\mathbf e_r\Big],
+$$
+
+and $\mathbf D(\mathbf v)(\mathbf x)$ follows by one more analytic differentiation. These values enter the predictor (B4), the shear rate of Section 10.2.3, and the friction chain of Section 10.3 at vertices and face centres. Sections 10.2.1–10.2.2 and 10.2.4 concern the star-shaped special case, where the basis follows $R(\hat{\boldsymbol\omega})$ and the trace sits at $\zeta=1$.
+
+### 10.2.1 Surface trace of the radial basis (star-shaped special case)
+
+With $\sigma_{\ell k}:=\psi'_{\ell k}(1)$, $\kappa_{\ell k}:=\psi''_{\ell k}(1)$, and $\psi_{\ell k}(1)=1$ (verified symbolically),
 
 $$
 \boxed{\ 
@@ -7968,25 +4432,17 @@ k&0&1&2&3\\\hline
 \end{array}\ }
 $$
 
-The first-derivative row is the specialization of Proposition 8.3(2). The second-derivative row follows by differentiating $\psi(\zeta)=\zeta^\ell P(2\zeta-1)$ twice and using
+The second row follows from differentiating $\zeta^\ell P(2\zeta-1)$ twice, with the Jacobi endpoint values $P'(1)=\tfrac12k(k+2\ell+3)$ and $P''(1)=\tfrac18k(k-1)(k+2\ell+3)(k+2\ell+4)$:
 
 $$
-P'(1)=\frac12 k(k+2\ell+3),\qquad
-P''(1)=\frac18 k(k-1)(k+2\ell+3)(k+2\ell+4),
+\kappa_{\ell k}=\ell(\ell-1)+2\ell k(k+2\ell+3)+\tfrac12k(k-1)(k+2\ell+3)(k+2\ell+4).
 $$
 
-which are the endpoint values of the Jacobi derivative recurrence. One obtains
+### 10.2.2 The velocity trace of the star-shaped basis
 
-$$
-\kappa_{\ell k}
-=\ell(\ell-1)+2\ell k(k+2\ell+3)+\frac12 k(k-1)(k+2\ell+3)(k+2\ell+4).
-$$
+*Scope.* This is the trace of the star-shaped basis, whose potentials carry $R(\hat{\boldsymbol\omega})$. On the general route the trace is the pointwise formula above.
 
-Substitution of $k=0,1,2,3$ reproduces the table: $\ell(\ell-1)$, $\ell(5\ell+7)$, $(\ell+2)(13\ell+15)$, and $(\ell+2)(25\ell+63)$.
-
-### 10.2.2 The velocity trace on a general star-shaped surface
-
-**Proposition 10.2.** For $\Phi$ and $\Psi$ expanded as above, the contribution of each mode $(\ell,k,m)$ at $r=R(\hat{\boldsymbol\omega})$, using $\nabla$ and $\Delta$ only on $Y_{\ell m}$ and on $R$, is
+**Proposition 10.2.** At $r=R(\hat{\boldsymbol\omega})$, with $\nabla$ and $\Delta$ acting on $Y_{\ell m}$ and $R$, $\sigma=\sigma_{\ell k}$, $\kappa=\kappa_{\ell k}$, and $Y=Y_{\ell m}$,
 
 $$
 \begin{aligned}
@@ -8003,79 +4459,21 @@ R^2\Lambda Y
 \end{aligned}
 $$
 
-where $\sigma=\sigma_{\ell k}$, $\kappa=\kappa_{\ell k}$, and $Y=Y_{\ell m}(\hat{\boldsymbol\omega})$. The surface velocity is $\mathbf v|_\Gamma=v_r\mathbf e_r+\mathbf v_S+\mathbf v^T$.
+and $\mathbf v|_\Gamma=v_r\mathbf e_r+\mathbf v_S+\mathbf v^T$.
 
-*Proof.* Lemma 5.5 gives $v_r=L^2\Phi/r$, $\mathbf v_S=r^{-1}\nabla\,\partial_r(r\Phi)$, and $\mathbf v^T=\nabla\Psi\times\mathbf e_r$, with $\nabla$ acting at fixed $r$. For a single mode write $A(\hat{\boldsymbol\omega};r)=R^2\psi(r/R)$ and $B=R\psi(r/R)$, and set $\zeta=r/R$. Differentiation at fixed $r$ uses $\partial_R\zeta=-\zeta/R$. Then
-
-$$
-\begin{aligned}
-A_R
-&=2R\psi+R^2\psi'(-\zeta/R)
-=R(2\psi-\zeta\psi'),\\
-A_{RR}
-&=2\psi-2\zeta\psi'+\zeta^2\psi''.
-\end{aligned}
-$$
-
-At $\zeta=1$, where $\psi=1$, $\psi'=\sigma$, and $\psi''=\kappa$,
+*Proof.* Lemma 5.5 gives $v_r=L^2\Phi/r$, $\mathbf v_S=r^{-1}\nabla\partial_r(r\Phi)$, and $\mathbf v^T=\nabla\Psi\times\mathbf e_r$ at fixed $r$. Let $A=R^2\psi(r/R)$, $B=R\psi(r/R)$, and $C=R^2(\psi+\zeta\psi')$ (the radial factor of $\partial_r(rA)$), with $\partial_R\zeta=-\zeta/R$. Then $A_R=R(2\psi-\zeta\psi')$, $A_{RR}=2\psi-2\zeta\psi'+\zeta^2\psi''$, $C_R=2R(\psi+\zeta\psi')-R\zeta(2\psi'+\zeta\psi'')$, and $B_R=\psi-\zeta\psi'$. At $\zeta=1$:
 
 $$
-A=R^2,\qquad A_R=R(2-\sigma),\qquad A_{RR}=2-2\sigma+\kappa.
+A=R^2,\quad A_R=R(2-\sigma),\quad A_{RR}=2-2\sigma+\kappa,\quad C=R^2(1+\sigma),\quad C_R=R(2-\kappa),\quad B=R,\quad B_R=1-\sigma .
 $$
 
-The radial factor of $\partial_r(rA)$ is $C=R^2(\psi+\zeta\psi')$. Its derivative in $R$ at fixed $r$ is
+With $\nabla A=A_R\nabla R$, $\Delta A=A_R\Delta R+A_{RR}|\nabla R|^2$, and $L^2(AY)=A\Lambda Y-2\nabla A\cdot\nabla Y-Y\Delta A$, divide by $r=R$. Also $\mathbf v_S=R^{-1}(C\nabla Y+YC_R\nabla R)$ and $\mathbf v^T=(B\nabla Y+YB_R\nabla R)\times\mathbf e_r$. ∎
 
-$$
-C_R=2R(\psi+\zeta\psi')-R\zeta(2\psi'+\zeta\psi''),
-$$
-
-so
-
-$$
-C\big|_{\zeta=1}=R^2(1+\sigma),\qquad C_R\big|_{\zeta=1}=R(2-\kappa).
-$$
-
-For the toroidal factor, $B_R=\psi-\zeta\psi'$, and $B_R|_{\zeta=1}=1-\sigma$, while $B|_{\zeta=1}=R$.
-
-At fixed $r$, $\nabla A=A_R\nabla R$ and
-
-$$
-\Delta A=A_R\Delta R+A_{RR}|\nabla R|^2.
-$$
-
-The spherical operator on a product is
-
-$$
-L^2(AY)=A\Lambda Y-2\nabla A\cdot\nabla Y-Y\Delta A.
-$$
-
-Division by $r=R$ and substitution of the endpoint values produce $v_r$. Likewise,
-
-$$
-\mathbf v_S=R^{-1}\nabla(CY)=R^{-1}\big(C\nabla Y+Y C_R\nabla R\big)
-$$
-
-becomes $R(1+\sigma)\nabla Y+(2-\kappa)Y\nabla R$, and
-
-$$
-\mathbf v^T=\nabla(BY)\times\mathbf e_r=\big(B\nabla Y+Y B_R\nabla R\big)\times\mathbf e_r
-$$
-
-becomes the toroidal formula. ∎
-
-
-When $\nabla R=0$, they reduce to $v_r=R\Lambda q Y$, $\mathbf v_S=R(1+\sigma)q\nabla Y$, and $\mathbf v^T=Rs\,\nabla Y\times\mathbf e_r$.
+For $\nabla R=0$: $v_r=R\Lambda qY$, $\mathbf v_S=R(1+\sigma)q\nabla Y$, and $\mathbf v^T=Rs\nabla Y\times\mathbf e_r$.
 
 ### 10.2.3 The surface-invariant shear rate
 
-Let $x^a$ ($a=1,2$) be local coordinates on $\Gamma$, with tangent basis $\mathbf e_a=\partial_a X$ and metric $g_{ab}=\mathbf e_a\cdot\mathbf e_b$ (Section 9.0). Let $\mathbf n$ be the unit normal, let $K_{ab}:=\mathbf e_a\cdot\partial_b\mathbf n=-\mathbf n\cdot\partial_a\partial_b X$ be the second fundamental form (on a sphere with outward normal, $K_{ab}=g_{ab}/R>0$), and let $H=g^{ab}K_{ab}$ be the mean curvature. Decompose $\mathbf v|_\Gamma$ as
-
-$$
-v_a=\mathbf v\cdot\mathbf e_a,\qquad
-v_n=\mathbf v\cdot\mathbf n=(\mathbf n\cdot\mathbf e_r)\,\partial_t R.
-$$
-
-Let $\nabla_a$ be the Levi-Civita covariant derivative of $g_{ab}$. The components of $\mathbf D=\operatorname{sym}\nabla\mathbf v$ in the surface frame are
+Take local coordinates $x^a$ on $\Gamma$, with $\mathbf e_a=\partial_aX$, metric $g_{ab}$, unit normal $\mathbf n$, second fundamental form $K_{ab}:=\mathbf e_a\cdot\partial_b\mathbf n$ ($=g_{ab}/R>0$ on a sphere), and mean curvature $H=g^{ab}K_{ab}$ ($=2/R>0$ on a sphere with the outward normal). This sign is fixed throughout. A formula taken from a source with the opposite convention must have $K_{ab}$ and $H$ negated before use; otherwise $D_{nn}$ changes sign, and with it $\dot\gamma_\Gamma$ and $\mu_d$ of Section 10.3. Write $v_a=\mathbf v\cdot\mathbf e_a$ and $v_n=\mathbf v\cdot\mathbf n$ ($=V_n$; $=(\mathbf n\cdot\mathbf e_r)\partial_tR$ in the star-shaped case). With the Levi-Civita derivative $\nabla_a$,
 
 $$
 \boxed{
@@ -8084,16 +4482,9 @@ D_{nn}=-g^{ab}D_{ab}=-\big(\nabla_a v^a+H\,v_n\big),\qquad
 D_{na}=\mathbf n\cdot\mathbf D\cdot\mathbf e_a.}
 $$
 
-*Derivation.* The tangential components
+*Derivation.* $D_{ab}=\tfrac12(\mathbf e_a\cdot\partial_b\mathbf v+\mathbf e_b\cdot\partial_a\mathbf v)$ involves only tangential derivatives. With $\mathbf v=v^c\mathbf e_c+v_n\mathbf n$ and Gauss–Weingarten ($\partial_a\mathbf e_b=\Gamma^c_{ab}\mathbf e_c-K_{ab}\mathbf n$, $\partial_a\mathbf n=K_a{}^c\mathbf e_c$), $\mathbf e_a\cdot\partial_b\mathbf v=\nabla_bv_a+v_nK_{ab}$. $D_{nn}$ contains a normal derivative, so it comes from $\operatorname{tr}\mathbf D=0$. ∎
 
-$$
-D_{ab}=\mathbf e_a\cdot\mathbf D\cdot\mathbf e_b
-=\tfrac12(\mathbf e_a\cdot\partial_b\mathbf v+\mathbf e_b\cdot\partial_a\mathbf v)
-$$
-
-involve only tangential derivatives. Substitute $\mathbf v=v^c\mathbf e_c+v_n\mathbf n$ and use the Gauss–Weingarten formulae $\partial_a\mathbf e_b=\Gamma^c_{ab}\mathbf e_c-K_{ab}\mathbf n$ and $\partial_a\mathbf n=K_a{}^c\mathbf e_c$. The tangential projection is $\mathbf e_a\cdot\partial_b\mathbf v=\nabla_b v_a+v_n K_{ab}$, and symmetrization produces $D_{ab}$. The normal–normal component $D_{nn}$ contains a normal derivative and cannot be read from surface values alone. Incompressibility, $\operatorname{tr}\mathbf D=D_{nn}+g^{ab}D_{ab}=0$, supplies the displayed formula. ∎
-
-The tensor $\mathbf D$ is traceless, and $\dot\gamma^2=2\mathbf D:\mathbf D$. In the surface frame, with inverse metric $g^{ab}$,
+Since $\dot\gamma^2=2\mathbf D:\mathbf D$,
 
 $$
 \boxed{
@@ -8101,42 +4492,31 @@ $$
 =2\Big[(g^{ab}D_{ab})^2+g^{ac}g^{bd}D_{ab}D_{cd}+2\,g^{ab}D_{na}D_{nb}\Big].}
 $$
 
-**Traction condition.** On a free surface, $\boldsymbol\sigma\mathbf n=-p_{\rm ext}\mathbf n$. With $\boldsymbol\sigma=-p\mathbf I+2\eta\mathbf D+\mathbf T_{\rm tide}$, the normal component gives $p|_\Gamma=p_{\rm ext}+\mathbf n\cdot\boldsymbol\tau\cdot\mathbf n$ (Section 4.22), and the tangential component gives
+**Traction condition.** On a free surface $\boldsymbol\sigma\mathbf n=-p_{\rm ext}\mathbf n$ with $\boldsymbol\sigma=-p\mathbf I+2\eta\mathbf D+\mathbf T_{\rm tide}$. The normal part gives $p|_\Gamma=p_{\rm ext}+\mathbf n\cdot\boldsymbol\tau\mathbf n$, and the tangential part
 
 $$
 \boxed{
 D_{na}=-\frac{\mathbf n\cdot\mathbf T_{\rm tide}\cdot\mathbf e_a}{2\eta}\quad(\eta>0).}
 $$
 
-In the mixed weak form this condition is a natural boundary condition. It holds only in the Galerkin sense. This paper also uses it as a **consistency relation** for the closure of the surface shear rate: after $\eta^{(n)}$ and $\mathbf T^{(n)}_{\rm tide}$ have been frozen, the formula supplies $D_{na}$, and $\dot\gamma_\Gamma$ is then computed. In the absence of a tide, $D_{na}=0$, the third term drops, and
-
-$$
-\dot\gamma_\Gamma^2\big|_{\mathbf T_{\rm tide}=0}
-=2\Big[(g^{ab}D_{ab})^2+g^{ac}g^{bd}D_{ab}D_{cd}\Big].
-$$
-
-The viscosity $\eta$ itself depends on $\dot\gamma$, so the dependence is implicit. In the SCF one freezes the viscosity $\eta^{(n)}$ of the previous iteration. This is an iterative approximation, not an algebraic identity.
-
-**Self-consistency report.** The $D_{na}$ of the actual Galerkin solution does not equal the formula exactly. Their difference
-
-$$
-\delta_{na}:=\|D_{na}^{h}-D_{na}^{\rm target}\|_{L^2(\Gamma)}
-$$
-
-must be reported as $K$ and $L_{\max}$ vary. It measures the extent to which the reduced model satisfies the traction condition.
+In the weak form this is natural and holds only in the Galerkin sense. It is also used as a **consistency relation**: with $\eta^{(n)}$ and $\mathbf T^{(n)}_{\rm tide}$ frozen it gives $D_{na}$, from which $\dot\gamma_\Gamma$ follows. Without a tide, $D_{na}=0$ and the third term drops. Since $\eta$ depends on $\dot\gamma$, freezing $\eta^{(n)}$ is an iterative approximation, not an identity. **Self-consistency report:** $\delta_{na}:=\|D^h_{na}-D^{\rm target}_{na}\|_{L^2(\Gamma)}$ is reported as $K$ and $L_{\max}$ vary. It measures how well the reduced model meets the traction condition.
 
 ### 10.2.4 A special case: the fixed reference sphere
 
-**Proposition 10.3 (The reduced condition $D_{rS}=0$).** Only under (i) a constant radius $R\equiv R_0$, so that the surface is a fixed reference sphere, $\mathbf n=\mathbf e_r$, and $K_{ab}=g_{ab}/R_0$; (ii) a velocity that contains only a single spherical-harmonic degree $(\ell,m)$, with distinct pairs $(\ell,m)$ decoupled; and (iii) $\mathbf T_{\rm tide}=\mathbf 0$, do Proposition 10.2 and the traction condition above reduce to
+**Proposition 10.3 (The reduced condition $D_{rS}=0$).** Only under all of the following does Proposition 10.2 with the traction condition reduce as below:
+
+- (i) $R\equiv R_0$, so $\mathbf n=\mathbf e_r$ and $K_{ab}=g_{ab}/R_0$;
+- (ii) a single, decoupled degree $(\ell,m)$;
+- (iii) $\mathbf T_{\rm tide}=\mathbf 0$.
+
+Then
 
 $$
-\begin{aligned}
-v_r&=R_0\Lambda\sum_k q_k Y,\\
-D_{rr}&=\Lambda\sum_k(\sigma_{\ell k}-1)q_k Y,\\
+v_r=R_0\Lambda\sum_k q_k Y,\qquad
+D_{rr}=\Lambda\sum_k(\sigma_{\ell k}-1)q_k Y,\qquad
 2D_{rS}
-&=\Big[\sum_k(\Lambda+\kappa_{\ell k}-2)q_k\Big]\nabla Y
+=\Big[\sum_k(\Lambda+\kappa_{\ell k}-2)q_k\Big]\nabla Y
 +\Big[\sum_k(\sigma_{\ell k}-1)s_k\Big]\nabla Y\times\mathbf e_r,
-\end{aligned}
 $$
 
 $$
@@ -8145,15 +4525,15 @@ D_{SS}
 (1+\sigma_{\ell k})q_k\operatorname{Hess}_S Y
 +\Lambda q_k Y\,\mathbf I_S
 +s_k\operatorname{sym}\nabla\big(\nabla Y\times\mathbf e_r\big)
-\Big].
+\Big],
 $$
 
-One has $\operatorname{tr} D_{SS}=-\Lambda\sum_k(\sigma_{\ell k}-1)q_k Y=-D_{rr}$, in agreement with incompressibility. Because $\nabla Y$ and $\nabla Y\times\mathbf e_r$ are pointwise orthogonal, the condition $D_{rS}=0$ is equivalent to two independent scalar constraints
+with $\operatorname{tr}D_{SS}=-D_{rr}$ (incompressibility). Since $\nabla Y\perp\nabla Y\times\mathbf e_r$, $D_{rS}=0$ is two scalar constraints:
 
 $$
 \boxed{
 \sum_{k=0}^3 c^{P}_{\ell k}q_{\ell km}=0,\ \ c^P_{\ell k}=\Lambda_\ell+\kappa_{\ell k}-2;\qquad
-\sum_{k=0}^3 c^{T}_{\ell k}s_{\ell km}=0,\ \ c^T_{\ell k}=\sigma_{\ell k}-1.}
+\sum_{k=0}^3 c^{T}_{\ell k}s_{\ell km}=0,\ \ c^T_{\ell k}=\sigma_{\ell k}-1,}
 $$
 
 $$
@@ -8164,92 +4544,79 @@ c^T_{\ell k}&\ell-1&3(\ell+1)&5\ell+9&7\ell+17
 \end{array}
 $$
 
-The table is the substitution of Section 10.2.1 into $c^P=\Lambda+\kappa-2$ and $c^T=\sigma-1$. For $k=0$, $\sigma=\ell$ and $\kappa=\ell(\ell-1)$ give $c^P=2(\ell^2-1)=2(\ell-1)(\ell+1)$ and $c^T=\ell-1$. For $k=1$, $\sigma=3\ell+4$ and $\kappa=\ell(5\ell+7)$ give $c^P=2(3\ell^2+4\ell-1)$ and $c^T=3(\ell+1)$. For $k=2$, $\sigma=5(\ell+2)$ and $\kappa=(\ell+2)(13\ell+15)$ give $c^P=14(\ell+1)(\ell+2)$ and $c^T=5\ell+9$. For $k=3$, $\sigma=7\ell+18$ and $\kappa=(\ell+2)(25\ell+63)$ give $c^P=2(\ell+2)(13\ell+31)$ and $c^T=7\ell+17$.
-
-Consistency check: the translational and rotational modes at $\ell=1$, $k=0$ have $c^P_{10}=c^T_{10}=0$. A rigid motion produces no surface shear.
-
-In this case $\dot\gamma_\Gamma^2=2\big[D_{rr}^2+D_{SS}:D_{SS}\big]$. The whole set of formulae applies **only** to the special case just stated. For a moving non-spherical radius $R(\theta,\varphi)$, for cross-degree modes that include toroidal coupling, or in the presence of a tidal backstress, one must use the general formulae of Section 10.2.3. One must not set $D_{rS}=0$ again. If one further sets $s_{\ell km}\equiv 0$, so that there is no toroidal flow, only the poloidal constraint remains.
+by substitution of Section 10.2.1. Check: $c^P_{10}=c^T_{10}=0$, so a rigid motion produces no surface shear. Here $\dot\gamma^2_\Gamma=2[D_{rr}^2+D_{SS}:D_{SS}]$. This applies **only** to this special case. A moving non-spherical $R$, cross-degree or toroidal coupling, or a tidal backstress requires Section 10.2.3; $D_{rS}=0$ must not be reimposed. With $s\equiv0$ only the poloidal constraint remains.
 
 ---
 
 ## 10.3 Closure of the endogenous, nonuniform, physical friction angle on the surface
 
-Remark. The pressure $p_{\rm ref}=\rho_{\rm bulk}|\mathbf g\cdot\mathbf n|h_s$ is a representative reference pressure of the shallow flowing layer. The coefficient $\mu_{\rm eff}$ constructed from it is a nominal geometric projection angle based on that representative surface pressure $p_{\rm ref}$. (A nominal geometric projection angle is monotone in pressure when there is no cohesion, or at high confining pressure. In general it is not guaranteed to be conservative. The true multiaxial yield is checked separately by the outer acceptance test.) The physical effective pressure $p_{*,\mathrm{phys}}=p+p_c$ is used only for the dynamic rheology $\mu_d$. The reference effective pressure $p_{*,\mathrm{ref}}=p_{\mathrm{ref}}+p_c$ is used only for the geometric projection angle $\mu_{\rm eff}$. This section does not use an unsubscripted $p_*$. Every quantity of this section lives on the free surface, $d=0$, so the cohesion $c$ below is the surface value $c_s$ of the two-layer strength (Section 4.3a).
+$p_{\rm ref}=\rho_{\rm bulk}|\mathbf g\cdot\mathbf n|h_s$ is a representative pressure of the shallow flowing layer, and $\mu_{\rm eff}$ built from it is a nominal geometric projection angle. It is monotone in pressure without cohesion or at high confinement, but not conservative in general; true multiaxial yield is checked by the outer acceptance test. Two effective pressures are kept apart, and no unsubscripted $p_*$ is used:
 
-**Material constants are frozen.** The solid fraction $\nu=\nu_0$ (for example $\nu_0=0.6$ for a standard rubble pile [5][6]) and the coordination number $Z=Z_0$ (for example $Z_0=6$) are **material constants given by the configuration**. They are not updated with the SCF iteration or with the relaxation, and they have no evolution law. Consequently $\rho_{\rm bulk}=\rho_p\nu_0$, $c=c(\nu_0,Z_0)$, $\mu_s=\mu_s(\nu_0,Z_0)$, $\mu_2$, $I_0$, $\mu_y\equiv\mu_s$ (Section 2.8, B2), and $F_H$ are all constants. The symbols below keep their original form and no longer carry a nodal or an iteration subscript. The superscript $(n)$ on $\nu^{(n)}$ and $Z^{(n)}$ in Sections 4.7–4.20 is the **index of a parameter sequence** in the reduction theorem. It has nothing to do with the SCF iteration. The density $\rho_{\rm bulk}$ is the packing density of the loose surface layer. The density $\rho_K$ is the internal Cauchy continuum density. They are two independent configuration quantities, linked only through the density weight $\rho_{\rm bulk}/\rho_K|_\Gamma$ (Section 2.8). The range of the ratio $\rho_{\rm bulk}/\rho_K|_\Gamma$ should be reported at each step.
+- $p_{*,\rm phys}=p+p_c$, only for the dynamic rheology $\mu_d$;
+- $p_{*,\rm ref}=p_{\rm ref}+p_c$, only for $\mu_{\rm eff}$.
 
-Every quantity below is evaluated on the frozen geometry $R^{(n)}$ of geological step $n$, on the frozen effective gravity $g_i^{(n)}$, and on the converged pressure $p_i^{(n)}$ of Section 8.7, taken at its regularized value $\tilde p_i^{(n)}=\max([p_i^{(n)}]_+,p_{\min})$ (Section 2.8). Define first
+Everything here lives on the surface ($d=0$), so $c=c_s$ (Section 4.3a).
+
+**Material constants are frozen.** $\nu=\nu_0$ (e.g. $0.6$ [5][6]) and $Z=Z_0$ (e.g. $6$) are configuration constants with no evolution law. Hence $\rho_{\rm bulk}=\rho_p\nu_0$, $c$, $\mu_s$, $\mu_2$, $I_0$, $\mu_y\equiv\mu_s$, and $F_H$ are constants. The $(n)$ of Sections 4.7–4.20 indexes a parameter sequence, not an SCF iteration. $\rho_{\rm bulk}$ (the packing of the loose layer) and $\rho_K$ (the continuum density) are independent, linked only through $\rho_{\rm bulk}/\rho_K|_\Gamma$, whose range is reported each step.
+
+All quantities are evaluated on the frozen geometry, the frozen $g_i^{(n)}$, and the converged $\tilde p_i^{(n)}$ (Section 8.7), with
 
 $$
 p_{*,{\rm phys},i}^{(n)}:=\tilde p_i^{(n)}+p_c\ge p_{\min}>0,
 \qquad
-p_c=C_c\frac{Z_0\nu_0 F_H}{d_p^2}.
+p_c=C_c\frac{Z_0\nu_0 F_H}{d_p^2},
 $$
 
-If a particular contact model supplies $F_H=A_H a/(6h_0^2)$, that expression is substituted. The numerical lower bound $p_{\min}>0$ (for example $10^{-6}\,\mathrm{Pa}$; an f32 implementation must be rechecked in f64) removes the division-by-zero singularity of $\sqrt{p_*/\rho_p}$ and of the denominator of $\mu_{\rm eff}$ at $p=0$ and $p_c=0$. The reference pressure $p_{*,{\rm ref}}$ is likewise replaced by $\max(\cdot,p_{\min})$. The lower bound is only a numerical protection. It must not be used only in a denominator. By the mandatory rule of Section 4.13, if a lower-bound pressure is used in the denominator of $\mu_d$, then the pressure inside the stress amplitude $c+\mu_d p$ must be the same regularized pressure $\max(p,p_{\min})$.
+and $F_H=A_Ha/(6h_0^2)$ if a contact model supplies it. The floor $p_{\min}$ (e.g. $10^{-6}$ Pa; f32 results rechecked in f64) removes the singularities of $\sqrt{p_*/\rho_p}$ and of the $\mu_{\rm eff}$ denominator. $p_{*,\rm ref}$ is floored the same way. The floor is a numerical protection only. Per Section 4.13, if it is used in the denominator of $\mu_d$, the same regularized pressure is used in $c+\mu_dp$.
 
-The surface shear rate is $\dot\gamma=\sqrt{2\mathbf D':\mathbf D'}$. Its nodal value is $\mathcal F_i:=\dot\gamma_i^{(n)}=\dot\gamma_\Gamma(\hat{\boldsymbol\omega}_i)$, computed from the general formula of Section 10.2.3 on the **converged** quasi-static Stokes solution $\mathbf u^{(n)}$ of step $n$ (system (8.4′) and Section 10.4.2). The yield test of Section 2.8 and the pressure of Section 8.7 use the same velocity field. The fixed-sphere formulae of Section 10.2.4 are used only as a check of that special case.
+The nodal shear rate $\mathcal F_i:=\dot\gamma_\Gamma$ at the surface point $i$ (vertex or face centre) comes from Section 10.2 on the **converged** Stokes solution of the step. The yield test and the pressure use the same velocity. Section 10.2.4 is only a special-case check.
 
-**Reference pressure, and the treatment of the singularity at $p_*=0$.** At a free-surface node, $p_i=p_{\rm ext}+\mathbf n\cdot\boldsymbol\tau\cdot\mathbf n$ may vanish (Section 4.22), and the denominators of $I_c$ and of $\mu_{\rm eff}$ may vanish. The slope proxy uses the effective pressure at a **reference depth**,
+**Reference pressure and the singularity at $p_*=0$.** At a surface node $p_i$ may vanish (Section 4.22), so the slope proxy uses a reference depth:
 
 $$
 p_{\mathrm{ref},i}=\rho_{\mathrm{bulk}}|g_i^{(n)}\cdot n_i^{(n)}|\,h_s,\qquad
-p_{*,{\rm ref},i}:=\max(p_{\mathrm{ref},i}+p_c,\,p_{\min})>0,
+p_{*,{\rm ref},i}:=\max(p_{\mathrm{ref},i}+p_c,\,p_{\min})>0 .
 $$
 
-where $h_s>0$ is the configured thickness of the active surface layer. The bound $p_{*,{\rm ref},i}>0$ is guaranteed by the explicit floor $p_{\min}>0$. The anti-overhang constraint $g_i\cdot\widehat n_i\le-\epsilon|g_i|$, together with $|g_i|>0$, only guarantees that the reference pressure points in the physical compressive direction. To avoid division by zero or underflow in $\sqrt{p_{*,{\rm phys}}/\rho_p}$, the shallow dynamic friction coefficient $\mu_{d,i}$ uses the physical effective pressure $p_{*,{\rm phys},i}$, already defined and regularized, through the rational expression
+The anti-overhang row with $|g_i|>0$ only ensures that the reference pressure is compressive. The shallow friction coefficient uses the physical effective pressure through
 
 $$
 \mu_{d,i}
-=\mu_s+(\mu_2-\mu_s)\frac{d_p\,\mathcal F_i}{I_0\sqrt{p_{*,{\rm phys},i}/\rho_p}+d_p\,\mathcal F_i}.
+=\mu_s+(\mu_2-\mu_s)\frac{d_p\,\mathcal F_i}{I_0\sqrt{p_{*,{\rm phys},i}/\rho_p}+d_p\,\mathcal F_i},
 $$
 
-It is monotone nondecreasing in $\mathcal F_i\ge 0$, with range $[\mu_s,\mu_2)$. As $p_{*,{\rm phys}}\downarrow 0$ with $\mathcal F_i>0$, it tends to $\mu_2$. The expression is a genuine indeterminate form only when $p_{*,{\rm phys}}=\mathcal F_i=0$, and in that case one takes the static branch $\mu_d:=\mu_s$. An f32 implementation must place a floor $p_{\min}>0$ under $p_{*,{\rm phys}}$ and must recheck the result in f64.
+which is nondecreasing in $\mathcal F_i$ with range $[\mu_s,\mu_2)$, and tends to $\mu_2$ as $p_{*,\rm phys}\downarrow0$ with $\mathcal F_i>0$. At $p_{*,\rm phys}=\mathcal F_i=0$ take the static branch $\mu_d:=\mu_s$.
 
-**Rheological-chain switch (the configuration item `mu_proj_mode`, which must be given explicitly).**
+**Rheological-chain switch (one of two modes, which must be chosen explicitly).**
 
-- `dynamic`: $\mu_{\mathrm{proj},i}:=\mu_{d,i}$. The shear-rate chain $\mathbf u^{(n)}\to\dot\gamma_i\to I_c\to\mu_d\to\mu_{\rm eff}\to\phi_i$ is then **fully active**. The surface velocity trace (Proposition 10.2) and the surface-invariant shear rate (Section 10.2.3) determine the geometric projection angle of a movable node directly.
-- `static`: $\mu_{\mathrm{proj},i}:=\mu_y=\mu_s$. The angle $\phi_i$ is a **static geometric relaxation proxy**, independent of the shear rate.
+- *dynamic*: $\mu_{{\rm proj},i}:=\mu_{d,i}$. The chain $\mathbf u^{(n)}\to\dot\gamma_i\to I_c\to\mu_d\to\mu_{\rm eff}\to\phi_i$ is **fully active**, so the trace and the shear rate set the projection angle directly.
+- *static*: $\mu_{{\rm proj},i}:=\mu_y=\mu_s$. $\phi_i$ is then a **static relaxation proxy**, independent of the shear rate.
 
-Neither option changes the yield classification. The tolerance $F_\delta$ of Section 2.8, the rigid core, the movable set, and the Mode C flux are all computed on the unique stress field, using $\mu_d$ for the viscosity and $\mu_y$ for the strength, independently of `mu_proj_mode`.
+Neither option changes the yield classification. $F_\delta$, the core, the movable set, and the Mode C flux always use the unique stress ($\mu_d$ for viscosity, $\mu_y$ for strength). $\phi_i$ is a nominal proxy for the SOCP, not an equivalent of multiaxial yield. Identifying $\phi=\arctan\mu$ with a repose angle is a modelling hypothesis between Mohr–Coulomb and Drucker–Prager, valid only for a declared loose layer.
 
-Under either option, $\phi_i$ is only a nominal geometric proxy for the SOCP. It is not an equivalent rewriting of the true multiaxial yield. Identifying $\phi=\arctan\mu$ with an angle of repose is a modelling hypothesis that sits between Mohr–Coulomb and Drucker–Prager. It holds only for a loose surface layer whose applicability has been declared.
-
-**Scalarization of the tidal backstress, and the nominal projection angle (based on the representative surface pressure $p_{\rm ref}$; not absolutely conservative).** Write $\|A\|_{\mathrm{eq}}=\|A\|_F/\sqrt{2}$. The yield condition $\|s-T\|_{\mathrm{eq}}\le c+\mu_y p$ implies only $\|s\|_{\mathrm{eq}}\le c+\mu_y p+\|T\|_{\mathrm{eq}}$. This is a **necessary** condition, and it is not conservative. For example, if $c=0$, $\mu_y p=1$, $T=\mathrm{diag}(0.6,-0.6,0)$, and $s=\mathrm{diag}(-0.5,0.5,0)$, then $\|s\|_{\mathrm{eq}}=0.5\le 1.6$, but $\|s-T\|_{\mathrm{eq}}=1.1>1$, so the material has already yielded. A **sufficient** condition at a given pressure $p$ follows from $\|s-T\|_{\mathrm{eq}}\le\|s\|_{\mathrm{eq}}+\|T\|_{\mathrm{eq}}$: if $\|s\|_{\mathrm{eq}}\le c+\mu_y p-\|T\|_{\mathrm{eq}}$, then $\|s-T\|_{\mathrm{eq}}\le c+\mu_y p$. One therefore takes
+**Tidal scalarization and the projection angle.** With $\|A\|_{\rm eq}=\|A\|_F/\sqrt2$, the condition $\|s-T\|_{\rm eq}\le c+\mu_yp$ implies only the necessary, non-conservative $\|s\|_{\rm eq}\le c+\mu_yp+\|T\|_{\rm eq}$. For example, $c=0$, $\mu_yp=1$, $T=\operatorname{diag}(0.6,-0.6,0)$, and $s=\operatorname{diag}(-0.5,0.5,0)$ give $\|s\|_{\rm eq}=0.5\le1.6$, yet $\|s-T\|_{\rm eq}=1.1>1$. A **sufficient** condition is $\|s\|_{\rm eq}\le c+\mu_yp-\|T\|_{\rm eq}$, so
 
 $$
 \mu_{\mathrm{eff},i}^{(n)}
 :=\frac{\Big[c+\mu_{\mathrm{proj},i}\,p_{\mathrm{ref},i}-\|T_{\mathrm{tide},i}\|_F/\sqrt{2}\Big]_+}{p_{*,\mathrm{ref},i}}\ge 0,
 \qquad
-\boxed{\phi_i^{(n)}=\arctan\mu_{\mathrm{eff},i}^{(n)}}.
+\boxed{\phi_i^{(n)}=\arctan\mu_{\mathrm{eff},i}^{(n)}},
+\qquad
+\sin^2\phi_i^{(n)}=\frac{(\mu_{\mathrm{eff},i}^{(n)})^2}{1+(\mu_{\mathrm{eff},i}^{(n)})^2}.
 $$
 
-**Monotonicity, and a counterexample ($\phi_i$ is not an absolutely conservative angle).** Write $T:=\|T_{\rm tide}\|_{\rm eq}$ and $\mu:=\mu_{\rm proj}$, and regard the proxy angle as a function of pressure, $\mu_{\rm eff}(p)=[c+\mu p-T]_+/(p+p_c)$. Whenever $c+\mu p-T>0$,
+**Monotonicity, and why $\phi_i$ is not absolutely conservative.** With $T:=\|T_{\rm tide}\|_{\rm eq}$, $\mu:=\mu_{\rm proj}$, and $\mu_{\rm eff}(p)=[c+\mu p-T]_+/(p+p_c)$,
 
 $$
-\begin{aligned}
-\frac{d}{dp}\,\frac{c+\mu p-T}{p+p_c}
-&=\frac{\mu(p+p_c)-(c+\mu p-T)}{(p+p_c)^2}
-=\frac{\mu p_c-(c-T)}{(p+p_c)^2}.
-\end{aligned}
+\frac{d}{dp}\,\frac{c+\mu p-T}{p+p_c}=\frac{\mu p_c-(c-T)}{(p+p_c)^2}.
 $$
 
-Thus $\mu_{\rm eff}$ is nondecreasing in $p$ if and only if $\mu p_c\ge c-T$. In that case $p_{\rm ref}\le p$ implies $\mu_{\rm eff}(p_{\rm ref})\le\mu_{\rm eff}(p)$, and the proxy angle does not exceed the value at the true pressure (it is biased tight). Conversely, if $c-T>\mu p_c$ (cohesion is large), then $\mu_{\rm eff}$ is strictly decreasing in $p$. When $p_{\rm ref}<p$, the proxy angle is **instead too large** (biased loose), and the slogan “$p_{\rm ref}\le p$ is conservative” is false. For a general granular body one therefore makes no claim of an “absolutely conservative sufficient condition”. The angle $\phi_i$ is only a nominal geometric projection angle based on the representative surface pressure $p_{\rm ref}$. It is monotone when there is no cohesion, since $c=0$ and $T\ge 0$ make $\mu p_c\ge -T$ automatic, and it is monotone at high confining pressure. It is a geometric proxy for the SOCP, not an algebraic equivalent. In general, the true multiaxial yield is checked separately by the tensorial yield condition $\|s-T_{\rm tide}\|_{\rm eq}\le c+\mu_y p$ in the outer acceptance test.
+- If $\mu p_c\ge c-T$, $\mu_{\rm eff}$ is nondecreasing, so $p_{\rm ref}\le p$ biases the angle tight.
+- If $c-T>\mu p_c$ (large cohesion), $\mu_{\rm eff}$ decreases, so $p_{\rm ref}<p$ biases it **loose**, and "$p_{\rm ref}\le p$ is conservative" is false.
 
-Since $\mu_{\mathrm{eff}}=\tan\phi$, the projection uses
+So no absolute sufficient condition is claimed. $\phi_i$ is monotone without cohesion ($\mu p_c\ge-T$ automatically) or at high confinement. True yield, $\|s-T_{\rm tide}\|_{\rm eq}\le c+\mu_yp$, is checked by the outer test.
 
-$$
-\sin^2\phi_i^{(n)}
-=\frac{(\mu_{\mathrm{eff},i}^{(n)})^2}{1+(\mu_{\mathrm{eff},i}^{(n)})^2}.
-$$
-
-**Spurious effect of a vertex Hessian.** The stress $T_{\mathrm{tide}}\propto\operatorname{dev} H_W$ takes the value $H^{\mathrm{FP}}_{\ell_0}$ at mesh vertices and along edges. There $C_{ij}\ne 0$, so the result depends on an arbitrary reference length $\ell_0$ (Section 1.3: $\Delta H=G\rho C\log(\ell_0/\ell_1)$). It is an artifact of the polyhedral discretization. For use in the stress, the Hessian must be evaluated in the interior of a face, at the face centre, or one must take the average of the one-sided limits on the two sides of the face. Proposition 2.7.1 proves that at every point of the relative interior of a triangular face, and in particular at the centroid, the hemispherical moment vanishes, the logarithmic RTFP singularity is absent, and the Feynman integral converges to the same scale-independent finite part. For a point in the interior of a planar face,
-
-$$
-H^{\pm}=H^{\mathrm{FP}}\pm 2\pi G\rho_K\,\mathbf n\mathbf n^{\!\top},
-$$
-
-where “$+$” is the exterior limit and “$-$” is the interior limit. The finite part $H^{\rm FP}$ contains the whole nonlocal finite contribution. At an interior point of the face, $C_{ij}=0$, so the value is independent of $\ell_0$. The average of the two sides is exactly $H^{\mathrm{FP}}$. The jump $H^+-H^-=4\pi G\rho_K\mathbf n\mathbf n^{\!\top}$ agrees with $\operatorname{tr} H^--\operatorname{tr} H^+=-4\pi G\rho_K$. One must not discard the nonlocal part and retain only the local contact tensor $-\tfrac{2\pi}{3}G\rho_K\mathbf I\pm 2\pi G\rho_K\mathbf n\mathbf n^{\!\top}$. Doing so would omit the large-scale tidal tensor. Vertex values must not enter $T_{\mathrm{tide}}$ directly.
+**Spurious effect of a vertex Hessian.** At vertices and edges $T_{\rm tide}\propto\operatorname{dev}H_W$ would take $H^{\rm FP}_{\ell_0}$ with $C_{ij}\ne0$, an $\ell_0$-dependent artefact of the discretization (Section 1.3). The Hessian for the stress is therefore taken at face centres, or as the mean of the one-sided limits. Proposition 2.7.1 shows that there the counterterm vanishes and the Feynman integral gives the same scale-free finite part, with $H^\pm=H^{\rm FP}\pm2\pi G\rho_K\mathbf n\mathbf n^{\!\top}$ ("$+$" exterior), mean $H^{\rm FP}$, and jump $4\pi G\rho_K\mathbf n\mathbf n^{\!\top}$. Retaining only the local contact tensor $-\tfrac{2\pi}{3}G\rho_K\mathbf I\pm2\pi G\rho_K\mathbf n\mathbf n^{\!\top}$ would discard the large-scale tidal tensor. Vertex values must never enter $T_{\rm tide}$ directly.
 
 ---
 
@@ -8257,30 +4624,37 @@ where “$+$” is the exterior limit and “$-$” is the interior limit. The f
 
 ### 10.4.1 Time levels, exogenous spin, and the geological step
 
-The quasi-static route has three nested levels. The meaning of “time” is different at each level, and the levels must not be mixed.
-
-| Level | Variables | Meaning and method of solution |
+| Level | Variables | Meaning and method |
 |---|---|---|
-| Exogenous spin table | $t\mapsto\omega(t)$ | given by the configuration; **not solved**; no feedback from the internal flow, from a change of inertia, or from angular momentum |
-| Geological step $n$ | $t_n$, $\Delta t_n$, $\lambda$ | geometric advance $R^{(n)}\to R^{(n+1)}$, with $t_{n+1}=t_n+\lambda\Delta t_n$ |
-| Picard iteration $k$ | $(\mathbf u^k,p^k)$ | nonlinear solution of the instantaneous Stokes equilibrium at fixed geometry and fixed $\omega_n$; **contains no time** |
+| Exogenous spin table | $t\mapsto\omega(t)$ | configured; **not solved**; no feedback from the flow, the inertia, or the angular momentum |
+| Geological step $n$ | $t_n$, $\Delta t_n$, $\lambda$ | geometric advance, $t_{n+1}=t_n+\lambda\Delta t_n$ |
+| Primal–dual iteration $k$ | $(\mathbf u^k,\boldsymbol\varsigma^k,p^k)$ | instantaneous Stokes equilibrium at fixed geometry and $\omega_n$; **contains no time** |
 
-**Exogenous spin table (the configuration item `spin_schedule`; exactly one form must be given).**
+The three meanings of time must not be mixed.
 
-- `stages`: $\{(\omega_j,T_j)\}_{j=1}^{J}$ with $T_j>0$. Stage $j$ occupies $[s_{j-1},s_j)$, where $s_0=0$ and $s_j=s_{j-1}+T_j$, and on that interval $\omega(t)\equiv\omega_j$. The terminal time is $T_{\rm end}=s_J$.
-- `linear`: $\omega(t)=\omega_0+\dot\omega_{\rm ext}\,t$ for $t\in[0,T_{\rm end}]$, where $\dot\omega_{\rm ext}$ is a given constant (for example a mean YORP acceleration), and one requires $\omega(t)\ge 0$.
-- `table`: nodes $(t_k,\omega_k)_{k=0}^{K_\omega}$, with $t_k$ strictly increasing. The spin $\omega$ is the piecewise-linear interpolant, and $T_{\rm end}=t_{K_\omega}$.
-- `orbit`: synchronous rotation on a circular orbit about a primary of gravitational parameter $GM_p$ that lies on the body $+x$ axis. The semi-major axis follows the constant-$Q$ tidal law $\dot a\propto a^{-11/2}$, that is $a(t)^{13/2}=a_0^{13/2}+\tfrac{13}{2}a_0^{11/2}\dot a_0\,t$ on $[0,T_{\rm end}]$, and $\omega(t)=n(t)=\sqrt{GM_p/a(t)^3}$. The primary adds the external field of the synchronous Hill problem, the quadrupole of its potential about the body centre,
+**Exogenous spin table (exactly one form).**
+
+- *Stages*: $\{(\omega_j,T_j)\}$ with $T_j>0$; $\omega\equiv\omega_j$ on $[s_{j-1},s_j)$, with $s_j=s_{j-1}+T_j$ and $T_{\rm end}=s_J$.
+- *Linear*: $\omega(t)=\omega_0+\dot\omega_{\rm ext}t$ (e.g. a mean YORP acceleration), with $\omega\ge0$ required.
+- *Table*: nodes $(t_k,\omega_k)$ with increasing $t_k$; piecewise-linear $\omega$; $T_{\rm end}=t_{K_\omega}$.
+- *Orbit*: synchronous rotation on a circular orbit about a primary $GM_p$ on the body $+x$ axis, with the constant-$Q$ law $a^{13/2}=a_0^{13/2}+\tfrac{13}{2}a_0^{11/2}\dot a_0t$ and $\omega=n=\sqrt{GM_p/a^3}$. The primary adds the Hill quadrupole
 
 $$
 U_{\rm tide}=\tfrac12 n^2\big(2x_1^2-x_2^2-x_3^2\big),\qquad
-\mathbf g_{\rm ext}=\nabla U_{\rm tide}=n^2(2x_1,-x_2,-x_3),\qquad
+\mathbf g_{\rm ext}=n^2(2x_1,-x_2,-x_3),\qquad
 \nabla^2U_{\rm tide}=n^2\operatorname{diag}(2,-1,-1),
 $$
 
-which enters $\mathbf g_0$ of Section 5.1 and, through $W$, the Hessian $H_W$ and $\mathbf T_{\rm tide}$. It is traceless, so $\Delta W$ and the identities of Section 8.7 are unchanged. The body $x$ axis is the long principal axis after the realignment of step 8, which is the synchronous orientation.
+which enters $\mathbf g_0$, $H_W$, and $\mathbf T_{\rm tide}$. It is traceless, so $\Delta W$ and Section 8.7 are unchanged. After realignment the body $x$ axis is the long principal axis, the synchronous orientation.
 
-Each geological step freezes $\omega_n:=\omega(t_n)$ (and, under `orbit`, $n_n=\omega_n$). The spin enters the model only through $\mathbf g_{\rm eff}=\nabla U+\omega_n^2\mathbf x_\perp+\mathbf g_{\rm ext}$ and through $H_W=\nabla^2 U+\omega_n^2\operatorname{diag}(1,1,0)+\nabla^2U_{\rm tide}$, and hence through $\mathbf T_{\rm tide}$; $\mathbf g_{\rm ext}=\mathbf 0$ except under `orbit`. **Hypothesis A-S (spin about a principal axis):** the spin axis is always the body-frame $z$-axis, that is, the current principal axis of maximum inertia, as guaranteed by the realignment of step 8. Nutation damping is regarded as instantaneous relative to $\Delta t_n$. The value of $\omega$ is never updated from the inertia tensor or from the angular momentum. A deformation that changes $I_1$ does not feed back into $\omega$. That is the definition of an exogenous prescription, not an omission.
+Each step freezes $\omega_n=\omega(t_n)$ (under the orbit form, also $n_n=\omega_n$). The spin enters only through
+
+$$
+\mathbf g_{\rm eff}=\nabla U+\omega_n^2\mathbf x_\perp+\mathbf g_{\rm ext},\qquad
+H_W=\nabla^2U+\omega_n^2\operatorname{diag}(1,1,0)+\nabla^2U_{\rm tide},
+$$
+
+and hence $\mathbf T_{\rm tide}$; $\mathbf g_{\rm ext}=\mathbf 0$ except under the orbit form. **Hypothesis A-S (spin about a principal axis):** the spin axis is the body $z$-axis, the current axis of maximum inertia, as maintained by the realignment of step 8. Nutation damping is instantaneous relative to $\Delta t_n$. $\omega$ is never updated from the inertia or the angular momentum; that is the definition of an exogenous prescription.
 
 **Geological step.**
 
@@ -8289,100 +4663,95 @@ $$
 =\min\{\Delta t_{\rm CFL},\ \Delta t_C,\ \Delta t_{\rm char},\ \Delta t_{\rm core},\ \Delta t_\omega,\ \Delta t_{\max},\ t_{\rm next}-t_n\}.
 $$
 
-- Geometric CFL of the movable region:
+- **CFL of the movable region:** $\Delta t_{\rm CFL}=\theta_{\rm CFL}h_{\Gamma,\min}/\max_{\{i:\chi_{Y,i}=1\}}|\mathbf v_{{\rm sl},i}\cdot\mathbf N_i|$, with $\theta_{\rm CFL}\le0.5$; promoted vertices have no creep and do not enter (Section 8.0, G10). The value is $+\infty$ if $\chi_Y\equiv0$ on the surface.
+- **Erosional flux:** $\Delta t_C=\theta_C\rho_{\rm bulk}h_s/\max_i|J_{\rm dep}-J_{\rm ero}|_i$, with $\theta_C<1$ and fluxes at $t_n$, so the layer thickness changes by at most $\theta_Ch_s$. Positivity needs no bound, since erosion is integrated exactly. On a full layer this bound is $\theta_C\sigma_0/(k_e[F_\delta]_+)$, and it relaxes as the layer depletes. The value is $+\infty$ without flux.
+- **$\rho_s$ characteristics:** $\Delta t_{\rm char}=\theta_{\rm ch}/\|\nabla_\Gamma\mathbf v_T\|_\infty$, with $\theta_{\rm ch}<1$ (Section 8.0, G5, G10).
+- **Core jet transport:** $\Delta t_{\rm core}=\theta_{\rm ch}/(\lambda\max_{k\ \text{not anchored}}\|\operatorname{dev}\nabla\mathbf v_{\rm adv}(\mathbf c_k)\|_F)$, evaluated at the current centres, since the RK2 midpoint $\mathbf c_k^{\rm mid}$ itself depends on $\tau_n=\lambda\Delta t_n$. Step 6b then checks the same bound at $\mathbf c_k^{\rm mid}$ and, if it is violated, shortens $\Delta t_n$ by the violation ratio and repeats the $O(K)$ prediction; the bound is a smooth function of $\Delta t_n$ through $\mathbf c_k^{\rm mid}$, so a few repetitions suffice. This keeps $\mathbf F_k$ near the identity and the Level 2 backtracking single-valued. The Frobenius norm bounds the spectral norm. The value is $+\infty$ if every core is anchored.
+- **Spin table:** none under the stage form (handled by $t_{\rm next}$). Under the linear or table form, $\Delta t_\omega=\varepsilon_\omega\max\{\omega(t_n),\omega_{\rm ref}\}/\max\{|\dot\omega(t_n)|,\epsilon\}$.
+- **Caps:** $\Delta t_{\max}$ is configured, and $t_{\rm next}$ is the next stage boundary, table node, or $T_{\rm end}$.
+
+**Why there is no viscous stiffness catastrophe.** The velocity comes implicitly from (8.4′). $\Delta t_n$ appears nowhere in it and is independent of $\eta_{\rm hi}=(c+\mu_2\tilde p)/\dot\gamma_\varepsilon$. Core creep is removed by $\chi_Y=0$ and does not enter $\Delta t_{\rm CFL}$. The step count is about $T\max_{\mathcal A}|\mathbf v_{\rm sl}\cdot\mathbf n|/(\theta_{\rm CFL}h_{\Gamma,\min})$, set by the true landslide speed. Promoted vertices have no speed, so while only they move the step is $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. An equilibrated stage needs one step, which jumps to the stage end. $\lambda\in(0,1]$ defaults to $1$ and is reduced only when the outer geometric test struggles; time accumulates as $\lambda\Delta t_n$. A step recomputed after a trust-region shrink (overhang, self-intersection) does not advance time. Stage equilibrium is 2.15(c). Its stability, and finite-step attainment, belong to PO-12.
+
+### 10.4.2 Quasi-static Stokes–pressure solution: the ray-structured primal–dual iteration
+
+On frozen geometry, $\rho_K$, $\omega_n$, $\mathbf g_{\rm eff}$, and $\mathbf T_{\rm tide}$ the step needs the pair $(\mathbf u,p)$ that satisfies (8.4′) and the pressure problem of Section 8.7. At frozen pressure the velocity is the unique minimizer of the strictly convex functional $J$ on $\mathbb K=\ker\mathbf B_{\rm rb}$ (Proposition 2.17.1); the pressure closes a fixed point that is not variational (Remark 2.17.2). The normative solver computes the velocity by a primal–dual iteration in strain samples along the RTFP rays and updates the pressure inside that iteration.
+
+**Strain samples.** On the volume nodes $\{\mathbf x_i,w_i\}$ of the ray-segment rule (G2), let $\mathbf e_i(\mathbf u)\in\mathbb R^5$ be $\sqrt2\,\mathbf D(\mathbf v)(\mathbf x_i)$ in an orthonormal basis of traceless symmetric matrices, so $|\mathbf e_i|=\dot\gamma(\mathbf x_i)$ and $\langle\mathbf e_i(\mathbf u),\mathbf e_i(\mathbf u')\rangle=2\mathbf D(\mathbf v):\mathbf D(\mathbf v')$. By Lemma 8.13, along each ray $\mathbf e$ is a polynomial in $r$ with direction-only coefficients; cavity modes (Section 8.2) are added pointwise. The primal metric is
 
 $$
-\Delta t_{\rm CFL}
-=\theta_{\rm CFL}\,h_{\Gamma,\min}
-\Big/\max_{i\in\mathcal A^{(n)}}\big(|\mathbf v_{{\rm sl},i}\cdot\mathbf n_i|/(\mathbf n_i\cdot\mathbf e_r)\big),
+\mathbf P:=\sum_iw_i\,\mathbf e_i^{\!\top}\mathbf e_i+\gamma_{\rm AL}\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb}=\mathbf G+\gamma_{\rm AL}\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb},
 $$
 
-with $\theta_{\rm CFL}\le 0.5$. If $\mathcal A^{(n)}=\varnothing$, the value is $+\infty$.
-- Erosional flux:
+SPD by Lemma 8.12 with $\eta\equiv1$ ($\mathbf G$ alone is singular on the rigid modes), with $\gamma_{\rm AL}$ of Section 8.4. $\mathbf G$ is computed exactly by Propositions 8.14–8.15 and factored once per geometry.
+
+**Saddle form.** With $\phi_i=\phi(\cdot;\mathbf x_i)$ of Proposition 2.17.1 at the frozen $\tilde p$ and $\mathbf F$ the load of (8.4′),
 
 $$
-\Delta t_C
-=\theta_C\,
-\frac{\rho_{\rm bulk}h_s}{\max_i|J_{\rm dep}-J_{\rm ero}|_i},
+\min_{\mathbf u\in\mathbb K}\ \sum_iw_i\,\phi_i(|\mathbf e_i(\mathbf u)|)-\mathbf F^{\!\top}\mathbf u
+=\min_{\mathbf u\in\mathbb K}\max_{\boldsymbol\varsigma}\ \sum_iw_i\big(\langle\boldsymbol\varsigma_i,\mathbf e_i(\mathbf u)\rangle-\phi_i^*(|\boldsymbol\varsigma_i|)\big)-\mathbf F^{\!\top}\mathbf u .
 $$
 
-with $\theta_C<1$ and the instantaneous fluxes at $t_n$, so that the change of layer thickness in one step does not exceed $\theta_C h_s$. Positivity of $\rho_s$ needs no bound, because the erosion is integrated exactly over the step (Section 2.8). On a full layer, $\rho_s=\rho_{\rm bulk}h_s$, the bound equals $\theta_C\sigma_0/(k_e[F_\delta]_+)$; on a depleting layer it relaxes with $\rho_s$. If there is no flux, the value is $+\infty$.
-- Single-valuedness of the $\rho_s$ characteristics: $\Delta t_{\rm char}=\theta_{\rm ch}/\|\nabla_{S^2}\mathbf c\|_\infty$, with $\theta_{\rm ch}<1$ and $\mathbf c=\chi_A\mathbf v_{{\rm sl},S}/R$ (Section 9.2).
-- Validity of the core jet transport (Section 9.10.3): $\Delta t_{\rm core}=\theta_{\rm ch}\big/\big(\lambda\max_{k\ \text{not anchored}}\|\operatorname{dev}\nabla\mathbf v_{\rm adv}(\mathbf c_k^{\rm mid})\|_F\big)$, so that the transport step satisfies $\tau_n\|\operatorname{dev}\nabla\mathbf v_{\rm adv}\|_F\le\theta_{\rm ch}$, the deformation $\mathbf F_k$ of one step stays close to the identity, and the backtracking of Level 2 is single-valued. The bound is placed on $\tau_n=\lambda\Delta t_n$, the step the cores actually take; the Frobenius norm bounds the spectral norm from above, and the gradient is a central difference of $\mathbf v_{\rm adv}$ at the RK2 midpoint. If every core is anchored, the value is $+\infty$.
-- Resolution of the spin table: under `stages` there is no separate restriction (the quantity $t_{\rm next}$ handles it). Under `linear` or `table`,
+The dual is the flow stress: at the saddle point $\boldsymbol\varsigma_i=\eta_i\mathbf e_i$, the tensor of $\boldsymbol\varsigma_i$ is $\boldsymbol\tau_{\rm flow}(\mathbf x_i)/\sqrt2$, and $|\boldsymbol\varsigma_i|=\|\boldsymbol\tau_{\rm flow}\|_{\rm eq}$. For Bingham ($\mu_d\equiv\mu_s$, $\tau_{y,i}=c_i+\mu_s\tilde p_i$),
 
 $$
-\Delta t_\omega
-=\varepsilon_\omega\max\{\omega(t_n),\omega_{\rm ref}\}/\max\{|\dot\omega(t_n)|,\epsilon\},
+\phi^*(t)=\dot\gamma_\varepsilon\big(\tau_y-\sqrt{\tau_y^2-t^2}\big)\ (0\le t\le\tau_y),\qquad\phi^*(t)=+\infty\ (t>\tau_y),
 $$
 
-so that the relative change of spin in one step does not exceed $\varepsilon_\omega$.
-- The quantity $\Delta t_{\max}$ is a configured upper bound. The time $t_{\rm next}$ is the next stage boundary, table node, or $T_{\rm end}$.
+so the regularization smooths the dual. With $\dot\gamma_\varepsilon=0$ the dual feasible set is the product of balls $|\boldsymbol\varsigma_i|\le\tau_{y,i}$, the statically admissible stresses. For the rate-dependent $\mu_d(I_c)$ the conjugate is never formed; only its prox is needed.
 
-**Why there is no viscous stiffness catastrophe.** The velocity is computed implicitly from (8.4′). The step $\Delta t_n$ does not appear in the velocity equation, and it is independent of $\eta_{\rm hi}=(c+\mu_2\tilde p)/\dot\gamma_\varepsilon$. Regularized creep inside the rigid core is removed by $\chi_Y=0$ and does not enter $\Delta t_{\rm CFL}$. The number of steps required is therefore about $T\cdot\max_{\mathcal A}|\mathbf v_{\rm sl}\cdot\mathbf n|/(\theta_{\rm CFL}h_{\Gamma,\min})$. It is fixed by the true landslide speed. There is no CFL restriction of viscous-diffusion type. The relief of promoted vertices (Section 2.8c) has no speed and does not enter this bound: while only promoted vertices are movable, the step is set by $\Delta t_\omega$, $\Delta t_{\max}$, or $t_{\rm next}$. An equilibrated stage whose movable set is empty needs only one step, which jumps to the end of the stage. The factor $\lambda\in(0,1]$ defaults to $1$ and is reduced only when the outer geometric acceptance test is difficult. Accumulated time is measured by $\lambda\Delta t_n$. A step that is recomputed after the trust region has been shrunk because of an overhang or a self-intersection does not advance time. Stage equilibrium and the termination condition are criterion (c) of Section 2.15. Stability of that criterion (sufficiency of the step-size rule), and the conditions under which stage equilibrium is reached in finitely many steps, belong to PO-12.
+**Iteration (Chambolle–Pock [14] in the metric $\mathbf P$).**
 
-### 10.4.2 Quasi-static Stokes–pressure solution at fixed geometry and fixed $\omega_n$
+$$
+\begin{aligned}
+\boldsymbol\varsigma_i^{k+1}&=\operatorname{prox}_{\tau_d\phi_i^*}\big(\boldsymbol\varsigma_i^k+\tau_d\,\mathbf e_i(\bar{\mathbf u}^k)\big)&&\text{(pointwise)},\\
+\mathbf u^{k+1}&=\mathbf u^k-\tau_p\,\Pi_{\mathbb K}^{\mathbf P}\,\mathbf P^{-1}\Big(\sum_iw_i\,\mathbf e_i^{\!\top}\boldsymbol\varsigma_i^{k+1}-\mathbf F\Big),\\
+\bar{\mathbf u}^{k+1}&=2\mathbf u^{k+1}-\mathbf u^k,
+\end{aligned}
+$$
 
-Geological step $n$ is executed on the frozen data $R^{(n)}$, $\rho_K$, $\omega_n$, $\mathbf g_{\rm eff}$, and $\mathbf T_{\rm tide}$:
+with $\Pi^{\mathbf P}_{\mathbb K}$ the $\mathbf P$-orthogonal projection onto $\mathbb K$ (six rows). By Moreau, $\operatorname{prox}_{\tau\phi^*}(\mathbf z)=\mathbf z-\tau\operatorname{prox}_{\phi/\tau}(\mathbf z/\tau)$, with $\operatorname{prox}_{\lambda\phi(|\cdot|)}(\mathbf y)=(\mathbf y/|\mathbf y|)s^*$ and $s^*+\lambda\phi'(s^*)=|\mathbf y|$. That root is unique, because $\phi'$ is nondecreasing, and is found by safeguarded one-dimensional Newton. For Bingham with $\dot\gamma_\varepsilon=0$ the prox is the ball projection $\boldsymbol\varsigma=\mathbf z\min(1,\tau_y/|\mathbf z|)$.
+
+**Proposition 10.4 (Independence of the viscosity contrast).** In the metric $\mathbf P$, the map $\mathbf u\mapsto(\sqrt{w_i}\,\mathbf e_i(\mathbf u))_i$ has norm at most $1$, with equality on $\mathbb K$, since $\sum_iw_i|\mathbf e_i(\mathbf u)|^2=\mathbf u^{\!\top}\mathbf G\mathbf u\le\mathbf u^{\!\top}\mathbf P\mathbf u$. So the step condition $\tau_p\tau_d<1$ depends on neither $\eta$, $\tau_y$, nor the yield pattern; strength enters only through the prox. ∎
+
+Properties of the iteration:
+
+- **Contrast.** The PCG count of a fixed-viscosity solve grows with $\eta_{\rm hi}/\eta_{\rm lo}$ (Section 8.4); the step condition here does not.
+- **Rate.** The ergodic gap decays as $O(1/k)$. For $\dot\gamma_\varepsilon>0$, $\phi_i'$ is Lipschitz, so $\phi_i^*$ is strongly convex (for Bingham with modulus $\ge\dot\gamma_\varepsilon/\tau_{y,i}$), and the accelerated step sizes of [14] give $O(1/k^2)$.
+- **Collapse.** If $L^*>1$ (Proposition 2.17.1) the primal is unbounded: the gap grows while $|\boldsymbol\varsigma_i|$ saturates at $\tau_{\max,i}$, a dual-infeasibility certificate instead of convergence.
+- **Exact Bingham limit.** With $\dot\gamma_\varepsilon=0$ the inner problem is the exact Bingham limit at frozen pressure, and yield is read off the prox (active projection means yielded; strictly inside means rigid). The reference model keeps $\dot\gamma_\varepsilon>0$ and the classification (B2)–(B3) on the converged stress; the limit is an admissible check of PO-12.
+
+**Pressure inside the iteration.** Every $N_p$ iterations the pressure is updated by the Nitsche problem (G3), whose matrix is factored once per geometry. In its right-hand side the volume term needs only stress samples,
+
+$$
+\int_{\mathcal V}(\nabla\cdot\boldsymbol\tau)\cdot\nabla q\,dV=\oint_\Gamma(\boldsymbol\tau\mathbf n)\cdot\nabla q\,dS-\int_{\mathcal V}\boldsymbol\tau:\nabla\nabla q\,dV,
+\qquad \boldsymbol\tau=\mathbf T_{\rm tide}+\sqrt2\,\boldsymbol\varsigma\ \text{at the volume nodes}.
+$$
+
+The boundary terms $\oint(\boldsymbol\tau\mathbf n)\cdot\nabla q$ and $-\oint(\mathbf f^-\cdot\mathbf n)\,q$ of (G3) need $\boldsymbol\tau$ and the interior trace $(\nabla\cdot\boldsymbol\tau)^-$ at boundary quadrature points. They are evaluated from the current primal iterate: $\boldsymbol\tau_{\rm flow}=2\eta\mathbf D(\mathbf u)$ and $(\nabla\cdot\boldsymbol\tau_{\rm flow})^-=\eta\Delta\mathbf v+2\mathbf D\nabla\eta$, with $\nabla\eta$ by the chain rule through $\dot\gamma$, $\tilde p$, and $c$, all analytic in the basis (Section 8.7). This boundary term is the only place where a stress derivative enters. Then $\tilde p\leftarrow\max([p]_+,p_{\min})$ updates every $\phi_i$ (strength and $I_c$), and the iteration continues warm. This is an inexact fixed-point iteration on the pressure (PO-19); a stationary pair satisfies (8.4′) and Section 8.7 exactly.
 
 ```text
-Input: initial value u^0 (the converged coefficients of the previous geological step,
-       reused without change; u^0 = 0 on the first step, or immediately after an 8b realignment),
-       p~^0 = p_min at every point (the implementation does not carry the pressure
-       across steps; only the number of sweeps depends on this start).
+Input: u^0 = converged coefficients of the previous step (0 on the first step and after realignment 8b);
+       varsigma_i^0 = eta e_i(u^0); p~^0 = p_min; P = G + gamma_AL B_rb^T B_rb factored once per geometry.
 for k = 0, 1, ..., k_max-1:
-  (P1) Pressure: from the frozen pair (u^k, p~^k), compute
-       f = rho_K g_eff + div T_tide + div tau_flow
-       and the Dirichlet datum
-       p_Gamma = p_ext + n.T_tide.n + n.tau_flow.n.
-       Solve the Poisson problem of Section 8.7 for p^{k+1};
-       p~^{k+1} = max([p^{k+1}]_+, p_min).
-  (P2) Viscosity: at the interior quadrature points X_vol,
-       gd^k = sqrt(2 D(u^k):D(u^k)),
-       I_c = d_p gd^k / sqrt((p~^{k+1} + p_c)/rho_p),
-       mu_d = mu_d(I_c) (Section 4.5),
-       eta^{k+1/2} = (c + mu_d p~^{k+1}) / sqrt((gd^k)^2 + gd_eps^2).
-       Optional relaxation:
-       eta <- theta_eta eta^{k+1/2} + (1 - theta_eta) eta^{k-1/2},
-       with theta_eta in (0,1].
-  (P3) Velocity: assemble K(eta^{k+1/2}) and F, and solve (8.4')
-       by the range-space method of Section 8.4, obtaining (u^{k+1}, lambda^{k+1}).
-  (P4) Stop if criterion (a) of Section 2.15 holds.
-The target gd_eps is solved first. If it has not converged within k_max
-(stokes.picard_max):
-  - with stokes.continuation = c > 0, restart from the incoming u^0 on the ladder
-    10^c gd_eps, ..., 10 gd_eps, gd_eps, each level starting from the previous one;
-  - on the target level, halve theta_eta (not below 1/4, at most three times) and retry.
-If the retry still fails, terminate and report "rheology not converged".
-A passing status must not be emitted.
-Output: u^(n), p^(n), lambda^(n), eta^(n); then apply criterion (b) of Section 2.15.
+  (D) Dual: varsigma_i^{k+1} = prox_{tau_d phi_i*}(varsigma_i^k + tau_d e_i(ubar^k)) at every volume node.
+  (U) Primal: u^{k+1} = u^k - tau_p Pi_K^P P^{-1}(sum_i w_i e_i^T varsigma_i^{k+1} - F);
+      ubar^{k+1} = 2 u^{k+1} - u^k.
+  (P) Every N_p iterations: Nitsche pressure problem (G3) with the stress of the current iterate;
+      p~ = max([p]_+, p_min); update every phi_i.
+  (S) Stop if criterion (a) of Section 2.15 holds.
+If k_max is reached: restart on the continuation ladder 10^c gd_eps, ..., 10 gd_eps, gd_eps (c >= 0
+  configured), warm-started from level to level. If the target level still fails: terminate,
+  report "rheology not converged"; no passing status. A growing gap with |varsigma_i| saturated at
+  tau_max,i is reported as limit-load collapse (L* > 1, Proposition 2.17.1).
+Output: u^(n), p^(n), varsigma^(n), and the rigid multiplier
+  lambda^(n) = (B_rb B_rb^T)^{-1} B_rb (F - sum_i w_i e_i^T varsigma_i); then criterion (b) of Section 2.15.
 ```
 
-The identities $\nabla\cdot\boldsymbol\tau_{\rm flow}=\eta\Delta\mathbf v+2\mathbf D\nabla\eta$ and $\nabla\cdot\mathbf T_{\rm tide}=-\tfrac{8\pi}{3}G C_T\rho_p\nu_0 d_p^2\nabla\rho_K$, used in (P1), are those of Section 8.7. The converged pair $(\mathbf u^{(n)},p^{(n)})$ satisfies both the divergence-free Galerkin momentum equation (8.4′) and the pressure Poisson equation. That is the quasi-static equilibrium of the unique stress $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$. The yield classification of Section 2.8, the friction-angle chain of Section 10.3, and the Mode C flux are all computed on this same solution.
-
-**Track B (Appendix A.4).** If, in (P3), the block-diagonal inverse $\mathbf K_{\gamma,B1}^{-1}$ replaces $\mathbf K_\gamma^{-1}$ (a truncated model), the resulting $\mathbf u_B$ must still have the residual $\varepsilon_{\rm mom}^{\rm weak}$ of criterion (b) in Section 2.15 computed with the **full** matrix $\mathbf K$. That residual is the a-posteriori measure of the Track B truncation. If it exceeds the threshold, the step must be resolved on Track A.
+The converged pair is the equilibrium of the unique stress, and the yield classification, the friction chain, and Mode C all use it. **Fixed-viscosity solve as a check.** The Picard map of Section 8.7 (assemble $\mathbf K(\eta)$, solve (8.4′) by Section 8.4) has the same fixed points (Proposition 2.17.1(1)). It is not the solver, because at small rates it is not a descent step for $J$, but one solve at the converged $\eta$ checks the result, and the Newton tangent of Section 5.3 may polish it. **Track B.** Replacing $\mathbf P$ by its block-diagonal part $\mathbf P_{B1}$ changes only the metric of the iteration, not its fixed point; the step condition then uses the operator norm of $\mathbf e$ in that metric, estimated by power iteration. $\varepsilon^{\rm weak}_{\rm mom}$ is computed with the full operator as before.
 
 ### 10.4.3 The geometric increment subproblem
 
-Geometric correction is a **sequential convex increment subproblem after the mechanical prediction**. The reference is the current geometry $R^{(n)}$ (Section 2.13). Linearize to first order at the current iteration point, and write
-
-$$
-\widehat n_i(d)=n_i^{(n)}+D n_i^{(n)}d,
-\qquad
-\widehat{\mathcal M}(d)=\mathcal M(R^{(n)},\rho_{\rm cand})+D\mathcal M^{(n)}d.
-$$
-
-The mechanical prediction $d_{\mathrm{pred}}^{(n)}$ and the three-way nodal partition into the locked set $\mathcal L^{(n)}$, the pure-deposition set $\mathcal D^{(n)}$, and the movable set $\mathcal A^{(n)}$ are given uniquely by Section 2.8 (B3–B4):
-
-$$
-d_{\mathrm{pred},i}^{(n)}
-=\frac{\chi_{Y,i}\,\Delta t_n\,\mathbf v_{{\rm sl},i}^{(n)}\!\cdot n_i^{(n)}
-+\dfrac{\rho_{\rm bulk}}{\rho_K(\mathbf x_i)}\,\Delta h_{C,i}}
-{n_i^{(n)}\cdot\mathbf e_r}
-\qquad(n\cdot e_r\ge c_0>0).
-$$
-
-Here $\mathbf v_{\rm sl}$ is the slip velocity of the converged quasi-static Stokes solution of step $n$, relative to the rigid core (the surface trace is synthesized by Proposition 10.2). The indicator $\chi_{Y,i}$ is the movability indicator based on the yield function $F_\delta$ of the unique stress field and on connectivity to the rigid core. The Mode C increment is $\Delta h_C=\Delta t_n(J_{\rm dep}-J_{\rm ero})/\rho_{\rm bulk}$. The density weight $\rho_{\rm bulk}/\rho_K$ makes the flux increment in the mass row equal to $\Delta h_C^*$. Metal-PDHG solves
+The correction is a **sequential convex increment subproblem after the mechanical prediction**, with the current geometry as reference (Section 2.13). The increments are normal (Section 8.0, G4). It uses the linearized face normals $\widehat{\mathbf n}_f(d)=\mathbf n_f^{(n)}+D\mathbf n_f^{(n)}d$ in those increments and $\widehat{\mathcal M}(d)=\mathcal M(\mathbf X^{(n)},\rho_{\rm cand})+D\mathcal M^{(n)}d$ with $(D\mathcal M)_i=\rho_K(\mathbf X_i)|\mathbf A_i|$, together with $d_{\rm pred}$ and the classes $\mathcal L,\mathcal D,\mathcal A$ of (B3)–(B4). $d_{\rm pred}$ uses the converged slip velocity (trace of Section 10.2) and the weight $\rho_{\rm bulk}/\rho_K$, so that flux increments are $\Delta h_C^*$. $\mathcal A_{\rm lin}$ contains the clearance rows of (G4). The PDHG cone solver solves
 
 $$
 \boxed{
@@ -8390,209 +4759,227 @@ $$
 (d_*^{(n)},t_*,s_{M*})
 =\arg\min_{d,\,t\ge 0,\,s_M}\;&
 \frac12\sum_{i\in\mathcal A^{(n)}} w_i\left(d_i-d_{{\mathrm{pred}},i}^{(n)}\right)^2
-+\varrho\Big(\sum_{i}t_i+|s_M|\Big)\\
++\varrho\sum_{f}t_f+\varrho_M\frac{|s_M|}{M}\\
 \text{s.t. }&d_i=0\quad(i\in\mathcal L^{(n)}),\qquad
 d_i=d_{\mathrm{pred},i}^{(n)}\quad(i\in\mathcal D^{(n)}),\\
-&\frac{\|g_i^{(n)}\times\widehat n_i(d)\|}{|g_i^{(n)}|}
-\le\sin\phi_i^{(n)}+t_i\quad(i\in\mathcal S_{\mathrm{slope}}^{(n)}),\\
-&g_i^{(n)}\cdot\widehat n_i(d)\le-\epsilon_n|g_i^{(n)}|\quad(i\in\mathcal S_{\mathrm{slope}}^{(n)}),\\
-&D\mathcal M^{(n)}d+s_M=M-\mathcal M(R^{(n)},\rho_{\rm cand}),\\
+&\frac{\|\mathbf g_f^{(n)}\times\widehat{\mathbf n}_f(d)\|}{|\mathbf g_f^{(n)}|}
+\le\sin\phi_f^{(n)}+t_f\quad(f\in\mathcal S_{\mathrm{slope}}^{(n)}),\\
+&\mathbf g_f^{(n)}\cdot\widehat{\mathbf n}_f(d)\le-\epsilon_n|\mathbf g_f^{(n)}|\quad(f\text{ with a vertex in }\mathcal A^{(n)}),\\
+&D\mathcal M^{(n)}d+s_M=M-\mathcal M(\mathbf X^{(n)},\rho_{\rm cand}),\\
 &d\in\mathcal A_{\mathrm{lin}}^{(n)},
-\qquad \|d_{\mathcal A}\|\le\Delta^{(n)}.
+\qquad \|d_{\mathcal A}\|\le\Delta^{(n)},\\
+&d_i\ge\min(d_{\mathrm{pred},i}^{(n)},0)-\rho_{s,i}A_i/(D\mathcal M)_i\quad(\pi_i=1,\ (D\mathcal M)_i>0),
 \end{aligned}}
 $$
 
-Under hypothesis A-C3 (Section 2.8b) the subproblem is solved twice: the mass that the first solution removes from the vertices of $\mathcal S_{\rm slope}^{(n)}$ is routed by the runout and returned as the deposit $\delta$, and the second solve uses $d_{\rm pred}+\delta$, with every locked vertex that receives a deposit moved to $\mathcal D^{(n)}$. Its solution is $d_*^{(n)}$. Both solves are the same convex program; only the data change.
+with the discrete form (per-face rows, box trust region, $\varrho_M|\sigma_M|$ with folding, KKT tolerance) given in Section 2.13, items 1–6.
 
-The set $\mathcal S_{\rm slope}^{(n)}\subseteq\mathcal A^{(n)}$ contains only those nodes of the movable set that belong to the loose surface layer to which the angle-of-repose proxy applies. In the implementation it is the set of supercritical faces of Section 2.8c, whose three vertices are movable after slope promotion; the rows are imposed at the face centres (Section 2.13, implementation item 1). The vector $d_{\mathcal A}$ is the restriction of $d$ to the movable set. The trust region constrains only the free variables. The objective **does not** contain $R_{\rm eq}$, $W_0$, or any equipotential term. If $\mathcal A^{(n)}=\varnothing$, the subproblem has no free variable, $d_*=d_{\rm pred}$ (zero on the locked set, and equal to the deposited amount on the deposition set), and Metal-PDHG is not called.
+**Further structure.**
 
-The mass row is equivalent to $\widehat{\mathcal M}(d)=M-s_M$. A feasible point is constructed by taking $d_{\mathcal L}=0$, $d_{\mathcal D}=d_{\rm pred,\mathcal D}$, $d_{\mathcal A}=0$, $s_M=M-\widehat{\mathcal M}(d)$, and $t_i=\big[\|g_i\times\widehat n_i(d)\|/|g_i|-\sin\phi_i\big]_+$. If the anti-overhang row is satisfied at that point, the point is feasible. The anti-overhang row has no slack. If it is violated, the outer level must repair the point by a geometric preprocessing in the direction $-g$, or the point must be removed when $\mathcal S_{\rm slope}$ is defined. This construction is only a feasibility construction. It is not a Slater certificate of a strict interior point. A strict interior point, if one is required, must be given a positive margin in the second-order cone and must satisfy every unrelaxed linear constraint strictly, as stated in Section 2.13. The objective is strictly convex in $d_{\mathcal A}$ (because $w_i>0$) plus an $\ell_1$ term, so a solution exists and $d_{\mathcal A*}$ is unique. The second-order-cone constraints, the affine constraints, and the trust ball make the problem a convex SOCP. Whether the constraints are truly satisfied is decided by whether $t_*$ and $s_{M*}$ vanish, and by the outer nonlinear geometric acceptance test.
+- **Two solves under A-C3.** The mass removed from $\mathcal V_{\rm slope}$ by the first solution is routed by the runout and returned as $\delta$. The second solve uses $d_{\rm pred}+\delta$, with depositing locked vertices moved to $\mathcal D$; its solution is $d_*$. Both are the same convex program with different data.
+- **The slope set.** $\mathcal S_{\rm slope}$ is the set of faces of Section 2.8c: loose faces with at least one vertex in $\mathcal A$, supercritical or not, with rows at face centres. Its fixed vertices enter $\widehat{\mathbf n}_f$ with their fixed increments. The trust region constrains only $d_{\mathcal A}$, with the loose-mass bound of Section 2.8c on promoted vertices. The objective has no $R_{\rm eq}$, $W_0$, or equipotential term.
+- **Empty movable set.** If $\mathcal A=\varnothing$, then $d_*=d_{\rm pred}$ (zero on $\mathcal L$, the deposit on $\mathcal D$), and the cone program is not solved.
+- **Feasibility and uniqueness.** The point $d_{\mathcal L}=0$, $d_{\mathcal D}=d_{\rm pred}$, $d_{\mathcal A}=0$ with $s_M$ and $t_f=[\cdot]_+$ meets the clearance rows and the loose-mass bound, and is feasible if the anti-overhang rows hold. Otherwise the violating faces lose their rows (item 2 of Section 2.13); they are counted, not repaired. This is not a Slater point (Section 2.13). The objective is strictly convex in $d_{\mathcal A}$ plus an $\ell_1$ term, so $d_{\mathcal A*}$ exists and is unique. True satisfaction is decided by $t_*,s_{M*}=0$ and by the outer test.
+- **What is not convex.** $\mathcal A_{\rm lin}$ holds only affine or conic interior approximations (nodal order, positive volume, trust region). True positive volume and topology are checked by the outer test. The trust-region policy is that of Section 2.13. With the norm constraint on the normal kept, the program is an SOCP; it is a pure QP only after full affine approximation.
 
-The set $\mathcal A_{\mathrm{lin}}^{(n)}$ contains only the affine or conic interior approximations of nodal order, positive volume, and the trust region. True positive volume and the topological conditions are not convex constraints of Metal-PDHG. They are checked by the outer acceptance test. If they fail, the trust region is reduced and the subproblem is resolved. **Unified trust-region policy.** The inner Metal-PDHG SOCP is convex-feasible because of the elastic slack variables $t_i$ and $s_M$. The inner level never reduces the trust region. The outer level reduces the trust-region radius $\Delta^{(n)}$ and regenerates the subproblem when the outer geometric acceptance test rejects the candidate (a self-intersection, a non-positive volume, an invalid mesh) or when the cone program misses its KKT tolerance; see Section 2.13. A mass miss does not reduce it (Section 2.14). If the constraint on the normal norm is retained, the problem is an SOCP with a quadratic objective. It may be called a pure QP only after every constraint has been affinely approximated.
+**Place of the tidal backstress and of yield.** $\sin\phi_f$ is the nominal proxy of Section 10.3 and constrains only the movable loose layer. $t_*=0$ only says that the proxy holds, and $t_*\ne0$ is not an assertion of tensorial yield. True yield is not an acceptance constraint; it drives the flow, and is recomputed next step on the new geometry, $\mathbf T_{\rm tide}$, and Stokes solution. The outer test checks only:
 
-**Place of the tidal backstress and of yield inside the subproblem.** The quantity $\sin\phi_i^{(n)}$ in the subproblem comes from the nominal geometric projection proxy of Section 10.3, based on $p_{\rm ref}$. It constrains only the geometry of the movable loose surface layer. Vanishing of $t_*$ says only that the proxy constraint holds. A nonzero $t_*$ is not, by itself, an assertion of tensorial yield. True tensorial yield is not a constraint of the geometric acceptance test. It is the physical state that drives the flow. On the next geological step, $F_\delta$ is recomputed and the classification is repeated, on the new geometry, the new $\mathbf T_{\rm tide}$, and the new Stokes solution (Section 2.8). The outer geometric acceptance test checks only positive volume, absence of self-intersection, and the mass residual (which is corrected once and then recorded, Section 2.14); star-shapedness $n\cdot e_r\ge c_0$ is reported, not enforced. If no acceptable candidate exists, the trust region is reduced. A fluid equipotential is not used as a fallback target. The trust region stops at the floor $\Delta_{\min}=\texttt{trust\_min}\cdot\bar R$. A geometric rejection that persists at the floor ends the run as `GeometryInvalid`. If instead the cone program itself misses the KKT tolerance at every radius down to the floor, the step keeps $d_*=\mathbf 0$: the geometry, and with it the supercritical faces of that step, are carried unchanged to the next step, time advances by $\lambda\Delta t_n$, and the step is flagged `cone_unresolved` and counted in the report. The transport of $\rho_s$ and the core closure of Section 9.10 still run on the kept geometry. Such a step leaves the slope inequality unrelieved, exactly as protected relief does (Section 2.8, B4); it does not move the body.
+- positive volume;
+- no self-intersection;
+- the mass, corrected once and then recorded (Section 2.14).
+
+Embeddedness inside the program is kept by the clearance rows. **Trust-region floor and outcomes.**
+
+- No acceptable candidate: shrink the trust region, never fall back to a fluid target.
+- The radius stops at $\Delta_{\min}=\Delta_{\min,0}\bar R$ (a configured fraction of the mean radius).
+- A geometric rejection that persists at the floor ends the run with the status *geometry invalid*.
+- A cone program that misses its KKT tolerance at every radius down to the floor keeps $d_*=\mathbf 0$. The geometry and its supercritical faces are carried unchanged, time advances by $\lambda\Delta t_n$, and the step is flagged *cone unresolved* and counted. $\rho_s$ transport and the core closure still run. Such a step leaves the slope unrelieved, as protected relief does, and does not move the body.
 
 ### 10.4.4 The main loop of the quasi-static evolution
 
 ```text
-0. Initialization: read the star-shaped polyhedron R^(0), the density (rho_b and the
-   Cauchy cores w_k, c_k, S_k or sigma_k, alpha_k; density_mode, core_shape and the
-   tolerances eps_xi, eps_rho, gn_max of Section 9.10; core_adapt, eps_split, eps_merge,
-   K_max belong to the unimplemented Level 3), the material constants
+0. Initialization: read the polyhedron (vertices X^(0), fixed connectivity; hypothesis (G) of
+   Section 8.0 is checked), the density (rho_b and the Cauchy cores w_k, c_k, S_k, alpha_k; the
+   core shape class and the tolerances eps_xi, eps_rho, gn_max of Section 9.10; eps_split, eps_merge,
+   K_max if Level 3 is used), the material constants
    (nu_0, Z_0, c_b, c_s, h_c, mu_s, mu_2, I_0, d_p, rho_p, C_c, F_H, C_T, gd_eps, delta_Y, p_min),
-   the Mode C parameters (k_e, sigma_0, kernel K, h_s, runout, runout_time, runout_stop),
-   the slope-promotion tolerance tau_s (relief.tol_slack), spin_schedule, and every tolerance.
-   If any item is missing -> ModelNotClosed, and refuse to run.
+   the Mode C parameters (k_e, sigma_0, kernel K, h_s, runout switch, T_run, eps_stop),
+   the slope-promotion tolerance tau_s, the primal-dual parameters of Section 10.4.2 (tau_p, tau_d,
+   N_p, eps_pd, eps_pic, k_max, continuation depth c), the spin table, and every tolerance.
+   If any item is missing -> model not closed; refuse to run.
    rho_s^0 = rho_bulk h_s, eps_p_bar = 0, t_0 = 0.
    Perform the frame alignment of step 8b once (mandatory; the trigger condition is ignored).
 For n = 0, 1, 2, ... until t_n >= T_end:
-1. Forward evaluation: omega_n = omega(t_n). On V^(n) and rho_K(.; theta^(n)), compute by the unified
-   RTFP/Feynman representation the face-centre Hessian (Section 10.3), the nodal fields
-   g_i and H_W,i, and grad U and Hess U at the interior quadrature points X_vol
-   (the assembly points of (8.4')) and on the classification mesh X_Y (Section 2.8, B3).
-   Interior points converge classically. (Specified: reuse the segment table and retrace
-   only the dirty rays, Section 3.15.2. Implemented: a geometric update rebuilds the
-   acceleration structure and casts every ray again; a spin-only step reuses the fields.)
+1. Forward evaluation: omega_n = omega(t_n). On V^(n) and rho_K(.; theta^(n)), compute by RTFP
+   the face-centre Hessian (Section 10.3), the nodal g_i and H_W,i, and grad U, Hess U at
+   X_vol (the assembly points of (8.4')) and on X_Y (Section 2.8, B3).
+   Reuse the segment table and retrace only dirty rays (Section 3.15.2); a spin-only step
+   reuses the fields.
    g_eff = grad U + omega_n^2 x_perp + g_ext,
-   H_W = Hess U + omega_n^2 diag(1,1,0) + Hess U_tide   (g_ext, U_tide only under `orbit`),
+   H_W = Hess U + omega_n^2 diag(1,1,0) + Hess U_tide   (g_ext, U_tide only under the orbit form),
    T_tide = C_T rho_p nu_0 d_p^2 dev H_W.
-2. Quasi-static Stokes–pressure Picard iteration (Section 10.4.2), producing
-   (u^(n), p^(n), lambda^(n), eta^(n)).
-   If either criterion (a) or (b) of Section 2.15 fails, retry by the continuation
-   of Section 10.4.2. If the retry still fails, terminate and report.
-3. Yield classification (Section 2.8, B2–B3): on X_Y, synthesize v, D, and p~,
-   and compute tau_flow, tau_y, and F_delta.
-   On the graph G_Y, find the unyielded connected components and take the component
-   of largest mass as the rigid core U_core. This produces chi_Y,i.
-   Fit the rigid motion (a_c, theta_c) of the core by least squares, and set
-   v_sl = v - a_c - theta_c x x.
-   Update the diagnostic Phi_p (eps_p_bar of (B6) is not implemented).
-   Report the movable area fraction, the fraction in tension, and Ek^{-1}
-   (eps_Euler is not reported).
-4. Friction-angle chain (Section 10.3): from u^(n), synthesize the surface velocity
-   by Proposition 10.2, compute gd at every face centre by Section 10.2.3, and obtain
-   mu_d, mu_proj, phi, and the repose slack s_f of every face.
-4b. Slope promotion (Section 2.8c, A-C4): pi_i = 1 for every vertex of a face with
-   s_f > tau_s that has chi_Y,i = 0 and rho_s,i > 0. The geometric movability is
-   max(chi_Y, pi); chi_Y itself is unchanged and governs steps 5, 5b, and the CFL bound.
-5. Mode C (Section 2.8): chi_A = chi_Y * 1[rho_s > 0], and J_ero.
-   Runout (Section 2.8b, A-C3): trace each node with J_ero > 0 over Gamma in the rotating
-   frame (sliding with mu(I) and Coriolis; ballistic hops where N <= 0) to its arrival X;
-   move J_ero A to X by barycentric weights; J_dep = G_w * (moved source)
-   (the kernel K is normalized; conservation is strict). Report the runout statistics.
-5b. Core prediction (Section 9.10.3, Level 0; density_mode = lagrangian_cores):
-   v_adv = chi_Y v_sl; for every core that is not anchored, RK2 for c_k and
-   F_k = exp(tau_n dev grad v_adv(c_k^mid)), S_k' = F_k^{-T} S_k F_k^{-1}, w_k' = w_k,
-   with tau_n = lambda Delta t_n (recomputed if lambda changes). This gives theta^pred and
-   rho_cand = rho_K(.; theta^pred). Steps 5 and 5b and step 4 read the same converged
-   Stokes solution and write disjoint data, so they may run concurrently (Section 10.5).
-6. Step size (Section 10.4.1): Delta t_n.
-   A^(n) below is the movable set after promotion.
-   If spin_schedule = stages and A^(n) is empty and J_ero = 0 (hence J_dep = 0):
-     stage equilibrium (criterion (c) of Section 2.15) -> emit the terminal state of the stage,
-     set t_{n+1} to the end s_j of the current stage, set R^(n+1) = R^(n), and go to step 1.
-   If A^(n) is empty and the schedule is not stages:
-     Delta t_n = min(Delta t_omega, Delta t_max, t_next - t_n),
-     d_pred = 0, and go directly to step 8 (the geometry is unchanged; only omega advances).
-7. Form d_pred (Section 2.8, B4; no creep term on promoted vertices) and the nodal
-   classes L / D / A. Solve the Metal-PDHG SOCP of Section 10.4.3; its mass row and
-   D M use rho_cand.
-   Relief routing (Section 2.8b, A-C3): r_i = [d_pred,i - d_i]_+ on the vertices of S_slope,
-   m_i = (D M)_i r_i; run each such vertex out to X(a_i); spread m by K;
-   delta_j = (K m)_j A_j / (D M)_j; d_pred <- d_pred + delta, a locked vertex with
-   delta_j > 0 joins D; solve again, warm-started, for d_*^(n). Report the routing gap.
+2. Stokes-pressure primal-dual iteration (Section 10.4.2) -> (u^(n), p^(n), varsigma^(n), lambda^(n)).
+   If criterion (a) or (b) of Section 2.15 fails, retry by continuation; if that fails, terminate and report.
+3. Yield classification (Section 2.8, B2-B3): on X_Y synthesize v, D, p~; compute tau_flow, tau_y, F_delta;
+   the unyielded component of largest mass on G_Y is U_core -> chi_Y,i;
+   least-squares rigid fit (a_c, theta_c); v_sl = v - a_c - theta_c x x.
+   Update Phi_p and eps_p_bar (B6). Report the movable area fraction, the tensile fraction,
+   Ek^{-1}, and eps_Euler.
+4. Friction chain (Section 10.3): surface velocity and strain rate at vertices and face centres
+   (Section 10.2), gd (Section 10.2.3), then mu_d, mu_proj, phi, and the repose slack s_f of every face.
+4b. Slope promotion (Section 2.8c): pi_i = 1 on vertices of faces with s_f > tau_s, chi_Y,i = 0,
+   rho_s,i > 0. Geometric movability max(chi_Y, pi); chi_Y itself governs 5, 6b, and the CFL bound.
+5. Mode C (Section 2.8): chi_A = chi_Y 1[rho_s > 0], J_ero. Runout (A-C3): trace each node with
+   J_ero > 0 over Gamma in the rotating frame (mu(I) sliding, Coriolis, hops where N <= 0) to X;
+   move J_ero A to X by barycentric weights; J_dep = G_w * (moved source) (normalized; strict
+   conservation). Report the runout statistics. Steps 4 and 5 read the same solution and write
+   disjoint data (Section 10.5).
+6. Step size (Section 10.4.1), with Delta t_core from the gradients at the current centres c_k;
+   A^(n) is the movable set after promotion.
+   If the spin table has stages, chi_Y = 0 on all of X_Y, A^(n) is empty, and J_ero = 0:
+     stage equilibrium (2.15(c)) -> emit the stage's terminal state, set t_{n+1} to the stage end,
+     X^(n+1) = X^(n), go to step 1.
+   If A^(n) is empty otherwise: Delta t_n = min(Delta t_omega, Delta t_core, Delta t_max, t_next - t_n),
+     d_pred = 0; run 6b, then go to step 8 (surface unchanged).
+6b. Core prediction (Section 9.10.3, Level 0; skipped in the frozen-density variant A-rho):
+   v_adv = chi_Y v_sl, tau_n = lambda Delta t_n; for each non-anchored core, RK2 for c_k,
+   F_k = exp(tau_n dev grad v_adv(c_k^mid)), S_k' = F_k^{-T} S_k F_k^{-1}, w_k' = w_k.
+   If tau_n ||dev grad v_adv(c_k^mid)||_F > theta_ch for some core, reduce Delta t_n by that ratio
+   and repeat 6b (cost O(K)). -> theta^pred, rho_cand (recomputed whenever lambda or Delta t_n changes).
+7. Form the normal increments d_pred (B4; no creep on promoted vertices) and the classes L / D / A;
+   solve the SOCP of Section 10.4.3 with rho_cand. Relief routing (A-C3): r_i = [d_pred,i - d_i]_+ on
+   the movable vertices of the faces of S_slope, m_rel_i = (D M)_i r_i, run out to X(a_i), spread by K,
+   delta_j = (K m_rel)_j A_j / (D M)_j; d_pred <- d_pred + delta (depositing locked vertices join D);
+   solve again, warm-started, for d_*^(n). Report the routing gap.
+   If the spin table has stages, chi_Y = 0 on all of X_Y, J_ero = 0, D is empty, and the cone
+   program, converged within its KKT tolerance (not cone unresolved), returns d_* = 0, the step is a
+   fixed point: stage equilibrium (2.15(c)) -> report the remaining slope slack as unrelievable,
+   emit the stage's terminal state, set t_{n+1} to the stage end, X^(n+1) = X^(n), go to step 1.
 8. Geometric update and frame realignment:
-   8a. R^(n+1) = R^(n) + lambda d_*^(n) (on the locked set, d_* = 0). Rebuild the polyhedron.
-       Outer geometric acceptance: positive volume and no self-intersection. On failure,
-       or when the cone solve of step 7 failed, reduce Delta^(n), resolve step 7, and do
-       not advance time. A miss of |M(V^(n+1), rho_cand) - M| <= eps_M M is corrected once
-       on the movable set and then recorded (Section 2.14). n.e_r is reported.
-       For rho_s: transport the single field by the semi-Lagrangian scheme of Section 9.2,
-       along c = chi_A v_sl,S / R, with step lambda Delta t_n, including the Jacobian
-       correction, then add lambda Delta t_n (J_dep - J_ero).
-   8c. Core closure on V^(n+1) (Section 9.10.4-9.10.5): Level 1 mass closure on the cores
-       (w <- (1+xi_n) w, rho_b fixed), misfit e_rho against the semi-Lagrangian transported
-       density, Level 2 Gauss-Newton refit if e_rho > eps_rho or |xi_n| > eps_xi, then
-       Level 1 once more. (Level 3 and the check rho_K >= rho_min are not implemented.)
-       8c runs before 8b because the realignment needs the updated density.
-   8b. Standard frame realignment. Trigger: |x_cm| > eps_frame R_ref / 2, or
-       max(|I_xz|, |I_yz|) > eps_frame I_1 / 2, or a violated ordering
-       I_zz >= I_yy >= I_xx beyond eps_deg I_1. If the trigger is not met, skip 8b,
-       so that repeated resampling does not cause numerical diffusion. At most three
-       passes are made; each is followed by a new gravity binding.
-       (i)   Centre of mass, with the density updated in 8c: x_cm = (1/M_V) int_{V(R^(n+1))} rho_K x dV,
-             with M_V = int rho_K dV.
-       (ii)  Translation: every mesh point x <- x - x_cm; every kernel centre c_k <- c_k - x_cm.
-       (iii) Inertia tensor I = int rho_K (|x|^2 Id - x x^T) dV. Eigendecomposition
-             I_1 >= I_2 >= I_3, with unit eigenvectors a_1, a_2, a_3.
-       (iv)  New frame: e_z' = a_1 (the axis of the largest principal moment I_1, which is
-             the spin axis), e_x' = a_3 (the axis of the smallest principal moment I_3),
-             e_y' = e_z' x e_x'. Signs are chosen so that a_1.e_z >= 0 and a_3.e_x >= 0,
-             which makes Q as close to the identity as possible.
-             Near degeneracy: if I_1 - I_2 <= eps_deg I_1, take e_z' to be the normalization
-             of the projection of the old e_z onto span{a_1, a_2}. If I_2 - I_3 <= eps_deg I_1,
-             take e_x' to be the normalization of the projection of the old e_x onto the
-             intersection of span{a_2, a_3} with the orthogonal complement of e_z'.
-             If all three moments are degenerate, Q = Id. If a projection vanishes, take
-             the eigenvector of least index in that subspace.
-             The rows of the rotation matrix Q are (e_x', e_y', e_z'), and det Q = +1.
-             Then x <- Q x, c_k <- Q c_k, and S_k <- Q S_k Q^T. The kernel centres and
-             metrics must rotate with the mesh; otherwise the physical density field changes.
-       (v)   From the new origin, cast a ray along each fixed nodal direction w_i,
-             intersect the transformed polyhedron, and resample R'(w_i) (RayBackend),
-             keeping the outermost crossing. (Specified: n.e_r >= c_0, else reject and
-             reduce Delta^(n). Implemented: a ray that does not leave the body is an error.)
-       (vi)  Scalar barycentric interpolation of the surface density rho_s (no global
-             rescaling; its error is part of the reported mass change). Velocity is not carried
-             across the step. The next Picard iteration takes u^0 = 0. The spin omega
-             is not changed by the realignment, because it is prescribed exogenously.
-             In the new frame, Omega = omega e_z'.
-       (vii) Recheck |x_cm'| <= eps_frame R_ref and max(|I_xz'|, |I_yz'|) <= eps_frame I_1;
-             a failure stops the run (incompatible). After this check passes, the
-             rigid-body compatibility conditions of Appendix A.3 hold by construction.
-             The resampling error is reported as the relative mass and volume change
-             of the realignment (frame_mass_change); E_frame itself is not computed.
-       (viii) The mass target M of the following steps is reset to the mass of the
-             realigned body, so the resampling change of (v)-(vi) is accepted and not
-             corrected later. The total mass over a run is the recorded `mass`.
-9. Set t_{n+1} = t_n + lambda Delta t_n. Record R^(n+1), rho_s, theta^(n+1), the diagnostics, and the
-   error budget of Section 9.8. Return to step 1.
+   8a. X_i <- X_i + lambda d_*,i N_i (Section 8.0, G4), with d_* = 0 on the locked set.
+       Rebuild the polyhedron. Outer acceptance: positive volume, no self-intersection, a closed,
+       consistently oriented mesh. On failure, or when the cone solve of step 7 failed, reduce
+       Delta^(n), redo step 7, and do not advance time. At Delta_min: a geometric rejection ends
+       the run (geometry invalid); a cone solve that still misses its KKT tolerance gives d_* = 0,
+       the step is flagged cone unresolved, X^(n+1) = X^(n), and the step continues with the
+       rho_s update and 8c, advancing time by lambda Delta t_n (Section 10.4.3). A miss of |M(V^(n+1), rho_cand) - M| <= eps_M M
+       is corrected once on the movable set, then recorded (Section 2.14).
+       rho_s: semi-Lagrangian transport along v_T on Gamma (Section 8.0, G5; Section 9.2), step
+       lambda Delta t_n, with the Jacobian correction and rho_s,i = m_i / A_i^new;
+       then add tau_n (J_dep - J_ero) with the step averages over tau_n = lambda Delta t_n of
+       Section 2.8 (the exact exponential erosion over tau_n, applied once) and the relief ledger
+       of Section 2.8c (debit lambda (D M)_i [d'_pred,i - d_*,i]_+, credited along the routed runout).
+   8c. Core closure on V^(n+1) (Sections 9.10.4-9.10.6): Level 1 on the cores (rho_b fixed), the
+       misfit e_rho, Level 2 Gauss-Newton refit if e_rho > eps_rho or |xi_n| > eps_xi, Level 3 if
+       used, then Level 1 again; recheck rho_K >= rho_min at the volume nodes. 8c precedes 8b,
+       which needs the updated density.
+   8b. Frame realignment. Trigger: |x_cm| > eps_frame R_ref / 2, or max(|I_xz|,|I_yz|) > eps_frame I_1 / 2,
+       or a violated ordering I_zz >= I_yy >= I_xx beyond eps_deg I_1; otherwise skip.
+       At most three passes, each followed by a new gravity evaluation.
+       (i)   x_cm = (1/M_V) int rho_K x dV with the 8c density, M_V = int rho_K dV.
+       (ii)  X_i <- X_i - x_cm for every vertex; c_k <- c_k - x_cm.
+       (iii) I = int rho_K (|x|^2 Id - x x^T) dV; eigenpairs I_1 >= I_2 >= I_3, a_1, a_2, a_3.
+       (iv)  e_z' = a_1 (spin axis), e_x' = a_3, e_y' = e_z' x e_x', signs with a_1.e_z >= 0 and
+             a_3.e_x >= 0 (Q closest to Id). Near degeneracy: if I_1 - I_2 <= eps_deg I_1, e_z' is
+             the normalized projection of the old e_z onto span{a_1, a_2}; if I_2 - I_3 <= eps_deg I_1,
+             e_x' is the normalized projection of the old e_x onto span{a_2, a_3} intersected with
+             e_z'-perp; if all degenerate, Q = Id; a vanishing projection takes the lowest-index
+             eigenvector. Rows of Q are (e_x', e_y', e_z'), det Q = +1.
+             X_i <- Q X_i, c_k <- Q c_k, S_k <- Q S_k Q^T (cores must rotate with the mesh).
+       (v)   No resampling (Section 8.0, G8): the moved vertices are the new surface, rho_s stays on
+             its vertices, and the mass is unchanged to rounding, so E_frame = 0.
+             Velocity is not carried: the next Picard takes u^0 = 0.
+             omega is unchanged (exogenous); Omega = omega e_z'.
+       (vi)  Recheck |x_cm'| <= eps_frame R_ref and max(|I_xz'|,|I_yz'|) <= eps_frame I_1; failure
+             stops the run. After it passes, the compatibility conditions of Appendix A.3 hold.
+9. t_{n+1} = t_n + lambda Delta t_n. Record X^(n+1), rho_s, theta^(n+1), the diagnostics,
+   and the error budget of Section 9.8. Return to step 1.
 ```
 
-**Stage equilibrium and micro-creep.** Criterion (c) of Section 2.15 is a strict fixed point. When the movable set is empty, $d_*=0$ holds exactly, independently of $\Delta t_n$ and of $\lambda$. The regularization $\dot\gamma_\varepsilon>0$ leaves a numerical creep of size $|\mathbf v|\sim\dot\gamma_Y R$ inside the rigid core. It is reported only as a diagnostic, $\max_{\mathcal U_{\rm core}}|\mathbf v_{\rm sl}|$. It does not enter the geometry, the step size, the flux, or any state variable. There is therefore no convergence test of “velocity floor” type, and creep causes neither a geometric drift nor a historical drift. As $\dot\gamma_\varepsilon\to 0$, the creep inside the core tends to zero, and the movable set converges to the yielded region and the sliding blocks of the unregularized model (PO-12).
+**Stage equilibrium and micro-creep.** 2.15(c) is a strict fixed point. With an empty movable set, $d_*=0$ exactly, independent of $\Delta t_n$ and $\lambda$. The regularized creep inside the core, $|\mathbf v|\sim\dot\gamma_YR$, is only a diagnostic, $\max_{\mathcal U_{\rm core}}|\mathbf v_{\rm sl}|$. It enters neither the geometry, nor the step, nor the flux, nor any state. There is no "velocity floor" test, and creep causes no geometric or historical drift. As $\dot\gamma_\varepsilon\to0$ the core creep vanishes, and the movable set tends to the yielded region and sliding blocks of the unregularized model (PO-12).
 
-**The dynamic free-surface mode** does not use this loop for its time advance. At each physical step, $R$ is integrated by $\partial_t R+\mathbf v_S\cdot\nabla_S R=v_r$. The velocity is given by the modal-momentum transport and the mass recovery of Chapter 9, and the geometric subproblem acts as a constraint correction. Its error budget is $E_{\rm total}^{\rm dyn}$ of Section 9.8.
-
-The closed loop of the quasi-static route is
+**The dynamic free-surface mode** does not use this loop. In its star-shaped setting (Section 9.0), $R$ is integrated by $\partial_tR+\mathbf v_S\cdot\nabla_SR=v_r$, the velocity comes from Chapter 9, the geometric subproblem is a constraint correction, and the error budget is $E^{\rm dyn}_{\rm total}$ (Section 9.8). The quasi-static loop is
 
 $$
 \boxed{
 \omega(t_n)
 \xrightarrow{\text{RTFP forward evaluation}}
 (\mathbf g_{\rm eff},\mathbf T_{\rm tide})
-\xrightarrow{\text{Stokes–Poisson Picard}}
+\xrightarrow{\text{Stokes–Poisson primal–dual}}
 (\mathbf u,p;\ \boldsymbol\sigma)
 \xrightarrow{F_\delta,\ \mathcal U_{\rm core},\ s_f}
 (\chi_Y,\pi,\mathbf v_{\rm sl},J)
 \xrightarrow{\Delta t_n}
 \big(d_{\mathrm{pred}},\ \theta^{\rm pred}\big)
-\xrightarrow{\mathrm{Metal-PDHG}\ \text{elastic SOCP}\ (\rho_{\rm cand})}
+\xrightarrow{\mathrm{PDHG}\ \text{elastic SOCP}\ (\rho_{\rm cand})}
 d_*^{(n)}
 \xrightarrow{\text{update}+\text{core closure}+\text{realignment}}
-\big(R^{(n+1)},\theta^{(n+1)}\big).
+\big(\mathbf X^{(n+1)},\theta^{(n+1)}\big).
 }
 $$
 
-The loop contains only one stress field $\boldsymbol\sigma$. The velocity is resolved implicitly at every step. The spin is prescribed exogenously. The geometry changes only on the movable set (yielded, sliding, or promoted vertices), and the density cores move only with the yielded or sliding material (Section 9.10). The interface $W_0/R_{\mathrm{eq}}$ of Mode A does not enter this loop. Its interface comments must be retained, so that a future explicit fluid simulation can call them. They must not be deleted by mistake in an implementation.
+It has one stress and an implicitly resolved velocity at every step, with an exogenous spin. The geometry changes only on the movable set (yielded, sliding, or promoted vertices), and the cores move only with yielded or sliding material. The Mode A interface $W_0/R_{\rm eq}$ is not in the loop; it is kept only as a defined interface for a fluid model.
+
+### 10.4.5 Optional variants: the fused conic program and gravity feedback
+
+Both variants reuse the operators of Sections 10.4.2–10.4.3. Neither is part of the reference loop of Section 10.4.4.
+
+**Fused program (minimizing movement).** The split route (Stokes, then $d_{\rm pred}$, then the cone) can be fused into one convex program per step:
+
+$$
+\min_{\mathbf u\in\mathbb K,\,d}\ \Delta t_n\,J(\mathbf u)+\sum_i\frac{\kappa_i}2\big(d_i-\Delta t_n\,\mathbf v_i(\mathbf u)\cdot\mathbf N_i-\Delta h^*_{C,i}\big)^2+\varrho\sum_ft_f+\varrho_M|\sigma_M|
+$$
+
+subject to the slope cones, anti-overhang, mass, clearance, and trust-box rows of Section 2.13 in $d$. It is convex: $J$ is convex at frozen pressure, the coupling is a convex quadratic, and the rows are conic or linear. The tie stiffness $\kappa_i$ (force per length, so every term is an energy) controls the closure:
+
+- $\kappa_i\to\infty$ gives $d_i=\Delta t_n\mathbf v_i\cdot\mathbf N_i+\Delta h^*_{C,i}$;
+- $\kappa_i=0$ on promoted vertices leaves the relief free.
+
+The slope multipliers act on $\mathbf u$ as nodal normal tractions, giving a slope-constrained creep in which relief and flow see each other within one step. This is a different closure from (B3)–(B4): $\chi_Y$ locking is replaced by exact Bingham rigidity, and the core motion is fixed by the gauge $\mathbb K$ rather than subtracted as $\mathbf v_{\rm sl}$. Its relation to (B3)–(B4) is open (PO-20). The fused program has the form of the cone program of Section 2.13 plus the nodal ball prox of Section 10.4.2:
+
+- primal: $(\mathbf u,d)$;
+- duals: $\boldsymbol\varsigma_i$, the face cone duals, the mass dual, and the box multipliers;
+- operators: $\mathbf e$ (a ray pass), the trace $\mathbf u\mapsto(\mathbf v(\mathbf X_i)\cdot\mathbf N_i)$, the sparse face-normal Jacobian, and $D\mathcal M$.
+
+**Gravity feedback.** Section 2.13 freezes $\mathbf g$ and ignores $D\mathbf g\cdot d$. The first variation $\delta\mathbf g(\mathbf x)=G\oint_\Gamma\rho_K\delta_n(\mathbf y)(\mathbf y-\mathbf x)|\mathbf y-\mathbf x|^{-3}dS$ is linear in $d$. For $\rho_b$ it is the vertex derivative of the closed-form field of Section 3.9, available on the face tree of Section 3.10. Linearizing $\mathbf g\times\widehat{\mathbf n}$ and $|\mathbf g|$ in both factors keeps the slope rows conic, which turns the frozen-$\mathbf g$ step into a Gauss–Newton step at one face-tree evaluation per linearization, in the split route and in the fused program alike. It matters when a slide moves enough mass to change its own gravity.
 
 ---
 
 ## 10.5 Computational realization: dependency graph, GPU and ray-tracing residency, and ECS organization
 
-This section fixes how the loop of Section 10.4.4 is executed efficiently. Like Section 3.15, it changes no computed value. Every reorganization below either reuses an exactly unchanged intermediate result or reorders independent work.
+Like Section 3.15, this changes no computed value; it only reuses unchanged results or reorders independent work.
 
 ### 10.5.1 Data dependencies of one geological step
 
 | Stage (10.4.4) | Reads | Writes | Device | Independent of |
 |---|---|---|---|---|
 | 1 gravity | mesh, AS, segment table $\mathcal T$, $\theta$, point sets | $U,\nabla U,H$ on all point sets | RT units + compute (Section 3.15) | — |
-| 2 Picard | fields of 1, $\theta$, mesh | $\mathbf u,p,\eta,\boldsymbol\lambda$ | compute (matrix-free block PCG, Section 8.4) | — |
+| 2 primal–dual | fields of 1, $\theta$, mesh, $\mathbf P$ | $\mathbf u,p,\boldsymbol\varsigma,\boldsymbol\lambda$ | compute (Section 10.5.6) | — |
 | 3 yield | $\mathbf u,p$ | $F_\delta$, $\chi_Y$, $\mathbf v_{\rm sl}$, core fit | compute; graph components on CPU | — |
-| 4 friction chain | $\mathbf u$, $p$, fields | $\phi_i$ | compute | 5, 5b |
-| 5 Mode C | $F_\delta$, $\chi_Y$, $\rho_s$ | $J_{\rm ero},J_{\rm dep}$ | compute | 4, 5b |
-| 5b core prediction | $\mathbf v_{\rm sl}$, $\chi_Y$, $\theta$ | $\theta^{\rm pred}$ | CPU or compute ($K$ items) | 4, 5 |
-| 6 step size | extrema of 3–5b | $\Delta t_n$ | reductions | — |
+| 4 friction chain | $\mathbf u$, $p$, fields | $\phi_i$ | compute | 5 |
+| 5 Mode C | $F_\delta$, $\chi_Y$, $\rho_s$ | $J_{\rm ero},J_{\rm dep}$ | compute | 4 |
+| 6 step size | extrema of 3–5, $\nabla\mathbf v_{\rm adv}(\mathbf c_k)$ | $\Delta t_n$ | reductions | — |
+| 6b core prediction | $\mathbf v_{\rm sl}$, $\chi_Y$, $\theta$, $\Delta t_n$ | $\theta^{\rm pred}$ (may shorten $\Delta t_n$) | CPU or compute ($K$ items) | — |
 | 7 SOCP | $d_{\rm pred}$, $\phi$, $\rho_{\rm cand}$ | $d_*$ | CPU (or GPU first-order solver) | — |
 | 8a geometry | $d_*$ | mesh, $\rho_s$ | compute | — |
 | 8a′ AS refit and dirty test | old and new mesh, $\mathcal T$ | dirty-ray list | RT units | 8c |
 | 8c core closure | new mesh, $\theta^{\rm pred}$, $\theta^{(n)}$, $\mathbf v_{\rm adv}$ | $\theta^{(n+1)}$ | compute (reductions) | 8a′ |
-| 8b realignment (if triggered) | mesh, $\theta^{(n+1)}$ | mesh, $\theta$, $\rho_s$ | compute + RT (radial resampling) | — |
+| 8b realignment (if triggered) | mesh, $\theta^{(n+1)}$ | mesh, $\theta$ | compute (volume and inertia integrals) | — |
 
-The last column lists stages that read the same inputs and write disjoint data. They may run concurrently. The critical path of a step is 1 → 2 → 3 → 6 → 7 → 8a → (8a′ ∥ 8c) → 1, with 2 (the Picard rounds) dominant. The mass integral needed by 8c and by the acceptance test of 8a does not need ray traversal: on the star-shaped domain, $\mathcal M=\int_{S^2}\int_0^{R(\hat{\boldsymbol\omega})}\rho_K r^2\,dr\,d\Omega$ is evaluated by the radial Gauss–Jacobi rule on the nodal directions.
+Stages in the last column read the same inputs and write disjoint data, so they may run concurrently. The critical path is 1 → 2 → 3 → 6 → 6b → 7 → 8a → (8a′ ∥ 8c) → 1, dominated by 2. The mass integral of 8c and 8a needs no new traversal: it is the exact surface formula of Proposition 8.15 for $\rho_b$ plus the ray-segment rule (G2) for the cores, with the segments from $O$ reused until the geometry changes.
 
 ### 10.5.2 Residency and transfers
 
-Every per-point and per-node array lives in device memory for the whole run: the mesh radii, the acceleration structure, the segment table, the point sets, the fields, the modal coefficients, $\eta$ and $\tilde p$ at the quadrature points, $\chi_Y$, $\rho_s$, and the core parameters. Only *reductions* are read back to the host: norms and inner products of the PCG, the $6\times6$ and $7\times7$ Gram matrices of the range-space method, the extrema for $\Delta t_n$, the Gauss–Newton normal matrix of size $p\times p$, the integrals $\mathcal M$, $\mathbf x_{\rm cm}$, $\mathbf I$, and the data of the SOCP restricted to the movable set. The connected-component computation of step 3 needs only $\chi$ on the graph, one byte per point. The work of one stage is recorded into one command submission.
+All per-point and per-node arrays stay in device memory for the run: mesh, acceleration structure, segment table, point sets, fields, modal coefficients, $\eta$ and $\tilde p$ at the nodes, $\chi_Y$, $\rho_s$, and the cores. Only *reductions* return to the host:
+
+- the primal–dual residuals, gap, and inner products;
+- the $6\times6$ and $7\times7$ range-space Gram matrices;
+- the extrema for $\Delta t_n$;
+- the Gauss–Newton matrix;
+- $\mathcal M$, $\mathbf x_{\rm cm}$, and $\mathbf I$;
+- the SOCP data on $\mathcal A$.
+
+The components of step 3 need only one byte of $\chi$ per point. Each stage is one command submission.
 
 ### 10.5.3 Precision policy
 
@@ -8600,104 +4987,169 @@ Every per-point and per-node array lives in device memory for the whole run: the
 |---|---|---|
 | traversal, candidate hits | single precision on RT units | selects triangles only |
 | hit distances, $b_k,d_k$, radial integrals | double, or double-float, after hit refinement (3.15.4) | endpoints enter every integral |
-| accumulation of $U,\nabla U,H$ (six components) | double, or compensated single, with a fixed reduction order | reproducibility; finite-part cancellations |
-| matrix-free Stokes operator inside PCG | single or matrix hardware allowed | iteration only |
-| PCG vectors, residuals of criteria (a)(b), $\boldsymbol\lambda$ | double | acceptance decisions |
+| accumulation of $U,\nabla U,H$ (six components) | double, or compensated single, fixed reduction order | reproducibility; finite-part cancellations |
+| strain synthesis, prox, and moment accumulation inside the primal–dual iteration | single (radii scaled by $R_*$) or matrix hardware allowed | iteration only |
+| primal iterate, $\mathbf P$ factor, residuals of (a)(b), $\boldsymbol\lambda$ | double | acceptance decisions |
 | core parameters, $\mathbf F_k$, Gauss–Newton solve | double | $K$ is small |
-
-*Implemented precision.* The implementation departs from the table in the gravity kernels and in the Stokes solve:
-
-| Quantity | Implemented arithmetic |
-|---|---|
-| traversal and hit distances | single precision, unit frame of the body, no hit refinement |
-| $b_k$, $d_k$, radial integrals | single precision; the $\alpha=1$ antiderivatives are evaluated in double-single from single-precision $b_k,d_k$ |
-| accumulation of $U,\nabla U,H$ | double-single per field point; the uniform part flushes single-precision partial sums every eight terms |
-| Stokes operator, pressure Poisson problem, range-space solve | double precision on the CPU, assembled densely and factored by Cholesky |
-| Metal-PDHG iteration | double precision on the CPU, the same primal, dual, cone and ergodic-average steps as the GPU kernels; `AE_PDHG=gpu` runs those kernels in double-single instead. The acceptance residuals are computed in double either way |
-| core parameters, $\mathbf F_k$, Gauss–Newton solve | double |
-
-The single-precision radial integrals limit the relative accuracy of the density-difference part of the field to about $10^{-6}$; a uniform body does not use them.
 
 ### 10.5.4 Organization in an entity–component–system architecture
 
-The loop maps onto an ECS with the following rules. The rules concern data layout and scheduling only.
+The rules below concern data layout and scheduling only.
 
-1. **Coarse entities.** One entity for the body, carrying the mesh (radii, fixed directions, fixed connectivity), the surface fields, the modal state, the frame state, and the core set $\theta$ as components. One entity per point-set role (surface nodes, face centres, $\mathcal X_{\rm vol}$, $\mathcal X_Y$), carrying its points, its requested field mask, its results, and its segment table. Points, nodes, triangles, and cores are **never** individual entities. Each component holds structure-of-arrays storage that is laid out exactly as the corresponding device buffer, so an upload is a copy without repacking and accesses are coalesced.
-2. **Systems are the stages of 10.5.1,** each declaring its read and write sets. The scheduler derives the concurrency of the last column of 10.5.1 from the absence of write conflicts. No ordering beyond the data dependencies is imposed.
-3. **Change detection drives invalidation.** A system that writes the mesh marks the changed directions; the gravity system then retraces only the rays of Proposition 3.15.2. A system that writes $\theta$ but not the mesh triggers only passes W3–W4. A pure change of the weights by a common factor (Level 1) triggers only a scaling of the stored fields. A change of $K$ (Level 3) invalidates the per-kernel partial sums, not the segment table. A realignment 8b invalidates everything. Change detection is thus the mechanism that realizes Propositions 3.15.1 and 3.15.2.
-4. **Long stages are asynchronous tasks** (Picard, SOCP, the GPU submissions). Their results are written back into the components when the task completes, so that a viewer or a recorder reading the same world sees only states at step boundaries.
-5. **Determinism switch.** With fixed reduction trees (W4, PCG inner products, Gauss–Newton assembly), two runs on the same device are bitwise identical. Regression tests run in this mode.
+1. **Coarse entities.** One entity is the body: mesh (vertices, fixed connectivity), surface fields, modal state, frame state, and cores $\theta$. One entity per point-set role (surface nodes, face centres, $\mathcal X_{\rm vol}$, $\mathcal X_Y$) holds its points, field mask, results, and segment table. Points, nodes, triangles, and cores are **never** entities. Components hold structure-of-arrays storage laid out exactly as the device buffers, so uploads are copies and accesses are coalesced.
+2. **Systems are the stages of 10.5.1,** each declaring its read and write sets. The scheduler derives the concurrency of 10.5.1 from the absence of write conflicts, with no further ordering.
+3. **Change detection drives invalidation.** This is what realizes Propositions 3.15.1–3.15.2:
+   - a mesh write marks changed directions, and only the rays of Proposition 3.15.2 are retraced;
+   - a $\theta$-only write triggers W3–W4;
+   - a common weight factor (Level 1) scales only the stored per-kernel parts, on an unchanged geometry;
+   - a change of $K$ invalidates the per-kernel partial sums;
+   - a realignment invalidates everything.
+4. **Long stages are asynchronous tasks** (Picard, SOCP, GPU submissions). Results are written back at completion, so readers see only step-boundary states.
+5. **Determinism switch.** With fixed reduction trees (W4, the reductions of PK3, Gauss–Newton assembly), runs on one device are bitwise identical.
 
 ### 10.5.5 Cost per geological step
 
-With $N_{\rm pic}$ Picard rounds, $N_{\rm it}$ block-PCG iterations per round, and the quantities of Sections 3.13 and 3.15.6,
-
 $$
-C_{\rm step}\approx C_{\rm grav}+N_{\rm pic}\Big[C_{\rm Poisson}+N_{\rm it}\,c\,n_fN_rL_{\max}^3\Big]+C_{\rm yield}+C_{\rm SOCP}(|\mathcal A|)+C_{\rm core}+C_{\rm run},
+C_{\rm step}\approx C_{\rm grav}+N_{\rm pd}\,C_{\rm pd}+\frac{N_{\rm pd}}{N_p}\,C_{\rm Poisson}+C_{\rm yield}+C_{\rm SOCP}(|\mathcal A|)+C_{\rm core}+C_{\rm run},
 \qquad
 C_{\rm core}=O(K)+N_{\rm GN}\,O(N_qp^2),
 \qquad
 C_{\rm run}=O\big(N_{\rm src}\,\bar N_\tau\big),
 $$
 
-Here $N_{\rm src}$ is the number of eroding nodes and of relieved slope vertices, and $\bar N_\tau$ the mean number of runout substeps (Section 2.8b); each substep is a constant-time face lookup, and the packets are independent. The relief routing adds, on geometry steps only, one warm-started second solve of the subproblem.
+with $N_{\rm pd}$ primal–dual iterations of cost $C_{\rm pd}$ each (Section 10.5.6), a pressure update every $N_p$ of them, $N_{\rm src}$ eroding nodes and relieved vertices, and $\bar N_\tau$ mean runout substeps, each a constant-time face lookup. Relief routing adds one warm-started second solve on geometry steps. Against a full rebuild, full retrace, and assembled $\mathbf K(\eta)$ per round, the dominant terms fall:
 
-Compared with an implementation that rebuilds the hierarchy, retraces every ray, and assembles $\mathbf K(\eta)$ at every Picard round, the dominant terms are reduced from $O(N_xN_\Omega(\log F+\bar L))$ traversals to the dirty fraction of Proposition 3.15.2 (zero in stage equilibrium and for density-only updates), and from $O(N_qN_u^2)=O(N_rL_{\max}^6)$ to $O(n_fN_rL_{\max}^3)$ per operator application. These are planning estimates under the hypotheses stated, not runtime certificates.
+- traversal goes from $O(N_xN_\Omega(\log F+\bar L))$ to the dirty fraction, which is zero in equilibrium and for density-only updates;
+- each velocity-operator application goes from an assembled $O(N_qN_u^2)$ to the $O(N_\Omega\bar L(m_{\max}+1)N_u+N_{\rm nodes}m_{\max})$ of Section 10.5.6, with no $N_{\rm nodes}\times N_u$ matrix.
+
+These are planning estimates.
+
+### 10.5.6 Kernels of the primal–dual iteration
+
+The organization follows Section 3.15.5, and it is where RTFP and the rheology meet:
+
+1. **One traversal.** The volume nodes are the segments of the RTFP rays from $O$, with the same pipeline and dirty test.
+2. **One factorization.** Direction tensors times radial moments: $T(\mathbf u_q)$ and $s_k(\mathbf u_q)$ times $I_U,I_g,I_H$ for gravity, and $\mathbb A_m(\hat{\boldsymbol\omega}_q)$ times moments of $\boldsymbol\varsigma$ for rheology.
+3. **One antiderivative family.** Density-weighted operators use the RTFP radial integrals with polynomial prefactors (Proposition 8.14).
+4. **Loads as surface fluxes** of RTFP face fields (Proposition 8.16).
+5. **Incremental reuse** of the operators and of the dual state on clean rays.
+
+**Geometric stage** (once per geometry; ray-tracing hardware):
+
+| Pass | Work item | Content |
+|---|---|---|
+| GP1 | ray from $O$ | direction-major, antipodal pairing; segment table $\mathcal T_O$ of the volume nodes; dirty test (Proposition 3.15.2) |
+| GP2 | vertex | first-hit rays along $\pm\mathbf N_i$: clearances $t_i^\pm$ and the classification probes (G4, G7) |
+| GP3 | field point | the fused RTFP kernel at face centres; scalar $W$ at the volume nodes |
+| GP4 | face | exact $\eta$-free matrices (Proposition 8.15) or ray moments (Proposition 8.14); Cholesky of $\mathbf P$ (one workgroup) |
+
+*Reuse.* Since $\mathbf P=\sum_q\mathbf P_q+\gamma_{\rm AL}\mathbf B_{\rm rb}^{\!\top}\mathbf B_{\rm rb}$, a geometric update is $\mathbf P\leftarrow\mathbf P+\sum_{q\ \rm dirty}(\mathbf P_q'-\mathbf P_q)$ plus the updated rigid term, followed by an $N_u^3$ refactorization. The dual state on clean rays is kept exactly, a warm start that is exact wherever the geometry is unchanged.
+
+**Parameter stage** (each iteration; no traversal):
+
+| Kernel | Work item | Content |
+|---|---|---|
+| PK1 | ray $q$ and all its nodes | with $\mathbb A_{\alpha m}(\hat{\boldsymbol\omega}_q)$ in shared memory and $\bar{\mathbf u}$ broadcast, form the $5(m_{\max}+1)$ coefficients of $\mathbf e(r\hat{\boldsymbol\omega}_q)=\sum_mr^m(\mathbb A_m\bar{\mathbf u})$ once per ray; per node: Horner, $\tilde p$ likewise, prox, write $\boldsymbol\varsigma_i$ (5 values), accumulate $\boldsymbol\mu_{q,m}=\sum_iw_ir_i^m\boldsymbol\varsigma_i$ |
+| PK2 | ray $q$ | $(\mathbf e^{\!\top}\boldsymbol\varsigma)_q=\sum_m\mathbb A_m^{\!\top}\boldsymbol\mu_{q,m}$ into $N_u$ partial sums; volume part of the pressure right-hand side from the same moments |
+| PK3 | one workgroup | fixed-order reduction over rays; $\mathbf P^{-1}$, rigid projection, extrapolation, gap and residuals; every $N_p$ iterations the Nitsche solve (with its boundary terms) and the update of $\phi_i$ |
+
+The fused variant of Section 10.4.5 adds the face kernels (cone prox) and vertex kernels (box prox, trace) of the cone program. *Cost.* One iteration takes about
+
+$$
+2\,N_\Omega\bar L\cdot5(m_{\max}+1)N_u\ +\ N_{\rm nodes}\cdot\big(10(m_{\max}+1)+c_{\rm prox}\big)
+$$
+
+operations ($\bar L$ segments per ray), linear in the node count with a small constant, so radial resolution is cheap. Assembling $\mathbf K(\eta)$ instead costs $O(N_{\rm nodes}N_u^2)$ per sweep. Memory is $5$ values per node and $5(m_{\max}+1)$ per ray, with no $N_{\rm nodes}\times N_u$ matrix. Radii are scaled by $R_*$, so the powers stay in single-precision range, and reductions follow Section 10.5.3.
 
 ---
 
 # 11. Conclusion
 
-This paper gives a closed loop whose core is the quasi-static viscoplastic Stokes equilibrium of Mode B, with local yield-driven erosion and deposition of Mode C as an auxiliary process. The loop couples the gravity of a Cauchy density, a variable-density poloidal–toroidal double-potential flow, conservative transport on the surface, and an incremental SOCP. Exterior fields are cross-checked by a Feynman parametrization and by the Newtonian representation. Interior and boundary Hessians are defined explicitly by the finite-part and contact conventions. Mechanically there is only one stress field, $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$. At each geological step, under the exogenously prescribed spin $\omega(t_n)$, the quasi-static Stokes system (8.4′) is solved implicitly in an exactly divergence-free shifted Jacobi–spherical-harmonic double-potential basis. The pressure is given by an independent scalar Poisson problem. The two are closed by a Picard iteration. On that same stress, the yield function $F_\delta$ with its tolerance, together with connectivity of the unyielded region, partitions the body into a rigid core and a movable set. Topography on the core receives no creep displacement. Only the yielded region and the sliding blocks produce a creep prediction, from the slip velocity relative to the core. The loose layer is in addition relieved toward its angle of repose by slope promotion (hypothesis A-C4); in the bundled runs of Ryugu, Phobos, and Deimos it is the only mechanism that moves the surface, because the regularized creep never crosses the yield threshold. Metal-PDHG corrects only that predicted increment, with the current shape as the reference, and never takes an equipotential as its target. The geological step is limited only by the geometric CFL of the true landslide speed and by the erosional flux. There is no viscous-diffusion stiffness. Track A (a global solve) is the reference. Track B (a spherical-harmonic block-diagonal surrogate) is used only as a preconditioner, or as an approximation that carries an a-posteriori residual. Mode A is retained only as an explicitly marked interface for a future fluid simulation. The density obeys the material transport implied by incompressibility: every Cauchy core is a material component whose centre, value, and metric are transported exactly to second order by the masked slip velocity, followed by an exact mass closure and an adaptive least-squares refit with an a-posteriori misfit $e_\rho$ that bounds the resulting gravity defect. Gravity is re-evaluated by reusing ray-segment tables and retracing only the rays that a geometric update can affect, and the Stokes operator is applied matrix-free.
+The paper gives a closed loop whose core is the Mode B quasi-static viscoplastic Stokes equilibrium, with Mode C erosion and deposition as an auxiliary process. It couples:
 
-The rigour of the model depends on positive pressure, on integrability, on the finite-part convention, on the radial modal truncation, and on constitutive regularization. Numerical results at $K=4$ should be checked for convergence against a higher-order radial basis and against a three-dimensional reference solution. The bundled configurations use $L_{\max}=2$ and 96 volume points (Section 8.4), so their stress fields are resolution-limited, and their slide durations depend on the trust radius and on $\Delta t_{\max}$ (Section 2.8c). The framework therefore provides an implementable reduced model whose error budget can be built term by term. It is not an unconditional closed-form equivalent of the three-dimensional problem.
+- the gravity of a Cauchy density;
+- a variable-density poloidal–toroidal flow;
+- conservative surface transport;
+- an incremental SOCP.
+
+**Gravity.** Exterior fields are cross-checked by the Feynman and Newtonian representations. Interior and boundary Hessians are defined by explicit finite-part and contact conventions.
+
+**Rheology.** There is one stress, $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+2\eta\mathbf D$. At each step, under the prescribed spin, (8.4′) is solved implicitly in an exactly divergence-free shifted-Jacobi–spherical-harmonic basis. The pressure comes from an independent Poisson problem. At frozen pressure the velocity is the minimizer of a convex functional (Proposition 2.17.1), computed by a ray-structured primal–dual iteration whose step condition is independent of the viscosity contrast; the pressure is updated inside that iteration (Section 10.4.2). On the same stress, $F_\delta$ and connectivity split the body into a rigid core and a movable set. The core gets no creep displacement, and only yielded and sliding regions produce a prediction, from the slip velocity relative to the core.
+
+**Surface.** Slope promotion (A-C4) relieves the loose layer toward repose. Where the truncated Stokes solve yields no surface node, it is the only mechanism that moves the surface, because shallow failure lies below that solve's resolution (Section 2.8, B2). The cone program corrects only predicted normal increments, relative to the current shape, never toward an equipotential. The step is limited by the CFL of the true landslide speed and by the erosional flux, with no viscous stiffness.
+
+**Discretization and geometry.**
+
+- Track A is the reference. Track B is only a preconditioner or a residual-carrying approximation.
+- Mode A is a marked interface only.
+- The density obeys the material transport of incompressibility: each core is transported exactly to second order, then mass-closed and adaptively refitted with a misfit $e_\rho$ that bounds the gravity defect.
+- The geometry is a general polyhedron of any genus, possibly with cavities and with the centre of mass outside the body (Section 8.0). The velocity basis lives on the enclosing ball, volume integrals follow ray segments, the pressure datum is imposed by Nitsche's method, and the surface moves by normal increments with clearance rows. Star-shaped formulas are a special case only.
+- Segment-table reuse, incremental retracing, and the matrix-free Stokes operator reduce the cost without changing any value (Sections 3.15, 8.4).
+
+Rigour rests on:
+
+- positive pressure and integrability;
+- the finite-part convention;
+- the radial truncation;
+- the constitutive regularization.
+
+Results at $K=4$ should be checked against a higher-order radial basis and a three-dimensional reference. A small $L_{\max}$ and a coarse volume rule make the stress field resolution-limited (Section 8.4), and slide durations depend on the trust radius and $\Delta t_{\max}$ (Section 2.8c). The framework is an implementable reduced model with a term-by-term error budget, not an unconditional closed-form equivalent of the three-dimensional problem.
 
 # Appendix A. Normative conventions and the register of proof obligations (single source of truth)
 
-This appendix is the normative convention for Chapters 5–10. It replaces a contract file that once stood alone. The words “must” and “must not” are mandatory. Chapters 1–4 are inputs to this appendix and are only cited. Every conclusion marked “theorem” must name the proof obligation (A.5) on which it depends. What has not been proved may be called only a “hypothesis” or a “numerical observation”.
+This appendix is the normative convention for Chapters 5–10; Chapters 1–4 are its inputs. "Must" and "must not" are mandatory. Every conclusion called a "theorem" must name the proof obligation (A.5) it depends on. Anything unproved may be called only a "hypothesis" or a "numerical observation".
 
 ## A.1 Glossary for disambiguation
 
-The basic unknowns of the quasi-static route are $(\mathbf v,p,R)$, together with the surface density $\rho_s$ of Mode C. The density $\rho_K$ is frozen within each geological step and advanced between steps by the Lagrangian core transport of Section 9.10 (hypothesis A-ρL, PO-14, PO-15); the frozen option (hypothesis A-ρ) serves only for regression. The spin $\omega(t)$ is prescribed exogenously (Section 10.4.1).
+The quasi-static unknowns are $(\mathbf v,p,\Gamma)$ ($\Gamma$ given by its vertices $\mathbf X_i$) and the surface density $\rho_s$. $\rho_K$ is frozen within a step and advanced between steps by Section 9.10 (A-ρL, PO-14, PO-15); the frozen-density variant A-ρ serves only for comparison. The spin is exogenous (Section 10.4.1).
 
 | Symbol | Meaning | Dimension / convention |
 |---|---|---|
 | $\mathbf x,\ r,\ \mathbf e_r$ | position in the rotating frame (origin at the centre of mass), radial coordinate, and unit vector | L; $\boldsymbol\Omega=\omega\mathbf e_z$ |
-| $\hat{\boldsymbol\omega}=(\theta,\varphi)\in S^2$ | direction (**always written $\hat{\boldsymbol\omega}$**, so that it is not confused with the angular speed $\omega$) | 1 |
-| $R(\hat{\boldsymbol\omega},t)$, $\zeta=r/R$ | star-shaped boundary radius, normalized radius | L, 1; $0<R_{\min}\le R\le R_{\max}$ |
-| $\mathcal V(R)$, $\Gamma=\partial\mathcal V$, $\mathbf n$ | material domain, free surface, outward normal | $\mathbf n\cdot\mathbf e_r\ge c_0>0$ |
-| $\ell,m,k$ | spherical-harmonic degree and order (velocity only for $\ell\ge 1$); radial mode $k=0..3$ ($K=4$) | 1 |
-| $\Lambda_\ell=\ell(\ell+1)$, $L^2=-\Delta_{S^2}$ | eigenvalue of the spherical Laplacian, and the squared angular momentum | 1 |
-| $\mathbf v,\ p$ | velocity, and pressure $p=-\operatorname{tr}\boldsymbol\sigma/3$ | L T⁻¹; M L⁻¹ T⁻² |
-| $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+\boldsymbol\tau_{\rm flow}$ | Cauchy stress (**bold**, to be distinguished from the kernel width $\sigma_k$) | M L⁻¹ T⁻² |
-| $\Phi,\Psi$; $q_{\ell km},s_{\ell km}$ | poloidal and toroidal potentials, and their modal coefficients | L² T⁻¹, L T⁻¹; coefficients T⁻¹ |
-| $\mathbf u=(\mathbf q,\mathbf s)$ | vector of velocity degrees of freedom, $N_u=8N_{\ell m}$, $N_{\ell m}=\#\{(\ell,m):1\le\ell\le L_{\max}\}$ | T⁻¹ |
-| $\mathbf M_\Gamma$, $\mathbf m=\mathbf M_\Gamma\mathbf u$ | global kinetic-energy mass operator, and the conserved modal variable (dynamic mode only) | $\sim\rho R^5$ |
-| $\mathbf K(\eta)$, $\mathbf F$ | quasi-static viscous stiffness and load (8.4′) | $\sim\eta R^3$; $\sim\rho g R^4$ |
-| $\eta,\ \tilde p$ | regularized viscosity, and the unique regularized pressure $\max([p]_+,p_{\min})$ | M L⁻¹ T⁻¹; M L⁻¹ T⁻² |
-| $X(a')$; $N$; $\kappa_v$ | arrival point of the packet eroded at $a'$; normal reaction per unit mass; normal curvature of $\Gamma$ along $\mathbf v$ (Section 2.8b, hypothesis A-C3) | L; L T⁻²; L⁻¹ |
-| $\boldsymbol\Omega=\omega_n\mathbf e_z$; $\mathrm{Ro}$ | angular velocity of the body frame; Rossby number $U/(2\Omega L)$ of a runout (Section 2.8b) | T⁻¹; 1 |
-| $r_i$, $m_i$, $\delta_j$ | radial thickness and mass the slope relief removes from vertex $i$, and the routed radial deposit at vertex $j$ (Section 2.8b, second part) | L; M; L |
-| $T_{\rm run}$, $\epsilon_{\rm stop}$, $v_{\rm stop}$ | runout time limit, stopping fraction, and stopping speed $\epsilon_{\rm stop}\sqrt{|\mathbf g_{\rm eff}|h_s}$ (Section 2.8b) | T; 1; L T⁻¹ |
-| $c(\mathbf x)$; $c_b,\ c_s,\ h_c$; $d$ | two-layer cohesion; interior and surface cohesion and transition depth; depth $R(\hat{\boldsymbol\omega})-r$ below $\Gamma$ (Section 4.3a, hypothesis A-C2) | M L⁻¹ T⁻²; L |
-| $\tau_y,\ F,\ F_\delta,\ \delta_Y$ | static strength $c(\mathbf x)+\mu_y\tilde p$, yield function, yield function with tolerance, and the tolerance (Section 2.8, B2) | M L⁻¹ T⁻²; $\delta_Y$ dimensionless |
-| $\mathcal U_{\rm core}$, $\chi_{Y,i}$, $\mathcal L,\mathcal D,\mathcal A$ | rigid core, movability indicator, and the locked, pure-deposition, and movable nodal sets (Section 2.8, B3–B4) | — |
-| $\pi_i$, $\tilde\chi_i$, $s_f$, $\tau_s$ | slope-promotion indicator, geometric movability $\max(\chi_{Y,i},\pi_i)$, repose slack of face $f$, and its tolerance `relief.tol_slack` (Section 2.8c, hypothesis A-C4) | —; 1 |
-| $\rho_b$ | constant matrix density `density.bulk` (Section 1.1) | M L⁻³ |
-| $\mathbf v_{\rm sl}$ | slip velocity relative to the rigid core, $\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x$ | L T⁻¹ |
-| $\omega(t)$, $\omega_n$ | exogenously prescribed spin table, and the value frozen at step $n$ (Section 10.4.1) | T⁻¹ |
-| $\theta=\{w_k,\mathbf c_k,\mathbf S_k,\alpha_k\}$ | parameters of the Cauchy cores: weight, centre, metric ($\mathbf S_k=\sigma_k^2\mathbf I$ if isotropic), exponent (Sections 1.1, 9.10) | M L⁻³, L, L⁻², 1 |
-| $\mathbf v_{\rm adv}=\chi_Y\mathbf v_{\rm sl}$, $\tau_n=\lambda\Delta t_n$ | advection velocity of the density, and the transport step (Section 9.10.2) | L T⁻¹, T |
+| $\hat{\boldsymbol\omega}=(\theta,\varphi)\in S^2$ | direction (**always written $\hat{\boldsymbol\omega}$**, not to be confused with the spin $\omega$) | 1 |
+| $R_*$, $B_*$, $\zeta=r/R_*$ | radius $\max_\Gamma|\mathbf x|$ of the enclosing ball $B_*$ and the normalized radius of the basis (Section 8.0); in the star-shaped special case $R(\hat{\boldsymbol\omega},t)$ and $\zeta=r/R$ | L, L³, 1 |
+| $\mathbf X_i$, $\mathbf N_i$, $\mathbf A_i$, $A_i$; $t_i^\pm$ | surface vertex, unit vertex normal, vertex vector area $\partial\,\mathrm{Vol}/\partial\mathbf X_i$, barycentric area; clearances along $\pm\mathbf N_i$ (Section 8.0, G4) | L, 1, L², L²; L |
+| $\mathcal V$, $\Gamma=\partial\mathcal V$, $\mathbf n$ | material domain (hypothesis (G)), free surface, outward normal | no sign condition on $\mathbf n\cdot\mathbf e_r$ |
+| $\ell,m,k$ | harmonic degree and order (velocity only for $\ell\ge1$); radial mode $k=0..3$ ($K=4$) | 1 |
+| $\Lambda_\ell=\ell(\ell+1)$, $L^2=-\Delta_{S^2}$ | eigenvalue of the spherical Laplacian; squared angular momentum | 1 |
+| $\mathbf v,\ p$ | velocity; pressure $p=-\operatorname{tr}\boldsymbol\sigma/3$ | L T⁻¹; M L⁻¹ T⁻² |
+| $\boldsymbol\sigma=-p\mathbf I+\mathbf T_{\rm tide}+\boldsymbol\tau_{\rm flow}$ | Cauchy stress (**bold**, distinct from the kernel width $\sigma_k$) | M L⁻¹ T⁻² |
+| $\Phi,\Psi$; $q_{\ell km},s_{\ell km}$ | poloidal and toroidal potentials and their coefficients | L² T⁻¹, L T⁻¹; T⁻¹ |
+| $\mathbf u=(\mathbf q,\mathbf s,\mathbf c)$ | velocity degrees of freedom ($\mathbf c$ the cavity flux modes, Section 8.2), $N_u=8N_{\ell m}+N_c$, $N_{\ell m}=\#\{(\ell,m):1\le\ell\le L_{\max}\}$ | T⁻¹ |
+| $\mathbf M_\Gamma$, $\mathbf m=\mathbf M_\Gamma\mathbf u$ | kinetic-energy mass operator; conserved modal variable (dynamic mode only) | $\sim\rho R^5$ |
+| $\mathbf K(\eta)$, $\mathbf F$ | quasi-static viscous stiffness and load (8.4′) | $\sim\eta R^3$; $\sim\rho gR^4$ |
+| $\eta,\ \tilde p$ | regularized viscosity; the unique regularized pressure $\max([p]_+,p_{\min})$ | M L⁻¹ T⁻¹; M L⁻¹ T⁻² |
+| $X(a')$; $N$; $\kappa_v$ | arrival point of a packet eroded at $a'$; normal reaction per unit mass; normal curvature along $\mathbf v$ (A-C3) | L; L T⁻²; L⁻¹ |
+| $\boldsymbol\Omega=\omega_n\mathbf e_z$; $\mathrm{Ro}$ | body-frame angular velocity; runout Rossby number $U/(2\Omega L)$ (Section 2.8b) | T⁻¹; 1 |
+| $r_i$, $m^{\rm rel}_i$, $\delta_j$ | thickness (radial; normal on the general route) and mass removed from vertex $i$ by the first relief solve; routed deposit at $j$ (Section 2.8b) | L; M; L |
+| $T_{\rm run}$, $\epsilon_{\rm stop}$, $v_{\rm stop}$ | runout time limit, stopping fraction, stopping speed $\epsilon_{\rm stop}\sqrt{|\mathbf g_{\rm eff}|h_s}$ | T; 1; L T⁻¹ |
+| $c(\mathbf x)$; $c_b,\ c_s,\ h_c$; $d$ | two-layer cohesion; interior and surface cohesion, transition depth; depth $\operatorname{dist}(\mathbf x,\Gamma)$ (Section 4.3a, A-C2) | M L⁻¹ T⁻²; L |
+| $\tau_y,\ F,\ F_\delta,\ \delta_Y$ | strength $c+\mu_y\tilde p$, yield function, yield function with tolerance, and the tolerance (B2) | M L⁻¹ T⁻²; 1 |
+| $\mathcal U_{\rm core}$, $\chi_{Y,i}$, $\mathcal L,\mathcal D,\mathcal A$ | rigid core, movability, locked/pure-deposition/movable sets (B3–B4) | — |
+| $\pi_i$, $\tilde\chi_i$, $s_f$, $\tau_s$ | promotion indicator, geometric movability $\max(\chi_{Y,i},\pi_i)$, repose slack of face $f$, its tolerance (A-C4) | —; 1 |
+| $\rho_b$ | constant matrix density (Section 1.1) | M L⁻³ |
+| $\mathbf v_{\rm sl}$ | slip velocity relative to the core, $\mathbf v-\mathbf a_c-\boldsymbol\theta_c\times\mathbf x$ | L T⁻¹ |
+| $\omega(t)$, $\omega_n$ | prescribed spin table; its value frozen at step $n$ | T⁻¹ |
+| $\theta=\{w_k,\mathbf c_k,\mathbf S_k,\alpha_k\}$ | core weight, centre, metric ($\sigma_k^2\mathbf I$ if isotropic), exponent (Sections 1.1, 9.10) | M L⁻³, L, L⁻², 1 |
+| $\mathbf v_{\rm adv}=\chi_Y\mathbf v_{\rm sl}$, $\tau_n=\lambda\Delta t_n$ | density advection velocity; transport step (Section 9.10.2) | L T⁻¹, T |
 | $\mathbf F_k$, $\xi_n$, $e_{\rho,n}$ | deformation gradient at core $k$, mass-closure factor, relative density misfit (Section 9.10) | 1 |
 | $\mathcal T$ | segment table of the ray geometry (Section 3.15) | — |
+| $\boldsymbol\varsigma_i$, $\mathbf e_i$, $L^*$ | dual flow stress and strain-rate sample at a volume node; frozen-pressure limit-load multiplier (Sections 2.17, 10.4.2) | M L⁻¹ T⁻², T⁻¹, 1 |
 
-Time notation: $t_n$ is geological time, $\Delta t_n$ is the geological step (Section 10.4.1), and $t_{n+1}=t_n+\lambda\Delta t_n$. The Picard index $k$ does not represent time. This paper does not use a pseudo-time, a step $\Delta\tau$, or a physical relaxation step $\Delta t_{\rm phys}$. The under-relaxation factor $\lambda$ (a scalar) is distinct from the rigid-body multiplier $\boldsymbol\lambda\in\mathbb R^6$ (bold). The vectors $\mathbf x_{\rm cm}$ and $\mathbf Q$ are the centre of mass and the rotation of the frame realignment (step 8b). This paper defines no elastic modulus, no hardening variable, and no return-mapping stress.
+**Time.** $t_n$ is geological time and $\Delta t_n$ the geological step, with $t_{n+1}=t_n+\lambda\Delta t_n$. The iteration index $k$ is not time. There is no pseudo-time $\Delta\tau$ and no physical relaxation step. The scalar under-relaxation $\lambda$ is distinct from the bold rigid multiplier $\boldsymbol\lambda\in\mathbb R^6$. $\mathbf x_{\rm cm}$ and $\mathbf Q$ are the centre of mass and rotation of step 8b. There is no elastic modulus, hardening variable, or return-mapping stress.
 
-Mandatory disambiguation. The Feynman parameter remains $u$, and only in Chapters 1–2. The degree-of-freedom vector $\mathbf u$ is written only in bold. A displacement increment is $\mathbf d$, with radial components $d_i$. Distinguish the stress $\boldsymbol\sigma$, the kernel width $\sigma_k$, and the growth rate $\lambda_{\rm gr}$. Distinguish the total mass $\mathsf M_{\rm tot}$ from the mass operator $\mathbf M_\Gamma$. Distinguish the domain $\mathcal V$ from the angular-velocity vector $\boldsymbol\Omega$. The kernel scale is $a_k=1/\sigma_k$. A nodal index $a$ is used only for Track B. The grain diameter is $d_p$. Index convention: $\sum_{\ell,m,k}$ runs over $1\le\ell\le L_{\max}$, $|m|\le\ell$, and $0\le k\le 3$. The default implementation uses a real orthonormal spherical-harmonic basis. The selection rules for $m$ in Sections 6.1, 7.3–7.4, and 8.9 are written in the notation of complex spherical harmonics. In a real basis, the corresponding $m$ and $-m$ must be merged into an equivalent two-dimensional real block. The relation $m'=m+M$ must not be treated as an index identity column by column in the real basis. Cartesian indices are $i,j,l$.
+**Mandatory disambiguation.**
+
+- The Feynman parameter $u$ appears only in Chapters 1–2; the degree-of-freedom vector $\mathbf u$ is always bold.
+- A displacement increment is $\mathbf d$ with components $d_i$, normal (along $\mathbf N_i$).
+- Distinguish $\boldsymbol\sigma$, $\sigma_k$, and the growth rate $\lambda_{\rm gr}$; $\mathsf M_{\rm tot}$ and $\mathbf M_\Gamma$; and $\mathcal V$ and $\boldsymbol\Omega$.
+- $a_k=1/\sigma_k$, and $d_p$ is the grain diameter. A nodal index $a$ is used only for Track B. Cartesian indices are $i,j,l$.
+- $\sum_{\ell,m,k}$ runs over $1\le\ell\le L_{\max}$, $|m|\le\ell$, $0\le k\le3$.
+- Real orthonormal harmonics are used in computation, while the $m$-selection rules (Sections 6.1, 7.3–7.4, 8.9) are written for complex harmonics. In a real basis, $m$ and $-m$ form one two-dimensional real block, and $m'=m+M$ is not a column-wise index identity.
 
 ## A.2 Specification of the function spaces and the trace spaces
 
-**Geometric hypothesis (mandatory).** One has $R\in W^{1,\infty}(S^2)$, $R\ge R_{\min}>0$, and $\mathbf n\cdot\mathbf e_r\ge c_0>0$ almost everywhere. The domain $\mathcal V$ is therefore a Lipschitz star-shaped domain, and the trace operator, Korn’s inequality, and inequalities of Poincaré type are available.
+**Geometric hypothesis (mandatory).** $\mathcal V$ satisfies hypothesis (G) of Section 8.0: a bounded connected Lipschitz polyhedral domain with a closed, oriented, embedded triangulated boundary of any genus, possibly with sealed cavities. It need not be star-shaped. Trace, Korn, and Poincaré-type inequalities hold on every bounded connected Lipschitz domain. *Star-shaped special case:* $R\in W^{1,\infty}(S^2)$, $R\ge R_{\min}>0$, and $\mathbf n\cdot\mathbf e_r\ge c_0>0$ a.e.; by Proposition 8.0.1 the last condition is exactly star-shapedness about $O$.
 
 $$
 \mathbb V=H^1(\mathcal V;\mathbb R^3),\qquad
@@ -8705,91 +5157,94 @@ $$
 \mathbb V_\sigma=\{\mathbf w\in\mathbb V:\nabla\cdot\mathbf w=0\}.
 $$
 
-The trace $\gamma_0:\mathbb V\to H^{1/2}(\Gamma;\mathbb R^3)$ is continuous and surjective. The traction $\mathbf t=\boldsymbol\sigma\mathbf n$ lies in $H^{-1/2}(\Gamma;\mathbb R^3)$, and the pairing is the duality of $H^{-1/2}$ with $H^{1/2}$. The free surface is a natural boundary (by default, $\mathbf t_{\rm ext}=0$ enters the surface term on the right-hand side). On a star-shaped domain, the part of degree $\ell\ge 1$ of a field $\mathbf w\in\mathbb V_\sigma$ is written uniquely as $\mathbf v=\nabla\times\nabla\times(\Phi\mathbf r)+\nabla\times(\Psi\mathbf r)$, with $\mathbf r=r\mathbf e_r$ (Section 5.2). At the continuous level, $p\in\mathbb Q$ has no free constant under a natural traction condition on the whole surface. The discrete level is Section 8.4.
+The trace $\gamma_0:\mathbb V\to H^{1/2}(\Gamma;\mathbb R^3)$ is continuous and onto. The traction lies in $H^{-1/2}$, paired with $H^{1/2}$. The free surface is a natural boundary, with default $\mathbf t_{\rm ext}=0$. On a star-shaped domain the $\ell\ge1$ part of $\mathbf w\in\mathbb V_\sigma$ is uniquely $\nabla\times\nabla\times(\Phi\mathbf r)+\nabla\times(\Psi\mathbf r)$ (Section 5.2). On a general domain this holds on $B_*$ for a solenoidal extension (Proposition 8.0.5). Because the extension is not unique, the representation is not unique either, which is why the restricted basis is independent but not uniformly stable. Under a natural traction condition on all of $\Gamma$, $p$ has no free constant. The discrete level is Section 8.4.
 
-**Function-theoretic hypotheses of the nonlinear constitutive law.** The map $\mu(I)$ is not monotone in $\mathbf D$. This paper **does not claim** existence or uniqueness for the continuous problem. A “solution” on Track A is defined to be a Picard fixed point, at a given $(L_{\max},K=4,\text{quadrature},\dot\gamma_\varepsilon,p_{\min})$, of the quasi-static discrete system (8.4′) together with the pressure Poisson problem of Section 8.7 (Section 10.4.2). Linear solvability at fixed viscosity is guaranteed by Lemma 8.12. Existence of the nonlinear fixed point, and convergence of Picard iteration, belong to PO-1 and PO-11. The fully implicit dynamic benchmark also involves PO-2. The constitutive denominator requires $p_*\ge p_{c,\min}>0$, or an explicit pressure regularization.
+**Nonlinear constitutive law.** $\mu(I)$ is not monotone in $\mathbf D$, and continuous existence or uniqueness is **not claimed**. A Track A "solution" is a fixed point of (8.4′) with Section 8.7, computed by the primal–dual iteration at given $(L_{\max},K=4,\text{quadrature},\dot\gamma_\varepsilon,p_{\min})$ (Section 10.4.2). Linear solvability at fixed viscosity is Lemma 8.12. At frozen pressure, the fixed point is the unique minimizer of a strictly convex functional when the limit-load multiplier satisfies $L^*<1$ (Proposition 2.17.1). Existence of the coupled fixed point and convergence of the pressure iteration are PO-1, PO-11, and PO-19, and the implicit dynamic benchmark adds PO-2. The constitutive denominator needs $p_*\ge p_{c,\min}>0$ or an explicit regularization.
 
-**Optional even basis.** If one requires $C^\infty$ smoothness at the centre when $R$ is constant, one may switch to $\psi^{\rm ev}_{\ell k}=\zeta^\ell P_k^{(0,\ell+1/2)}(2\zeta^2-1)$, which is orthogonal for the weight $\zeta^{2\ell+2}$. When $R$ is not constant, every term of the potential contains a direction-dependent factor $R(\hat{\boldsymbol\omega})^{2-n}$. Smoothness at the centre is then decided by that factor and is independent of the parity of the radial basis. The exception $\ell=1$ of Proposition 8.4 is unchanged. The default basis is Definition 8.2. Its radial parameters are fixed as $(0,2\ell+2)$, with argument $2\zeta-1$. One must not use $P_k^{(2\ell+2,0)}(2\zeta-1)$. The symbol $K=4$ means four radial modes for each $(\ell,m)$ and each potential, hence eight velocity degrees of freedom for each $(\ell,m)$. It does not mean “four scalar fields globally”.
+**Optional even basis.** For $C^\infty$ smoothness at the centre with the constant $R_*$, use $\psi^{\rm ev}_{\ell k}=\zeta^\ell P_k^{(0,\ell+1/2)}(2\zeta^2-1)$, which is orthogonal for $\zeta^{2\ell+2}$ and polynomial in $\mathbf x$ (Proposition 8.15). In the star-shaped variant with non-constant $R$, the factor $R(\hat{\boldsymbol\omega})^{2-n}$ decides smoothness regardless of parity, and the $\ell=1$ exception of Proposition 8.4 remains. The default basis is Definition 8.2, with parameters $(0,2\ell+2)$ and argument $2\zeta-1$; $P_k^{(2\ell+2,0)}(2\zeta-1)$ must not be used. $K=4$ means four radial modes per $(\ell,m)$ and per potential (eight velocity degrees of freedom per $(\ell,m)$), not four global scalar fields.
 
 ## A.3 The rigid-body kernel and the constraint matrix
 
-**The singularity at $\ell=0$ (mandatory).** For a function $f$ that depends only on $r$, one has $\nabla\times(f\mathbf r)=\mathbf 0$. The potentials $\Phi$ and $\Psi$ of degree $\ell=0$ therefore contribute nothing to $\mathbf v$. Velocity degrees of freedom contain only $\ell\ge 1$. The matrices $\mathbf K$, $\mathbf K_\gamma$, and $\mathbf M_\Gamma$ are assembled and inverted only on the subspace $\ell\ge 1$. No implementation may invert a matrix that contains $\ell=0$. The component of degree $\ell=0$ in $R$ is determined by the total-mass constraint $\int_{\mathcal V}\rho\,dV=\mathsf M_{\rm tot}$. It is not advanced by the kinematic equation.
+**The $\ell=0$ singularity (mandatory).** $\nabla\times(f(r)\mathbf r)=\mathbf 0$, so $\ell=0$ potentials carry no velocity. $\mathbf K$, $\mathbf K_\gamma$, and $\mathbf M_\Gamma$ are assembled and inverted only on $\ell\ge1$; no matrix containing $\ell=0$ may be inverted. The mean normal increment of $\Gamma$ is fixed by the total mass $\int_{\mathcal V}\rho\,dV=\mathsf M_{\rm tot}$ (Section 8.6), not by the kinematics.
 
-**The rigid-body space.** One has $\mathbf D(\mathbf w)=\mathbf 0$ if and only if $\mathbf w$ is a rigid motion. A translation $\mathbf w=\mathbf e$ corresponds to $\Phi=\tfrac12\mathbf e\cdot\mathbf x$. A rotation $\mathbf w=\boldsymbol\theta\times\mathbf x$ corresponds to $\Psi=\boldsymbol\theta\cdot\mathbf x$, with radial profile $\zeta^1$. When $R$ is constant, these are exactly the six coefficients of indices $\ell=1$, $k=0$. When $R$ is not constant, they need not lie in $\mathbb V_h^\sigma$, and the rank must be checked at each step.
+**The rigid-body space.** $\mathbf D(\mathbf w)=\mathbf 0$ iff $\mathbf w$ is rigid: $\Phi=\tfrac12\mathbf e\cdot\mathbf x$ for translations and $\Psi=\boldsymbol\theta\cdot\mathbf x$ for rotations. With the constant $R_*$ of the general route these are exactly the six $\ell=1$, $k=0$ coefficients, and $\operatorname{rank}\mathbf B_{\rm rb}=6$ for every body (Proposition 8.0.4). Only the star-shaped variant with non-constant $R$ loses this; there the rank is checked each step.
 
-**Constraint matrix (mandatory; the recommended form).** The mass-weighted constraints of zero momentum and zero angular momentum, $\int_{\mathcal V}\rho\mathbf v\,dV=\mathbf 0$ and $\int_{\mathcal V}\rho\,\mathbf x\times\mathbf v\,dV=\mathbf 0$, become $\mathbf B_{\rm rb}\mathbf u=\mathbf 0$, with $\mathbf B_{\rm rb}\in\mathbb R^{6\times N_u}$. The rows are $\int_{\mathcal V}\rho\,\mathbf B_\alpha\,dV$ and $\int_{\mathcal V}\rho\,\mathbf x\times\mathbf B_\alpha\,dV$, and one requires $\operatorname{rank}(\mathbf B_{\rm rb})=6$. The meaning of the multiplier $\boldsymbol\lambda$, and the monitor $E_{\rm rb}$, are those of Section 9.4. An alternative is to fix $q_{1m0}=s_{1m0}=0$ directly. That alternative is allowed only when the two forms are equivalent, and the difference must be reported.
+**Constraint matrix (mandatory; the recommended form).** $\int\rho\mathbf v=\mathbf 0$ and $\int\rho\,\mathbf x\times\mathbf v=\mathbf 0$ become $\mathbf B_{\rm rb}\mathbf u=\mathbf 0$, with rows $\int\rho\mathbf B_\alpha$ and $\int\rho\,\mathbf x\times\mathbf B_\alpha$, and $\operatorname{rank}\mathbf B_{\rm rb}=6$ is required. $\boldsymbol\lambda$ and $E_{\rm rb}$ are as in Section 9.4. Fixing $q_{1m0}=s_{1m0}=0$ instead is allowed only where the two are equivalent, and the difference must be reported.
 
-**Compatibility conditions for solvability (mandatory check).** A necessary condition for the quasi-static problem to have a solution is that the external force do no work on the rigid modes:
+**Compatibility (mandatory check).** The necessary conditions are
 
 $$
 \int\rho\mathbf g_{\rm eff}\,dV+\oint_\Gamma\mathbf t_{\rm ext}\,dS=\mathbf 0,
 \qquad
-\int\rho\,\mathbf x\times\mathbf g_{\rm eff}\,dV+\oint_\Gamma\mathbf x\times\mathbf t_{\rm ext}\,dS=\mathbf 0.
+\int\rho\,\mathbf x\times\mathbf g_{\rm eff}\,dV+\oint_\Gamma\mathbf x\times\mathbf t_{\rm ext}\,dS=\mathbf 0 .
 $$
 
-The resultant of self-gravity vanishes identically. The centrifugal force requires the centre of mass to lie on the axis of rotation and that axis to be a principal axis of inertia ($I_{xz}=I_{yz}=0$). If the condition fails, one must report “incompatible”. The failure must not be absorbed by the multiplier. On the quasi-static route these two conditions are guaranteed by construction through the **standard frame realignment** of step 8b in Section 10.4.4. After a geometric update, if the mismatch exceeds the trigger threshold, the origin is translated back to the centre of mass and the principal axis of the largest principal moment $I_1$ is rotated onto the spin axis $z$. The centre of mass then lies on the axis of rotation and $I_{xz}=I_{yz}=0$. Spin about the axis of largest principal moment is also the stable rotating state (hypothesis A-S). Every Cauchy kernel centre $\mathbf c_k$ is translated and rotated in the same way, and every metric is rotated, $\mathbf S_k\leftarrow\mathbf Q\mathbf S_k\mathbf Q^{\!\top}$. After the realignment one must still recheck the residuals $|\mathbf x_{\rm cm}|\le\varepsilon_{\rm frame}R_{\rm ref}$ and $|I_{xz}|,|I_{yz}|\le\varepsilon_{\rm frame}I_1$. Only if that check fails does one report “incompatible”. The Euler force of an exogenous $\dot\omega$, and the external torque, are omitted as a pair (Section 2.8, B1) and do not break torque compatibility. For every $\ell\ge 1$ one must report the smallest singular value of the global stiffness matrix.
+Self-gravity has zero resultant. The centrifugal force needs the centre of mass on the spin axis and $I_{xz}=I_{yz}=0$. A failure is reported as "incompatible" and never absorbed by the multiplier. On the quasi-static route both conditions hold by construction through the **frame realignment** of step 8b:
+
+- the origin is moved back to the centre of mass, and the $I_1$ axis is rotated onto $z$ (the stable rotating state, A-S);
+- the core centres are translated and rotated with the mesh, and the metrics rotated, $\mathbf S_k\leftarrow\mathbf Q\mathbf S_k\mathbf Q^{\!\top}$;
+- the residuals $|\mathbf x_{\rm cm}|\le\varepsilon_{\rm frame}R_{\rm ref}$ and $|I_{xz}|,|I_{yz}|\le\varepsilon_{\rm frame}I_1$ are rechecked, and only a failure there means "incompatible".
+
+The Euler force of $\dot\omega$ and its torque are omitted as a pair (B1) and do not break compatibility. The smallest singular value of the global stiffness is reported for every $\ell\ge1$.
 
 ## A.4 Definitions of Track A and Track B, and Theorem A.1
 
-The two tracks are defined for one and the same symmetric positive-definite operator $\mathbf A$. On the quasi-static route, $\mathbf A=\mathbf K_\gamma$ (the augmented viscous stiffness of (8.4′), with right-hand side $\mathbf b=\mathbf F$). In the dynamic mode, $\mathbf A=\mathbf M_\Gamma$ (Section 9.4, with right-hand side $\mathbf b=\mathbf m$). **Track A (the reference):** solve the full operator $\mathbf A$ exactly, up to the iteration tolerance. **Track B (a fast diagonal surrogate; a truncated model):** take $\mathbf A_B:=\operatorname{blockdiag}_{(\ell,m)}\mathbf A_{\ell m,\ell m}$ (one $8\times 8$ principal sub-block for each $(\ell,m)$; for $\mathbf M_\Gamma$ this is $\mathbf M_{B1}$ of Section 9.5), and set $\mathbf u_B=\mathbf A_B^{-1}\mathbf b$. The residual operator is $\mathbf E:=\mathbf A-\mathbf A_B$. On a spherically symmetric geometry, $\mathbf E=\mathbf 0$ and Track B agrees with Track A. Track B means only the B1 block-diagonal surrogate (PO-8). The inverse $\mathbf A_B^{-1}$ is at the same time the PCG preconditioner inside Track A.
+Both tracks concern one SPD operator $\mathbf A$: $\mathbf K_\gamma$ with right-hand side $\mathbf F$ on the quasi-static route, and $\mathbf M_\Gamma$ with $\mathbf m$ in the dynamic mode.
 
-**Theorem A.1 (Exact error identity).** If $\mathbf A_B$ and $\mathbf A$ are both invertible, then for the same $\mathbf b$,
+- **Track A (the reference)** solves $\mathbf A$ exactly, to the iteration tolerance.
+- **Track B (a truncated model)** uses $\mathbf A_B:=\operatorname{blockdiag}_{(\ell,m)}\mathbf A_{\ell m,\ell m}$ (one $8\times8$ block per $(\ell,m)$; $\mathbf M_{B1}$ for $\mathbf M_\Gamma$) and $\mathbf u_B=\mathbf A_B^{-1}\mathbf b$. It means only this B1 surrogate (PO-8), and $\mathbf A_B^{-1}$ is also the PCG preconditioner inside Track A.
 
-$$
-\mathbf u_B-\mathbf u_0=\mathbf A_B^{-1}\mathbf E\,\mathbf u_0,\qquad \mathbf u_0=\mathbf A^{-1}\mathbf b.
-$$
+With $\mathbf E:=\mathbf A-\mathbf A_B$, $\mathbf E=\mathbf 0$ under spherical symmetry.
 
-*Proof.* The identity $\mathbf A_B^{-1}-\mathbf A^{-1}=\mathbf A_B^{-1}(\mathbf A-\mathbf A_B)\mathbf A^{-1}$, applied to $\mathbf b$, gives the result. ∎ Corollary: $\mathbf u_B=\mathbf u_0$ if and only if $\mathbf E\mathbf u_0=\mathbf 0$. Track B is therefore not an exact equivalent. The complete form that includes the rigid-body constraint in the dynamic mode is Theorem 9.4. On the quasi-static route, the a-posteriori quantity of Track B is the residual $\varepsilon_{\rm mom}^{\rm weak}$ computed with the full matrix $\mathbf K$ (Section 10.4.2).
+**Theorem A.1 (Exact error identity).** If $\mathbf A_B$ and $\mathbf A$ are invertible, then $\mathbf u_B-\mathbf u_0=\mathbf A_B^{-1}\mathbf E\mathbf u_0$ with $\mathbf u_0=\mathbf A^{-1}\mathbf b$, from $\mathbf A_B^{-1}-\mathbf A^{-1}=\mathbf A_B^{-1}(\mathbf A-\mathbf A_B)\mathbf A^{-1}$. ∎
 
-**Mandatory report.** Every run of Track B must give $\varepsilon_B:=\|\mathbf r_B\|/\max\{\|\mathbf b\|,\varepsilon_b\}$, where $\mathbf r_B=\mathbf b-\mathbf A\mathbf u_B$. If $\|\mathbf b\|=0$, then $\varepsilon_B=0$ when $\mathbf r_B=0$; otherwise the step is judged undefined and has failed. The distribution of $\varepsilon_B$ in $\ell$ must be given, together with an estimate of $\mathbf A_B^{-1}-\mathbf A^{-1}$. Track B must not be called “exact”, “equivalent”, or “rigorous”. **Red line.** Track B may be used only when the measured $\varepsilon_B$ lies below the configured threshold, and a convergence conclusion drawn from it must be checked again on Track A (Section 9.5, PO-8). The production reference is Track A. The two tracks share the elastic SOCP geometric correction of Sections 2.13 and 10.4.3. They differ only in the linear solve.
+So $\mathbf u_B=\mathbf u_0$ iff $\mathbf E\mathbf u_0=\mathbf 0$, and Track B is not exact. The dynamic form with the rigid constraint is Theorem 9.4. On the quasi-static route, Track B's a-posteriori measure is $\varepsilon^{\rm weak}_{\rm mom}$ with the full $\mathbf K$ (Section 10.4.2).
+
+**Mandatory report.**
+
+- Every Track B run gives $\varepsilon_B:=\|\mathbf r_B\|/\max\{\|\mathbf b\|,\varepsilon_b\}$ with $\mathbf r_B=\mathbf b-\mathbf A\mathbf u_B$. For $\mathbf b=0$: $\varepsilon_B=0$ if $\mathbf r_B=0$; otherwise the step is undefined and has failed.
+- Its $\ell$-distribution and an estimate of $\mathbf A_B^{-1}-\mathbf A^{-1}$ are also given.
+- Track B is never called "exact", "equivalent", or "rigorous".
+
+**Red line.** Track B is used only below the configured $\varepsilon_B$ threshold. Its convergence conclusions must be rechecked on Track A (Section 9.5, PO-8), and the reference is Track A. The tracks share the SOCP of Sections 2.13 and 10.4.3 and differ only in the linear solve.
 
 ## A.5 Register of proof obligations (PO)
 
 | Number | Content | Status |
 |---|---|---|
-| PO-1 | Local solvability, under continuation in $\dot\gamma_\varepsilon$, of the discrete nonlinear system (8.4′) together with Section 8.7, including $p_*\ge p_{c,\min}$. The linear subproblem at fixed $\eta$ is closed by Lemma 8.12 | linear subproblem closed; the nonlinear problem is not proved |
-| PO-2 | The inf–sup condition, and the concrete matching of $\mathbb V_h^g$ with $\mathbb Q_h$. This concerns only the fully implicit dynamic benchmark. The quasi-static route has an exactly divergence-free velocity space and does not need it | not proved |
+| PO-1 | Local solvability, under continuation in $\dot\gamma_\varepsilon$, of (8.4′) with Section 8.7, including $p_*\ge p_{c,\min}$; the linear subproblem at fixed $\eta$ is Lemma 8.12, and the frozen-pressure velocity problem is Proposition 2.17.1 | linear and frozen-pressure subproblems closed; the coupled nonlinear problem is not proved |
+| PO-2 | The inf–sup condition and the matching of $\mathbb V_h^g$ with $\mathbb Q_h$; only for the fully implicit dynamic benchmark (the quasi-static space is exactly divergence-free) | not proved |
 | PO-3 | Compatibility of the basis at the centre, $\mathbf v\in H^1$, including $\ell=1$ | closed: Proposition 8.4 |
-| PO-4 | Hypothesis A-M (transport of $\mathbf m$ along the surface), a bound on the model error of geometric remapping, and the complete expansion of the source. Dynamic mode only; the quasi-static route does not transport $\mathbf m$ | not proved |
-| PO-5 | Explicit modal formulae for the free-surface shear rate in the presence of $\Psi$, and for the two tangential traction constraints | conditionally closed: Propositions 10.2 and 10.3 (a consistency residual $\delta_{na}$ is allowed) |
+| PO-4 | Hypothesis A-M (transport of $\mathbf m$), a bound on the geometric remapping error, and the complete source expansion; dynamic mode only | not proved |
+| PO-5 | Explicit modal formulae for the free-surface shear rate with $\Psi$, and the two tangential traction constraints | conditionally closed: Propositions 10.2, 10.3 (a residual $\delta_{na}$ is allowed) |
 | PO-6 | Block entries, bandwidth, and condition numbers of $\mathbf M_\Gamma$ in the Jacobi basis | conditionally closed: Proposition 10.1 (fixed reference sphere only) |
-| PO-7 | Assembly formulae for every term of the velocity equation in the basis | conditionally closed: Propositions 6.2, 6.4, 7.3, and 7.4 (Coriolis block only for a spherically symmetric radial density) |
-| PO-8 | The abolished B2 (a nodally local model that freezes $\Lambda_\star$: numerical observation shows that the spectral radius of its iteration matrix $\mathbf I-\widetilde{\mathbf M}_{B2}^{-1}\mathbf M_\Gamma$ is much larger than $1$ on high modes, so the iteration diverges or converges spuriously). Track B means only the B1 block-diagonal surrogate. What remains unproved is the a-priori dependence of $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$ on the degree of asphericity, and an a-priori upper bound for $\varepsilon_B$ | B2 abolished; the a-priori bound for B1 is not proved |
-| PO-9 | Consistency and stability, as $\Delta t_n\to 0$, of the geological geometric update, which is an RTFP–Stokes–SOCP sequence explicit in the geometry; an upper bound for the SOCP projection departure $E_{\rm proj}$ | not proved (depends on the CFL restriction, on under-relaxation, and on the trust region) |
-| PO-10 | Short-wave ill-posedness of $\mu(I)$ viscoplasticity at high inertial number (Proposition 5.8, which includes the pressure coupling $\mathbb K_p$ that drives it), and the strain localization and mesh dependence of that ill-posedness under the regularizations $\dot\gamma_\varepsilon$ and $p_{\min}$ | not proved |
-| PO-11 | Convergence of the Picard iteration that couples the pressure Poisson problem (Section 8.7) to the quasi-static Stokes problem (8.4′); stability of $\nabla\cdot\boldsymbol\tau_{\rm flow}$ with respect to the frozen pair $(\mathbf u^k,\tilde p^k)$ | not proved (failure to converge is judged by criterion (a) of Section 2.15) |
-| PO-12 | Convergence, as $\dot\gamma_\varepsilon\to 0$, of the regularized yield surface ($F_\delta=0$ at fixed $\delta_Y$) and of the rigid core and the movable set, toward the yielded region and the sliding blocks of the unregularized Bingham or $\mu(I)$ model; sufficiency of the step-size rule in Section 10.4.1; conditions under which, at constant $\omega_j$, the movable set becomes empty in finitely many steps (stage equilibrium is attainable) | not proved (if it is not attained, report “stage not equilibrated”, criterion (c) of Section 2.15) |
-| PO-13 | A bound $E_{\rm frame}$ on the resampling error of the frame realignment, and preservation of star-shapedness about the new origin. Evolution of the spin is not a proof obligation: $\omega(t)$ is prescribed exogenously, and spin about a principal axis is the explicit model hypothesis A-S (Section 10.4.1) | partially closed (the error bound is not proved) |
-| PO-14 | Hypothesis A-ρL: the density is a finite sum of (anisotropic) Cauchy cores, frozen within a geological step and transported between steps by 2-jet transport, mass closure, and refit (Section 9.10). Proved: exactness of the jet update for affine flows, preservation of $\det\mathbf S_k$ and of positive definiteness, the stage fixed point, the gravity bounds of Proposition 9.10.1, and the additive (non-amplifying) accumulation of projection defects under the stated idealizations. Not proved: an a-priori bound on the per-step projection defect $\delta_n$ for a general flow, and the effect of the mask at the core boundary | partially closed; reported at each step through $e_{\rho,n}$, $|\xi_n|$, and $s_{M*}$ (the range of $\rho_{\rm bulk}/\rho_K\rvert_\Gamma$ and $\min\rho_K/\rho_{\min}$ are specified but not reported, Appendix A.6). Hypothesis A-ρ (frozen density) is available only as `density_mode = frozen`, and runs in that mode do not measure the ghost-gravity defect |
-| PO-15 | Well-posedness of the Level 2 refit (rank of $\mathbf J^{\!\top}\mathbf W\mathbf J$ for cores that overlap strongly or lie mostly outside $V$) and termination of the Level 3 split/merge rules | not proved; rank deficiency is detected by the Levenberg–Marquardt solve and reported. Level 3 is not implemented |
-| PO-16 | Hypothesis A-C3 (Section 2.8b): convergence of the arrival points $X(a')$ as $\theta_r\to0$, the size of the near-surface gravity error of a hop, and convergence of the relief routing (one correction pass is made; the routing gap measures its defect). Proved: exact mass balance of the runout kernel and of the routed relief in the linearized mass row, the reductions to the isotropic kernel, and unconditional stability of the exact Coriolis rotation | partially closed; the counts of escaped and timed-out packets and the largest hop height are reported at every step, and the arrival points are checked against halved substeps in the tests |
-| PO-17 | Hypothesis A-C4 (Section 2.8c): slope promotion of the loose layer, a subgrid closure of shallow failure. Open: the instantaneous-failure assumption, the dependence of slide durations and per-step displacements on the trust radius and on $\Delta t_{\max}$, convergence of the relieved shape as the trust radius and the step tend to zero, and agreement of the shallow-layer criterion with a solve that resolves the layer. Proved: reduction to (B3)–(B4) for $\tau_s\to\infty$ or $\rho_s\equiv0$, and that promotion leaves the stress, the yield classification, and the Mode C fluxes unchanged | open; the numbers of movable vertices and of supercritical faces, the slope slack left by the cone, the largest displacement, and the trust radius are reported at every step |
+| PO-7 | Assembly formulae for every term of the velocity equation | conditionally closed: Propositions 6.2, 6.4, 7.3, 7.4 (Coriolis block only for spherically symmetric radial density) |
+| PO-8 | The abolished B2 (a nodally local model freezing $\Lambda_\star$, whose iteration matrix $\mathbf I-\widetilde{\mathbf M}_{B2}^{-1}\mathbf M_\Gamma$ was observed to have spectral radius $\gg1$ on high modes); Track B means only B1. Open: the a-priori dependence of $\|\mathbf M_B^{-1/2}\mathbf E\mathbf M_B^{-1/2}\|$ on asphericity, and an a-priori bound on $\varepsilon_B$ | B2 abolished; the a-priori bound for B1 is not proved |
+| PO-9 | Consistency and stability, as $\Delta t_n\to0$, of the geometric update (an RTFP–Stokes–SOCP sequence explicit in the geometry); a bound on $E_{\rm proj}$ | not proved (depends on the CFL, the under-relaxation, and the trust region) |
+| PO-10 | Short-wave ill-posedness of $\mu(I)$ outside an intermediate range of the inertial number (small and large $I$ [8]) (Proposition 5.8, with the pressure coupling $\mathbb K_p$), and its localization and mesh dependence under $\dot\gamma_\varepsilon$ and $p_{\min}$ | not proved |
+| PO-11 | Convergence of the pressure fixed point of Section 8.7 and (8.4′) with exact inner velocity solves; stability of $\nabla\cdot\boldsymbol\tau_{\rm flow}$ in the frozen pair $(\mathbf u,\tilde p)$. The inner problem at frozen pressure is closed: it is convex (Proposition 2.17.1) and the primal–dual iteration of Section 10.4.2 converges for it [14]. The fixed-viscosity Picard step is not a descent step at small rates and serves only as a check | outer pressure fixed point not proved (judged by criterion (a) of Section 2.15) |
+| PO-12 | Convergence, as $\dot\gamma_\varepsilon\to0$, of the regularized yield surface and of the core and movable set to the yielded region and sliding blocks of the unregularized model; sufficiency of the step rule of Section 10.4.1; finite-step attainment of stage equilibrium at constant $\omega_j$ | not proved (otherwise report "stage not equilibrated", criterion (c) of Section 2.15) |
+| PO-13 | The frame realignment. On the general route it is an exact rigid motion of vertices and cores, so $E_{\rm frame}=0$ (Section 8.0, G8). Only a radial resampling in the star-shaped variant would need a bound on $E_{\rm frame}$ and preservation of star-shapedness about the new origin. Spin evolution is not an obligation: $\omega(t)$ is exogenous, and principal-axis spin is hypothesis A-S | closed on the general route; open for the star-shaped resampling variant |
+| PO-14 | Hypothesis A-ρL (Section 9.10). Proved: exactness of the jet update for affine flows, preservation of $\det\mathbf S_k$ and definiteness, the stage fixed point, Proposition 9.10.1, and additive accumulation of projection defects under the stated idealizations. Not proved: an a-priori bound on $\delta_n$ for a general flow, and the effect of the mask at the core boundary | partially closed; reported through $e_{\rho,n}$, $|\xi_n|$, $s_{M*}$, the range of $\rho_{\rm bulk}/\rho_K\rvert_\Gamma$, and $\min\rho_K/\rho_{\min}$. In the frozen-density variant A-ρ the ghost gravity is not measured |
+| PO-15 | Well-posedness of the Level 2 refit (rank of $\mathbf J^{\!\top}\mathbf W\mathbf J$ for strongly overlapping cores or cores mostly outside $V$) and termination of the Level 3 rules | not proved; rank deficiency is detected by the LM solve and reported; termination of Level 3 is open |
+| PO-16 | Hypothesis A-C3: convergence of $X(a')$ as $\theta_r\to0$, the near-surface gravity error of a hop, and convergence of the relief routing (one pass; the routing gap measures its defect). Proved: exact mass balance of the runout kernel and of the routed relief in the linear mass row, the reductions to the isotropic kernel, and unconditional stability of the exact Coriolis rotation | partially closed; escaped and timed-out counts and the largest hop are reported each step; arrival points are checked against halved substeps |
+| PO-17 | Hypothesis A-C4. Open: instantaneous failure, the dependence of slide durations and per-step displacements on the trust radius and $\Delta t_{\max}$, convergence of the relieved shape as both shrink, and agreement with a solve resolving the layer. Proved: reduction to (B3)–(B4) for $\tau_s\to\infty$ or $\rho_s\equiv0$, and that promotion leaves the stress, the classification, and the Mode C fluxes unchanged | open; movable vertices, supercritical faces, residual slope slack, largest displacement, and trust radius are reported each step |
+| PO-18 | The general route of Section 8.0 and the ray structure of Section 8.10. Proved: Proposition 8.0.1; independence and the rigid modes of the enclosing-ball basis, with the cavity flux modes (Propositions 8.0.3, 8.0.4, Section 8.2); discrete Nitsche coercivity (Proposition 8.0.6); the vertex-area identity and normal kinematics (G4, Proposition 8.0.7); Lemma 8.13, Propositions 8.14–8.16; Proposition 2.17.1. Sketched: density of the restricted basis with cavity flux modes (Proposition 8.0.5). Open: a rate for the conditioning growth with $L_{\max}$; convergence of the ray-segment rule across silhouettes; sufficiency of the clearance rows for embeddedness; forward stability of the moment recurrence of Proposition 8.14 | partially closed |
+| PO-19 | Convergence of the primal–dual iteration of Section 10.4.2 when the pressure is updated inexactly every $N_p$ iterations, and the choice of $N_p$ | not proved (judged by criterion (a) of Section 2.15) |
+| PO-20 | The fused variant of Section 10.4.5: its relation to the closure (B3)–(B4), and the limit $\kappa_i\to\infty$ | not proved; optional variant, not in the reference loop |
+| PO-21 | Conjecture A.2 (Appendix A.6): the two associated cone programs bracket the frozen-pressure fixed point and $L^*$ | open |
 
+## A.6 Conjectures
 
-## A.6 Implementation status of the normative procedures
+**Conjecture A.2 (A convex surrogate of the pressure coupling brackets the fixed point; PO-21).** The coupled problem is non-associated (Remark 2.17.2), but the pressure problem of Section 8.7 is affine in the stress, $p=p_0+\mathcal P\boldsymbol\tau$. Impose the Drucker–Prager cone
 
-Every item of Chapters 2–10 that the implementation realizes differently, or not at all, is listed here, with the place where the text describes the implemented form. Items not listed are implemented as specified. "Reported" means present in the per-step record of `scf-cli run-sim`.
+$$
+|\boldsymbol\varsigma_i|\le c_i+\mu\,(p_0+\mathcal P\boldsymbol\tau)_i
+$$
 
-| Item | Specified | Implemented |
-|---|---|---|
-| Density | Cauchy sum (Section 1.1) | constant matrix $\rho_b$ plus the Cauchy sum (Section 1.1) |
-| Slope promotion | — | hypothesis A-C4, Section 2.8c |
-| Geometric subproblem | per-node rows, ball trust region, $\varrho\lvert s_M\rvert$ | per-face rows, box trust region, $\varrho\hat M\lvert\sigma_M\rvert$ with folding (Section 2.13, implementation items 1–6) |
-| Mass miss | reject, reduce $\Delta t_n$ | one movable-set correction, residual recorded (Section 2.14) |
-| Star-shapedness $n\cdot e_r\ge c_0$ | acceptance test | reported only; $\lvert n\cdot e_r\rvert<0.05$ gives no radial increment (Section 2.8, B4) |
-| Criterion (b) | normalized by $\lVert\mathbf F\rVert$, flag for insufficient resolution | normalized by the absolute load scale, one tolerance, no resolution flag (Section 2.15) |
-| $\delta_{na}$, $E_{4\to8}$, $E_{\rm frame}$, $\varepsilon_{\rm Euler}$, $\bar\varepsilon_p$, $\sigma_{\min}(\mathbf B_{\rm rb})$ in the record | reported | not computed or not recorded (Sections 2.15, 8.9, 10.4.4) |
-| RTFP segments | orientation-based construction with re-trace | parity after merging (Section 3.6) |
-| RTFP precision | double after hit refinement | single-precision hits and radial rules, double-single sums (Section 10.5.3) |
-| Data reuse (Section 3.15) | segment table, dirty rays, refit | rebuild after each geometric update; field and operator caches (Section 3.15) |
-| Stokes solve (Section 8.4) | block PCG, matrix-free operator | dense assembly and Cholesky; coarse production quadrature (Section 8.4) |
-| Picard start and continuation | previous pressure, ladder from $10\dot\gamma_\varepsilon$ | $\tilde p^0=p_{\min}$, target first, optional ladder (Section 10.4.2) |
-| $\rho_s$ transport | second-order characteristics, local conservation | first-order foot point, one global conservation factor (Section 9.2) |
-| Level 1 core closure | all weights scaled | cores only, $\rho_b$ fixed (Section 9.10.4) |
-| Level 3, check $\rho_K\ge\rho_{\min}$ | split/merge, recheck | not implemented (Sections 9.10.6, 10.4.4) |
-| $\Delta t_{\rm core}$ | $\theta_{\rm ch}/\lVert\nabla\mathbf v_{\rm adv}\rVert_2$ | $\theta_{\rm ch}/(\lambda\lVert\operatorname{dev}\nabla\mathbf v_{\rm adv}\rVert_F)$ (Section 10.4.1) |
-| Frame realignment | $M$ fixed | mass target reset to the realigned mass; failure of (vii) stops the run (Section 10.4.4, 8b) |
-| Dynamic free-surface mode (Chapter 9 except Sections 9.0, 9.2, 9.10), Track B, Mode A interface (Sections 2.11–2.12) | specified | not implemented; the code contains the quasi-static route only |
+on the dual samples of Section 10.4.2, without the tension truncation of (B5); the apex cuts tension at $p=-c/\mu$. Each constraint is a second-order cone with an affine radius, so the admissible stresses form a convex set and the min–max of Section 10.4.2 over it is convex–concave. Its velocity obeys the associated flow rule of the extended space, including the $\mathcal P^{\!\top}$ term, not the co-axial isochoric rule of Section 2.8.
+
+In limit analysis, a non-associated Mohr–Coulomb material has its limit load bracketed by two associated materials: one with the original strength [15], one with Davis's reduced strength [16], $c^*=c\cos\phi$ and $\tan\phi^*=\sin\phi$ for zero dilatancy (plane strain). The conjecture is that the two analogous cone programs, with $(c,\mu)$ and with $(c\cos\phi,\sin\phi)$, bracket the frozen-pressure fixed point of Section 10.4.2 and its limit-load multiplier $L^*$. If it holds, it gives rigorous bounds on $L^*$ and a warm start for the pressure iteration.
 
 ---
 
@@ -8818,3 +5273,13 @@ Every item of Chapters 2–10 that the implementation realizes differently, or n
 [11] Jop, P., Forterre, Y., & Pouliquen, O. (2006). A constitutive law for dense granular flows. *Nature*, 441(7094), 727–730. https://doi.org/10.1038/nature04801
 
 [12] Sugimura, R., Arakawa, M., & Yasui, M. (2026). Crater size scaling in the strength-dominated regime for weak porous targets: Implications for the tensile strength of asteroid surfaces. *Icarus*, in press (available online 27 May 2026).
+
+[13] Galdi, G. P. (2011). *An Introduction to the Mathematical Theory of the Navier–Stokes Equations: Steady-State Problems* (2nd ed.). Springer.
+
+[14] Chambolle, A., & Pock, T. (2011). A first-order primal-dual algorithm for convex problems with applications to imaging. *Journal of Mathematical Imaging and Vision*, 40(1), 120–145.
+
+[15] Radenkovic, D. (1961). Théorèmes limites pour un matériau de Coulomb à dilatation non standardisée. *Comptes Rendus de l'Académie des Sciences, Paris*, 252.
+
+[16] Davis, E. H. (1968). Theories of plasticity and the failure of soil masses. In I. K. Lee (Ed.), *Soil Mechanics: Selected Topics* (pp. 341–380). Butterworths.
+
+[17] Nitsche, J. (1971). Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind. *Abhandlungen aus dem Mathematischen Seminar der Universität Hamburg*, 36, 9–15.

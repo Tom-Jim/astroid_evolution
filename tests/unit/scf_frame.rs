@@ -1,21 +1,10 @@
-//! Unit tests of `scf::frame`, moved out of `src/scf/frame.rs`.
+//! Unit tests of `scf::frame`: the realignment of step 8b is a rigid motion (G8).
 
-mod ctx {
-    pub use astroid_evolution::common::density::CauchyKernel;
-    pub use astroid_evolution::common::error::SimError;
-    pub use astroid_evolution::common::math::DVec3;
-    pub use astroid_evolution::scf::body::Body;
-    pub use astroid_evolution::scf::forward::{Forward, Moments, inertia_matrix};
-    pub use astroid_evolution::scf::params::GeometryParams;
-    pub use astroid_evolution::scf::transport::{DirIndex, interp_vertex_field};
-    pub use nalgebra::{Matrix3, SymmetricEigen, Vector3};
-}
-use ctx::*;
-
+use astroid_evolution::common::density::CauchyKernel;
+use astroid_evolution::common::math::DVec3;
+use astroid_evolution::scf::body::Body;
 use astroid_evolution::scf::frame::*;
-use std::sync::Arc;
-
-use astroid_evolution::scf::body::Topology;
+use astroid_evolution::scf::params::GeometryParams;
 
 fn prm() -> GeometryParams {
     GeometryParams {
@@ -29,85 +18,44 @@ fn prm() -> GeometryParams {
         sh_fit_tol: 1e-2,
         eps_frame: 1e-3,
         eps_deg: 1e-6,
+        theta_g: 0.4,
     }
+}
+
+fn ellipsoid(axes: [f64; 3], kernels: Vec<CauchyKernel>) -> Body {
+    let (topo, x) = Body::ellipsoid(4, axes);
+    let rho_s = x.iter().map(|p| 1.0 + 0.5 * p.x).collect();
+    Body::new(topo, x, 1000.0, kernels, rho_s).unwrap()
 }
 
 #[test]
 fn tilted_offset_ellipsoid_is_brought_to_the_standard_frame() {
-    let topo = Arc::new(Topology::icosphere(4));
-    let axes = [0.6, 0.8, 1.0];
-    // Ellipsoid whose long axis is e_x and short axis e_z, i.e. a wrong frame.
-    let radius = Body::ellipsoid(topo.clone(), axes);
-    let nv = topo.n_vertices();
-    let body = Body::new(topo.clone(), radius, 1000.0, vec![], vec![1.0; nv]).unwrap();
-    // The frame is wrong: I_zz is the smallest moment.
-    let g = 1.0e-9;
-    let (out, rep, _) = realign(&body, None, g, &prm(), false).unwrap();
+    // Long axis e_x, short axis e_z: I_zz is the smallest moment, a wrong frame.
+    let body = ellipsoid([0.6, 0.8, 1.0], vec![]);
+    let (out, rep, _) = realign(&body, None, 1.0e-9, &prm(), false).unwrap();
     assert!(rep.applied);
-    assert!(rep.after.ordering < 1e-3, "{:?}", rep.after);
-    assert!(rep.after.off_diagonal < 1e-3, "{:?}", rep.after);
-    assert!(rep.after.centroid < 1e-3, "{:?}", rep.after);
-    // The new long axis (max R) is along e_x? No: e_z is the max-inertia (short body) axis,
-    // so the shortest radius must now lie on z and the longest on x or y.
-    let zi = (0..nv)
-        .max_by(|a, b| topo.dirs[*a].z.partial_cmp(&topo.dirs[*b].z).unwrap())
-        .unwrap();
-    assert!((out.radius[zi] - 0.6).abs() < 0.03, "{}", out.radius[zi]);
-    assert!(rep.mass_change.abs() < 5e-3);
+    assert!(rep.after.ordering < 1e-3 && rep.after.off_diagonal < 1e-3 && rep.after.centroid < 1e-3);
+    // The short axis (0.6) now lies on z; the motion is rigid, so ρ_s stays on its vertex.
+    let top = out.positions.iter().map(|p| p.z.abs()).fold(0.0, f64::max);
+    assert!((top - 0.6).abs() < 1e-3, "{top}");
+    assert_eq!(out.rho_s, body.rho_s);
+    assert!(rep.mass_change.abs() < 1e-9);
 }
 
 #[test]
-fn kernel_centres_follow_the_mesh() {
-    let topo = Arc::new(Topology::icosphere(4));
-    let nv = topo.n_vertices();
-    let radius = Body::ellipsoid(topo.clone(), [1.0, 0.8, 0.6]);
-    let k = CauchyKernel::try_new(DVec3::new(0.3, 0.1, 0.2), 800.0, 0.3, 2.0).unwrap();
-    let body = Body::new(topo, radius, 1000.0, vec![k], vec![0.0; nv]).unwrap();
-    let g = 1.0e-9;
-    let (out, rep, _) = realign(&body, None, g, &prm(), false).unwrap();
-    assert!(rep.applied);
-    assert!(rep.after.centroid < 1e-3, "{:?}", rep.after);
-    assert!(rep.after.off_diagonal < 1e-3, "{:?}", rep.after);
-    // The kernel moved with the rigid map x' = Q (x - c) (a rigid map preserves distances
-    // to the origin only up to the translation).
-    let c = rep.translation;
-    let q = rep.rotation;
-    let old = DVec3::new(0.3, 0.1, 0.2) - c;
-    let expect = DVec3::new(
-        q[0][0] * old.x + q[0][1] * old.y + q[0][2] * old.z,
-        q[1][0] * old.x + q[1][1] * old.y + q[1][2] * old.z,
-        q[2][0] * old.x + q[2][1] * old.y + q[2][2] * old.z,
-    );
-    let got = out.kernels[0].center;
-    assert!((got - expect).length() < 1e-9, "{got:?} vs {expect:?}");
-}
-
-#[test]
-fn undo_frame_returns_a_realigned_body_to_its_original_frame() {
-    let topo = Arc::new(Topology::icosphere(4));
-    let nv = topo.n_vertices();
-    // A wrong frame: the short axis is e_x, so e_z' = e_x after the re-alignment.
-    let radius = Body::ellipsoid(topo.clone(), [0.6, 1.0, 0.8]);
+fn undo_frame_inverts_the_realignment_exactly() {
     let k = CauchyKernel::try_new(DVec3::new(0.2, -0.1, 0.15), 500.0, 0.4, 2.0).unwrap();
-    let rho_s: Vec<f64> = topo.dirs.iter().map(|d| 1.0 + 0.5 * d.x).collect();
-    let body = Body::new(topo.clone(), radius.clone(), 1000.0, vec![k], rho_s.clone()).unwrap();
+    let body = ellipsoid([0.6, 1.0, 0.8], vec![k]);
     let (moved, rep, _) = realign(&body, None, 1.0e-9, &prm(), false).unwrap();
     assert!(rep.applied && rep.angle_deg > 45.0, "{}", rep.angle_deg);
     let back = undo_frame(&moved, rep.rotation, rep.translation).unwrap();
-    // Two ray re-samplings of the same polyhedron: the error is the facet interpolation.
-    let worst = (0..nv)
-        .map(|i| (back.radius[i] - radius[i]).abs())
+    let worst = (0..body.positions.len())
+        .map(|i| (back.positions[i] - body.positions[i]).length())
         .fold(0.0, f64::max);
-    assert!(worst < 1e-2, "radius error {worst}");
-    assert!((back.kernels[0].center - k.center).length() < 1e-9);
-    let s0 = k.metric_mat();
-    let s1 = back.kernels[0].metric_mat();
-    assert!((s1 - s0).to_cols_array().iter().all(|v| v.abs() < 1e-9));
-    let rho_err = (0..nv)
-        .map(|i| (back.rho_s[i] - rho_s[i]).abs())
-        .fold(0.0, f64::max);
-    assert!(rho_err < 2e-2, "rho_s error {rho_err}");
-    // The identity map is a no-op.
+    assert!(worst < 1e-12, "position error {worst}");
+    assert!((back.kernels[0].center - k.center).length() < 1e-12);
+    let ds = back.kernels[0].metric_mat() - k.metric_mat();
+    assert!(ds.to_cols_array().iter().all(|v| v.abs() < 1e-9));
     let same = undo_frame(&body, astroid_evolution::scf::evolve::IDENTITY, DVec3::ZERO).unwrap();
-    assert_eq!(same.radius, body.radius);
+    assert_eq!(same.positions, body.positions);
 }

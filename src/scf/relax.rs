@@ -6,7 +6,7 @@
 //! sweep, so a subcritical face stays in static friction (`d = 0`). That is the
 //! relaxation reading of `S_slope ⊆ A`: locked nodes do not receive the repose
 //! proxy, and the mass row runs only inside the mobile patch. Crater features are
-//! protected by the geometric detector (radius anomaly against the neighbour mean,
+//! protected by the geometric detector (normal offset from the neighbour mean,
 //! curvature above the configured quantile) or by observed floor/wall/rim masks.
 //! Protected vertices are hard-locked (weight ≥ `lock_weight`) or made
 //! proportionally stiffer. Mass is restored inside the mobile set, never by a
@@ -15,11 +15,10 @@
 use std::path::Path;
 
 use crate::common::math::DVec3;
-use crate::rheo::{RheoGpu, VelocityField};
 
 use super::body::{Body, Topology};
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
-use super::mechanics::{face_chain, fit_surface, quad_form};
+use super::mechanics::{face_node, quad_form};
 use super::params::Project;
 use super::socp::{Kind, SocpInput, mass_jacobian, solve};
 use crate::common::error::SimError;
@@ -79,34 +78,20 @@ fn read_mask(
     )))
 }
 
-/// Vertex normals (area weighted).
-pub fn vertex_normals(body: &Body) -> Vec<DVec3> {
-    let p = body.positions();
-    let mut n = vec![DVec3::ZERO; p.len()];
-    for t in &body.topo.faces {
-        let [a, b, c] = t.map(|x| x as usize);
-        let area = (p[b] - p[a]).cross(p[c] - p[a]);
-        for v in [a, b, c] {
-            n[v] = n[v] + area;
-        }
-    }
-    n.iter()
-        .map(|x| x.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0)))
-        .collect()
-}
-
-/// Crater-feature detector: radius anomaly against the neighbour mean, and curvature rank.
+/// Crater-feature detector: the offset of a vertex from its neighbour mean along `N_i`
+/// (a fraction `radius_anomaly` of `R_*`), and the curvature rank.
 pub fn geometric_protection(project: &Project, body: &Body) -> Vec<f64> {
     let topo = &body.topo;
     let nv = topo.n_vertices();
-    let rmax = body.radius.iter().cloned().fold(0.0, f64::max);
-    let normals = vertex_normals(body);
+    let x = &body.positions;
+    let normals = body.vertex_normals();
+    let limit = project.relief.radius_anomaly * body.r_star();
     let mut w = vec![0.0_f64; nv];
     let mut curv = vec![0.0; nv];
     for i in 0..nv {
         let nb = &topo.vertex_neighbors[i];
-        let mean = nb.iter().map(|j| body.radius[*j]).sum::<f64>() / nb.len() as f64;
-        if (mean - body.radius[i]).abs() > project.relief.radius_anomaly * rmax {
+        let mean = nb.iter().fold(DVec3::ZERO, |s, j| s + x[*j]) / nb.len() as f64;
+        if (x[i] - mean).dot(normals[i]).abs() > limit {
             w[i] = 1.0;
         }
         curv[i] = nb
@@ -182,8 +167,6 @@ impl std::fmt::Display for AcceptError {
 
 /// Outer geometric acceptance: positive volume and mass.
 ///
-/// Grazing faces stay in the radial graph. Callers report `n·ê` from
-/// [`Body::min_radial`](super::body::Body::min_radial).
 /// Returns `Ok(relative_mass_residual)` on pass.
 /// Returns `Err(AcceptError::Geometry(_))` for a non-positive volume.
 /// Returns `Err(AcceptError::Mass(resid))` for mass failures that require conservative correction.
@@ -196,6 +179,31 @@ pub fn accept(fwd: &Forward, mass_target: f64, eps_mass: f64) -> Result<f64, Acc
         return Err(AcceptError::Mass(resid));
     }
     Ok(resid)
+}
+
+/// The one mass correction of §2.14 on the mobile set: `X_i ← X_i + α (Dℳ)_i N_i` with
+/// `α = clip((M − ℳ)/Σ (Dℳ)_i², ±Δ/max|(Dℳ)_i|)`, so every increment stays in the box.
+pub fn mass_correction(
+    positions: &[DVec3],
+    normals: &[DVec3],
+    kind: &[Kind],
+    jac: &[f64],
+    excess: f64,
+    trust: f64,
+) -> Option<Vec<DVec3>> {
+    let mobile = || (0..kind.len()).filter(|&i| kind[i] == Kind::Mobile);
+    let denom: f64 = mobile().map(|i| jac[i] * jac[i]).sum();
+    let jmax = mobile().map(|i| jac[i].abs()).fold(0.0, f64::max);
+    if !(denom.is_finite() && denom > 0.0) {
+        return None;
+    }
+    let clip = trust / jmax;
+    let alpha = (-excess / denom).clamp(-clip, clip);
+    let mut out = positions.to_vec();
+    for i in mobile() {
+        out[i] += normals[i] * (alpha * jac[i]);
+    }
+    Some(out)
 }
 
 #[derive(Clone, Debug)]
@@ -213,9 +221,6 @@ pub struct SweepRecord {
     pub dropped_overhang: usize,
     pub mass_residual: f64,
     pub max_displacement: f64,
-    /// Smallest `n·ê` on the accepted body, and the face that carries it.
-    pub min_radial: f64,
-    pub min_radial_face: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -240,50 +245,26 @@ struct SlopeState {
 
 fn slope_state(
     project: &Project,
-    gpu: &RheoGpu,
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
 ) -> Result<SlopeState, SimError> {
-    let (surf, _) = fit_surface(project, body)?;
     fwd.eval_faces(body)?;
-    let centres = fwd.face.points.clone();
-    let dirs: Vec<DVec3> = centres.iter().map(|c| c.try_normalize().unwrap()).collect();
-    let gravity: Vec<DVec3> = fwd
-        .face
-        .grad_u
-        .iter()
-        .zip(&centres)
-        .map(|(g, x)| effective_gravity(*g, *x, load))
-        .collect();
-    let hess_w: Vec<[f64; 6]> = fwd
-        .face
-        .hess_u
-        .iter()
-        .map(|h| hessian_w(*h, load))
-        .collect();
-    let normals = surf.normals(&dirs);
-    let pressure: Vec<f64> = hess_w
-        .iter()
-        .zip(&normals)
-        .map(|(h, (_, n))| {
-            project.stokes.p_ext + project.material.tide_coef * quad_form(deviator(*h), *n)
+    let faces = body.face_geometry();
+    let m = &project.material;
+    let nodes: Vec<_> = (0..faces.len())
+        .map(|f| {
+            let (x, n, _) = faces[f];
+            let g = effective_gravity(fwd.face.grad_u[f], x, load);
+            let tide = deviator(hessian_w(fwd.face.hess_u[f], load)).map(|v| m.tide_coef * v);
+            let p = project.stokes.p_ext + quad_form(tide, n);
+            (g, face_node(m, x, n, DVec3::ZERO, &[0.0; 6], g, tide, p))
         })
         .collect();
-    let (nodes, _) = face_chain(
-        gpu,
-        project,
-        &surf,
-        &VelocityField::zero(),
-        &dirs,
-        &gravity,
-        hess_w,
-        pressure,
-    )?;
     Ok(SlopeState {
-        sin_phi: nodes.iter().map(|n| n.sin_phi).collect(),
-        slack: nodes.iter().map(|n| n.slack).collect(),
-        gravity,
+        sin_phi: nodes.iter().map(|n| n.1.sin_phi).collect(),
+        slack: nodes.iter().map(|n| n.1.slack).collect(),
+        gravity: nodes.iter().map(|n| n.0).collect(),
     })
 }
 
@@ -336,7 +317,6 @@ pub fn friction_lock(
 /// Relax the supercritical slopes of `body` under the loads `load`.
 pub fn relax(
     project: &Project,
-    gpu: &RheoGpu,
     body: &Body,
     load: Loading,
 ) -> Result<(Body, RelaxReport), SimError> {
@@ -372,7 +352,7 @@ pub fn relax(
     let mut fwd = Forward::bind(&current, project.g)?;
     let mass_target = fwd.moments.mass;
     let mut sweeps = Vec::new();
-    let mut state = slope_state(project, gpu, &current, &mut fwd, load)?;
+    let mut state = slope_state(project, &current, &mut fwd, load)?;
     let measure = |st: &SlopeState| -> (f64, usize, usize) {
         let mut max_slack = 0.0_f64;
         let mut count = 0;
@@ -416,7 +396,8 @@ pub fn relax(
                 "relaxation sweep {sweep}: {n_super} supercritical faces but the mobile set is empty"
             )));
         }
-        let r_mean = current.radius.iter().sum::<f64>() / nv as f64;
+        let r_mean = current.r_mean();
+        let normals = current.vertex_normals();
         let mut trust = g.trust0 * r_mean;
         let jac = mass_jacobian(&current, &current.density()?);
         let d_pred = vec![0.0; nv];
@@ -447,6 +428,8 @@ pub fn relax(
                 mass: mass_target,
                 trust,
                 eps_n: g.eps_n,
+                lower: &[],
+                upper: &[],
                 varrho: g.varrho,
                 warm: None,
             };
@@ -461,16 +444,15 @@ pub fn relax(
                 }
                 Err(err) => return Err(err),
             };
-            let mut cand = current.clone();
-            for i in 0..nv {
-                cand.radius[i] += out.d[i];
-            }
+            let moved: Vec<DVec3> = (0..nv)
+                .map(|i| current.positions[i] + normals[i] * out.d[i])
+                .collect();
             let built = match Body::new(
                 topo.clone(),
-                cand.radius.clone(),
-                cand.bulk,
-                cand.kernels.clone(),
-                cand.rho_s.clone(),
+                moved,
+                current.bulk,
+                current.kernels.clone(),
+                current.rho_s.clone(),
             ) {
                 Ok(b) => b,
                 Err(e) => {
@@ -501,24 +483,13 @@ pub fn relax(
                     // A degenerate Jacobian is reported; it is not turned into a
                     // smaller trust radius.
                     let dm = bound.moments.mass - mass_target;
-                    let denom: f64 = sweep_kind
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, k)| **k == Kind::Mobile)
-                        .map(|(i, _)| jac[i] * jac[i])
-                        .sum();
-                    if !(denom.is_finite() && denom > 0.0) {
+                    let Some(rr) =
+                        mass_correction(&built.positions, &normals, &sweep_kind, &jac, dm, trust)
+                    else {
                         return Err(SimError::solver(format!(
                             "relaxation sweep {sweep}: mass residual {resid:.3e} and the mobile mass Jacobian is degenerate"
                         )));
-                    }
-                    let alpha = (-dm / denom).clamp(-trust, trust);
-                    let mut rr = built.radius.clone();
-                    for i in 0..nv {
-                        if sweep_kind[i] == Kind::Mobile {
-                            rr[i] += alpha * jac[i];
-                        }
-                    }
+                    };
                     let corrected = Body::new(
                         topo.clone(),
                         rr,
@@ -553,8 +524,7 @@ pub fn relax(
         let (b, f, resid, out, dmax) = accepted;
         current = b;
         fwd = f;
-        state = slope_state(project, gpu, &current, &mut fwd, load)?;
-        let (min_radial, min_radial_face) = current.min_radial();
+        state = slope_state(project, &current, &mut fwd, load)?;
         sweeps.push(SweepRecord {
             sweep,
             max_slack,
@@ -567,8 +537,6 @@ pub fn relax(
             dropped_overhang: out.dropped_overhang,
             mass_residual: resid,
             max_displacement: dmax,
-            min_radial,
-            min_radial_face,
         });
         let (new_slack, _, _) = measure(&state);
         if new_slack > 0.99 * last_slack {

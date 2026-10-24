@@ -1,7 +1,7 @@
 //! One accepted Tier 2 step, packed on the worker for the viewer.
 //!
-//! Positions are `scale * ω̂ * R`. The radial morph between two snapshots is
-//! `scale * ω̂ * mix(R_from, R_to, smoothstep(τ))`. `d_radial` stays a scalar.
+//! Positions are `scale * X_i`. The morph between two snapshots is
+//! `scale * mix(X_from, X_to, smoothstep(τ))`. `d_normal` stays a scalar.
 
 use rayon::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -91,7 +91,7 @@ pub struct VertexSample {
     pub v_sl: [f32; 3],
     pub rho_s: f32,
     pub j_net: f32,
-    pub d_radial: f32,
+    pub d_normal: f32,
     pub slack_max: f32,
     pub slack_avg: f32,
     /// Largest principal Cauchy stress (Pa, tension positive).
@@ -313,11 +313,10 @@ pub fn pack(
     slack_tol: f32,
     wall_seconds: f64,
 ) -> StepSnapshot {
-    let dirs = &state.body.topo.dirs;
     let faces = &state.body.topo.faces;
-    let nv = dirs.len();
-    let position_from = view_positions(dirs, &fields.radius_from, scale);
-    let position_to = view_positions(dirs, &state.body.radius, scale);
+    let nv = state.body.positions.len();
+    let position_from = view_positions(&fields.positions_from, scale);
+    let position_to = view_positions(&state.body.positions, scale);
     let normal_from = smooth_normals(&position_from, faces);
     let normal_to = smooth_normals(&position_to, faces);
     let geometry = state.body.face_geometry();
@@ -338,21 +337,14 @@ pub fn pack(
             rho_s: state.body.rho_s.get(i).copied().unwrap_or(0.0) as f32,
             j_net: (fields.j_dep.get(i).copied().unwrap_or(0.0)
                 - fields.j_ero.get(i).copied().unwrap_or(0.0)) as f32,
-            d_radial: fields.d_radial.get(i).copied().unwrap_or(0.0) as f32,
+            d_normal: fields.d_normal.get(i).copied().unwrap_or(0.0) as f32,
             slack_max: slack_max.get(i).copied().unwrap_or(0.0),
             slack_avg: slack_avg.get(i).copied().unwrap_or(0.0),
             sigma1: tension[i].0,
             sigma_dir: tension[i].1,
         });
     }
-    let (mut radius_min, mut radius_max) = (f64::INFINITY, 0.0_f64);
-    for radius in &state.body.radius {
-        radius_min = radius_min.min(*radius);
-        radius_max = radius_max.max(*radius);
-    }
-    if state.body.radius.is_empty() {
-        radius_min = 0.0;
-    }
+    let (radius_min, radius_max) = radius_range(&state.body.positions);
     let neighbors = &state.body.topo.vertex_neighbors;
     let flow_active = fields.flow_active;
     let v_sl = &fields.v_sl;
@@ -364,7 +356,7 @@ pub fn pack(
             } else {
                 (particle * nv) / PARTICLE_COUNT
             };
-            walk(dirs, neighbors, v_sl, flow_active, seed)
+            walk(&state.body.positions, &fields.normal, neighbors, v_sl, flow_active, seed)
         })
         .collect();
     let (bulk, cores, rho_range) = interior(state, scale);
@@ -432,14 +424,14 @@ pub fn pack(
 pub fn pack_initial(state: &State, mass: f64, scale: f64, slack_tol: f32) -> StepSnapshot {
     let nv = state.body.topo.n_vertices();
     let fields = StepFields {
-        radius_from: state.body.radius.clone(),
+        positions_from: state.body.positions.clone(),
         f_delta: vec![0.0; nv],
         movable: vec![false; nv],
         v_sl: Vec::new(),
         normal: Vec::new(),
         j_ero: Vec::new(),
         j_dep: Vec::new(),
-        d_radial: Vec::new(),
+        d_normal: Vec::new(),
         slack: Vec::new(),
         g_face: Vec::new(),
         stress: Vec::new(),
@@ -461,18 +453,20 @@ pub fn pack_initial(state: &State, mass: f64, scale: f64, slack_tol: f32) -> Ste
     snap
 }
 
-fn view_positions(dirs: &[DVec3], radius: &[f64], scale: f64) -> Vec<[f32; 3]> {
-    dirs.iter()
-        .enumerate()
-        .map(|(i, dir)| {
-            let span = scale * radius.get(i).copied().unwrap_or(0.0);
-            [
-                (dir.x * span) as f32,
-                (dir.y * span) as f32,
-                (dir.z * span) as f32,
-            ]
-        })
+fn view_positions(x: &[DVec3], scale: f64) -> Vec<[f32; 3]> {
+    x.iter()
+        .map(|p| [(p.x * scale) as f32, (p.y * scale) as f32, (p.z * scale) as f32])
         .collect()
+}
+
+/// Smallest and largest vertex distance from the centre of mass.
+pub fn radius_range(x: &[DVec3]) -> (f64, f64) {
+    if x.is_empty() {
+        return (0.0, 0.0);
+    }
+    x.iter()
+        .map(|p| p.length())
+        .fold((f64::INFINITY, 0.0), |(lo, hi), r| (lo.min(r), hi.max(r)))
 }
 
 pub fn smooth_normals(positions: &[[f32; 3]], faces: &[[u32; 3]]) -> Vec<[f32; 3]> {
@@ -528,23 +522,20 @@ fn tangent(velocity: DVec3, dir: DVec3) -> DVec3 {
 }
 
 fn walk(
-    dirs: &[DVec3],
+    x: &[DVec3],
+    normals: &[DVec3],
     neighbors: &[Vec<usize>],
     v_sl: &[DVec3],
     flow_active: bool,
     seed: usize,
 ) -> [StreamPoint; STREAMLINE_STEPS] {
-    let seed = if dirs.is_empty() {
-        0
-    } else {
-        seed.min(dirs.len() - 1)
-    };
+    let seed = if x.is_empty() { 0 } else { seed.min(x.len() - 1) };
     let stay = StreamPoint {
         verts: [seed as u32; 3],
         bary: [1.0, 0.0, 0.0],
     };
     let mut out = [stay; STREAMLINE_STEPS];
-    if !flow_active || dirs.is_empty() {
+    if !flow_active || x.is_empty() || normals.len() != x.len() {
         return out;
     }
     let mut current = seed;
@@ -553,13 +544,12 @@ fn walk(
             verts: [current as u32; 3],
             bary: [1.0, 0.0, 0.0],
         };
-        let dir = dirs[current];
-        let flow = tangent(v_sl.get(current).copied().unwrap_or(DVec3::ZERO), dir);
+        let flow = tangent(v_sl.get(current).copied().unwrap_or(DVec3::ZERO), normals[current]);
         let mut best = current;
         let mut best_dot = 0.0;
         if let Some(ring) = neighbors.get(current) {
             for &next in ring {
-                let score = flow.dot(dirs[next] - dir);
+                let score = flow.dot(x[next] - x[current]);
                 if score > best_dot {
                     best_dot = score;
                     best = next;
@@ -648,10 +638,11 @@ pub fn face_neighbors(nv: usize, faces: &[[u32; 3]]) -> Vec<Vec<usize>> {
     neighbors
 }
 
-/// Streamlines of a stored frame, rebuilt from its view positions, vertex neighbours and
-/// surface velocity: the same walk as `pack`.
+/// Streamlines of a stored frame, rebuilt from its view positions and normals, vertex
+/// neighbours and surface velocity: the same walk as `pack`.
 pub fn streamlines(
     positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
     neighbors: &[Vec<usize>],
     field: &[VertexSample],
     flow_active: bool,
@@ -669,12 +660,13 @@ pub fn streamlines(
             })
             .collect();
     }
-    let dirs: Vec<DVec3> = positions
+    let x: Vec<DVec3> = positions
         .iter()
-        .map(|p| {
-            let p = DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]));
-            p.try_normalize().unwrap_or(DVec3::Z)
-        })
+        .map(|p| DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2])))
+        .collect();
+    let normals_d: Vec<DVec3> = normals
+        .iter()
+        .map(|v| DVec3::new(f64::from(v[0]), f64::from(v[1]), f64::from(v[2])))
         .collect();
     let v_sl: Vec<DVec3> = field
         .iter()
@@ -684,7 +676,7 @@ pub fn streamlines(
         .into_par_iter()
         .flat_map_iter(|particle| {
             let seed = if nv == 0 { 0 } else { (particle * nv) / PARTICLE_COUNT };
-            walk(&dirs, neighbors, &v_sl, true, seed)
+            walk(&x, &normals_d, neighbors, &v_sl, true, seed)
         })
         .collect()
 }

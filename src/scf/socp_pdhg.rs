@@ -32,10 +32,7 @@ const GAP_ITERS_CAP: u32 = 80_000;
 /// Twenty residual checks. The gap extension ends when a window this long
 /// does not cut the gap by five percent.
 const GAP_WINDOW: u32 = 960;
-/// Batches one submission may run past the batch whose residuals are checked. A
-/// browser round trip costs milliseconds, a native one a fraction of that.
-#[cfg(target_arch = "wasm32")]
-const MAX_AHEAD: usize = 16;
+/// Batches one GPU submission may run past the batch whose residuals are checked.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_AHEAD: usize = 8;
 
@@ -53,6 +50,7 @@ fn gap_extension(iter: u32, gap: f64) -> u32 {
 }
 const MAX_STEP_GROWS: u32 = 8;
 /// Entries per workgroup of a long row (`pdhg_ax_long`).
+#[cfg(not(target_arch = "wasm32"))]
 const LONG_CHUNK: u32 = 4096;
 
 pub struct Problem {
@@ -157,6 +155,9 @@ struct Candidate {
 /// The CPU in f64 by default: faster than the GPU kernels on every cone program of
 /// the bundled bodies (a few hundred to several thousand rows), more precise than
 /// their double-single, and free of GPU round trips (milliseconds each in the browser).
+/// The browser has no environment and always runs the CPU iteration, so its build
+/// carries neither the GPU engine nor its kernels.
+#[cfg(not(target_arch = "wasm32"))]
 fn on_cpu() -> bool {
     std::env::var("AE_PDHG").as_deref() != Ok("gpu")
 }
@@ -164,6 +165,7 @@ fn on_cpu() -> bool {
 /// Where the batches run: the GPU kernels in double-single, or the same iteration on
 /// the CPU in f64.
 enum Engine {
+    #[cfg(not(target_arch = "wasm32"))]
     Gpu(gpu::Device),
     Cpu(cpu::Device),
 }
@@ -171,6 +173,7 @@ enum Engine {
 /// The iterates after a batch, as the engine holds them.
 #[derive(Clone)]
 enum Snapshot {
+    #[cfg(not(target_arch = "wasm32"))]
     Gpu(gpu::Words),
     Cpu(cpu::State),
 }
@@ -179,6 +182,7 @@ impl Snapshot {
     /// `(x, y, x_avg, y_avg)`.
     fn iterates(&self) -> [Vec<f64>; 4] {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Gpu(words) => words.each_ref().map(|w| gpu::undo(w)),
             Self::Cpu(state) => state.clone(),
         }
@@ -199,15 +203,16 @@ impl Engine {
         n_soc: usize,
         n_trust: usize,
     ) -> Result<Self, PdhgError> {
-        Ok(if on_cpu() {
-            Self::Cpu(cpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust))
-        } else {
-            Self::Gpu(gpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust)?)
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        if !on_cpu() {
+            return Ok(Self::Gpu(gpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust)?));
+        }
+        Ok(Self::Cpu(cpu::Device::new(a, p, q, b, tau, sigma, n_eq, n_nn, n_soc, n_trust)))
     }
 
     fn run(&mut self, plan: &[(u32, u32)], scale: f64) -> Result<Vec<Snapshot>, PdhgError> {
         Ok(match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Gpu(d) => d.run(plan, scale)?.into_iter().map(Snapshot::Gpu).collect(),
             Self::Cpu(c) => c.run(plan, scale).into_iter().map(Snapshot::Cpu).collect(),
         })
@@ -215,17 +220,20 @@ impl Engine {
 
     fn restore(&mut self, snap: &Snapshot) -> Result<(), PdhgError> {
         match (self, snap) {
+            #[cfg(not(target_arch = "wasm32"))]
             (Self::Gpu(d), Snapshot::Gpu(words)) => d.restore(words),
             (Self::Cpu(c), Snapshot::Cpu(state)) => {
                 c.restore(state);
                 Ok(())
             }
+            #[allow(unreachable_patterns)]
             _ => Err(PdhgError::Gpu("PDHG snapshot from another engine".into())),
         }
     }
 
     fn write_state(&mut self, x: &[f64], y: &[f64], xavg: &[f64], yavg: &[f64]) -> Result<(), PdhgError> {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Gpu(d) => d.write_state(x, y, xavg, yavg),
             Self::Cpu(c) => {
                 c.write_state(x, y, xavg, yavg);
@@ -238,6 +246,7 @@ impl Engine {
     /// round trip, a CPU batch only its iterations.
     fn ahead_limit(&self) -> usize {
         match self {
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Gpu(_) => MAX_AHEAD,
             Self::Cpu(_) => 1,
         }
@@ -2343,7 +2352,9 @@ impl Csr {
 /// Device side of the iteration (`scf/shader/pdhg.wesl`): the matrix in CSR and
 /// CSC form and the iterates stay resident; one submission runs a block of
 /// iterations and reads the iterates back.
+#[cfg(not(target_arch = "wasm32"))]
 mod gpu {
+    use super::cpu::transpose;
     use super::{Csr, PdhgError};
     use crate::gpu::{Job, Res, kernels};
 
@@ -2377,34 +2388,6 @@ mod gpu {
             .collect()
     }
 
-    pub(super) struct Csc {
-        pub(super) ptr: Vec<u32>,
-        pub(super) row: Vec<u32>,
-        pub(super) val: Vec<f64>,
-    }
-
-    pub(super) fn transpose(a: &Csr) -> Csc {
-        let mut ptr = vec![0u32; a.n + 1];
-        for &c in &a.col {
-            ptr[c as usize + 1] += 1;
-        }
-        for j in 0..a.n {
-            ptr[j + 1] += ptr[j];
-        }
-        let mut row = vec![0u32; a.val.len()];
-        let mut val = vec![0.0; a.val.len()];
-        let mut cursor = ptr.clone();
-        for i in 0..a.m {
-            for k in a.row_ptr[i] as usize..a.row_ptr[i + 1] as usize {
-                let j = a.col[k] as usize;
-                let p = cursor[j] as usize;
-                cursor[j] += 1;
-                row[p] = i as u32;
-                val[p] = a.val[k];
-            }
-        }
-        Csc { ptr, row, val }
-    }
 
     /// Device words of `(x, y, x_avg, y_avg)`.
     pub type Words = [Vec<[f32; 2]>; 4];

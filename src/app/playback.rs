@@ -401,7 +401,7 @@ fn mix_sample(a: VertexSample, b: VertexSample, t: f32) -> VertexSample {
         v_sl: mix3(a.v_sl, b.v_sl, t),
         rho_s: a.rho_s + (b.rho_s - a.rho_s) * t,
         j_net: a.j_net + (b.j_net - a.j_net) * t,
-        d_radial: a.d_radial + (b.d_radial - a.d_radial) * t,
+        d_normal: a.d_normal + (b.d_normal - a.d_normal) * t,
         slack_max: a.slack_max + (b.slack_max - a.slack_max) * t,
         slack_avg: a.slack_avg + (b.slack_avg - a.slack_avg) * t,
         sigma1: a.sigma1 + (b.sigma1 - a.sigma1) * t,
@@ -466,7 +466,7 @@ fn pack_surface(from: &Keyframe, to: &Keyframe) -> Vec<[f32; 4]> {
         out.push([a.v_sl[0], a.v_sl[1], a.v_sl[2], a.rho_s]);
         out.push([b.v_sl[0], b.v_sl[1], b.v_sl[2], b.rho_s]);
         out.push([a.slack_max, a.slack_avg, b.slack_max, b.slack_avg]);
-        out.push([a.j_net, b.j_net, a.d_radial, b.d_radial]);
+        out.push([a.j_net, b.j_net, a.d_normal, b.d_normal]);
         out.push([a.sigma_dir[0], a.sigma_dir[1], a.sigma_dir[2], a.sigma1]);
         out.push([b.sigma_dir[0], b.sigma_dir[1], b.sigma_dir[2], b.sigma1]);
     }

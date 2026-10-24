@@ -1,27 +1,36 @@
-//! Steps 1–4 of §10.4.4 on a frozen geometry: forward gravity (Tier 1), quasi-static
-//! Stokes–pressure Picard, yield classification, and the friction-angle chain
-//! (`rheo_friction`, called once on the GPU at the face centres).
+//! Steps 1–4 of §10.4.4 on a frozen geometry: forward gravity (Tier 1), the quasi-static
+//! Stokes–pressure solve, yield classification, and the friction-angle chain at the face
+//! centres (§10.3), all on the general domain of hypothesis (G).
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-use crate::common::math::DVec3;
-use crate::rheo::{ChainStats, NodeBatch, NodeResult, RheoGpu};
+use rayon::prelude::*;
 
+use crate::common::math::DVec3;
+use crate::rheo::closure::{ClosureInput, closure};
+use crate::rheo::model::local_frame;
+use crate::rheo::{ChainStats, NodeResult};
+
+use super::basis::{Want, contract_velocity_rays};
 use super::body::Body;
 use super::classify::{Classification, classify};
+use super::domain::SurfacePoints;
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
 use super::harmonics::SurfaceFit;
 use super::params::Project;
-use super::stokes::{Loads, Operators, StokesSolution, SurfaceSet, solve};
+use super::stokes::{Loads, Operators, StokesSolution, solve};
+use super::surface::SurfaceIndex;
 use crate::common::error::SimError;
+use crate::common::time::wall_seconds;
 
 pub struct Mechanics {
     pub omega: f64,
+    /// The enclosing-ball fit `R ≡ R_*` of the basis (G1).
     pub surf: SurfaceFit,
-    /// `max |R_SH − R| / R` over the vertices.
-    pub fit_error: f64,
     pub ops: Arc<Operators>,
+    /// Closest-point and ray queries on `Γ` of this geometry.
+    pub index: Arc<SurfaceIndex>,
     pub sol: StokesSolution,
     pub class: Classification,
     /// `g_eff` at the face centres.
@@ -102,81 +111,150 @@ pub fn surface_cauchy(node: &NodeResult, pressure: f64, tide: [f64; 6]) -> [f64;
     ]
 }
 
-/// Harmonic fit of the radii (the Stokes domain and the `rheo_friction` surface).
-pub fn fit_surface(project: &Project, body: &Body) -> Result<(SurfaceFit, f64), SimError> {
-    // A spin-only step keeps the radii: the fit of the last body is reused.
-    static LAST: Mutex<Option<(u64, SurfaceFit, f64)>> = Mutex::new(None);
-    let topo = &body.topo;
-    let mut h = DefaultHasher::new();
-    project.stokes.l_surface.hash(&mut h);
-    body.radius.iter().for_each(|r| r.to_bits().hash(&mut h));
-    topo.dirs
-        .iter()
-        .for_each(|d| d.to_array().iter().for_each(|v| v.to_bits().hash(&mut h)));
-    topo.vertex_solid.iter().for_each(|w| w.to_bits().hash(&mut h));
-    let key = h.finish();
-    if let Some((k, surf, err)) = LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        if *k == key && *err <= project.geometry.sh_fit_tol {
-            return Ok((surf.clone(), *err));
-        }
+/// The friction chain of §10.3 at one face centre from the analytic strain `D` there
+/// (§10.2): `M` is the tangential block of `D`, and the traction condition gives `D_na`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn face_node(
+    m: &crate::rheo::Material,
+    x: DVec3,
+    n: DVec3,
+    v: DVec3,
+    d6: &[f64],
+    g: DVec3,
+    tide: [f64; 6],
+    pressure: f64,
+) -> NodeResult {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let dm = [
+        [d6[0], d6[3] * s, d6[4] * s],
+        [d6[3] * s, d6[1], d6[5] * s],
+        [d6[4] * s, d6[5] * s, d6[2]],
+    ];
+    let (e1, e2) = local_frame(n);
+    let quad = |a: DVec3, b: DVec3| {
+        let (a, b) = (a.to_array(), b.to_array());
+        (0..3).map(|i| (0..3).map(|j| a[i] * dm[i][j] * b[j]).sum::<f64>()).sum::<f64>()
+    };
+    let d_ab = [quad(e1, e1), quad(e1, e2), quad(e2, e2)];
+    let tr = d_ab[0] + d_ab[2];
+    let s0 = 2.0 * (tr * tr + d_ab[0] * d_ab[0] + 2.0 * d_ab[1] * d_ab[1] + d_ab[2] * d_ab[2]);
+    let tm = sym(tide);
+    let t = [e1, e2].map(|e| n.dot(tm * e));
+    let tide_frob = (tide[..3].iter().map(|x| x * x).sum::<f64>()
+        + 2.0 * tide[3..].iter().map(|x| x * x).sum::<f64>())
+    .sqrt();
+    let out = closure(
+        m,
+        &ClosureInput {
+            s0,
+            tg: t[0] * t[0] + t[1] * t[1],
+            pressure,
+            g_dot_n: g.dot(n),
+            g_norm: g.length(),
+            g_cross_n: g.cross(n).length(),
+            tide_frob,
+        },
+    );
+    let d_na = t.map(|ta| if out.eta > 0.0 { -ta / (2.0 * out.eta) } else { 0.0 });
+    NodeResult {
+        radius: x.length(),
+        normal: n,
+        area_density: 0.0,
+        velocity: v,
+        e1,
+        e2,
+        metric: [1.0, 0.0, 1.0],
+        d_ab,
+        d_nn: -tr,
+        d_na,
+        shear: out.shear,
+        inertial: out.inertial,
+        mu_d: out.mu_d,
+        eta: out.eta,
+        tau_eq: out.tau_eq,
+        p_tilde: out.p_tilde,
+        p_star: out.p_star,
+        p_ref: out.p_ref,
+        mu_proj: out.mu_proj,
+        mu_eff: out.mu_eff,
+        phi: out.phi,
+        sin2_phi: out.sin2_phi,
+        sin_phi: out.sin2_phi.sqrt(),
+        sin_slope: out.sin_slope,
+        slack: out.slack,
+        overhang_margin: out.overhang_margin,
+        tide_frob,
+        v_r: v.dot(x.normalize_or_zero()),
+        v_n: v.dot(n),
+        s0,
+        tg: t[0] * t[0] + t[1] * t[1],
+        iterations: out.iterations,
+        converged: out.converged,
     }
-    let surf = SurfaceFit::fit(
-        project.stokes.l_surface,
-        &topo.dirs,
-        &body.radius,
-        &topo.vertex_solid,
-    )?;
-    let err = surf.max_relative_error(&topo.dirs, &body.radius);
-    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, surf.clone(), err));
-    if err > project.geometry.sh_fit_tol {
-        return Err(SimError::geometry(format!(
-            "harmonic surface of degree {} misses the polyhedron by {err:.3e} > geometry.sh_fit_tol {:.3e}",
-            project.stokes.l_surface, project.geometry.sh_fit_tol
-        )));
-    }
-    Ok((surf, err))
 }
 
-/// Run the friction-angle chain at the face centres.
-pub fn face_chain(
-    gpu: &RheoGpu,
+/// `(xx, yy, zz, xy, xz, yz)` as a matrix.
+pub fn sym(t: [f64; 6]) -> crate::common::math::DMat3 {
+    crate::common::math::sym_mat(t)
+}
+
+/// Run the friction chain at every face centre.
+fn face_chain(
     project: &Project,
-    surf: &SurfaceFit,
-    velocity: &crate::rheo::VelocityField,
-    dirs: &[DVec3],
+    ops: &Operators,
+    u: &[f64],
     g_face: &[DVec3],
-    hess_w: Vec<[f64; 6]>,
-    pressure: Vec<f64>,
+    tide_face: &[[f64; 6]],
+    pressure: &[f64],
 ) -> Result<(Vec<NodeResult>, ChainStats), SimError> {
-    let batch = NodeBatch {
-        dirs: dirs.to_vec(),
-        gravity: g_face.to_vec(),
-        hessian_w: hess_w,
-        pressure,
+    let start = wall_seconds();
+    let f = &ops.faces;
+    let vd = contract_velocity_rays(&ops.surf, &ops.lay, &f.pts, 1, Want::VD, u);
+    let nodes: Vec<NodeResult> = (0..f.pts.len())
+        .into_par_iter()
+        .map(|k| {
+            let v = DVec3::new(vd.v[3 * k], vd.v[3 * k + 1], vd.v[3 * k + 2]);
+            face_node(
+                &project.material,
+                f.pts[k],
+                f.normals[k],
+                v,
+                &vd.d[6 * k..6 * k + 6],
+                g_face[k],
+                tide_face[k],
+                pressure[k],
+            )
+        })
+        .collect();
+    let stats = ChainStats {
+        max_iterations: nodes.iter().map(|n| n.iterations).max().unwrap_or(0),
+        unconverged: nodes.iter().filter(|n| !n.converged).count() as u32,
+        invalid: nodes.iter().filter(|n| !n.slack.is_finite()).count() as u32,
+        seconds: wall_seconds() - start,
     };
-    let res = gpu.evaluate(&project.material, &surf.to_rheo(), velocity, &batch)?;
-    if res.stats.invalid > 0 {
+    if stats.invalid > 0 {
         return Err(SimError::rheology_not_converged(format!(
             "{} rheology nodes were invalid",
-            res.stats.invalid
+            stats.invalid
         )));
     }
-    Ok((res.nodes, res.stats))
+    Ok((nodes, stats))
 }
 
-/// The Stokes operators depend on the geometry and the density only (§10.4.2), not on
-/// the spin or the loads. A spin-only step keeps both, so the last set is reused.
-fn operators(
+/// The geometry of the step: the surface index and the Stokes operators. They depend on
+/// the vertices and the density only, not on the spin, so a spin-only step reuses them.
+fn geometry(
     project: &Project,
     body: &Body,
-    surf: &SurfaceFit,
-    density: &crate::common::density::CauchyDensity,
-    dirs: &[DVec3],
-) -> Result<Arc<Operators>, SimError> {
-    static LAST: Mutex<Option<(u64, Arc<Operators>)>> = Mutex::new(None);
+    fwd: &Forward,
+) -> Result<(Arc<SurfaceIndex>, Arc<Operators>), SimError> {
+    type Cached = (u64, Arc<SurfaceIndex>, Arc<Operators>);
+    static LAST: Mutex<Option<Cached>> = Mutex::new(None);
     let mut h = DefaultHasher::new();
     let bits = |h: &mut DefaultHasher, v: f64| v.to_bits().hash(h);
-    body.radius.iter().for_each(|r| bits(&mut h, *r));
+    body.positions
+        .iter()
+        .for_each(|p| p.to_array().iter().for_each(|v| bits(&mut h, *v)));
     bits(&mut h, body.bulk);
     for k in &body.kernels {
         k.center.to_array().iter().for_each(|v| bits(&mut h, *v));
@@ -184,96 +262,77 @@ fn operators(
         bits(&mut h, k.weight);
         bits(&mut h, k.alpha);
     }
-    dirs.iter()
-        .for_each(|d| d.to_array().iter().for_each(|v| bits(&mut h, *v)));
     format!("{:?}", project.stokes).hash(&mut h);
     let key = h.finish();
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, ops)) = last.as_ref() {
+    if let Some((k, index, ops)) = last.as_ref() {
         if *k == key {
-            return Ok(ops.clone());
+            return Ok((index.clone(), ops.clone()));
         }
     }
     let _span = super::timing::span("stokes_operators");
-    let surface = SurfaceSet::build(surf, dirs.to_vec(), body.topo.face_solid.clone());
-    let ops = Arc::new(Operators::build(surf, density, surface, &project.stokes)?);
-    *last = Some((key, ops.clone()));
-    Ok(ops)
+    let index = Arc::new(SurfaceIndex::build(&body.positions, &body.topo.faces));
+    let surf = SurfaceFit::sphere(body.r_star());
+    let ops = Arc::new(Operators::build(
+        &surf,
+        &body.density()?,
+        fwd.body_mesh(),
+        &index,
+        SurfacePoints::faces(&body.face_geometry()),
+        &project.stokes,
+    )?);
+    *last = Some((key, index.clone(), ops.clone()));
+    Ok((index, ops))
 }
 
 pub fn evaluate(
     project: &Project,
-    gpu: &RheoGpu,
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
     guess: Option<&[f64]>,
 ) -> Result<Mechanics, SimError> {
-    let topo = body.topo.clone();
-    let density = body.density()?;
     let material = &project.material;
-    let (surf, fit_error) = {
-        let _span = super::timing::span("surface_fit");
-        fit_surface(project, body)?
-    };
-
+    let (index, ops) = geometry(project, body, fwd)?;
     fwd.eval_faces(body)?;
-    let centres = fwd.face.points.clone();
-    let dirs: Vec<DVec3> = centres
-        .iter()
-        .map(|c| c.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0)))
-        .collect();
-    let ops = operators(project, body, &surf, &density, &dirs)?;
-
-    // Interior fields at the Stokes quadrature points.
-    let field = match ops.vol_field.get() {
-        Some(field) => field,
+    // Interior fields at the volume nodes and surface fields at the boundary rule.
+    let vol = match ops.vol_field.get() {
+        Some(f) => f,
         None => {
-            let field = fwd.eval_field(&ops.vol.pts, true)?;
-            ops.vol_field.get_or_init(|| field)
+            let f = fwd.eval_field(&ops.vol.pts, true)?;
+            ops.vol_field.get_or_init(|| f)
+        }
+    };
+    let bnd = match ops.bnd_field.get() {
+        Some(f) => f,
+        None => {
+            let f = fwd.eval_surface(&ops.bnd.pts)?;
+            ops.bnd_field.get_or_init(|| f)
         }
     };
     let _loads = super::timing::span("effective_loads");
-    let g_vol: Vec<DVec3> = ops
-        .vol
-        .pts
+    let tide_of = |h: &[f64; 6]| deviator(hessian_w(*h, load)).map(|v| material.tide_coef * v);
+    let g_of = |pts: &[DVec3], g: &[DVec3]| -> Vec<DVec3> {
+        pts.iter().zip(g).map(|(x, g)| effective_gravity(*g, *x, load)).collect()
+    };
+    let g_vol = g_of(&ops.vol.pts, &vol.grad_u);
+    let tide: Vec<[f64; 6]> = vol.hess_u.iter().map(tide_of).collect();
+    let g_bnd = g_of(&ops.bnd.pts, &bnd.grad_u);
+    let tide_bnd: Vec<[f64; 6]> = bnd.hess_u.iter().map(tide_of).collect();
+    let g_face = g_of(&ops.faces.pts, &fwd.face.grad_u);
+    let tide_face: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(tide_of).collect();
+    let tide_nn: Vec<f64> = tide_face
         .iter()
-        .zip(&field.grad_u)
-        .map(|(x, g)| effective_gravity(*g, *x, load))
-        .collect();
-    let tide: Vec<[f64; 6]> = field
-        .hess_u
-        .iter()
-        .map(|h| {
-            let d = deviator(hessian_w(*h, load));
-            d.map(|v| material.tide_coef * v)
-        })
-        .collect();
-
-    // Face-centre fields.
-    let g_face: Vec<DVec3> = fwd
-        .face
-        .grad_u
-        .iter()
-        .zip(&centres)
-        .map(|(g, x)| effective_gravity(*g, *x, load))
-        .collect();
-    let hess_w: Vec<[f64; 6]> = fwd
-        .face
-        .hess_u
-        .iter()
-        .map(|h| hessian_w(*h, load))
-        .collect();
-    let tide_nn: Vec<f64> = hess_w
-        .iter()
-        .zip(&ops.surface.normals)
-        .map(|(h, n)| material.tide_coef * quad_form(deviator(*h), *n))
+        .zip(&ops.faces.normals)
+        .map(|(t, n)| quad_form(*t, *n))
         .collect();
     drop(_loads);
 
     let ld = Loads {
         g_eff: &g_vol,
         tide: &tide,
+        g_bnd: &g_bnd,
+        tide_bnd: &tide_bnd,
         tide_nn: &tide_nn,
         g_const: project.g,
     };
@@ -281,40 +340,23 @@ pub fn evaluate(
         let _span = super::timing::span("stokes");
         solve(&ops, &ld, &project.stokes, material, guess)?
     };
-
     let class = {
         let _span = super::timing::span("classify");
         classify(
             &ops,
             &sol,
-            &surf,
-            &topo,
+            body,
+            fwd.body_mesh(),
+            &index,
             material,
             project.yielding.delta_y,
             project.stokes.n_radial,
-            &|x| density.rho(x),
             load.omega,
-            material.spec.p_min,
-        )
+        )?
     };
-
-    let velocity = ops.lay.to_rheo(&sol.u);
-    let tide_face: Vec<[f64; 6]> = hess_w
-        .iter()
-        .map(|h| deviator(*h).map(|v| material.tide_coef * v))
-        .collect();
     let (rheo, rheo_stats) = {
         let _span = super::timing::span("rheology");
-        face_chain(
-            gpu,
-            project,
-            &surf,
-            &velocity,
-            &dirs,
-            &g_face,
-            hess_w,
-            sol.p_surface.clone(),
-        )?
+        face_chain(project, &ops, &sol.u, &g_face, &tide_face, &sol.p_surface)?
     };
     let surface_stress = rheo
         .iter()
@@ -324,9 +366,9 @@ pub fn evaluate(
         .collect();
     Ok(Mechanics {
         omega: load.omega,
-        surf,
-        fit_error,
+        surf: ops.surf.clone(),
         ops,
+        index,
         sol,
         class,
         g_face,

@@ -31,7 +31,6 @@ fn record() -> StepRecord {
         quasi_static: true,
         core_mass_fraction: 1.0,
         mass: 5.0,
-        min_radial: 1.0,
         ..StepRecord::default()
     }
 }
@@ -88,11 +87,12 @@ fn face_slack_scatters_by_the_incident_maximum_and_the_area_weight() {
 
 #[test]
 fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
-    let topo = Arc::new(Topology::icosphere(0));
+    let (topo, dirs) = Topology::icosphere(0);
+    let topo = Arc::new(topo);
     let count = topo.n_vertices();
     let body = Body::new(
         topo.clone(),
-        vec![2.0; count],
+        dirs.iter().map(|d| *d * 2.0).collect(),
         1000.0,
         Vec::<CauchyKernel>::new(),
         vec![0.0; count],
@@ -109,14 +109,14 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
         velocity: Vec::new(),
     };
     let fields = StepFields {
-        radius_from: vec![1.0; count],
+        positions_from: dirs.clone(),
         f_delta: vec![0.0; count],
         movable: vec![false; count],
         v_sl: vec![DVec3::ZERO; count],
-        normal: state.body.topo.dirs.clone(),
+        normal: dirs.clone(),
         j_ero: vec![0.0; count],
         j_dep: vec![0.0; count],
-        d_radial: vec![0.0; count],
+        d_normal: vec![0.0; count],
         slack: vec![0.0; state.body.topo.n_faces()],
         g_face: vec![DVec3::ZERO; state.body.topo.n_faces()],
         // Uniaxial tension 5 Pa along x, compression along z.
@@ -126,7 +126,7 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
     };
     let snapshot = pack(&record(), &state, &fields, 0.5, 0.01, 1.5);
     assert!((snapshot.tension_max - 5.0).abs() < 1e-5);
-    for (sample, dir) in snapshot.field.iter().zip(&state.body.topo.dirs) {
+    for (sample, dir) in snapshot.field.iter().zip(&dirs) {
         assert!((sample.sigma1 - 5.0).abs() < 1e-4);
         let [x, y, z] = sample.sigma_dir;
         // The tangent projection of ±x: unit, normal to the radial direction.
@@ -137,10 +137,10 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
             assert!(x.abs() > y.abs() && x.abs() > z.abs() || dir.x.abs() > 0.7);
         }
     }
-    assert_eq!(snapshot.field.len(), state.body.radius.len());
-    assert!(snapshot.field.iter().all(|sample| sample.d_radial == 0.0));
+    assert_eq!(snapshot.field.len(), state.body.positions.len());
+    assert!(snapshot.field.iter().all(|sample| sample.d_normal == 0.0));
     assert!(!snapshot.flow_active);
-    for (shown, dir) in snapshot.position_to.iter().zip(&state.body.topo.dirs) {
+    for (shown, dir) in snapshot.position_to.iter().zip(&dirs) {
         let expected = morphed_position([dir.x, dir.y, dir.z], 2.0, 2.0, 1.0, 0.5);
         assert!((shown[0] - expected[0]).abs() < 1.0e-5);
         assert!((shown[1] - expected[1]).abs() < 1.0e-5);
@@ -163,11 +163,12 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
 
 #[test]
 fn the_initial_snapshot_is_a_still_tier2_pose() {
-    let topo = Arc::new(Topology::icosphere(0));
+    let (topo, dirs) = Topology::icosphere(0);
+    let topo = Arc::new(topo);
     let count = topo.n_vertices();
     let body = Body::new(
         topo.clone(),
-        vec![2.0; count],
+        dirs.iter().map(|d| *d * 2.0).collect(),
         1000.0,
         Vec::<CauchyKernel>::new(),
         vec![0.0; count],
@@ -200,21 +201,21 @@ fn the_initial_snapshot_is_a_still_tier2_pose() {
 #[test]
 fn the_history_returns_each_recorded_step_within_quantization() {
     use astroid_evolution::app::history::History;
-    let topo = Arc::new(Topology::icosphere(2));
+    let (topo, dirs) = Topology::icosphere(2);
+    let topo = Arc::new(topo);
     let count = topo.n_vertices();
     let faces = topo.n_faces();
     let mut history = History::default();
     let mut originals = Vec::new();
     for step in 0..3 {
         // A bump that grows with the step, and a stress that changes with it.
-        let radius: Vec<f64> = topo
-            .dirs
+        let radius: Vec<f64> = dirs
             .iter()
             .map(|d| 2.0 + 0.1 * step as f64 * d.z.max(0.0))
             .collect();
         let body = Body::new(
             topo.clone(),
-            radius.clone(),
+            dirs.iter().zip(&radius).map(|(d, r)| *d * *r).collect(),
             1000.0,
             Vec::<CauchyKernel>::new(),
             vec![0.0; count],
@@ -231,14 +232,14 @@ fn the_history_returns_each_recorded_step_within_quantization() {
             velocity: Vec::new(),
         };
         let fields = StepFields {
-            radius_from: radius,
+            positions_from: state.body.positions.clone(),
             f_delta: (0..count).map(|i| i as f64 * 1e-3).collect(),
             movable: vec![true; count],
             v_sl: vec![DVec3::new(0.0, 1e-9, 0.0); count],
-            normal: topo.dirs.clone(),
+            normal: dirs.clone(),
             j_ero: vec![0.0; count],
             j_dep: vec![0.0; count],
-            d_radial: vec![0.0; count],
+            d_normal: vec![0.0; count],
             slack: vec![0.0; faces],
             g_face: vec![DVec3::ZERO; faces],
             stress: vec![[step as f64 + 1.0, 0.0, -1.0, 0.0, 0.0, 0.0]; faces],

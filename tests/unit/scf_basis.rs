@@ -13,14 +13,25 @@ const S2: f64 = std::f64::consts::SQRT_2;
 use astroid_evolution::scf::basis::*;
 use std::f64::consts::PI;
 
+/// `R = 100 (1 + 0.08 (3z² − 1) + 0.05 xy)`, a degree-2 star surface (the star-shaped
+/// special case of the basis), projected exactly on a product rule.
 fn bumpy_surface() -> SurfaceFit {
-    // R = 100 (1 + 0.08 Y20-like + 0.05 xy-like) fitted on a dense grid.
     let (dirs, w) = astroid_evolution::scf::quad::sphere_grid(16, 32);
-    let radii: Vec<f64> = dirs
-        .iter()
-        .map(|d| 100.0 * (1.0 + 0.08 * (3.0 * d.z * d.z - 1.0) + 0.05 * d.x * d.y))
-        .collect();
-    SurfaceFit::fit(4, &dirs, &radii, &w).unwrap()
+    let n = (4 + 1) * (4 + 1);
+    let mut coeff = vec![0.0; n];
+    for (d, w) in dirs.iter().zip(&w) {
+        let r = 100.0 * (1.0 + 0.08 * (3.0 * d.z * d.z - 1.0) + 0.05 * d.x * d.y);
+        let y = astroid_evolution::rheo::basis::sh_all(4, d.to_array());
+        for a in 0..n {
+            coeff[a] += w * r * y[a];
+        }
+    }
+    SurfaceFit { l_max: 4, coeff }
+}
+
+fn radius(surf: &SurfaceFit, w: DVec3) -> f64 {
+    let y = astroid_evolution::rheo::basis::sh_all(surf.l_max, w.to_array());
+    surf.coeff.iter().zip(&y).map(|(c, y)| c * y).sum()
 }
 
 #[test]
@@ -103,7 +114,7 @@ fn pressure_basis_vanishes_on_the_surface() {
     let surf = bumpy_surface();
     let lay = PresLayout { l_max: 3, k_max: 3 };
     let w = DVec3::new(0.3, -0.5, 0.8).try_normalize().unwrap();
-    let x = w * surf.radius(w);
+    let x = w * radius(&surf, w);
     let rows = eval_pressure(&surf, &lay, &[x], true);
     assert!(rows.val.iter().all(|v| v.abs() < 1e-12));
     // The lift reproduces Y_lm there.

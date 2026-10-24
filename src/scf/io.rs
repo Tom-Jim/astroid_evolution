@@ -14,7 +14,7 @@ use super::evolve::State;
 use super::params::Project;
 use crate::common::error::SimError;
 
-const FORMAT: &str = "scf-snapshot-v4";
+const FORMAT: &str = "scf-snapshot-v5";
 const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -29,16 +29,16 @@ pub struct KernelRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub format: String,
-    /// Ellipsoid subdivision. An imported mesh stores its own directions and faces;
-    /// this value is not used to rebuild that mesh.
+    /// Icosphere subdivision of the project (resolution of `mesh_rays` and ellipsoids).
     pub level: usize,
-    /// Unit directions of the star nodes, one per vertex.
-    pub dirs: Vec<[f64; 3]>,
-    /// Imported or ellipsoid triangles. Vertex order matches `dirs` and `radius`.
-    pub faces: Vec<[u32; 3]>,
+    /// Vertex positions `X_i` (m).
+    pub positions: Vec<[f64; 3]>,
+    /// Triangles of an imported mesh; absent when they are those of the icosphere of
+    /// `level`, which the reader rebuilds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<Vec<[u32; 3]>>,
     pub bulk: f64,
     pub kernels: Vec<KernelRecord>,
-    pub radius: Vec<f64>,
     pub rho_s: Vec<f64>,
     pub time: f64,
     pub step: usize,
@@ -64,8 +64,11 @@ impl Snapshot {
         Self {
             format: FORMAT.into(),
             level,
-            dirs: body.topo.dirs.iter().map(|d| d.to_array()).collect(),
-            faces: body.topo.faces.clone(),
+            positions: body.positions.iter().map(|p| p.to_array()).collect(),
+            faces: match body.topo.icosphere {
+                Some(l) if l == level => None,
+                _ => Some(body.topo.faces.clone()),
+            },
             bulk: body.bulk,
             kernels: body
                 .kernels
@@ -77,7 +80,6 @@ impl Snapshot {
                     alpha: k.alpha,
                 })
                 .collect(),
-            radius: body.radius.clone(),
             rho_s: body.rho_s.clone(),
             time,
             step,
@@ -121,15 +123,17 @@ impl Snapshot {
     }
 
     pub fn to_body(&self) -> Result<Body, SimError> {
-        if self.dirs.len() != self.radius.len() || self.dirs.len() != self.rho_s.len() {
-            return Err(SimError::io(
-                "snapshot directions, radii and ρ_s differ in length",
-            ));
+        if self.positions.len() != self.rho_s.len() {
+            return Err(SimError::io("snapshot positions and ρ_s differ in length"));
         }
-        let topo = Arc::new(Topology::new(
-            self.dirs.iter().copied().map(DVec3::from_array).collect(),
-            self.faces.clone(),
-        ));
+        let topo = match &self.faces {
+            Some(faces) => Topology::new(self.positions.len(), faces.clone()),
+            None => Topology::icosphere(self.level).0,
+        };
+        if topo.n_vertices() != self.positions.len() {
+            return Err(SimError::io("snapshot positions do not match its faces"));
+        }
+        let topo = Arc::new(topo);
         let kernels = self
             .kernels
             .iter()
@@ -144,7 +148,7 @@ impl Snapshot {
             .collect::<Result<Vec<_>, _>>()?;
         Body::new(
             topo,
-            self.radius.clone(),
+            self.positions.iter().copied().map(DVec3::from_array).collect(),
             self.bulk,
             kernels,
             self.rho_s.clone(),
@@ -161,14 +165,22 @@ pub fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<(), SimError> {
 pub fn read_snapshot(path: &Path) -> Result<Snapshot, SimError> {
     // The page and its workers read installed bytes; native builds read the disk.
     let text = crate::io::memfs::read_to_string(path).map_err(SimError::io)?;
-    let snap: Snapshot = serde_json::from_str(&text)
-        .map_err(|e| SimError::io(format!("{}: {e}", path.display())))?;
+    let wrong_format = |found: &str| {
+        SimError::io(format!("{} is a '{found}' container; expected '{FORMAT}'", path.display()))
+    };
+    let snap: Snapshot = serde_json::from_str(&text).map_err(|e| {
+        // Another container version fails on its fields first; name the version instead.
+        #[derive(Deserialize)]
+        struct Tag {
+            format: String,
+        }
+        match serde_json::from_str::<Tag>(&text) {
+            Ok(tag) if tag.format != FORMAT => wrong_format(&tag.format),
+            _ => SimError::io(format!("{}: {e}", path.display())),
+        }
+    })?;
     if snap.format != FORMAT {
-        return Err(SimError::io(format!(
-            "{} is a '{}' container; expected '{FORMAT}'",
-            path.display(),
-            snap.format
-        )));
+        return Err(wrong_format(&snap.format));
     }
     Ok(snap)
 }
@@ -188,9 +200,9 @@ pub fn initial_body(project: &Project) -> Result<Body, SimError> {
     let _span = super::timing::span("mesh_load");
     match project.body.shape.as_str() {
         "ellipsoid" => {
-            let topo = Arc::new(Topology::icosphere(project.body.level));
-            let radius = Body::ellipsoid(topo.clone(), project.body.semi_axes.expect("validated"));
-            assemble(project, topo, radius, project.kernels())
+            let (topo, positions) =
+                Body::ellipsoid(project.body.level, project.body.semi_axes.expect("validated"));
+            assemble(project, topo, positions, project.kernels())
         }
         _ => {
             let path = project.resolve(project.body.mesh.as_deref().expect("validated"));
@@ -204,54 +216,53 @@ pub fn initial_body(project: &Project) -> Result<Body, SimError> {
     }
 }
 
-/// Star body of an imported triangle mesh.
+/// Body of an imported triangle mesh, centred on its volume centroid.
 ///
-/// Vertices and faces are the mesh itself, centred on the vertex mean. Radial cones
-/// that overlap are separated tangentially at constant radius. Cauchy centres
-/// move by the same translation, so the density stays attached to the polyhedron.
-/// The returned origin is that vertex mean in the input frame (§10.4.4 step 8b maps
-/// the evolved body back by this shift). Updating `radius[i]` later moves vertex `i`.
+/// `shape = "mesh"` uses the mesh itself; `"mesh_rays"` re-triangulates it on the
+/// icosphere of `body.level`. Cauchy centres move by the same translation, so the
+/// density stays attached to the polyhedron. The returned origin is the centroid in
+/// the input frame (§10.4.4 step 8b maps the evolved body back by this shift).
 pub fn mesh_body(
     project: &Project,
     vertices: &[DVec3],
     faces: Vec<[u32; 3]>,
 ) -> Result<(Body, DVec3), SimError> {
-    let (topo, radius, origin) = match project.body.shape.as_str() {
-        "mesh_rays" => Topology::star_from_rays(project.body.level, vertices, &faces)?,
-        _ => Topology::star_from_mesh(vertices, faces)?,
+    let (topo, positions, origin) = match project.body.shape.as_str() {
+        "mesh_rays" => Body::rays_from_mesh(project.body.level, vertices, &faces)?,
+        _ => Body::from_mesh(vertices, faces)?,
     };
     let kernels = project
         .kernels()
         .into_iter()
         .map(|k| CauchyKernel::try_anisotropic(k.center - origin, k.weight, k.metric, k.alpha))
         .collect::<Result<Vec<_>, _>>()?;
-    let body = assemble(project, Arc::new(topo), radius, kernels)?;
+    let body = assemble(project, topo, positions, kernels)?;
     Ok((body, origin))
 }
 
 fn assemble(
     project: &Project,
     topo: Arc<Topology>,
-    radius: Vec<f64>,
+    positions: Vec<DVec3>,
     kernels: Vec<CauchyKernel>,
 ) -> Result<Body, SimError> {
     let rho_bulk = project.material.spec.rho_p * project.material.spec.nu0;
     let rho_s = vec![rho_bulk * project.material.spec.h_s; topo.n_vertices()];
-    Body::new(topo, radius, project.density.bulk, kernels, rho_s)
+    Body::new(topo, positions, project.density.bulk, kernels, rho_s)
 }
 
 pub fn write_obj(path: &Path, body: &Body) -> Result<(), SimError> {
-    let positions = body.positions().into_iter().map(|p| p.to_array());
+    let positions = body.positions.iter().map(|p| p.to_array());
     crate::common::obj::write(path, "", positions, &body.topo.faces)
 }
 
 pub fn write_vertices_csv(path: &Path, body: &Body) -> Result<(), SimError> {
     ensure_parent(path)?;
-    let mut text = String::from("i,x,y,z,radius,rho_s\n");
-    for (i, p) in body.positions().iter().enumerate() {
+    let mut text = String::from("i,x,y,z,rho_s\n");
+    for (i, p) in body.positions.iter().enumerate() {
         text.push_str(&format!(
-            "{i},{:.9e},{:.9e},{:.9e},{:.9e},{:.9e}\n",
-            p.x, p.y, p.z, body.radius[i], body.rho_s[i]
+            "{i},{:.9e},{:.9e},{:.9e},{:.9e}\n",
+            p.x, p.y, p.z, body.rho_s[i]
         ));
     }
     std::fs::write(path, text).map_err(|e| SimError::io(format!("{}: {e}", path.display())))

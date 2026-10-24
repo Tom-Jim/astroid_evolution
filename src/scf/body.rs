@@ -1,59 +1,42 @@
-//! The star-shaped body: vertex directions `ω̂_i`, faces, and variable radii `R_i`.
+//! The body: a closed polyhedron carried by its vertex positions `X_i` (§8.0, G4).
 //!
-//! An imported mesh is that polyhedron. Each vertex keeps its own direction and radius
-//! about the vertex centroid, and its face stays the imported triangle. An ellipsoid,
-//! which has no imported faces, is the subdivided icosphere of `body.level`. The frame
-//! is the standard one (§10.4.4 step 8b): centroid at the origin, inertia principal
-//! axes along `e_x, e_y, e_z`, spin about `e_z`. Directions and topology stay fixed
-//! between realignments; a geological step moves vertices by changing `R_i`. There is
-//! no tetrahedral volume mesh anywhere in Tier 2.
+//! Connectivity is fixed for a run; a geological step moves vertices along their
+//! area-weighted normals `N_i`, and the frame realignment of step 8b is a rigid
+//! motion of the vertices (G8). Nothing here assumes the body is star-shaped about
+//! the origin. An imported mesh is used as it is; `shape = "mesh_rays"` and the
+//! ellipsoid build an icosphere-connected polyhedron, which is only a choice of
+//! initial triangulation. There is no tetrahedral volume mesh anywhere in Tier 2.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::common::density::{CauchyDensity, CauchyKernel};
-use crate::common::geometry::{TriMesh, align_radial_cones};
+use crate::common::geometry::TriMesh;
 use crate::common::math::DVec3;
 use crate::rtfp::mesh::BodyMesh;
 
 use crate::common::error::SimError;
 
-/// Directions, faces and the quantities that depend on them only.
+/// Faces and adjacency, which do not change during a run.
 #[derive(Clone, Debug)]
 pub struct Topology {
-    pub dirs: Vec<DVec3>,
     pub faces: Vec<[u32; 3]>,
-    /// Unit direction of the mean of each face's vertex directions (fixed).
-    pub face_dirs: Vec<DVec3>,
-    /// Solid angle of each spherical triangle (sums to `4π`).
-    pub face_solid: Vec<f64>,
-    /// Dual solid angle of each vertex (a third of its incident faces).
-    pub vertex_solid: Vec<f64>,
     pub vertex_neighbors: Vec<Vec<usize>>,
     pub vertex_faces: Vec<Vec<usize>>,
-    /// Faces sharing an edge, three entries per face (`u32::MAX` never occurs on a closed mesh).
+    /// Faces sharing an edge: entry `e` is the face across the edge `(t[e], t[e + 1])`.
     pub face_neighbors: Vec<[usize; 3]>,
+    /// `Some(level)` when the faces are those of `icosphere(level)`, so that a snapshot
+    /// need not store them.
+    pub icosphere: Option<usize>,
 }
 
 impl Topology {
-    pub fn new(dirs: Vec<DVec3>, faces: Vec<[u32; 3]>) -> Self {
-        let nv = dirs.len();
-        let mut face_dirs = Vec::with_capacity(faces.len());
-        let mut face_solid = Vec::with_capacity(faces.len());
-        let mut vertex_solid = vec![0.0; nv];
-        let mut vertex_neighbors = vec![Vec::new(); nv];
-        let mut vertex_faces = vec![Vec::new(); nv];
+    pub fn new(n_vertices: usize, faces: Vec<[u32; 3]>) -> Self {
+        let mut vertex_neighbors = vec![Vec::new(); n_vertices];
+        let mut vertex_faces = vec![Vec::new(); n_vertices];
         for (f, tri) in faces.iter().enumerate() {
-            let [a, b, c] = tri.map(|i| dirs[i as usize]);
-            let mean = (a + b + c).try_normalize().unwrap_or(a);
-            face_dirs.push(mean);
-            let num = a.dot(b.cross(c));
-            let den = 1.0 + a.dot(b) + b.dot(c) + c.dot(a);
-            let omega = 2.0 * num.atan2(den).abs();
-            face_solid.push(omega);
             for (k, &i) in tri.iter().enumerate() {
                 let i = i as usize;
-                vertex_solid[i] += omega / 3.0;
                 vertex_faces[i].push(f);
                 for (j, &o) in tri.iter().enumerate() {
                     if j != k && !vertex_neighbors[i].contains(&(o as usize)) {
@@ -62,16 +45,15 @@ impl Topology {
                 }
             }
         }
-        let mut edges: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut edges: HashMap<(u32, u32), usize> = HashMap::with_capacity(faces.len() * 3 / 2);
         let mut face_neighbors = vec![[usize::MAX; 3]; faces.len()];
         for (f, tri) in faces.iter().enumerate() {
             for e in 0..3 {
                 let (a, b) = (tri[e], tri[(e + 1) % 3]);
                 if let Some(&g) = edges.get(&(b, a)) {
                     face_neighbors[f][e] = g;
-                    let ge = faces[g]
-                        .iter()
-                        .position(|&v| v == b)
+                    let ge = (0..3)
+                        .find(|&k| faces[g][k] == b && faces[g][(k + 1) % 3] == a)
                         .expect("shared edge belongs to the neighbour");
                     face_neighbors[g][ge] = f;
                 } else {
@@ -80,132 +62,16 @@ impl Topology {
             }
         }
         Self {
-            dirs,
             faces,
-            face_dirs,
-            face_solid,
-            vertex_solid,
             vertex_neighbors,
             vertex_faces,
             face_neighbors,
+            icosphere: None,
         }
     }
 
-    /// Star nodes of an imported polyhedron, centred on the vertex mean.
-    ///
-    /// Faces are the imported triangles. Where two non-adjacent faces overlap in
-    /// radial projection, their vertices are moved tangentially at constant radius
-    /// until the cones are disjoint, so a later radius update (§10.4.4 step 8a)
-    /// or the step-8b resample cannot make those faces intersect. A mesh that is
-    /// already a star about the vertex mean is unchanged.
-    pub fn star_from_mesh(
-        vertices: &[DVec3],
-        faces: Vec<[u32; 3]>,
-    ) -> Result<(Self, Vec<f64>, DVec3), SimError> {
-        if vertices.len() < 4 || faces.len() < 4 {
-            return Err(SimError::geometry(
-                "a solid mesh needs at least 4 vertices and 4 triangles",
-            ));
-        }
-        let origin = vertices.iter().copied().fold(DVec3::ZERO, |acc, v| acc + v)
-            * (1.0 / vertices.len() as f64);
-        let mut placed = Vec::with_capacity(vertices.len());
-        for (i, v) in vertices.iter().enumerate() {
-            let offset = *v - origin;
-            let r = offset.length();
-            if !(r.is_finite() && r > 0.0) {
-                return Err(SimError::geometry(format!(
-                    "vertex {i} lies on the centroid and is not a star node"
-                )));
-            }
-            placed.push(offset);
-        }
-        align_radial_cones(&mut placed, &faces)?;
-        let mut dirs = Vec::with_capacity(placed.len());
-        let mut radius = Vec::with_capacity(placed.len());
-        for (i, p) in placed.iter().enumerate() {
-            let Some(d) = p.try_normalize() else {
-                return Err(SimError::geometry(format!(
-                    "vertex {i} lies on the centroid and is not a star node"
-                )));
-            };
-            dirs.push(d);
-            radius.push(p.length());
-        }
-        let topo = Self::new(dirs, faces);
-        TriMesh::try_new(placed, topo.faces.clone())?;
-        Ok((topo, radius, origin))
-    }
-
-    /// Icosphere of `level` about the volume centroid of a closed mesh, each radius
-    /// the outermost hit of its ray (`shape = "mesh_rays"`). Facets far below the
-    /// node spacing (boulders) are not resolved; the regolith-scale surface is.
-    pub fn star_from_rays(
-        level: usize,
-        vertices: &[DVec3],
-        faces: &[[u32; 3]],
-    ) -> Result<(Self, Vec<f64>, DVec3), SimError> {
-        use rayon::prelude::*;
-        let mesh = TriMesh::try_new(vertices.to_vec(), faces.to_vec())?;
-        // Volume centroid from the signed tetrahedra on the origin.
-        let (mut six_v, mut moment) = (0.0, DVec3::ZERO);
-        for f in 0..faces.len() {
-            let [a, b, c] = mesh.triangle(f);
-            let v = a.dot(b.cross(c));
-            six_v += v;
-            moment += (a + b + c) * v;
-        }
-        let origin = moment * (1.0 / (4.0 * six_v));
-        let topo = Self::icosphere(level);
-        let index = super::transport::DirIndex::build(&topo.dirs);
-        let dirs = &topo.dirs;
-        let hits: Vec<(usize, f64)> = (0..faces.len())
-            .into_par_iter()
-            .flat_map_iter(|f| {
-                let [a, b, c] = mesh.triangle(f).map(|p| p - origin);
-                let centre = (a + b + c).normalize_or_zero();
-                let alpha = [a, b, c]
-                    .iter()
-                    .map(|p| p.normalize_or_zero().dot(centre).clamp(-1.0, 1.0).acos())
-                    .fold(0.0, f64::max)
-                    + 1e-9;
-                let mut near = Vec::new();
-                index.collect_within(centre, alpha, &mut near);
-                let (e1, e2) = (b - a, c - a);
-                near.into_iter().filter_map(move |i| {
-                    // Möller–Trumbore from the origin along dirs[i].
-                    let d = dirs[i];
-                    let p = d.cross(e2);
-                    let det = e1.dot(p);
-                    if det.abs() < 1e-300 {
-                        return None;
-                    }
-                    let s = -a;
-                    let u = s.dot(p) / det;
-                    let q = s.cross(e1);
-                    let v = d.dot(q) / det;
-                    let t = e2.dot(q) / det;
-                    (u >= -1e-12 && v >= -1e-12 && u + v <= 1.0 + 1e-12 && t > 0.0)
-                        .then_some((i, t))
-                })
-            })
-            .collect();
-        let mut radius = vec![0.0_f64; dirs.len()];
-        for (i, t) in hits {
-            radius[i] = radius[i].max(t);
-        }
-        if let Some(i) = radius.iter().position(|r| *r <= 0.0) {
-            return Err(SimError::geometry(format!(
-                "ray {i} from the volume centroid misses the mesh"
-            )));
-        }
-        Ok((topo, radius, origin))
-    }
-
-    /// Subdivided icosahedron with outward, counter-clockwise faces.
-    ///
-    /// Used for `shape = "ellipsoid"` and `shape = "mesh_rays"`.
-    pub fn icosphere(level: usize) -> Self {
+    /// Subdivided icosahedron with outward, counter-clockwise faces, and its unit vertices.
+    pub fn icosphere(level: usize) -> (Self, Vec<DVec3>) {
         let t = (1.0 + 5.0_f64.sqrt()) / 2.0;
         let mut verts: Vec<DVec3> = [
             [-1.0, t, 0.0],
@@ -222,7 +88,7 @@ impl Topology {
             [-t, 0.0, 1.0],
         ]
         .iter()
-        .map(|p| DVec3::from_array(*p).try_normalize().unwrap())
+        .map(|p| DVec3::from_array(*p).normalize())
         .collect();
         let mut faces: Vec<[u32; 3]> = vec![
             [0, 11, 5],
@@ -255,10 +121,7 @@ impl Topology {
                     let (a, b) = (tri[e], tri[(e + 1) % 3]);
                     let key = (a.min(b), a.max(b));
                     mid[e] = *cache.entry(key).or_insert_with(|| {
-                        let m = (verts[a as usize] + verts[b as usize])
-                            .try_normalize()
-                            .unwrap();
-                        verts.push(m);
+                        verts.push((verts[a as usize] + verts[b as usize]).normalize());
                         (verts.len() - 1) as u32
                     });
                 }
@@ -269,11 +132,13 @@ impl Topology {
             }
             faces = next;
         }
-        Self::new(verts, faces)
+        let mut topo = Self::new(verts.len(), faces);
+        topo.icosphere = Some(level);
+        (topo, verts)
     }
 
     pub fn n_vertices(&self) -> usize {
-        self.dirs.len()
+        self.vertex_faces.len()
     }
 
     pub fn n_faces(&self) -> usize {
@@ -281,10 +146,23 @@ impl Topology {
     }
 }
 
+/// Volume centroid of a closed, outward-oriented triangle mesh (signed tetrahedra on the origin).
+pub fn volume_centroid(vertices: &[DVec3], faces: &[[u32; 3]]) -> DVec3 {
+    let (mut six_v, mut moment) = (0.0, DVec3::ZERO);
+    for t in faces {
+        let [a, b, c] = t.map(|i| vertices[i as usize]);
+        let v = a.dot(b.cross(c));
+        six_v += v;
+        moment += (a + b + c) * v;
+    }
+    moment * (1.0 / (4.0 * six_v))
+}
+
 #[derive(Clone, Debug)]
 pub struct Body {
     pub topo: Arc<Topology>,
-    pub radius: Vec<f64>,
+    /// Vertex positions `X_i` (m).
+    pub positions: Vec<DVec3>,
     pub bulk: f64,
     pub kernels: Vec<CauchyKernel>,
     /// Loose surface layer `ρ_s` (kg m⁻²) per vertex.
@@ -294,37 +172,97 @@ pub struct Body {
 impl Body {
     pub fn new(
         topo: Arc<Topology>,
-        radius: Vec<f64>,
+        positions: Vec<DVec3>,
         bulk: f64,
         kernels: Vec<CauchyKernel>,
         rho_s: Vec<f64>,
     ) -> Result<Self, SimError> {
-        if radius.len() != topo.n_vertices() || rho_s.len() != topo.n_vertices() {
+        if positions.len() != topo.n_vertices() || rho_s.len() != topo.n_vertices() {
             return Err(SimError::geometry("body arrays do not match the topology"));
         }
-        if radius.iter().any(|r| !(r.is_finite() && *r > 0.0)) {
-            return Err(SimError::geometry("a vertex radius is not positive"));
+        if positions.iter().any(|p| !p.is_finite()) {
+            return Err(SimError::geometry("a vertex position is not finite"));
         }
         Ok(Self {
             topo,
-            radius,
+            positions,
             bulk,
             kernels,
             rho_s,
         })
     }
 
-    pub fn positions(&self) -> Vec<DVec3> {
-        self.topo
-            .dirs
+    /// An icosphere-connected polyhedron: each unit vertex of `icosphere(level)` scaled
+    /// by the outermost crossing of its ray from the volume centroid of a closed mesh
+    /// (`shape = "mesh_rays"`). Returns the body frame origin in the input frame.
+    pub fn rays_from_mesh(
+        level: usize,
+        vertices: &[DVec3],
+        faces: &[[u32; 3]],
+    ) -> Result<(Arc<Topology>, Vec<DVec3>, DVec3), SimError> {
+        let mesh = TriMesh::try_new(vertices.to_vec(), faces.to_vec())?;
+        let origin = volume_centroid(vertices, faces);
+        let (topo, dirs) = Topology::icosphere(level);
+        let hw = BodyMesh::build(&mesh)?;
+        let mut batch = hw.new_batch();
+        for d in &dirs {
+            batch.push(origin, *d, None);
+        }
+        let hits = hw.trace(&batch, false)?;
+        let mut buf = Vec::new();
+        let mut out = Vec::with_capacity(dirs.len());
+        for (i, d) in dirs.iter().enumerate() {
+            buf.clear();
+            hits.distances_into(i, &mut buf);
+            match buf.last() {
+                Some(r) if *r > 0.0 => out.push(*d * *r),
+                _ => {
+                    return Err(SimError::geometry(format!(
+                        "ray {i} from the volume centroid misses the mesh"
+                    )));
+                }
+            }
+        }
+        Ok((Arc::new(topo), out, origin))
+    }
+
+    /// An imported closed mesh used as it is, centred on its volume centroid.
+    pub fn from_mesh(
+        vertices: &[DVec3],
+        faces: Vec<[u32; 3]>,
+    ) -> Result<(Arc<Topology>, Vec<DVec3>, DVec3), SimError> {
+        if vertices.len() < 4 || faces.len() < 4 {
+            return Err(SimError::geometry(
+                "a solid mesh needs at least 4 vertices and 4 triangles",
+            ));
+        }
+        TriMesh::try_new(vertices.to_vec(), faces.clone())?;
+        let origin = volume_centroid(vertices, &faces);
+        let placed: Vec<DVec3> = vertices.iter().map(|v| *v - origin).collect();
+        Ok((Arc::new(Topology::new(placed.len(), faces)), placed, origin))
+    }
+
+    /// Ellipsoid with semi-axes `(a, b, c)` on the icosphere of `level`.
+    pub fn ellipsoid(level: usize, axes: [f64; 3]) -> (Arc<Topology>, Vec<DVec3>) {
+        let (topo, dirs) = Topology::icosphere(level);
+        let positions = dirs
             .iter()
-            .zip(&self.radius)
-            .map(|(d, r)| *d * *r)
-            .collect()
+            .map(|d| {
+                let r = 1.0
+                    / ((d.x / axes[0]).powi(2) + (d.y / axes[1]).powi(2) + (d.z / axes[2]).powi(2))
+                        .sqrt();
+                *d * r
+            })
+            .collect();
+        (Arc::new(topo), positions)
+    }
+
+    pub fn positions(&self) -> &[DVec3] {
+        &self.positions
     }
 
     pub fn mesh(&self) -> Result<TriMesh, SimError> {
-        TriMesh::try_new(self.positions(), self.topo.faces.clone())
+        TriMesh::try_new(self.positions.clone(), self.topo.faces.clone())
     }
 
     pub fn density(&self) -> Result<CauchyDensity, SimError> {
@@ -333,41 +271,69 @@ impl Body {
 
     /// Face centroids, unit normals and areas of the polyhedron.
     pub fn face_geometry(&self) -> Vec<(DVec3, DVec3, f64)> {
-        let p = self.positions();
+        let p = &self.positions;
         self.topo
             .faces
             .iter()
             .map(|t| {
                 let [a, b, c] = t.map(|i| p[i as usize]);
                 let cross = (b - a).cross(c - a);
-                let area2 = cross.length();
-                let n = cross.try_normalize().unwrap_or(DVec3::new(0.0, 0.0, 1.0));
-                ((a + b + c) * (1.0 / 3.0), n, 0.5 * area2)
+                let n = cross.try_normalize().unwrap_or(DVec3::Z);
+                ((a + b + c) * (1.0 / 3.0), n, 0.5 * cross.length())
             })
             .collect()
     }
 
-    /// Smallest `n·ê` on the radial graph, and the face that carries it.
-    ///
-    /// A grazing or overhanging face keeps its radius. Callers report this pair;
-    /// it does not reject the body.
-    pub fn min_radial(&self) -> (f64, usize) {
-        let geo = self.face_geometry();
-        let mut worst = f64::INFINITY;
-        let mut face = 0usize;
-        for (fi, (_, n, _)) in geo.iter().enumerate() {
-            let c = n.dot(self.topo.face_dirs[fi]);
-            if c < worst {
-                worst = c;
-                face = fi;
-            }
+    /// `A_i = ∂Vol/∂X_i = ⅓ Σ_{f∋i} A_f n_f` (G4).
+    pub fn area_vectors(&self) -> Vec<DVec3> {
+        let p = &self.positions;
+        let mut a = vec![DVec3::ZERO; p.len()];
+        for t in &self.topo.faces {
+            let [i, j, k] = t.map(|v| v as usize);
+            // A_f n_f = ½ (b − a) × (c − a).
+            let an = (p[j] - p[i]).cross(p[k] - p[i]) * (1.0 / 6.0);
+            a[i] += an;
+            a[j] += an;
+            a[k] += an;
         }
-        (worst, face)
+        a
+    }
+
+    /// Unit normals `N_i = A_i / |A_i|` (G4).
+    pub fn vertex_normals(&self) -> Vec<DVec3> {
+        self.area_vectors()
+            .into_iter()
+            .map(|a| a.try_normalize().unwrap_or(DVec3::Z))
+            .collect()
+    }
+
+    /// Vertex areas `A_i = ⅓ Σ_{f∋i} A_f`.
+    pub fn vertex_areas(&self) -> Vec<f64> {
+        let p = &self.positions;
+        let mut a = vec![0.0; p.len()];
+        for t in &self.topo.faces {
+            let [i, j, k] = t.map(|v| v as usize);
+            let s = (p[j] - p[i]).cross(p[k] - p[i]).length() / 6.0;
+            a[i] += s;
+            a[j] += s;
+            a[k] += s;
+        }
+        a
+    }
+
+    /// `R_* = max_Γ |x|`, the radius of the enclosing ball of the basis (G1).
+    pub fn r_star(&self) -> f64 {
+        self.positions.iter().map(|p| p.length()).fold(0.0, f64::max)
+    }
+
+    /// Mean vertex distance from the frame origin: the length scale `R̄`.
+    pub fn r_mean(&self) -> f64 {
+        self.positions.iter().map(|p| p.length()).sum::<f64>() / self.positions.len().max(1) as f64
     }
 
     /// Smallest nearest-vertex spacing, `h_{Γ,min}` of the CFL bound (§10.4.1).
     pub fn min_edge(&self) -> f64 {
-        let p = self.positions();
+        let p = &self.positions;
         let mut h = f64::INFINITY;
         for (i, nb) in self.topo.vertex_neighbors.iter().enumerate() {
             for &j in nb {
@@ -375,45 +341,5 @@ impl Body {
             }
         }
         h
-    }
-
-    /// Re-sample a closed mesh along the fixed directions from `origin` (outermost crossing).
-    pub fn radii_from_mesh(
-        mesh: &TriMesh,
-        origin: DVec3,
-        dirs: &[DVec3],
-    ) -> Result<Vec<f64>, SimError> {
-        let hw = BodyMesh::build(mesh)?;
-        let mut batch = hw.new_batch();
-        for d in dirs {
-            batch.push(origin, *d, None);
-        }
-        let hits = hw.trace(&batch, false)?;
-        let mut buf = Vec::new();
-        let mut out = Vec::with_capacity(dirs.len());
-        for i in 0..dirs.len() {
-            buf.clear();
-            hits.distances_into(i, &mut buf);
-            match buf.last() {
-                Some(r) if *r > 0.0 => out.push(*r),
-                _ => {
-                    return Err(SimError::geometry(format!(
-                        "ray {i} from the centroid does not leave the body"
-                    )));
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Ellipsoid with semi-axes `(a, b, c)`: the radius along `ω̂` is `1/√(Σ ω_i²/a_i²)`.
-    pub fn ellipsoid(topo: Arc<Topology>, axes: [f64; 3]) -> Vec<f64> {
-        topo.dirs
-            .iter()
-            .map(|d| {
-                1.0 / ((d.x / axes[0]).powi(2) + (d.y / axes[1]).powi(2) + (d.z / axes[2]).powi(2))
-                    .sqrt()
-            })
-            .collect()
     }
 }

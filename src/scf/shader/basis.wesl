@@ -531,28 +531,6 @@ fn eval_pres1(gid: u32, prm: BasisParams) {
     }
 }
 
-fn eval_normal(gid: u32, prm: BasisParams) {
-    if gid >= prm.n_points {
-        return;
-    }
-    var sqrt2: ds = ds_mk(prm.sqrt2_hi, prm.sqrt2_lo);
-    var pmm0: ds = ds_mk(prm.pmm_hi, prm.pmm_lo);
-    var px: ds;
-    var py: ds;
-    var pz: ds;
-    load_point(gid, &px, &py, &pz);
-    var u: array<Jt_1, 3>;
-    var radius: Jt_1;
-    var rr: Jt_1;
-    unit_frame_1(&(u), &(radius), px, py, pz, prm);
-    var l_surf: i32 = i32(prm.l_surf);
-    sh_accumulate_1__saved(&(rr), 0, l_surf, l_surf, &(u), sqrt2, pmm0, prm);
-    store_ds(0u, prm.n_points, gid, rr.c[0]);
-    store_ds(1u, prm.n_points, gid, rr.c[1]);
-    store_ds(2u, prm.n_points, gid, rr.c[2]);
-    store_ds(3u, prm.n_points, gid, rr.c[3]);
-}
-
 fn j_zero_3(r: ptr<function, Jt_3>) {
     for(var i: i32 = 0; i < 20; i = i + 1) {
         (*r).c[i] = ds_zero();
@@ -3815,24 +3793,6 @@ fn basis_pres1(@builtin(global_invocation_id) gid3: vec3<u32>) {
 }
 
 // END ENTRY basis_pres1
-// ENTRY basis_normal
-@group(0) @binding(0)
-var<storage, read> points: array<vec2<f32>>;
-@group(0) @binding(1)
-var<storage, read> params: BasisParams;
-@group(0) @binding(2)
-var<storage, read> coeff: array<vec2<f32>>;
-@group(0) @binding(3)
-var<storage, read> tables: array<u32>;
-@group(0) @binding(4)
-var<storage, read_write> out: array<vec2<f32>>;
-@compute @workgroup_size(64)
-fn basis_normal(@builtin(global_invocation_id) gid3: vec3<u32>) {
-    let gid = gid3.x;
-    eval_normal(gid, params);
-}
-
-// END ENTRY basis_normal
 // ENTRY basis_vel_o3_l2_dot
 @group(0) @binding(0)
 var<storage, read> points: array<vec2<f32>>;

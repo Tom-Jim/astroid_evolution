@@ -53,11 +53,12 @@ fn the_view_keeps_file_axes_and_locks_scale_from_the_imported_mesh() {
 
 #[test]
 fn a_frame_is_the_tier2_body_itself() {
-    let topo = Arc::new(Topology::icosphere(1));
+    let (topo, dirs) = Topology::icosphere(1);
+    let topo = Arc::new(topo);
     let count = topo.n_vertices();
     let body = Body::new(
         topo.clone(),
-        vec![2.0; count],
+        dirs.iter().map(|d| *d * 2.0).collect(),
         1000.0,
         Vec::<CauchyKernel>::new(),
         vec![1.0; count],

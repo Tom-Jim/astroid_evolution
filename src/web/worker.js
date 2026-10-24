@@ -1,14 +1,24 @@
 let sab = null;
 let port = null;
+// The first failure wins: a Rust panic logs its message, then aborts with a bare
+// `RuntimeError: unreachable` that must not replace it.
+let failed = false;
 
-const reportError = console.error.bind(console);
-console.error = (...args) => {
-  const text = args.map((item) => String(item && item.stack ? item.stack : item)).join("\n");
+function fail(text) {
+  if (failed) {
+    return;
+  }
+  failed = true;
   try {
     self.postMessage({ kind: "failed", payload: text });
   } catch (_err) {
     // The page may already be gone.
   }
+}
+
+const reportError = console.error.bind(console);
+console.error = (...args) => {
+  fail(args.map((item) => String(item && item.stack ? item.stack : item)).join("\n"));
   reportError(...args);
 };
 
@@ -38,12 +48,13 @@ function installBridge() {
       }
       const phase = Atomics.load(words, 0);
       const len = Atomics.load(words, 1);
-      const out = dst.slice(0, len);
       Atomics.store(words, 0, 0);
       if (phase === 3) {
-        throw new Error(new TextDecoder().decode(out));
+        throw new Error(new TextDecoder().decode(dst.slice(0, len)));
       }
-      return out;
+      // A view, not a copy: wasm copies it into its memory before the next request
+      // can reach the buffer (this worker is the only caller and waits for each reply).
+      return dst.subarray(0, len);
     },
     emit(kind, payload) {
       self.postMessage({ kind, payload });
@@ -78,9 +89,6 @@ self.onmessage = async (event) => {
     }
     worker_main(event.data.config);
   } catch (error) {
-    self.postMessage({
-      kind: "failed",
-      payload: String(error && error.stack ? error.stack : error),
-    });
+    fail(String(error && error.stack ? error.stack : error));
   }
 };

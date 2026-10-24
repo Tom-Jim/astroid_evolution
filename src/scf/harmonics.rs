@@ -6,13 +6,10 @@
 
 use std::f64::consts::{PI, SQRT_2};
 
-use nalgebra::{Cholesky, DMatrix, DVector};
 
-use crate::common::math::DVec3;
-use crate::rheo::basis::{lm_index, sh_all};
+use crate::rheo::basis::lm_index;
 
 use super::jets::Jet;
-use crate::common::error::SimError;
 
 /// Real orthonormal harmonics up to `l_max`, as jets in the *unit-vector* jets `x`.
 ///
@@ -72,84 +69,11 @@ pub struct SurfaceFit {
 }
 
 impl SurfaceFit {
-    /// Weighted least squares through `(ω̂_i, R_i)`. A tiny Laplace–Beltrami ridge keeps
-    /// the normal equations definite when the sample is sparse at high degree.
-    pub fn fit(
-        l_max: usize,
-        dirs: &[DVec3],
-        radii: &[f64],
-        weights: &[f64],
-    ) -> Result<Self, SimError> {
-        let n = (l_max + 1) * (l_max + 1);
-        if dirs.len() < n {
-            return Err(SimError::geometry(format!(
-                "{} surface samples cannot determine {} harmonic coefficients",
-                dirs.len(),
-                n
-            )));
+    /// The constant radius `R ≡ r`: the enclosing ball of the general basis (§8.0, G1).
+    pub fn sphere(r: f64) -> Self {
+        Self {
+            l_max: 0,
+            coeff: vec![r * (4.0 * std::f64::consts::PI).sqrt()],
         }
-        let mut gram = DMatrix::<f64>::zeros(n, n);
-        let mut rhs = DVector::<f64>::zeros(n);
-        for ((d, r), w) in dirs.iter().zip(radii).zip(weights) {
-            let y = sh_all(l_max, d.to_array());
-            for a in 0..n {
-                rhs[a] += w * r * y[a];
-                for b in 0..=a {
-                    gram[(a, b)] += w * y[a] * y[b];
-                }
-            }
-        }
-        for a in 0..n {
-            for b in 0..a {
-                gram[(b, a)] = gram[(a, b)];
-            }
-        }
-        let scale = gram.trace() / n as f64;
-        for l in 0..=l_max {
-            for m in -(l as i32)..=(l as i32) {
-                let i = lm_index(l, m);
-                gram[(i, i)] += 1.0e-12 * scale * (1.0 + (l * (l + 1)) as f64);
-            }
-        }
-        let chol = Cholesky::new(gram).ok_or_else(|| {
-            SimError::geometry("spherical-harmonic normal equations are singular")
-        })?;
-        let coeff = chol.solve(&rhs).iter().copied().collect();
-        Ok(Self { l_max, coeff })
-    }
-
-    pub fn radius(&self, dir: DVec3) -> f64 {
-        let y = sh_all(self.l_max, dir.to_array());
-        self.coeff.iter().zip(&y).map(|(c, y)| c * y).sum()
-    }
-
-    /// The `StarSurface` consumed by `rheo_friction`.
-    pub fn to_rheo(&self) -> crate::rheo::StarSurface {
-        crate::rheo::StarSurface {
-            l_max: self.l_max,
-            coeff: self.coeff.clone(),
-        }
-    }
-
-    /// Largest `|R_SH(ω̂_i) − R_i| / R_i`.
-    pub fn max_relative_error(&self, dirs: &[DVec3], radii: &[f64]) -> f64 {
-        dirs.iter()
-            .zip(radii)
-            .map(|(d, r)| (self.radius(*d) - r).abs() / r)
-            .fold(0.0, f64::max)
-    }
-
-    /// Radius and analytic outward unit normal of the surface `r = R(ω̂)` at the direction `w`.
-    pub fn normal(&self, w: DVec3) -> (f64, DVec3) {
-        self.normals(std::slice::from_ref(&w))
-            .into_iter()
-            .next()
-            .unwrap_or((0.0, w))
-    }
-
-    /// Radius and outward unit normal at every direction, one GPU launch.
-    pub fn normals(&self, dirs: &[DVec3]) -> Vec<(f64, DVec3)> {
-        super::basis_gpu::normals(self, dirs)
-            .unwrap_or_else(|err| panic!("surface normal GPU: {err}"))
     }
 }

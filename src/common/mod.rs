@@ -6,6 +6,7 @@
 pub mod density;
 pub mod error;
 pub mod geometry;
+pub mod linalg;
 pub mod math;
 pub mod obj;
 pub mod time;

@@ -1,4 +1,4 @@
-//! Unit tests of `scf::stokes`, moved out of `src/scf/stokes.rs`.
+//! Unit tests of `scf::stokes` on the general domain of hypothesis (G).
 
 mod ctx {
     pub use astroid_evolution::common::density::CauchyDensity;
@@ -19,8 +19,14 @@ mod ctx {
 }
 use ctx::*;
 
+use std::sync::Arc;
+
 use astroid_evolution::rheo::{MaterialSpec, SolverSpec};
+use astroid_evolution::rtfp::mesh::BodyMesh;
+use astroid_evolution::scf::body::{Body, Topology};
+use astroid_evolution::scf::domain::SurfacePoints;
 use astroid_evolution::scf::stokes::*;
+use astroid_evolution::scf::surface::SurfaceIndex;
 
 pub fn material() -> Material {
     Material::new(
@@ -68,83 +74,60 @@ pub fn params() -> StokesParams {
         theta_eta: 1.0,
         continuation: 2,
         rigid_sigma_min: 1e-6,
+        solver: "primal-dual".into(),
+        pd_tol: 1e-8,
+        pd_max: 400_000,
+        pd_pressure_every: 10,
+        n_boundary: 1024,
+        cut_depth: 3,
     }
 }
 
+/// The Stokes operators of a uniform polyhedral sphere of radius `r0` (§8.0).
+pub fn sphere_ops(r0: f64, rho: f64, prm: &StokesParams) -> Operators {
+    let (topo, dirs) = Topology::icosphere(4);
+    let nv = dirs.len();
+    let body = Body::new(Arc::new(topo), dirs.iter().map(|d| *d * r0).collect(), rho, vec![], vec![0.0; nv])
+        .unwrap();
+    let mesh = BodyMesh::build(&body.mesh().unwrap()).unwrap();
+    let index = SurfaceIndex::build(&body.positions, &body.topo.faces);
+    let faces = SurfacePoints::faces(&body.face_geometry());
+    Operators::build(&SurfaceFit::sphere(body.r_star()), &body.density().unwrap(), &mesh, &index, faces, prm)
+        .unwrap()
+}
+
+/// A uniform sphere in its own gravity is at rest, and the Nitsche pressure (G3) is the
+/// hydrostatic `ρ k (R² − r²) / 2` up to the polyhedral approximation of the sphere.
 #[test]
 fn uniform_sphere_is_hydrostatic_and_at_rest() {
     let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
     let k = 4.0 * PI / 3.0 * g * rho;
-    let surf = SurfaceFit {
-        l_max: 0,
-        coeff: vec![r0 * (4.0 * PI).sqrt()],
-    };
-    let density = CauchyDensity::uniform(rho).unwrap();
     let prm = params();
-    // A closed set of surface nodes: the product grid.
-    let (dirs, solid) = sphere_grid(8, 16);
-    let surface = SurfaceSet::build(&surf, dirs, solid);
-    let ops = Operators::build(&surf, &density, surface, &prm).unwrap();
+    let ops = sphere_ops(r0, rho, &prm);
     let g_eff: Vec<DVec3> = ops.vol.pts.iter().map(|x| *x * -k).collect();
+    let g_bnd: Vec<DVec3> = ops.bnd.pts.iter().map(|x| *x * -k).collect();
     let tide = vec![[0.0; 6]; ops.vol.pts.len()];
-    let tide_nn = vec![0.0; ops.surface.pts.len()];
+    let tide_bnd = vec![[0.0; 6]; ops.bnd.pts.len()];
+    let tide_nn = vec![0.0; ops.faces.pts.len()];
     let ld = Loads {
         g_eff: &g_eff,
         tide: &tide,
+        g_bnd: &g_bnd,
+        tide_bnd: &tide_bnd,
         tide_nn: &tide_nn,
         g_const: g,
     };
     let sol = solve(&ops, &ld, &prm, &material(), None).unwrap();
     let umax = sol.u.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
     assert!(umax < 1e-12, "velocity {umax}");
-    // p(r) = rho k (R^2 - r^2) / 2
-    for (p, x) in ops.vol.pts.iter().enumerate().step_by(37) {
+    let centre = 0.5 * rho * k * r0 * r0;
+    for (p, x) in ops.vol.pts.iter().enumerate() {
         let exact = 0.5 * rho * k * (r0 * r0 - x.length_squared());
-        let got = sol.p_tilde[p];
-        assert!(
-            (got - exact).abs() < 2e-3 * exact.abs().max(1.0) + 1e-3,
-            "p at r={}: {got} vs {exact}",
-            x.length()
-        );
+        assert!((sol.p_tilde[p] - exact).abs() < 5e-3 * centre, "p at r={}: {} vs {exact}", x.length(), sol.p_tilde[p]);
     }
     assert!(sol.eps_rot < 1e-2, "rot {}", sol.eps_rot);
 }
 
-#[test]
-fn strain_gram_matches_the_scaled_product() {
-    let nu = 7;
-    let np = 5;
-    let mut d = DMatrix::zeros(6 * np, nu);
-    for row in 0..d.nrows() {
-        for col in 0..nu {
-            d[(row, col)] = ((row * 3 + col * 5) % 17) as f64 * 0.01 - 0.05;
-        }
-    }
-    let eta = [1.0, 2.5, 0.0, 4.0, 0.3];
-    let weight = [0.2, 0.1, 0.4, 0.05, 0.8];
-    let grams = strain_grams(&d);
-    let got = stiffness_from_grams(&grams, &eta, &weight, nu);
-    let mut scaled = d.clone();
-    for p in 0..np {
-        let s = (2.0 * eta[p] * weight[p]).sqrt();
-        for c in 0..6 {
-            scaled.row_mut(6 * p + c).scale_mut(s);
-        }
-    }
-    let want = scaled.tr_mul(&scaled);
-    let scale = want.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-    let diff = got
-        .iter()
-        .zip(want.iter())
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
-    assert!(
-        diff <= 1e-12 * scale.max(1.0),
-        "gram stiffness differs by {diff} on a matrix of scale {scale}"
-    );
-}
-
-/// §4.3a: the profile equals `c_s` on the surface, tends to `c_b` at depth, and its
-/// slope is the derivative of the same function.
 #[test]
 fn two_layer_cohesion_profile() {
     let mut m = material();
@@ -166,36 +149,9 @@ fn two_layer_cohesion_profile() {
     assert_eq!(a, b);
 }
 
-/// The depth gradient `∇d = (ω̂ − n/(n·ω̂))/ζ − ω̂` that carries `∇c` into `∇η`
-/// matches central differences of `d(x) = R(x/|x|) − |x|` on a bumpy surface.
-#[test]
-fn depth_gradient_matches_finite_differences() {
-    let (dirs, w) = sphere_grid(16, 32);
-    let radii: Vec<f64> = dirs
-        .iter()
-        .map(|d| 100.0 * (1.0 + 0.08 * (3.0 * d.z * d.z - 1.0) + 0.05 * d.x * d.y))
-        .collect();
-    let surf = SurfaceFit::fit(4, &dirs, &radii, &w).unwrap();
-    let density = CauchyDensity::try_new(1000.0, vec![]).unwrap();
-    let vol = VolumeSet::build(&surf, &density, 4, 8, 3);
-    let depth_at = |x: DVec3| surf.radius(x.normalize()) - x.length();
-    let h = 1e-4;
-    for p in (0..vol.pts.len()).step_by(7) {
-        let x = vol.pts[p];
-        assert!((depth_at(x) - vol.depth[p]).abs() < 1e-9 * 100.0);
-        let fd = DVec3::new(
-            depth_at(x + DVec3::X * h) - depth_at(x - DVec3::X * h),
-            depth_at(x + DVec3::Y * h) - depth_at(x - DVec3::Y * h),
-            depth_at(x + DVec3::Z * h) - depth_at(x - DVec3::Z * h),
-        ) / (2.0 * h);
-        assert!(
-            (fd - vol.gdepth[p]).length() < 1e-4,
-            "point {p}: {fd} vs {}",
-            vol.gdepth[p]
-        );
-    }
-}
-
+/// The depth is the distance to the surface (G6), not the radial gap: the foot
+/// `x − d ∇d` lies on `r = R(ω̂)`, the gap is normal there (`∇d = −n`), `|∇d| = 1`,
+/// and `d` never exceeds the radial gap `R(x̂) − |x|`.
 #[test]
 fn chart_strain_rebuilds_the_cartesian_tensor() {
     use astroid_evolution::common::math::DVec3;

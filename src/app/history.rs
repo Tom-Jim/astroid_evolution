@@ -1,7 +1,7 @@
 //! Every step the viewer received, kept compactly so the timeline can return to any
-//! of them. A frame stores the radius along each vertex direction and the fourteen
-//! surface channels, each quantized to 16 bits between its own extremes; the unit
-//! directions and the faces are shared while the topology stays the same. Normals and
+//! of them. A frame stores the three vertex coordinates and the fourteen surface
+//! channels, each quantized to 16 bits between its own extremes; the faces are shared
+//! while the topology stays the same. Normals and
 //! streamlines are rebuilt when a frame is shown. Over the memory budget, every other
 //! stored frame is dropped (the newest is always kept), so coverage stays even.
 
@@ -63,7 +63,7 @@ fn channels(s: &VertexSample) -> [f32; CHANNELS] {
         s.v_sl[2],
         s.rho_s,
         s.j_net,
-        s.d_radial,
+        s.d_normal,
         s.slack_max,
         s.slack_avg,
         s.sigma1,
@@ -80,7 +80,7 @@ fn sample(c: [f32; CHANNELS]) -> VertexSample {
         v_sl: [c[2], c[3], c[4]],
         rho_s: c[5],
         j_net: c[6],
-        d_radial: c[7],
+        d_normal: c[7],
         slack_max: c[8],
         slack_avg: c[9],
         sigma1: c[10],
@@ -90,11 +90,10 @@ fn sample(c: [f32; CHANNELS]) -> VertexSample {
 
 struct Frame {
     stats: FrameStats,
-    dirs: Arc<Vec<[f32; 3]>>,
     faces: Arc<Vec<[u32; 3]>>,
     /// Vertex rings of `faces`, built once per topology for the streamlines.
     neighbors: Arc<Vec<Vec<usize>>>,
-    radius: Quantized,
+    position: [Quantized; 3],
     field: Vec<Quantized>,
     bulk: f32,
     cores: Vec<[f32; 4]>,
@@ -113,9 +112,9 @@ struct Frame {
 const RANGE: f32 = 4.0;
 
 impl Frame {
-    /// Bytes owned by this frame alone (shared directions and faces not counted).
+    /// Bytes owned by this frame alone (shared faces not counted).
     fn bytes(&self) -> usize {
-        2 * self.radius.values.len() * (1 + CHANNELS) + 16 * self.cores.len() + 8 * self.runout.len() + 256
+        2 * self.position[0].values.len() * (3 + CHANNELS) + 16 * self.cores.len() + 8 * self.runout.len() + 256
     }
 }
 
@@ -165,31 +164,7 @@ impl History {
     }
 
     pub fn record(&mut self, snap: &StepSnapshot) {
-        let radius: Vec<f32> = snap
-            .position_to
-            .iter()
-            .map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())
-            .collect();
-        let dirs: Vec<[f32; 3]> = snap
-            .position_to
-            .iter()
-            .zip(&radius)
-            .map(|(p, r)| {
-                if *r > 0.0 {
-                    [p[0] / r, p[1] / r, p[2] / r]
-                } else {
-                    [0.0, 0.0, 1.0]
-                }
-            })
-            .collect();
         let last = self.frames.last();
-        let dirs = match last {
-            Some(f) if same_dirs(&f.dirs, &dirs) => f.dirs.clone(),
-            _ => {
-                self.bytes += 12 * dirs.len();
-                Arc::new(dirs)
-            }
-        };
         let (faces, neighbors) = match last {
             Some(f) if *f.faces == snap.faces => (f.faces.clone(), f.neighbors.clone()),
             _ => {
@@ -203,10 +178,9 @@ impl History {
             .collect();
         let frame = Frame {
             stats: FrameStats::of(snap),
-            dirs,
             faces,
             neighbors,
-            radius: Quantized::new(radius.iter().copied()),
+            position: std::array::from_fn(|c| Quantized::new(snap.position_to.iter().map(move |p| p[c]))),
             field,
             bulk: snap.bulk,
             cores: snap.cores.clone(),
@@ -237,15 +211,10 @@ impl History {
         }
         self.frames = kept;
         self.view = self.view.map(|v| (v / 2).min(self.frames.len() - 1));
-        let mut seen = Vec::<*const Vec<[f32; 3]>>::new();
         let mut faces = Vec::<*const Vec<[u32; 3]>>::new();
         self.bytes = 0;
         for f in &self.frames {
             self.bytes += f.bytes();
-            if !seen.contains(&Arc::as_ptr(&f.dirs)) {
-                seen.push(Arc::as_ptr(&f.dirs));
-                self.bytes += 12 * f.dirs.len();
-            }
             if !faces.contains(&Arc::as_ptr(&f.faces)) {
                 faces.push(Arc::as_ptr(&f.faces));
                 self.bytes += 12 * f.faces.len() + 8 * 6 * f.neighbors.len();
@@ -256,19 +225,14 @@ impl History {
     /// Frame `index` as a still snapshot (both poses equal), ready for the playback.
     pub fn frame(&self, index: usize) -> Option<StepSnapshot> {
         let f = self.frames.get(index)?;
-        let n = f.dirs.len();
-        let position: Vec<[f32; 3]> = (0..n)
-            .map(|i| {
-                let r = f.radius.get(i);
-                let d = f.dirs[i];
-                [d[0] * r, d[1] * r, d[2] * r]
-            })
-            .collect();
+        let n = f.position[0].values.len();
+        let position: Vec<[f32; 3]> =
+            (0..n).map(|i| std::array::from_fn(|c| f.position[c].get(i))).collect();
         let normal = smooth_normals(&position, &f.faces);
         let field: Vec<VertexSample> = (0..n)
             .map(|i| sample(std::array::from_fn(|c| f.field[c].get(i))))
             .collect();
-        let stream = streamlines(&position, &f.neighbors, &field, f.flow_active);
+        let stream = streamlines(&position, &normal, &f.neighbors, &field, f.flow_active);
         let s = f.stats;
         Some(StepSnapshot {
             step: s.step,
@@ -322,12 +286,4 @@ impl History {
             rho_range: f.rho_range,
         })
     }
-}
-
-/// Same rays up to float noise (a realignment rotates them).
-fn same_dirs(a: &[[f32; 3]], b: &[[f32; 3]]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(x, y)| {
-            (x[0] - y[0]).abs() < 1e-6 && (x[1] - y[1]).abs() < 1e-6 && (x[2] - y[2]).abs() < 1e-6
-        })
 }

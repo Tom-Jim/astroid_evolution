@@ -92,6 +92,49 @@ pub struct StokesParams {
     pub continuation: usize,
     /// Largest accepted `η_hi / η_lo` is reported, not limited; this bounds the Cholesky condition.
     pub rigid_sigma_min: f64,
+    /// Velocity solver at frozen pressure: `"primal-dual"` (§10.4.2) or `"picard"`, the
+    /// fixed-viscosity map kept as a check.
+    #[serde(default = "default_solver")]
+    pub solver: String,
+    /// `ε_pd` of criterion (a): relative velocity change and relative primal–dual gap.
+    #[serde(default = "default_pd_tol")]
+    pub pd_tol: f64,
+    /// `k_max` of the primal–dual iteration.
+    #[serde(default = "default_pd_max")]
+    pub pd_max: usize,
+    /// `N_p`: primal–dual iterations between pressure updates.
+    #[serde(default = "default_pd_pressure_every")]
+    pub pd_pressure_every: usize,
+    /// Target number of points of the boundary rule of the Nitsche terms (G3).
+    #[serde(default = "default_n_boundary")]
+    pub n_boundary: usize,
+    /// Refinement depth of cut angular cells of the volume rule (G2); 0 keeps the product rule.
+    #[serde(default = "default_cut_depth")]
+    pub cut_depth: usize,
+}
+
+fn default_n_boundary() -> usize {
+    1024
+}
+
+fn default_cut_depth() -> usize {
+    3
+}
+
+fn default_solver() -> String {
+    "primal-dual".into()
+}
+
+fn default_pd_tol() -> f64 {
+    1e-3
+}
+
+fn default_pd_max() -> usize {
+    20_000
+}
+
+fn default_pd_pressure_every() -> usize {
+    10
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -152,11 +195,18 @@ pub struct GeometryParams {
     pub trust_shrink: f64,
     /// Elastic-slack penalty `ϱ`.
     pub varrho: f64,
-    /// Largest accepted `max_i |R_SH(ω̂_i) − R_i| / R_i`.
+    /// Retained so existing project files still parse; the general route fits no surface.
     pub sh_fit_tol: f64,
     /// Frame thresholds `ε_frame`, `ε_deg` of step 8b.
     pub eps_frame: f64,
     pub eps_deg: f64,
+    /// Clearance fraction `θ_g ∈ (0, ½)` of the rows `−θ_g t⁻ ≤ d ≤ θ_g t⁺` (G4).
+    #[serde(default = "default_theta_g")]
+    pub theta_g: f64,
+}
+
+fn default_theta_g() -> f64 {
+    0.4
 }
 
 #[derive(Clone, Debug, Deserialize)]

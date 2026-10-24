@@ -34,6 +34,9 @@ pub struct Exec {
 
 /// Buffers a size class keeps for reuse; more are destroyed.
 const POOL_PER_CLASS: usize = 4;
+/// Larger buffers are not kept: a one-off operator build would otherwise hold its
+/// staging for the life of the process (unified memory counts it as resident).
+const POOL_MAX_BYTES: u64 = 16 << 20;
 const READBACK: wgpu::BufferUsages =
     wgpu::BufferUsages::MAP_READ.union(wgpu::BufferUsages::COPY_DST);
 
@@ -260,7 +263,7 @@ impl Exec {
 
     fn give(&mut self, buf: wgpu::Buffer) {
         let class = self.pool.entry((buf.size(), buf.usage().bits())).or_default();
-        if class.len() < POOL_PER_CLASS {
+        if class.len() < POOL_PER_CLASS && buf.size() <= POOL_MAX_BYTES {
             class.push(buf);
         } else {
             buf.destroy();

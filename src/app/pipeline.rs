@@ -18,7 +18,6 @@ use crate::app::resources::AppConfig;
 use crate::app::snapshot::StepSnapshot;
 use crate::common::error::SimError;
 use crate::io::{ImportRequest, load_mesh_file};
-use crate::rheo::RheoGpu;
 use crate::scf::body::Body;
 use crate::scf::evolve::{self, RunOptions, State};
 use crate::scf::forward::Forward;
@@ -83,14 +82,7 @@ pub struct SurfaceFrame {
 
 impl SurfaceFrame {
     pub fn from_body(body: &Body, step: usize, time: f64, omega: f64, mass: f64) -> Self {
-        let (mut radius_min, mut radius_max) = (f64::INFINITY, 0.0_f64);
-        for radius in &body.radius {
-            radius_min = radius_min.min(*radius);
-            radius_max = radius_max.max(*radius);
-        }
-        if body.radius.is_empty() {
-            radius_min = 0.0;
-        }
+        let (radius_min, radius_max) = crate::app::snapshot::radius_range(&body.positions);
         Self {
             step,
             time,
@@ -218,7 +210,6 @@ pub fn mesh_summary(project: &Project) -> Result<MeshSummary, String> {
 /// Parsed project and the body `evolve::start` produced.
 pub struct Prepared {
     pub project: Project,
-    pub gpu: RheoGpu,
     pub schedule: SpinSchedule,
     pub state: State,
     pub forward: Forward,
@@ -247,10 +238,8 @@ pub fn prepare(
             evolve::start(&project, body).map_err(|e| e.to_string())?
         }
     };
-    let gpu = RheoGpu::new().map_err(|e| e.to_string())?;
     Ok(Prepared {
         project,
-        gpu,
         schedule,
         state,
         forward,
@@ -267,7 +256,6 @@ pub fn run_prepared(
 ) -> Result<bool, String> {
     let Prepared {
         project,
-        gpu,
         schedule,
         state,
         forward,
@@ -289,7 +277,6 @@ pub fn run_prepared(
     };
     let result = evolve::run(
         &project,
-        &gpu,
         &schedule,
         state,
         forward,

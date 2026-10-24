@@ -2,13 +2,16 @@
 
 use astroid_evolution::common::math::DVec3;
 use astroid_evolution::rheo::{Material, MaterialSpec, SolverSpec};
-use astroid_evolution::scf::body::Topology;
+use std::sync::Arc;
+
+use astroid_evolution::scf::body::{Body, Topology};
 use astroid_evolution::scf::forward::Loading;
 use astroid_evolution::scf::params::ModeCParams;
 use astroid_evolution::scf::runout::{
     RunoutField, THETA, eroded_masses, moved_source, report, route_relief,
 };
-use astroid_evolution::scf::transport::{DirIndex, mode_c};
+use astroid_evolution::scf::surface::SurfaceIndex;
+use astroid_evolution::scf::transport::{Spread, mode_c};
 
 fn material(mu_s: f64, mu_2: f64) -> Material {
     Material::new(
@@ -42,31 +45,33 @@ fn material(mu_s: f64, mu_2: f64) -> Material {
 
 /// A sphere of radius `r` with face normals and centres.
 struct Sphere {
-    topo: Topology,
+    topo: Arc<Topology>,
     positions: Vec<DVec3>,
-    index: DirIndex,
+    index: SurfaceIndex,
 }
 
 impl Sphere {
     fn new(level: usize, r: f64) -> Self {
-        let topo = Topology::icosphere(level);
-        let positions = topo.dirs.iter().map(|d| *d * r).collect();
-        let index = DirIndex::build(&topo.dirs);
+        let (topo, dirs) = Topology::icosphere(level);
+        let positions: Vec<DVec3> = dirs.iter().map(|d| *d * r).collect();
+        let index = SurfaceIndex::build(&positions, &topo.faces);
         Self {
-            topo,
+            topo: Arc::new(topo),
             positions,
             index,
         }
     }
 
+    /// The deposition spread of width `w` (radians) on this sphere.
+    fn spread(&self, area: &[f64], w: f64) -> Spread {
+        let nv = self.positions.len();
+        let body = Body::new(self.topo.clone(), self.positions.clone(), 1.0, vec![], vec![0.0; nv]).unwrap();
+        Spread::new(&body, area, w * body.r_mean())
+    }
+
     fn face(&self, f: usize) -> (DVec3, DVec3) {
         let [a, b, c] = self.topo.faces[f].map(|v| self.positions[v as usize]);
-        let centre = (a + b + c) / 3.0;
-        let mut n = (b - a).cross(c - a).normalize();
-        if n.dot(centre) < 0.0 {
-            n = -n;
-        }
-        (centre, n)
+        ((a + b + c) / 3.0, (b - a).cross(c - a).normalize())
     }
 
     /// `g_face` from a field of the face centre and normal.
@@ -85,6 +90,9 @@ impl Sphere {
             index: &self.index,
             positions: &self.positions,
             g_face: g,
+            hess_face: &[],
+            rho_face: &[],
+            grav_const: 0.0,
             load,
             material: m,
             time_limit: time,
@@ -96,8 +104,9 @@ impl Sphere {
     /// Vertex whose direction is closest to `dir`.
     fn vertex(&self, dir: DVec3) -> usize {
         let dir = dir.normalize();
-        (0..self.topo.dirs.len())
-            .max_by(|&a, &b| self.topo.dirs[a].dot(dir).total_cmp(&self.topo.dirs[b].dot(dir)))
+        let x = &self.positions;
+        (0..x.len())
+            .max_by(|&a, &b| x[a].normalize().dot(dir).total_cmp(&x[b].normalize().dot(dir)))
             .unwrap()
     }
 }
@@ -186,7 +195,7 @@ fn packets_from_mid_latitudes_migrate_toward_the_equator() {
         ends.push(n_end);
     }
     // PO-16: halving θ_r moves the arrival by less than a few node spacings.
-    let spacing = r * (4.0 * std::f64::consts::PI / sphere.topo.dirs.len() as f64).sqrt();
+    let spacing = r * (4.0 * std::f64::consts::PI / sphere.positions.len() as f64).sqrt();
     assert!((ends[0] - ends[1]).length() < 3.0 * spacing, "{:?}", ends);
 }
 
@@ -216,7 +225,7 @@ fn an_unbound_packet_escapes_and_stays_at_its_source() {
 fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
     let (gm, r, omega) = (30.0, 450.0, 5.29e-4);
     let sphere = Sphere::new(4, r);
-    let nv = sphere.topo.dirs.len();
+    let nv = sphere.positions.len();
     let m = material(0.70, 0.96);
     let load = Loading { omega, tide: 0.0 };
     let g = sphere.gravity(|c, _| {
@@ -227,9 +236,9 @@ fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
     let movable = vec![true; nv];
     // Yield excess at mid-latitudes only.
     let f_delta: Vec<f64> = sphere
-        .topo
-        .dirs
+        .positions
         .iter()
+        .map(|p| p.normalize())
         .map(|d| if d.z.abs() > 0.5 && d.z.abs() < 0.8 { 0.3 } else { 0.0 })
         .collect();
     let prm = ModeCParams {
@@ -242,7 +251,8 @@ fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
     };
     let sources: Vec<usize> = (0..nv).filter(|&i| f_delta[i] > 0.0).collect();
     let arrivals = sphere.field(&g, load, &m, 1.0e6).trace(&sources);
-    let moved = mode_c(&sphere.topo, &area, &rho_s, &movable, &f_delta, &prm, Some(&arrivals));
+    let spread = sphere.spread(&area, prm.kernel_width);
+    let moved = mode_c(&spread, &area, &rho_s, &movable, &f_delta, &prm, Some(&arrivals));
     let ero: f64 = (0..nv).map(|i| moved.j_ero[i] * area[i]).sum();
     let dep: f64 = (0..nv).map(|i| moved.j_dep[i] * area[i]).sum();
     assert!((ero - dep).abs() <= 1e-12 * ero, "{ero} {dep}");
@@ -258,8 +268,8 @@ fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
     let still = sphere
         .field(&still_g, Loading { omega: 0.0, tide: 0.0 }, &m, 1.0e6)
         .trace(&sources);
-    let a = mode_c(&sphere.topo, &area, &rho_s, &movable, &f_delta, &prm, Some(&still));
-    let b = mode_c(&sphere.topo, &area, &rho_s, &movable, &f_delta, &prm, None);
+    let a = mode_c(&spread, &area, &rho_s, &movable, &f_delta, &prm, Some(&still));
+    let b = mode_c(&spread, &area, &rho_s, &movable, &f_delta, &prm, None);
     for i in 0..nv {
         assert!((a.j_dep[i] - b.j_dep[i]).abs() <= 1e-9 * b.j_dep[i].abs().max(1e-30), "{i}");
     }
@@ -271,7 +281,7 @@ fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
 fn routed_relief_returns_its_mass_toward_the_equator() {
     let (gm, r, omega) = (30.0, 450.0, 5.29e-4);
     let sphere = Sphere::new(4, r);
-    let nv = sphere.topo.dirs.len();
+    let nv = sphere.positions.len();
     let m = material(0.70, 0.96);
     let load = Loading { omega, tide: 0.0 };
     let g = sphere.gravity(|c, _| {
@@ -281,9 +291,9 @@ fn routed_relief_returns_its_mass_toward_the_equator() {
     // (DM)_i = ρ A_i on a sphere; 0.5 m of relief on the 35°–55° bands.
     let jac: Vec<f64> = area.iter().map(|a| 1193.0 * a).collect();
     let removed: Vec<f64> = sphere
-        .topo
-        .dirs
+        .positions
         .iter()
+        .map(|p| p.normalize())
         .map(|d| if d.z.abs() > 0.57 && d.z.abs() < 0.82 { 0.5 } else { 0.0 })
         .collect();
     let prm = ModeCParams {
@@ -295,7 +305,7 @@ fn routed_relief_returns_its_mass_toward_the_equator() {
         runout_stop: 1.0e-3,
     };
     let field = sphere.field(&g, load, &m, 1.0e6);
-    let routing = route_relief(&field, &area, &jac, &removed, &prm);
+    let routing = route_relief(&field, &area, &jac, &removed, &sphere.spread(&area, prm.kernel_width), None).unwrap();
     let out: f64 = (0..nv).map(|i| jac[i] * removed[i]).sum();
     let back: f64 = (0..nv).map(|i| jac[i] * routing.delta[i]).sum();
     assert!((back - out).abs() <= 1e-12 * out, "{back} vs {out}");
@@ -303,7 +313,7 @@ fn routed_relief_returns_its_mass_toward_the_equator() {
     // Mean |sin latitude| of the removed and of the returned mass.
     let mean_z = |w: &dyn Fn(usize) -> f64| {
         let (num, den) = (0..nv).fold((0.0, 0.0), |(n, d), i| {
-            (n + w(i) * sphere.topo.dirs[i].z.abs(), d + w(i))
+            (n + w(i) * sphere.positions[i].normalize().z.abs(), d + w(i))
         });
         num / den
     };

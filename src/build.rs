@@ -101,9 +101,11 @@ fn main() {
         }
         units.extend(split_entries(&program_name(&root, program), &source));
     }
-    for (stem, source) in &units {
-        let stem = stem.clone();
-        let source = source.clone();
+    // The browser runs the PDHG iteration on the CPU only (`socp_pdhg::on_cpu`).
+    let units = units
+        .into_iter()
+        .filter(|(stem, _)| target != Target::Wgsl || !stem.starts_with("scf_pdhg_"));
+    for (stem, source) in units {
         let traces = source.contains("@if(rt_hw)") || source.contains("@if(!rt_hw)");
         let native_fp = target != Target::Wgsl && std::env::var_os("AE_DS_EXACT").is_none();
         let fp = (native_fp, target == Target::Msl);
@@ -167,7 +169,7 @@ fn main() {
                         // naga's namer appends `_` to an identifier that ends in a digit
                         // (`basis_vel_o4` -> `basis_vel_o4_`), but the host looks the entry
                         // point up by its source name.
-                        let text = restore_entry_name(text, name);
+                        let text = compact_wgsl(&restore_entry_name(text, name));
                         std::fs::write(&path, text).unwrap();
                         format!("Code::Wgsl(include_str!({:?}))", path.display().to_string())
                     }
@@ -216,6 +218,17 @@ fn binds_rs(binds: &[(u32, Kind)]) -> String {
 }
 
 /// Gives the single `@compute` function of a generated WGSL module back its source name.
+/// naga's WGSL without its indentation and blank lines: whitespace is insignificant in
+/// WGSL, and the text is embedded in the browser binary.
+fn compact_wgsl(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn restore_entry_name(text: String, name: &str) -> String {
     let at = text
         .find("@compute")

@@ -2,8 +2,11 @@
 
 use std::sync::OnceLock;
 
+use rayon::prelude::*;
+
 use nalgebra::DMatrix;
 
+use crate::common::linalg::{self, Entry};
 use crate::common::math::DVec3;
 use crate::rheo::basis::{K, ds_pair, pack_dirs, pack_scalars, psi_poly};
 
@@ -12,7 +15,9 @@ use super::harmonics::SurfaceFit;
 use super::jets::packed_jet_tables;
 use crate::gpu::{Arg, Res, kernel, once};
 
-const BATCH_BYTES: usize = 64 * 1024 * 1024;
+/// Output bytes per basis launch: larger batches fill the GPU (one thread per point), smaller
+/// ones cap the transient copies (and, in the browser, the workers' heap high-water mark).
+const BATCH_BYTES: usize = 32 * 1024 * 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -242,11 +247,11 @@ fn ds_at(words: &[f32], channel: usize, n: usize, point: usize) -> f64 {
     f64::from(words[i]) + f64::from(words[i + 1])
 }
 
-fn write_at(matrix: &mut DMatrix<f64>, row: usize, col: usize, value: f64) {
+fn write_at<T: Entry>(matrix: &mut DMatrix<T>, row: usize, col: usize, value: f64) {
     let nrows = matrix.nrows();
     debug_assert!(row < nrows && col < matrix.ncols());
     unsafe {
-        *matrix.as_mut_ptr().add(col * nrows + row) = value;
+        *matrix.as_mut_ptr().add(col * nrows + row) = T::of(value);
     }
 }
 
@@ -256,8 +261,6 @@ enum Bind {
     Full,
     /// Pressure value kernel: no monomial tables.
     NoTables,
-    /// Normal kernel: no polynomials.
-    NoPolys,
     /// Velocity contraction: mode coefficients at buffer 6, output at 5.
     FullDot,
     /// Pressure contraction: mode coefficients at buffer 4, output at 5.
@@ -275,9 +278,9 @@ fn launch(
     n_f32: usize,
     threads: usize,
     coef: Option<&Vec<f32>>,
-) -> Result<Vec<f32>, String> {
+) -> Result<Words, String> {
     if threads == 0 || n_f32 == 0 {
-        return Ok(vec![0.0; n_f32]);
+        return Ok(Words(vec![0; n_f32 * 4]));
     }
     let params_b = bytemuck::bytes_of(params);
     let points_b: &[u8] = bytemuck::cast_slice(points);
@@ -289,7 +292,6 @@ fn launch(
     match bind {
         Bind::Full => args.extend([Arg::In(polys_b), Arg::Res(&core.tables), out]),
         Bind::NoTables => args.extend([Arg::In(polys_b), out]),
-        Bind::NoPolys => args.extend([Arg::Res(&core.tables), out]),
         Bind::FullDot => args.extend([
             Arg::In(polys_b),
             Arg::Res(&core.tables),
@@ -298,8 +300,22 @@ fn launch(
         ]),
         Bind::PresDot => args.extend([Arg::In(polys_b), Arg::In(coef_b), out]),
     }
-    let back = once(kernel(entry)?, groups_of(threads), &args)?;
-    Ok(bytemuck::pod_collect_to_vec(&back[0]))
+    let mut back = once(kernel(entry)?, groups_of(threads), &args)?;
+    Ok(Words(back.swap_remove(0)))
+}
+
+/// Read-back bytes of one launch, viewed as `f32` words.
+struct Words(Vec<u8>);
+
+impl Words {
+    /// The words in place when the allocation is aligned for `f32` (the usual case),
+    /// otherwise one copy.
+    fn get(&self) -> std::borrow::Cow<'_, [f32]> {
+        match bytemuck::try_cast_slice(&self.0) {
+            Ok(w) => std::borrow::Cow::Borrowed(w),
+            Err(_) => std::borrow::Cow::Owned(bytemuck::pod_collect_to_vec(&self.0)),
+        }
+    }
 }
 
 fn component_count(want: Want) -> usize {
@@ -374,23 +390,17 @@ fn velocity_kernel(ord: usize, l_max: usize, rays: bool) -> Result<VelKernel, St
     }
 }
 
-pub(crate) fn velocity(
+pub(crate) fn velocity<T: Entry>(
     surf: &SurfaceFit,
     lay: &VelLayout,
     pts: &[DVec3],
     n_per: usize,
     want: Want,
-) -> Result<VelRows, String> {
+) -> Result<VelRows<T>, String> {
     check_surface(surf)?;
     let np = pts.len();
     let n_u = lay.n_u;
-    let mk = |on: bool, rows: usize| {
-        if on {
-            DMatrix::zeros(rows * np, n_u)
-        } else {
-            DMatrix::zeros(0, n_u)
-        }
-    };
+    let mk = |on: bool, rows: usize| linalg::zeros(if on { rows * np } else { 0 }, n_u);
     let mut rows = VelRows {
         n_points: np,
         v: mk(want.v, 3),
@@ -463,81 +473,52 @@ pub(crate) fn velocity(
             if grouped { batch_rays } else { batch_points },
             None,
         )?;
-        scatter_velocity(&mut rows, &words, want, n_comp, n_u, point0, batch_points);
+        scatter_velocity(&mut rows, &words.get(), want, n_comp, point0, batch_points);
         ray0 += batch_rays;
     }
     Ok(rows)
 }
 
-fn scatter_velocity(
-    rows: &mut VelRows,
+/// Unpack one batch into the column-major rows, one column per task: each column is
+/// written as one contiguous run instead of 30 strided writes per point and mode.
+fn scatter_velocity<T: Entry>(
+    rows: &mut VelRows<T>,
     words: &[f32],
     want: Want,
     n_comp: usize,
-    n_u: usize,
     point0: usize,
     n_batch: usize,
 ) {
-    let mut cursor = 0;
-    let local_v = cursor;
-    if want.v {
-        cursor += 3;
-    }
-    let local_d = cursor;
-    if want.d || want.lap || want.gd {
-        cursor += 6;
-    }
-    let local_lap = cursor;
-    if want.lap {
-        cursor += 3;
-    }
-    let local_gd = cursor;
-    debug_assert_eq!(cursor + if want.gd { 18 } else { 0 }, n_comp);
-    for p in 0..n_batch {
-        let gp = point0 + p;
-        for j in 0..n_u {
-            let base = j * n_comp;
-            if want.v {
-                for a in 0..3 {
-                    write_at(
-                        &mut rows.v,
-                        3 * gp + a,
-                        j,
-                        ds_at(words, base + local_v + a, n_batch, p),
-                    );
-                }
-            }
-            if want.d || want.lap || want.gd {
-                for a in 0..6 {
-                    write_at(
-                        &mut rows.d,
-                        6 * gp + a,
-                        j,
-                        ds_at(words, base + local_d + a, n_batch, p),
-                    );
-                }
-            }
-            if want.lap {
-                for a in 0..3 {
-                    write_at(
-                        &mut rows.lap,
-                        3 * gp + a,
-                        j,
-                        ds_at(words, base + local_lap + a, n_batch, p),
-                    );
-                }
-            }
-            if want.gd {
-                for a in 0..18 {
-                    write_at(
-                        &mut rows.gd,
-                        18 * gp + a,
-                        j,
-                        ds_at(words, base + local_gd + a, n_batch, p),
-                    );
-                }
-            }
+    // Each matrix with its rows per point, at its offset in a point's record.
+    let strain = want.d || want.lap || want.gd;
+    let mut local = 0;
+    let mut targets = Vec::with_capacity(4);
+    for (m, per, on) in [
+        (&mut rows.v, 3, want.v),
+        (&mut rows.d, 6, strain),
+        (&mut rows.lap, 3, want.lap),
+        (&mut rows.gd, 18, want.gd),
+    ] {
+        if on {
+            targets.push((m, per, local));
+            local += per;
         }
+    }
+    debug_assert_eq!(local, n_comp);
+    for (m, per, local) in targets {
+        let nrows = m.nrows();
+        m.as_mut_slice()
+            .par_chunks_mut(nrows)
+            .enumerate()
+            .for_each(|(j, col)| {
+                let dst = &mut col[per * point0..per * (point0 + n_batch)];
+                for a in 0..per {
+                    let channel = j * n_comp + local + a;
+                    for p in 0..n_batch {
+                        dst[per * p + a] = T::of(ds_at(words, channel, n_batch, p));
+                    }
+                }
+            });
     }
 }
 
@@ -615,9 +596,9 @@ pub(crate) fn pressure(
             None,
         )?;
         if gradients {
-            scatter_pressure_grad(&mut rows, &words, n, nl, point0, batch);
+            scatter_pressure_grad(&mut rows, &words.get(), n, nl, point0, batch);
         } else {
-            scatter_pressure_value(&mut rows, &words, n, nl, point0, batch);
+            scatter_pressure_value(&mut rows, &words.get(), n, nl, point0, batch);
         }
         point0 += batch;
     }
@@ -678,66 +659,6 @@ fn scatter_pressure_grad(
             }
         }
     }
-}
-
-/// Radius and outward unit normal of `r = R(ω̂)` at each direction.
-///
-/// The kernel returns `(R, ∇R)` of the order-1 jet. The host finishes
-/// `n = normalize(ω̂ − ∇R / R)` in f64, the same completion as `SurfaceFit::normal`.
-pub(crate) fn normals(surf: &SurfaceFit, dirs: &[DVec3]) -> Result<Vec<(f64, DVec3)>, String> {
-    check_surface(surf)?;
-    if dirs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let core = core()?;
-    let coeff = host_buf(&pack_scalars(&surf.coeff))?;
-    let dummy = host_buf(&[] as &[f32])?;
-    let packed = pack_dirs(dirs);
-    let per_batch = (BATCH_BYTES / 32).clamp(1, dirs.len());
-    let mut params = blank_params();
-    params.n_per = 1;
-    params.l_surf = as_u32(surf.l_max, "surface degree")?;
-    params.l_mode = params.l_surf;
-    let mut out = Vec::with_capacity(dirs.len());
-    let mut point0 = 0;
-    while point0 < dirs.len() {
-        let batch = per_batch.min(dirs.len() - point0);
-        params.n_rays = as_u32(batch, "directions")?;
-        params.n_points = params.n_rays;
-        let word0 = point0 * 6;
-        let words = launch(
-            core,
-            "basis_normal",
-            &packed[word0..word0 + batch * 6],
-            &params,
-            &coeff,
-            &dummy,
-            Bind::NoPolys,
-            batch * 4 * 2,
-            batch,
-            None,
-        )?;
-        for p in 0..batch {
-            let r = ds_at(&words, 0, batch, p);
-            let g = [
-                ds_at(&words, 1, batch, p),
-                ds_at(&words, 2, batch, p),
-                ds_at(&words, 3, batch, p),
-            ];
-            let w = dirs[point0 + p];
-            let n = if r.is_finite() && r != 0.0 {
-                let k = 1.0 / r;
-                DVec3::new(w.x - g[0] * k, w.y - g[1] * k, w.z - g[2] * k)
-                    .try_normalize()
-                    .unwrap_or(w)
-            } else {
-                w
-            };
-            out.push((r, n));
-        }
-        point0 += batch;
-    }
-    Ok(out)
 }
 
 fn unpack_pairs(words: &[f32]) -> Vec<f64> {
@@ -842,7 +763,7 @@ pub(crate) fn contract_velocity(
         if grouped { n_rays } else { np },
         Some(&coef),
     )?;
-    let flat = unpack_pairs(&words);
+    let flat = unpack_pairs(&words.get());
     let mut v = vec![0.0; if want.v { np * 3 } else { 0 }];
     let mut d = vec![0.0; if want.d { np * 6 } else { 0 }];
     let nv = usize::from(want.v) * 3;
@@ -1066,5 +987,5 @@ pub(crate) fn contract_pressure(
         np,
         Some(&coef),
     )?;
-    Ok(unpack_pairs(&words))
+    Ok(unpack_pairs(&words.get()))
 }

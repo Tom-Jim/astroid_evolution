@@ -14,7 +14,8 @@ self.onmessage = async (event) => {
     await init({ module_or_path: event.data.wasm });
     let queue = Promise.resolve();
     const serve = async () => {
-      const request = data.slice(0, Atomics.load(header, 1));
+      // The caller waits for the reply, so the request bytes stay put while wasm copies them.
+      const request = data.subarray(0, Atomics.load(header, 1));
       try {
         const out = new Uint8Array(await execute_gpu(request));
         if (out.length > data.length) {

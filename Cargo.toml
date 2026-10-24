@@ -180,3 +180,35 @@ codegen-units = 1
 strip = true
 # No unwinding tables: a panic already ends the viewer (Bevy systems, rayon jobs).
 panic = "abort"
+
+# Shipped builds optimize the viewer, GPU and shell crates for size; the solver and the
+# crates its loops run in keep full speed.
+[profile.dist.package."*"]
+opt-level = "s"
+
+[profile.dist.package.astroid_evolution]
+opt-level = 3
+
+[profile.dist.package.nalgebra]
+opt-level = 3
+
+[profile.dist.package.matrixmultiply]
+opt-level = 3
+
+[profile.dist.package.simba]
+opt-level = 3
+
+[profile.dist.package.glam]
+opt-level = 3
+
+[profile.dist.package.obvhs]
+opt-level = 3
+
+[profile.dist.package.rayon]
+opt-level = 3
+
+[profile.dist.package.rayon-core]
+opt-level = 3
+
+[profile.dist.package.serde_json]
+opt-level = 3

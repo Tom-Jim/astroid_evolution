@@ -4,7 +4,6 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use astroid_evolution::common::error::SimError;
-use astroid_evolution::rheo::RheoGpu;
 use astroid_evolution::scf::evolve::{
     self, RunOptions, State, StepFields, StepRecord, compose_frame,
 };
@@ -104,6 +103,9 @@ enum Command {
         r_ref: Option<f64>,
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Also write the per-point fields (vertices, faces, volume points) as JSON.
+        #[arg(long)]
+        fields: Option<PathBuf>,
     },
     /// Export a snapshot as OBJ or per-vertex CSV.
     Export {
@@ -226,9 +228,8 @@ fn run(cli: Cli) -> Result<(), SimError> {
             obj,
         } => {
             let p = Project::load(&project)?;
-            let gpu = RheoGpu::new()?;
             let (state, _) = evolve::start(&p, initial_body(&p)?)?;
-            let (body, rep) = relax(&p, &gpu, &state.body, Loading { omega, tide: 0.0 })?;
+            let (body, rep) = relax(&p, &state.body, Loading { omega, tide: 0.0 })?;
             let (body, frep, _) = frame::realign(&body, None, p.g, &p.geometry, false)?;
             println!(
                 "relax: converged={} stalled={} protection={} locked={} protected={} preserved_supercritical={} slack {:.3e} -> {:.3e} in {} sweeps",
@@ -281,12 +282,11 @@ fn run(cli: Cli) -> Result<(), SimError> {
             let state = initial_state(&p, snapshot.as_deref())?;
             let (body, rep, _) = frame::realign(&state.body, None, p.g, &p.geometry, true)?;
             println!(
-                "realign: passes={} angle={:.4e} deg  dM/M={:.2e} dV/V={:.2e} max dR/R={:.2e}",
+                "realign: passes={} angle={:.4e} deg  dM/M={:.2e} dV/V={:.2e}",
                 rep.passes,
                 rep.angle_deg,
                 rep.mass_change,
-                rep.volume_change,
-                rep.max_radius_change
+                rep.volume_change
             );
             println!(
                 "  before: centroid={:.2e} offdiag={:.2e} order={:.2e}\n  after:  centroid={:.2e} offdiag={:.2e} order={:.2e}",
@@ -318,7 +318,6 @@ fn run(cli: Cli) -> Result<(), SimError> {
             let p = Project::load(&project)?;
             let schedule = SpinSchedule::parse(&spin)?;
             schedule.validate()?;
-            let gpu = RheoGpu::new()?;
             std::fs::create_dir_all(&out_dir)
                 .map_err(|e| SimError::io(format!("{}: {e}", out_dir.display())))?;
             timing::set_phase("startup");
@@ -335,7 +334,6 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 let omega0 = schedule.sample(0.0).omega;
                 let (body, rep) = relax(
                     &p,
-                    &gpu,
                     &state.body,
                     Loading {
                         omega: omega0,
@@ -355,7 +353,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
             }
             let dep = departure(
                 &fwd.moments,
-                state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64,
+                state.body.r_mean(),
                 p.geometry.eps_deg,
             );
             println!(
@@ -383,7 +381,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
                     }
                     Ok(())
                 };
-            let result = evolve::run(&p, &gpu, &schedule, state, fwd, &opts, &mut obs);
+            let result = evolve::run(&p, &schedule, state, fwd, &opts, &mut obs);
             let samples = timing::drain();
             let wall_seconds = wall.elapsed().as_secs_f64();
             if !samples.is_empty() {
@@ -434,7 +432,6 @@ fn run(cli: Cli) -> Result<(), SimError> {
         } => {
             use astroid_evolution::scf::history::{self, GravityTarget, InversionOptions};
             let p = Project::load(&project)?;
-            let gpu = RheoGpu::new()?;
             std::fs::create_dir_all(&out_dir)?;
             let (state, _) = evolve::start(&p, initial_body(&p)?)?;
             let (present, fit) = match (mass, c20, r_ref, core_sigma) {
@@ -478,7 +475,6 @@ fn run(cli: Cli) -> Result<(), SimError> {
             };
             let inv = history::invert(
                 &p,
-                &gpu,
                 &schedule,
                 &present,
                 &InversionOptions {
@@ -527,14 +523,13 @@ fn run(cli: Cli) -> Result<(), SimError> {
             omega,
             r_ref,
             out,
+            fields,
         } => {
             let p = Project::load(&project)?;
-            let gpu = RheoGpu::new()?;
             let state = initial_state(&p, snapshot.as_deref())?;
             let mut fwd = Forward::bind(&state.body, p.g)?;
             let m = mechanics::evaluate(
                 &p,
-                &gpu,
                 &state.body,
                 &mut fwd,
                 Loading { omega, tide: 0.0 },
@@ -542,7 +537,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
             )?;
             let dep = departure(
                 &fwd.moments,
-                state.body.radius.iter().sum::<f64>() / state.body.radius.len() as f64,
+                state.body.r_mean(),
                 p.geometry.eps_deg,
             );
             let inward: Vec<f64> = m
@@ -551,7 +546,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 .zip(&m.rheo)
                 .map(|(g, node)| -g.dot(node.normal))
                 .collect();
-            let area = frame::vertex_areas(&state.body);
+            let area = state.body.vertex_areas();
             let rho_total: f64 = (0..area.len()).map(|i| area[i] * state.body.rho_s[i]).sum();
             let report = serde_json::json!({
                 "omega": omega,
@@ -561,7 +556,9 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 "frame_departure": {
                     "centroid": dep.centroid, "off_diagonal": dep.off_diagonal, "ordering": dep.ordering
                 },
-                "surface_fit_error": m.fit_error,
+                "nitsche_c": m.ops.c_nitsche,
+                "volume_points": m.ops.vol.pts.len(),
+                "cut_rays": m.ops.vol.cut_rays,
                 "picard": {
                     "iterations": m.sol.picard_iterations, "eps_picard": m.sol.eps_picard,
                     "eps_momentum": m.sol.eps_momentum, "eps_lambda": m.sol.eps_lambda,
@@ -601,6 +598,42 @@ fn run(cli: Cli) -> Result<(), SimError> {
             });
             let text = serde_json::to_string_pretty(&report)?;
             println!("{text}");
+            if let Some(path) = fields {
+                let v3 = |v: &[astroid_evolution::common::math::DVec3]| -> Vec<[f64; 3]> {
+                    v.iter().map(|x| x.to_array()).collect()
+                };
+                let faces = state.body.face_geometry();
+                let dump = serde_json::json!({
+                    "vertices": {
+                        "position": v3(&state.body.positions()),
+                        "f_delta": m.class.f_delta,
+                        "v_sl": v3(&m.class.v_sl),
+                        "movable": m.class.movable,
+                    },
+                    "faces": {
+                        "centre": faces.iter().map(|f| f.0.to_array()).collect::<Vec<_>>(),
+                        "g_eff": v3(&m.g_face),
+                        "phi": m.rheo.iter().map(|n| n.phi).collect::<Vec<_>>(),
+                        "slack": m.rheo.iter().map(|n| n.slack).collect::<Vec<_>>(),
+                        "shear": m.rheo.iter().map(|n| n.shear).collect::<Vec<_>>(),
+                        "p_tilde": m.rheo.iter().map(|n| n.p_tilde).collect::<Vec<_>>(),
+                        "velocity": m.rheo.iter().map(|n| n.velocity.to_array()).collect::<Vec<_>>(),
+                        "stress": m.surface_stress,
+                    },
+                    "volume": {
+                        "point": v3(&m.ops.vol.pts),
+                        "weight": m.ops.vol.w,
+                        "eta": m.sol.eta,
+                        "p_tilde": m.sol.p_tilde,
+                    },
+                    "stokes": {
+                        "u": m.sol.u,
+                        "lambda": m.sol.lambda,
+                    },
+                });
+                std::fs::write(&path, serde_json::to_string(&dump)?)
+                    .map_err(|e| SimError::io(format!("{}: {e}", path.display())))?;
+            }
             if let Some(o) = out {
                 std::fs::write(&o, text)
                     .map_err(|e| SimError::io(format!("{}: {e}", o.display())))?;

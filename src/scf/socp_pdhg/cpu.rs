@@ -7,7 +7,6 @@
 //! trip, which the browser pays in milliseconds per batch.
 
 use super::Csr;
-use super::gpu::{Csc, transpose};
 
 /// `(x, y, x_avg, y_avg)`.
 pub type State = [Vec<f64>; 4];
@@ -181,4 +180,34 @@ impl Device {
             }
         }
     }
+}
+
+/// Column-major copy of `A` for the `Aᵀ y` sums.
+pub(super) struct Csc {
+    pub(super) ptr: Vec<u32>,
+    pub(super) row: Vec<u32>,
+    pub(super) val: Vec<f64>,
+}
+
+pub(super) fn transpose(a: &Csr) -> Csc {
+    let mut ptr = vec![0u32; a.n + 1];
+    for &c in &a.col {
+        ptr[c as usize + 1] += 1;
+    }
+    for j in 0..a.n {
+        ptr[j + 1] += ptr[j];
+    }
+    let mut row = vec![0u32; a.val.len()];
+    let mut val = vec![0.0; a.val.len()];
+    let mut cursor = ptr.clone();
+    for i in 0..a.m {
+        for k in a.row_ptr[i] as usize..a.row_ptr[i + 1] as usize {
+            let j = a.col[k] as usize;
+            let p = cursor[j] as usize;
+            cursor[j] += 1;
+            row[p] = i as u32;
+            val[p] = a.val[k];
+        }
+    }
+    Csc { ptr, row, val }
 }

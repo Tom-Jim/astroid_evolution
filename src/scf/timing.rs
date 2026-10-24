@@ -142,7 +142,7 @@ pub fn group(name: &str) -> &'static str {
     match name {
         "rtfp_bind" | "rtfp_moments" | "rtfp_faces" | "rtfp_field" => "RTFP",
         "rheology" => "rheology",
-        "socp_assemble" | "socp_face_frames" | "socp_pdhg" | "socp_recover" => "outer_socp",
+        "socp_assemble" | "socp_pdhg" | "socp_recover" => "outer_socp",
         _ => "other",
     }
 }

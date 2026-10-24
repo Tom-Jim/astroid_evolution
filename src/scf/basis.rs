@@ -10,6 +10,7 @@
 
 use nalgebra::DMatrix;
 
+use crate::common::linalg::Entry;
 use crate::common::math::DVec3;
 use crate::rheo::basis::{K, lm_index};
 
@@ -50,26 +51,6 @@ impl VelLayout {
             }
         }
         out
-    }
-
-    /// Coefficients in the layout of `rheo::VelocityField`.
-    pub fn to_rheo(&self, u: &[f64]) -> crate::rheo::VelocityField {
-        let n = (self.l_max + 1) * (self.l_max + 1);
-        let mut q = vec![[0.0; K]; n];
-        let mut s = vec![[0.0; K]; n];
-        for l in 1..=self.l_max {
-            for m in -(l as i32)..=(l as i32) {
-                for k in 0..K {
-                    q[lm_index(l, m)][k] = u[self.dof(l, m, false, k)];
-                    s[lm_index(l, m)][k] = u[self.dof(l, m, true, k)];
-                }
-            }
-        }
-        crate::rheo::VelocityField {
-            l_max: self.l_max,
-            q,
-            s,
-        }
     }
 }
 
@@ -120,13 +101,14 @@ impl Want {
 
 /// Velocity rows at a set of points. Row `3p + a` of `v`, `6p + c` of `d` (components
 /// `xx, yy, zz, √2 xy, √2 xz, √2 yz`, so that `d·d = D:D`), `3p + a` of `lap`, and row
-/// `18p + 6k + c` of `gd` (`∂_k D`).
-pub struct VelRows {
+/// `18p + 6k + c` of `gd` (`∂_k D`). Stored in f64, or in f32 where the rows are only
+/// read through the f64-accumulating products of `common::linalg`.
+pub struct VelRows<T: Entry = f64> {
     pub n_points: usize,
-    pub v: DMatrix<f64>,
-    pub d: DMatrix<f64>,
-    pub lap: DMatrix<f64>,
-    pub gd: DMatrix<f64>,
+    pub v: DMatrix<T>,
+    pub d: DMatrix<T>,
+    pub lap: DMatrix<T>,
+    pub gd: DMatrix<T>,
 }
 
 /// Evaluate the velocity basis at `pts`. Each point is its own ray.
@@ -146,6 +128,17 @@ pub fn eval_velocity_rays(
     n_per: usize,
     want: Want,
 ) -> VelRows {
+    eval_velocity_rays_as(surf, lay, pts, n_per, want)
+}
+
+/// The same rows stored as `T`.
+pub fn eval_velocity_rays_as<T: Entry>(
+    surf: &SurfaceFit,
+    lay: &VelLayout,
+    pts: &[DVec3],
+    n_per: usize,
+    want: Want,
+) -> VelRows<T> {
     super::basis_gpu::velocity(surf, lay, pts, n_per, want)
         .unwrap_or_else(|err| panic!("velocity basis GPU: {err}"))
 }

@@ -1,8 +1,9 @@
 //! The quasi-static evolution loop of §10.4.4.
 //!
-//! One pass of [`run`] is steps 1–9 of the doc: forward gravity (Tier 1), Stokes–pressure
-//! Picard, yield classification, friction-angle chain (`rheo_friction`), mode C, step size,
-//! geometric SOCP with outer acceptance, `ρ_s` transport, frame re-alignment. The spin
+//! One pass of [`run`] is steps 1–9 of the doc: forward gravity (Tier 1), the
+//! Stokes–pressure solve, yield classification, friction-angle chain, mode C, step size,
+//! geometric SOCP in normal increments with outer acceptance, `ρ_s` transport, and the
+//! rigid frame re-alignment, all on the general polyhedron of hypothesis (G). The spin
 //! schedule is an exogenous input; neither angular momentum nor any Tier 3 coupling enters.
 
 use std::borrow::Cow;
@@ -11,23 +12,21 @@ use nalgebra::{Matrix3, Vector3};
 use serde::Serialize;
 
 use crate::common::math::DVec3;
-use crate::rheo::RheoGpu;
 
 use super::basis::{Want, contract_velocity_rays};
 use super::body::Body;
 use super::cores::{self, CoreReport, Quadrature};
+use super::domain::volume_rule;
 use super::forward::Forward;
 use super::forward::Loading;
-use super::frame::{FrameReport, realign, vertex_areas};
+use super::frame::{FrameReport, realign};
 use super::mechanics::{Mechanics, evaluate};
 use super::params::Project;
-use super::relax::{AcceptError, accept};
+use super::relax::{AcceptError, accept, mass_correction};
 use super::socp::{Kind, SocpInput, SocpOutput, SocpSeed, mass_jacobian, solve};
 use super::spin::SpinSchedule;
 use super::runout::{self, RunoutField, RunoutReport};
-use super::transport::{
-    DirIndex, locate_face, locate_vertex, mode_c, mode_c_over, surface_flow, transport,
-};
+use super::transport::{Spread, mode_c, mode_c_over, surface_flow, transport};
 use crate::common::error::SimError;
 
 /// Everything that defines a restartable state of the run.
@@ -104,19 +103,20 @@ pub struct StepRecord {
     pub frame_applied: bool,
     pub frame_angle_deg: f64,
     pub frame_mass_change: f64,
-    pub fit_error: f64,
+    /// `C_N` of Proposition 8.0.6 for the Nitsche pressure problem of this geometry.
+    pub nitsche_c: f64,
     pub rheo_unconverged: u32,
     pub rheo_seconds: f64,
     pub mass: f64,
     pub centroid_offset: f64,
     /// Smallest `n·ê` on the body kept by this step, and the face that carries it.
-    pub min_radial: f64,
-    pub min_radial_face: usize,
     /// Runout of the eroded and the routed packets together (§2.8b).
     pub runout: RunoutReport,
     /// Mass the slope relief removed and routed (kg), and the routing gap (§2.8b).
     pub relief_mass: f64,
     pub relief_gap: f64,
+    /// Loose-layer mass the relief of promoted vertices moved through the ledger (kg, §2.8c).
+    pub relief_layer: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -134,24 +134,23 @@ pub struct RunResult {
 
 /// Surface fields of one accepted step, indexed like the body the observer receives.
 ///
-/// `radius_from` is the ray radius at the start of the step. `d_radial` is `λ d` on a
-/// geometry step and zero on a spin or stage-equilibrium step; a frame realignment does
-/// not resample it. Every other vertex field is resampled onto the post-realignment body
-/// when the frame report was applied. `movable` is the classifier flag (true means the
-/// vertex is outside the rigid core).
+/// `positions_from` are the vertices at the start of the step, in the frame of the body
+/// the observer receives. `d_normal` is `λ d` on a geometry step and zero on a spin or
+/// stage-equilibrium step. `movable` is the classifier flag (true means the vertex is
+/// outside the rigid core).
 /// Runout paths handed to the viewer per step (§2.8b).
 pub const RUNOUT_PATHS: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct StepFields {
-    pub radius_from: Vec<f64>,
+    pub positions_from: Vec<DVec3>,
     pub f_delta: Vec<f64>,
     pub movable: Vec<bool>,
     pub v_sl: Vec<DVec3>,
     pub normal: Vec<DVec3>,
     pub j_ero: Vec<f64>,
     pub j_dep: Vec<f64>,
-    pub d_radial: Vec<f64>,
+    pub d_normal: Vec<f64>,
     /// Per face. Incident-face scatter happens when the snapshot is packed.
     pub slack: Vec<f64>,
     pub g_face: Vec<DVec3>,
@@ -214,7 +213,6 @@ pub fn start(project: &Project, body: Body) -> Result<(State, Forward), SimError
 #[allow(clippy::too_many_lines)]
 pub fn run(
     project: &Project,
-    gpu: &RheoGpu,
     spin: &SpinSchedule,
     mut state: State,
     mut fwd: Forward,
@@ -252,8 +250,7 @@ pub fn run(
         }
         let topo = state.body.topo.clone();
         let nv = topo.n_vertices();
-        let radius_from = state.body.radius.clone();
-        let dir_index = DirIndex::build(&topo.dirs);
+        let positions_from = state.body.positions.clone();
         let sample = spin.sample(state.t);
         let t_next = sample.t_next.min(t_end);
         let omega = sample.omega;
@@ -264,13 +261,15 @@ pub fn run(
             omega,
             tide: spin.tide(state.t),
         };
-        let mech = evaluate(project, gpu, &state.body, &mut fwd, load, guess.as_deref())?;
+        let mech = evaluate(project, &state.body, &mut fwd, load, guess.as_deref())?;
         let cl = &mech.class;
         let density = state.body.density()?;
         let area = {
             let _span = super::timing::span("vertex_areas");
-            vertex_areas(&state.body)
+            state.body.vertex_areas()
         };
+        let r_mean = state.body.r_mean();
+        let spread = Spread::new(&state.body, &area, project.mode_c.kernel_width * r_mean);
         // χ_Y from the unyielded core is authoritative for creep and mode C (§2.8 B3).
         // Slope promotion (§2.8c, A-C4) admits the loose-layer vertices of supercritical
         // faces to the geometric mobile set only.
@@ -292,12 +291,23 @@ pub fn run(
         // §2.8b: where each eroded packet comes to rest. The sources are the nodes with
         // J_ero > 0; the arrivals do not depend on the step length, so both mode C
         // evaluations of this step share them.
-        let positions = state.body.positions();
+        let positions = state.body.positions.clone();
+        // ρ_K at the face centres, for the exterior Hessian of the flight expansion.
+        let rho_face: Vec<f64> = topo
+            .faces
+            .iter()
+            .map(|t| density.rho(t.iter().map(|v| positions[*v as usize]).sum::<DVec3>() / 3.0))
+            .collect();
+        // The frozen field of this step; the cone's density update must not reach it.
+        let hess_face = fwd.face.hess_u.clone();
         let field = RunoutField {
             topo: &topo,
-            index: &dir_index,
+            index: &mech.index,
             positions: &positions,
             g_face: &mech.g_face,
+            hess_face: &hess_face,
+            rho_face: &rho_face,
+            grav_const: project.g,
             load,
             material: &project.material,
             time_limit: project.mode_c.runout_time,
@@ -309,7 +319,8 @@ pub fn run(
             let sources: Vec<usize> = (0..nv)
                 .filter(|&i| yielded[i] && state.body.rho_s[i] > 0.0 && cl.f_delta[i] > 0.0)
                 .collect();
-            field.trace(&sources)
+            let exterior = |p: &[DVec3]| fwd.eval_exterior(p);
+            field.trace_with(&sources, Some(&exterior))?
         } else {
             Vec::new()
         };
@@ -317,7 +328,7 @@ pub fn run(
         let mc = {
             let _span = super::timing::span("mode_c");
             mode_c(
-                &topo,
+                &spread,
                 &area,
                 &state.body.rho_s,
                 &yielded,
@@ -333,6 +344,7 @@ pub fn run(
             runout: RunoutReport::default(),
             relief_mass: 0.0,
             relief_gap: 0.0,
+            relief_layer: 0.0,
             cores: CoreReport::default(),
             step: state.step,
             t: state.t,
@@ -388,13 +400,11 @@ pub fn run(
             frame_applied: false,
             frame_angle_deg: 0.0,
             frame_mass_change: 0.0,
-            fit_error: mech.fit_error,
+            nitsche_c: mech.ops.c_nitsche,
             rheo_unconverged: mech.rheo_stats.unconverged,
             rheo_seconds: mech.rheo_stats.seconds,
             mass: fwd.moments.mass,
             centroid_offset: fwd.moments.centroid.length(),
-            min_radial: 0.0,
-            min_radial_face: 0,
         };
         rec.runout = runout::report(&eroded, &arrivals);
         guess = Some(mech.sol.u.clone());
@@ -407,7 +417,53 @@ pub fn run(
             st.eps_omega * omega.max(st.omega_ref) / sample.omega_dot.abs().max(1e-30)
         };
         rec.dt_omega = omega_bound;
-        if n_mobile == 0 && spin.is_stages() {
+        // Single-valued core map: τ ‖dev ∇v_adv‖_F ≤ θ_ch at every moving core, with the
+        // gradient at the current centres (§10.4.1); step 6b rechecks it at the midpoints.
+        let cores_on = project.cores.lagrangian() && !state.body.kernels.is_empty();
+        let probe_h = 1e-3 * r_mean;
+        let v_adv = |p: &[DVec3]| advection(&mech, p);
+        let in_body = |c: DVec3| mech.index.inside(c);
+        let core_rate = if cores_on {
+            cores::strain_rate(&state.body.kernels, &v_adv, &in_body, probe_h, &project.cores)
+        } else {
+            0.0
+        };
+        let dt_core = if core_rate > 0.0 {
+            st.theta_char / (st.lambda * core_rate)
+        } else {
+            f64::INFINITY
+        };
+        // 6b: Level 0 of the core transport over τ = λΔt. Where a midpoint gradient breaks
+        // the bound, Δt shrinks by the violation ratio and the O(K) prediction repeats.
+        let predict_cores = |dt: &mut f64, rep: &mut CoreReport| {
+            if !cores_on || core_rate == 0.0 {
+                return state.body.kernels.clone();
+            }
+            let _span = super::timing::span("core_transport");
+            let mut tries = 0;
+            loop {
+                let mut r = CoreReport::default();
+                let ks = cores::predict(
+                    &state.body.kernels,
+                    st.lambda * *dt,
+                    &v_adv,
+                    &in_body,
+                    probe_h,
+                    &project.cores,
+                    &mut r,
+                );
+                tries += 1;
+                if r.strain_step <= st.theta_char * (1.0 + 1e-9) || tries >= CORE_REPEATS {
+                    *rep = r;
+                    return ks;
+                }
+                *dt *= st.theta_char / r.strain_step;
+            }
+        };
+        // Stage equilibrium (2.15(c)) needs the whole body in the rigid core: an interior
+        // yielded pocket would move the cores even with a locked surface.
+        let all_core = cl.in_core.iter().all(|c| *c);
+        if n_mobile == 0 && spin.is_stages() && all_core {
             // Stage equilibrium (criterion (c) of §2.15): jump to the end of the stage.
             let dt = t_next - state.t;
             rec.kind = "stage-equilibrium";
@@ -418,36 +474,49 @@ pub fn run(
             advance_time(&mut state, spin, dt, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
-            stamp_radial(&mut rec, &state.body);
             let fields = step_fields(
-                &radius_from,
-                &cl.f_delta,
-                &cl.movable,
-                &cl.v_sl,
-                &cl.normal,
-                &mc.j_ero,
-                &mc.j_dep,
-                &radial_increments(false, st.lambda, nv, None),
+                &positions_from,
+                &mech,
+                &mc,
                 &slack,
-                &mech.g_face,
-                &mech.surface_stress,
+                vec![0.0; nv],
                 &paths,
                 false,
                 None,
-                &state.body,
             );
             observer(&rec, &state, &fields)?;
             records.push(rec);
             continue;
         }
         if n_mobile == 0 {
-            // A spin-only step still executes frame re-alignment (§10.4.4 step 8b),
-            // even though the geometry has no movable vertices.
-            let (body, frep, new_fwd) = realign(&state.body, Some(fwd), project.g, g, false)?;
+            // An empty movable set leaves the surface unchanged, but an interior yielded
+            // pocket still moves the cores (6b, 8c), and the frame is re-aligned (8b).
+            let bounds = [
+                ("core", dt_core),
+                ("omega", omega_bound),
+                ("dt_max", st.dt_max),
+                ("t_next", t_next - state.t),
+            ];
+            let (mut name, mut dt) = bounds
+                .iter()
+                .fold(("dt_max", f64::INFINITY), |a, b| if b.1 < a.1 { *b } else { a });
+            let chosen = dt;
+            let kernels_pred = predict_cores(&mut dt, &mut rec.cores);
+            if dt < chosen {
+                name = "core";
+            }
+            let advance = st.lambda * dt;
+            let mut body = state.body.clone();
+            if core_rate > 0.0 {
+                body.kernels = kernels_pred;
+                fwd.set_density(body.density()?)?;
+                close_cores(project, &mech, &state.body, &mut body, &mut fwd, mass_target, advance, &mut rec.cores)?;
+            }
+            let (body, frep, new_fwd) = realign(&body, Some(fwd), project.g, g, false)?;
             rec.kind = "spin-only";
-            rec.dt = (omega_bound.min(st.dt_max)).min(t_next - state.t);
-            rec.advance = rec.dt;
-            rec.dt_bound = "omega/max/t_next";
+            rec.dt = dt;
+            rec.advance = advance;
+            rec.dt_bound = name;
             rec.frame_applied = frep.applied;
             rec.frame_angle_deg = frep.angle_deg;
             rec.frame_mass_change = frep.mass_change;
@@ -467,23 +536,15 @@ pub fn run(
             advance_time(&mut state, spin, rec.advance, t_next, snap_tol);
             state.step += 1;
             steps_done += 1;
-            stamp_radial(&mut rec, &state.body);
             let fields = step_fields(
-                &radius_from,
-                &cl.f_delta,
-                &cl.movable,
-                &cl.v_sl,
-                &cl.normal,
-                &mc.j_ero,
-                &mc.j_dep,
-                &radial_increments(false, st.lambda, nv, None),
+                &positions_from,
+                &mech,
+                &mc,
                 &slack,
-                &mech.g_face,
-                &mech.surface_stress,
+                vec![0.0; nv],
                 &paths,
                 false,
                 Some(&frep),
-                &state.body,
             );
             observer(&rec, &state, &fields)?;
             records.push(rec);
@@ -498,7 +559,7 @@ pub fn run(
         let dt_cfl = cfl_dt(&state.body, &yielded, &cl.normal, &cl.v_sl, st.theta_cfl);
         let flow = {
             let _span = super::timing::span("surface_flow");
-            surface_flow(&topo, &cl.v_sl, &chi_a, &cl.radius)
+            surface_flow(&state.body, &cl.normal, &cl.v_sl, &chi_a)
         };
         let max_flux = (0..nv)
             .map(|i| (mc.j_dep[i] - mc.j_ero[i]).abs())
@@ -515,29 +576,6 @@ pub fn run(
         } else {
             f64::INFINITY
         };
-        // Single-valued core map: τ |∇v| ≤ θ_ch at every moving core (§9.10.3).
-        let cores_on = project.cores.lagrangian() && !state.body.kernels.is_empty();
-        let probe_h = 1e-3 * state.body.radius.iter().sum::<f64>() / nv as f64;
-        let core_rate = if cores_on {
-            let mut r = CoreReport::default();
-            cores::predict(
-                &state.body.kernels,
-                1.0,
-                &|p| advection(&mech, &topo.dirs, &dir_index, p),
-                &|c| inside_body(&mech, c),
-                probe_h,
-                &project.cores,
-                &mut r,
-            );
-            r.strain_step
-        } else {
-            0.0
-        };
-        let dt_core = if core_rate > 0.0 {
-            st.theta_char / (st.lambda * core_rate)
-        } else {
-            f64::INFINITY
-        };
         let bounds = [
             ("core", dt_core),
             ("cfl", dt_cfl),
@@ -547,13 +585,21 @@ pub fn run(
             ("dt_max", st.dt_max),
             ("t_next", t_next - state.t),
         ];
-        let (name, dt) =
+        let (mut name, mut dt) =
             bounds.iter().fold(
                 ("dt_max", f64::INFINITY),
                 |a, b| if b.1 < a.1 { *b } else { a },
             );
         if !(dt.is_finite() && dt > 0.0) {
             return Err(SimError::solver(format!("step size {dt} is not positive")));
+        }
+        // 6b before the step is used anywhere: the cone's mass row sees the predicted
+        // density ρ_cand, so dense material carried outward is not mistaken for a
+        // geometric mass error (§9.10.7).
+        let chosen = dt;
+        let kernels_pred = predict_cores(&mut dt, &mut rec.cores);
+        if dt < chosen {
+            name = "core";
         }
         rec.dt = dt;
         rec.dt_bound = name;
@@ -565,7 +611,7 @@ pub fn run(
         let mc = if mc.eroded_rate > 0.0 {
             let _span = super::timing::span("mode_c");
             mode_c_over(
-                &topo,
+                &spread,
                 &area,
                 &state.body.rho_s,
                 &yielded,
@@ -584,7 +630,6 @@ pub fn run(
         let pos = &positions;
         for i in 0..nv {
             let n = cl.normal[i];
-            let mu = n.dot(topo.dirs[i]);
             let dh_star = dt * (mc.j_dep[i] - mc.j_ero[i]) / density.rho(pos[i]).max(1e-300);
             if movable[i] {
                 // Slope-promoted nodes are still in the rigid core. Use the relax predictor
@@ -595,37 +640,38 @@ pub fn run(
                 } else {
                     dt * cl.v_sl[i].dot(n)
                 };
-                d_pred[i] = radial_increment(slide + dh_star, mu);
+                d_pred[i] = slide + dh_star;
                 kind[i] = Kind::Mobile;
             } else if dh_star != 0.0 {
-                d_pred[i] = radial_increment(dh_star, mu);
+                d_pred[i] = dh_star;
                 kind[i] = Kind::Deposit;
             }
         }
         rec.n_deposit = kind.iter().filter(|k| **k == Kind::Deposit).count();
         rec.n_locked = kind.iter().filter(|k| **k == Kind::Locked).count();
-        // S_slope is the supercritical loose sheet only. Subcritical faces stay
-        // in static friction: their yielded vertices may still follow d_pred,
-        // but they do not enter the slope cone.
+        // S_slope (§2.8c): the loose faces with at least one free vertex, supercritical
+        // or not. The subcritical rows start inactive and keep the relief from pushing
+        // a neighbour past repose; fixed vertices enter n̂ with their fixed increments.
         let slope_row: Vec<bool> = mech
             .rheo
             .iter()
             .enumerate()
             .map(|(f, node)| {
                 let v = topo.faces[f].map(|x| x as usize);
-                node.slack > project.relief.tol_slack
-                    && node.sin_phi.is_finite()
-                    && v.iter().all(|i| kind[*i] == Kind::Mobile)
+                node.sin_phi.is_finite()
+                    && v.iter().any(|i| kind[*i] == Kind::Mobile)
                     && v.iter().map(|i| state.body.rho_s[*i]).sum::<f64>() > 0.0
             })
             .collect();
         let sin_phi: Vec<f64> = mech.rheo.iter().map(|n| n.sin_phi).collect();
-        // Vertices of the supercritical slope rows: where the relief removes mass (§2.8b).
+        // V_slope, the free vertices of the slope faces: where the relief removes mass (§2.8b).
         let mut slope_vertex = vec![false; nv];
         for (f, on) in slope_row.iter().enumerate() {
             if *on {
                 for v in topo.faces[f] {
-                    slope_vertex[v as usize] = true;
+                    if kind[v as usize] == Kind::Mobile {
+                        slope_vertex[v as usize] = true;
+                    }
                 }
             }
         }
@@ -635,23 +681,6 @@ pub fn run(
         // exact-penalty scale ϱ ≥ 10 h̄² of §2.13 holds with d in metres.
         let mean_area = area.iter().sum::<f64>() / nv as f64;
         let weight: Vec<f64> = area.iter().map(|a| a / mean_area).collect();
-        // 5b: Level 0 of the core transport. The cone's mass row sees the predicted
-        // density ρ_cand, so dense material carried outward is not mistaken for a
-        // geometric mass error (§9.10.7).
-        let kernels_pred = if cores_on {
-            let _span = super::timing::span("core_transport");
-            cores::predict(
-                &state.body.kernels,
-                rec.advance,
-                &|p| advection(&mech, &topo.dirs, &dir_index, p),
-                &|c| inside_body(&mech, c),
-                probe_h,
-                &project.cores,
-                &mut rec.cores,
-            )
-        } else {
-            state.body.kernels.clone()
-        };
         let density_cand =
             crate::common::density::CauchyDensity::try_new(state.body.bulk, kernels_pred.clone())?;
         if cores_on {
@@ -661,14 +690,16 @@ pub fn run(
             let _span = super::timing::span("mass_jacobian");
             mass_jacobian(&state.body, &density_cand)
         };
-        let r_mean = state.body.radius.iter().sum::<f64>() / nv as f64;
+        // Clearance rows of (G4): −θ_g t⁻ ≤ d ≤ θ_g t⁺ along the vertex normals, with
+        // t^± the distance to the next crossing of Γ (two first-hit queries).
+        let (lower, upper) = clearance(&state.body, &cl.normal, fwd.body_mesh(), g.theta_g, &floor_of(&slope_promoted, &d_pred, &state.body.rho_s, &area, &jac))?;
         // Outer geometric acceptance (§2.13, §10.4.4 step 8a): a self-intersection,
         // an overhang or a lost volume shrinks the trust radius and re-solves step 7;
         // time does not advance on a rejected attempt.
         let mut trust = g.trust0 * r_mean;
         let mut retries = 0usize;
         let mut rejected: Option<String> = None;
-        let (out, dmax, new_body, new_fwd, resid) = loop {
+        let (out, dmax, new_body, new_fwd, resid, d_used) = loop {
             if trust < g.trust_min * r_mean {
                 let why = rejected.as_deref().unwrap_or("rejected");
                 if !why.starts_with("cone solve") {
@@ -684,14 +715,14 @@ pub fn run(
                 rec.cone_unresolved = true;
                 let b = Body::new(
                     topo.clone(),
-                    state.body.radius.clone(),
+                    state.body.positions.clone(),
                     state.body.bulk,
                     kernels_pred.clone(),
                     state.body.rho_s.clone(),
                 )?;
                 let f = Forward::bind(&b, project.g)?;
                 let resid = (f.moments.mass - mass_target).abs() / mass_target;
-                break (SocpOutput::unresolved(nv, topo.n_faces()), 0.0, b, f, resid);
+                break (SocpOutput::unresolved(nv, topo.n_faces()), 0.0, b, f, resid, d_pred.clone());
             }
             // One cone solve. A warm seed is never discarded, and a mass or volume
             // miss does not start PDHG again.
@@ -708,6 +739,8 @@ pub fn run(
                 mass: mass_target,
                 trust,
                 eps_n: g.eps_n,
+                lower: &lower,
+                upper: &upper,
                 varrho: g.varrho,
                 warm: socp_seed.as_ref(),
             };
@@ -736,7 +769,8 @@ pub fn run(
             let (out, kind_used, d_pred_used) = if removed.iter().any(|r| *r > 0.0) {
                 let routed = {
                     let _span = super::timing::span("relief_routing");
-                    runout::route_relief(&field, &area, &jac, &removed, &project.mode_c)
+                    let exterior = |p: &[DVec3]| fwd.eval_exterior(p);
+                    runout::route_relief(&field, &area, &jac, &removed, &spread, Some(&exterior))?
                 };
                 let mut d2 = d_pred.clone();
                 let mut k2 = kind.clone();
@@ -782,16 +816,15 @@ pub fn run(
             let (max_locked_step, max_deposit_miss) = class_steps(&kind_used, &d_pred_used, &out.d);
             rec.max_locked_step = max_locked_step;
             rec.max_deposit_miss = max_deposit_miss;
-            // 8a: R⁽ⁿ⁺¹⁾ = R⁽ⁿ⁾ + λ d_*.
-            let mut radius = state.body.radius.clone();
-            for i in 0..nv {
-                radius[i] += st.lambda * out.d[i];
-            }
+            // 8a: X⁽ⁿ⁺¹⁾ = X⁽ⁿ⁾ + λ d_* N (G4).
+            let moved: Vec<DVec3> = (0..nv)
+                .map(|i| state.body.positions[i] + cl.normal[i] * (st.lambda * out.d[i]))
+                .collect();
             let b = match {
                 let _span = super::timing::span("geometry_build");
                 Body::new(
                     topo.clone(),
-                    radius,
+                    moved,
                     state.body.bulk,
                     kernels_pred.clone(),
                     state.body.rho_s.clone(),
@@ -827,21 +860,10 @@ pub fn run(
                 }
                 Err(AcceptError::Mass(resid)) => {
                     let dm = f.moments.mass - mass_target;
-                    let denom: f64 = kind
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, k)| **k == Kind::Mobile)
-                        .map(|(i, _)| jac[i] * jac[i])
-                        .sum();
                     let mut chosen = (b, f, resid);
-                    if denom > 0.0 {
-                        let alpha = (-dm / denom).clamp(-trust, trust);
-                        let mut rr = chosen.0.radius.clone();
-                        for i in 0..nv {
-                            if kind[i] == Kind::Mobile {
-                                rr[i] += alpha * jac[i];
-                            }
-                        }
+                    if let Some(rr) =
+                        mass_correction(&chosen.0.positions, &cl.normal, &kind, &jac, dm, trust)
+                    {
                         if let Ok(cb) = {
                             let _span = super::timing::span("geometry_build");
                             Body::new(
@@ -863,7 +885,7 @@ pub fn run(
                     chosen
                 }
             };
-            break (out, dmax, new_body, new_fwd, resid);
+            break (out, dmax, new_body, new_fwd, resid, d_pred_used.into_owned());
         };
         rec.trust = trust;
         rec.trust_retries = retries;
@@ -873,6 +895,76 @@ pub fn run(
         rec.dropped_overhang = out.dropped_overhang;
         rec.mass_residual = resid;
         rec.max_displacement = dmax;
+        // 2.15(c), second route: on a stage with the whole body in the core, no erosion and
+        // no deposit, a resolved cone program that leaves every free vertex in place is a
+        // fixed point; the remaining slack is unrelievable. The step jumps to the stage end
+        // with the geometry unchanged.
+        let fixed_point = spin.is_stages()
+            && all_core
+            && rec.n_deposit == 0
+            && mc.j_ero.iter().all(|j| *j == 0.0)
+            && !rec.cone_unresolved
+            && out.d.iter().all(|d| d.abs() <= D_ZERO * r_mean);
+        if fixed_point {
+            drop((new_body, new_fwd));
+            let dt = t_next - state.t;
+            rec.kind = "stage-equilibrium";
+            rec.dt = dt;
+            rec.advance = dt;
+            rec.dt_bound = "t_next";
+            rec.max_displacement = 0.0;
+            advance_time(&mut state, spin, dt, t_next, snap_tol);
+            state.step += 1;
+            steps_done += 1;
+            let fields = step_fields(
+                &positions_from,
+                &mech,
+                &mc,
+                &slack,
+                vec![0.0; nv],
+                &paths,
+                false,
+                None,
+            );
+            observer(&rec, &state, &fields)?;
+            records.push(rec);
+            continue;
+        }
+        // §2.8c: the relief of a promoted vertex comes out of its loose layer and is laid
+        // down where the routing of §2.8b sends it; Σ A ρ_s is unchanged.
+        let (layer_debit, layer_credit) = {
+            let debit: Vec<f64> = (0..nv)
+                .map(|i| {
+                    if slope_promoted[i] && out.d.len() == nv {
+                        // Capped by the carried layer plus what arrives on it this step.
+                        let m = st.lambda * jac[i] * (d_used[i] - out.d[i]).max(0.0);
+                        m.min(state.body.rho_s[i] * area[i] + st.lambda * jac[i] * d_used[i].max(0.0))
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            if debit.iter().any(|m| *m > 0.0) {
+                let per_area: Vec<f64> = (0..nv).map(|i| debit[i] / area[i]).collect();
+                let routed: Vec<runout::Arrival> = routing
+                    .as_ref()
+                    .map(|(r, _)| {
+                        r.arrivals
+                            .iter()
+                            .filter(|a| slope_promoted[a.source])
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let moved = runout::moved_source(&area, &per_area, &routed);
+                let laid = spread.spread(&moved);
+                let credit: Vec<f64> = (0..nv).map(|j| laid[j] * area[j]).collect();
+                (debit, credit)
+            } else {
+                (debit, vec![0.0; nv])
+            }
+        };
+        rec.relief_layer = layer_debit.iter().sum();
         // Runout of the eroded packets over the step and of the routed relief together.
         let mut weights = runout::eroded_masses(&area, &mc.j_ero, &arrivals, rec.advance);
         let mut packets = arrivals;
@@ -889,19 +981,18 @@ pub fn run(
         let adv = st.lambda * dt;
         let area_new = {
             let _span = super::timing::span("vertex_areas");
-            vertex_areas(&new_body)
+            new_body.vertex_areas()
         };
-        let j_old: Vec<f64> = (0..nv).map(|i| area[i] / topo.vertex_solid[i]).collect();
-        let j_new: Vec<f64> = (0..nv)
-            .map(|i| area_new[i] / topo.vertex_solid[i])
-            .collect();
         let (mut rho_s, fix) = {
             let _span = super::timing::span("transport");
-            transport(&topo, &flow, &state.body.rho_s, &j_old, &j_new, adv)
-                .map_err(|e| SimError::solver(format!("surface transport failed: {e}")))?
+            transport(&state.body, &flow, &state.body.rho_s, &area, &area_new, adv)
         };
         for i in 0..nv {
-            rho_s[i] = (rho_s[i] + adv * (mc.j_dep[i] - mc.j_ero[i])).max(0.0);
+            // The step-averaged J_ero is the exact exponential decay, applied once (§2.8).
+            rho_s[i] = (rho_s[i]
+                + adv * (mc.j_dep[i] - mc.j_ero[i])
+                + (layer_credit[i] - layer_debit[i]) / area_new[i])
+                .max(0.0);
         }
         rec.transport_fix = fix;
         let mut body = new_body;
@@ -909,31 +1000,16 @@ pub fn run(
         let mut new_fwd = new_fwd;
         // 8c: Levels 1 and 2 of the core transport (§9.10.4–5).
         if cores_on {
-            let _span = super::timing::span("core_refit");
-            let (ks, refit) = close_cores(
+            close_cores(
                 project,
                 &mech,
-                &dir_index,
                 &state.body,
-                &body,
-                &new_fwd,
+                &mut body,
+                &mut new_fwd,
                 mass_target,
                 rec.advance,
                 &mut rec.cores,
             )?;
-            body.kernels = ks;
-            new_fwd.set_density(body.density()?)?;
-            if refit {
-                // The refit holds the quadrature mass only; close the exact mass again.
-                let bulk_mass = body.bulk * new_fwd.moments.volume;
-                cores::close_mass(
-                    &mut body.kernels,
-                    new_fwd.moments.mass,
-                    bulk_mass,
-                    mass_target,
-                );
-                new_fwd.set_density(body.density()?)?;
-            }
         }
         rec.rho_s_total = (0..nv).map(|i| area_new[i] * body.rho_s[i]).sum();
 
@@ -958,23 +1034,15 @@ pub fn run(
         advance_time(&mut state, spin, adv, t_next, snap_tol);
         state.step += 1;
         steps_done += 1;
-        stamp_radial(&mut rec, &state.body);
         let fields = step_fields(
-            &radius_from,
-            &cl.f_delta,
-            &cl.movable,
-            &cl.v_sl,
-            &cl.normal,
-            &mc.j_ero,
-            &mc.j_dep,
-            &radial_increments(true, st.lambda, nv, Some(&out.d)),
+            &positions_from,
+            &mech,
+            &mc,
             &slack,
-            &mech.g_face,
-            &mech.surface_stress,
+            out.d.iter().map(|d| st.lambda * d).collect(),
             &paths,
             true,
             Some(&frep),
-            &state.body,
         );
         observer(&rec, &state, &fields)?;
         records.push(rec);
@@ -989,7 +1057,7 @@ pub fn run(
 
 /// The masked slip velocity `v_adv = χ_Y (v − a − θ × x)` at arbitrary points (§9.10.2).
 /// `χ_Y` is read at the nearest point of the classification grid `X_Y`.
-fn advection(mech: &Mechanics, dirs: &[DVec3], index: &DirIndex, pts: &[DVec3]) -> Vec<DVec3> {
+fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
     let cl = &mech.class;
     // Every point of X_Y in the rigid core: χ_Y = 0 everywhere and the result is zero,
     // so the velocity basis is not evaluated.
@@ -1000,18 +1068,7 @@ fn advection(mech: &Mechanics, dirs: &[DVec3], index: &DirIndex, pts: &[DVec3]) 
     pts.iter()
         .enumerate()
         .map(|(k, x)| {
-            let r = x.length();
-            let w = if r > 0.0 { *x / r } else { DVec3::Z };
-            let i = index.nearest(dirs, w);
-            let zeta = r / mech.surf.radius(w).max(1e-300);
-            let q = (0..cl.zeta.len())
-                .min_by(|a, b| {
-                    (cl.zeta[*a] - zeta)
-                        .abs()
-                        .total_cmp(&(cl.zeta[*b] - zeta).abs())
-                })
-                .unwrap_or(0);
-            if !cl.movable_at(i, q) {
+            if !cl.movable_near(*x) {
                 return DVec3::ZERO;
             }
             DVec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]) - cl.core_a - cl.core_theta.cross(*x)
@@ -1019,19 +1076,89 @@ fn advection(mech: &Mechanics, dirs: &[DVec3], index: &DirIndex, pts: &[DVec3]) 
         .collect()
 }
 
-/// A core centre inside the harmonic surface of the current step.
-fn inside_body(mech: &Mechanics, c: DVec3) -> bool {
-    let r = c.length();
-    r == 0.0 || r < mech.surf.radius(c / r)
+/// The loose-mass bound of §2.8c: a promoted vertex cannot cut below its carried layer plus
+/// the step's deposit, `d_i ≥ min(d_pred,i, 0) − ρ_s,i A_i / (DM)_i ≤ 0`, so `d = 0` stays
+/// feasible; `−∞` elsewhere.
+fn floor_of(promoted: &[bool], d_pred: &[f64], rho_s: &[f64], area: &[f64], jac: &[f64]) -> Vec<f64> {
+    (0..promoted.len())
+        .map(|i| {
+            if promoted[i] && jac[i] > 0.0 {
+                d_pred[i].min(0.0) - rho_s[i] * area[i] / jac[i]
+            } else {
+                f64::NEG_INFINITY
+            }
+        })
+        .collect()
+}
+
+/// Per-vertex bounds of the cone program: the clearance rows `−θ_g t⁻ ≤ d ≤ θ_g t⁺` of
+/// (G4), with `t^±` the distance along `±N_i` to the next crossing of `Γ`, and the
+/// loose-mass `floor`.
+fn clearance(
+    body: &Body,
+    normals: &[DVec3],
+    mesh: &crate::rtfp::mesh::BodyMesh,
+    theta_g: f64,
+    floor: &[f64],
+) -> Result<(Vec<f64>, Vec<f64>), SimError> {
+    let _span = super::timing::span("clearance");
+    let nv = normals.len();
+    let eps = 1e-7 * body.r_mean();
+    let mut batch = mesh.new_batch();
+    for i in 0..nv {
+        for s in [1.0, -1.0] {
+            batch.push(body.positions[i] + normals[i] * (s * eps), normals[i] * s, None);
+        }
+    }
+    let hits = mesh.trace(&batch, true)?;
+    let mut buf = Vec::new();
+    let mut dist = |k: usize| {
+        buf.clear();
+        hits.distances_into(k, &mut buf);
+        buf.first().map_or(f64::INFINITY, |t| t + eps)
+    };
+    let mut lower = Vec::with_capacity(nv);
+    let mut upper = Vec::with_capacity(nv);
+    for i in 0..nv {
+        upper.push(theta_g * dist(2 * i));
+        lower.push((-theta_g * dist(2 * i + 1)).max(floor[i]));
+    }
+    Ok((lower, upper))
 }
 
 /// Levels 1–2 of §9.10: mass closure of the predicted cores on the new body,
 /// then, when the misfit or the closure exceeds its threshold, the refit.
 #[allow(clippy::too_many_arguments)]
+/// 8c: Levels 1 and 2 of the core transport (§9.10.4–5) on the new body, which carries
+/// the predicted cores; `fwd` is bound to it and gets the closed density.
+#[allow(clippy::too_many_arguments)]
 fn close_cores(
     project: &Project,
     mech: &Mechanics,
-    index: &DirIndex,
+    old: &Body,
+    body: &mut Body,
+    fwd: &mut Forward,
+    mass_target: f64,
+    tau: f64,
+    rep: &mut CoreReport,
+) -> Result<(), SimError> {
+    let _span = super::timing::span("core_refit");
+    let (ks, refit) = closed_cores(project, mech, old, body, fwd, mass_target, tau, rep)?;
+    body.kernels = ks;
+    fwd.set_density(body.density()?)?;
+    if refit {
+        // The refit holds the quadrature mass only; close the exact mass again.
+        let bulk_mass = body.bulk * fwd.moments.volume;
+        cores::close_mass(&mut body.kernels, fwd.moments.mass, bulk_mass, mass_target);
+        fwd.set_density(body.density()?)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn closed_cores(
+    project: &Project,
+    mech: &Mechanics,
     old: &Body,
     new: &Body,
     fwd: &Forward,
@@ -1042,18 +1169,11 @@ fn close_cores(
     let mut ks = new.kernels.clone();
     let bulk_mass = new.bulk * fwd.moments.volume;
     rep.xi = cores::close_mass(&mut ks, fwd.moments.mass, bulk_mass, mass_target);
-    // Volume quadrature of V⁽ⁿ⁺¹⁾: vertex directions × Gauss–Jacobi (ζ²) nodes.
-    let (zeta, wr) = super::quad::gauss_jacobi_zeta2(project.stokes.n_radial);
-    let quad = Quadrature::star(
-        &new.topo.dirs,
-        &new.radius,
-        &new.topo.vertex_solid,
-        &zeta,
-        &wr,
-    );
-    let target = cores::departure_density(&old.density()?, &quad, tau, &|p| {
-        advection(mech, &old.topo.dirs, index, p)
-    });
+    // Volume quadrature of V⁽ⁿ⁺¹⁾: the ray-segment rule of (G2).
+    let s = &project.stokes;
+    let (pts, w, _, _) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
+    let quad = Quadrature { pts, w };
+    let target = cores::departure_density(&old.density()?, &quad, tau, &|p| advection(mech, p));
     let closed = crate::common::density::CauchyDensity::try_new(new.bulk, ks.clone())?;
     rep.e_rho = cores::misfit(&closed, &quad, &target);
     let refit = rep.e_rho > project.cores.eps_rho || rep.xi.abs() > project.cores.eps_xi;
@@ -1104,17 +1224,10 @@ pub fn slope_promotion(
     (movable, promoted)
 }
 
-/// `|n·ê|` below this is left unconverted. The vertex takes no radial step from
-/// that normal displacement, and it does not enter the CFL speed.
-const MU_MIN: f64 = 0.05;
-
-pub fn radial_increment(normal_disp: f64, mu: f64) -> f64 {
-    if mu.abs() >= MU_MIN {
-        normal_disp / mu
-    } else {
-        0.0
-    }
-}
+/// `|d_*| ≤ D_ZERO R̄` is a zero displacement for the stage fixed point (round-off only).
+const D_ZERO: f64 = 1e-12;
+/// Repetitions of the step-6b core prediction after a midpoint violation.
+const CORE_REPEATS: usize = 8;
 
 fn flux_gap(mc: &super::transport::ModeC, area: &[f64]) -> f64 {
     let ero: f64 = mc.j_ero.iter().zip(area).map(|(j, a)| j * a).sum();
@@ -1135,23 +1248,18 @@ fn class_steps(kind: &[Kind], d_pred: &[f64], d: &[f64]) -> (f64, f64) {
     (locked, deposit)
 }
 
-/// `θ min_i h_i / s_i` over the yielded movable set.
+/// `θ min_i h_i / |v_sl,i · N_i|` over the yielded movable set (G10).
 ///
-/// `h_i` is the shortest edge at the node and `s_i = |v_sl · n| / |n · ê|` is
-/// the radial rate of §10.4.1. `θ` is the configured CFL factor, at most 1/2.
+/// `h_i` is the shortest edge at the node: a node advances by at most `θ` times its
+/// own nearest spacing. `θ` is the configured CFL factor, at most 1/2.
 fn cfl_dt(body: &Body, yielded: &[bool], normal: &[DVec3], v_sl: &[DVec3], theta: f64) -> f64 {
     let position = body.positions();
-    let dirs = &body.topo.dirs;
     let mut dt = f64::INFINITY;
     for i in 0..yielded.len() {
         if !yielded[i] {
             continue;
         }
-        let mu = normal[i].dot(dirs[i]);
-        if mu.abs() < MU_MIN {
-            continue;
-        }
-        let speed = v_sl[i].dot(normal[i]).abs() / mu;
+        let speed = v_sl[i].dot(normal[i]).abs();
         if !(speed.is_finite() && speed > 0.0) {
             continue;
         }
@@ -1166,136 +1274,42 @@ fn cfl_dt(body: &Body, yielded: &[bool], normal: &[DVec3], v_sl: &[DVec3], theta
     dt
 }
 
-fn stamp_radial(rec: &mut StepRecord, body: &Body) {
-    let (mu, face) = body.min_radial();
-    rec.min_radial = mu;
-    rec.min_radial_face = face;
-}
-
-/// `λ d` when this step moved the geometry, otherwise a zero increment per vertex.
-pub fn radial_increments(flow_active: bool, lambda: f64, nv: usize, d: Option<&[f64]>) -> Vec<f64> {
-    if !flow_active {
-        return vec![0.0; nv];
-    }
-    let mut out = Vec::with_capacity(nv);
-    for i in 0..nv {
-        let value = d.and_then(|row| row.get(i)).copied().unwrap_or(0.0);
-        out.push(lambda * value);
-    }
-    out
-}
-
+/// Surface fields of the step for the observer. A frame realignment is a rigid motion
+/// (G8), so vertex and face identities are kept: vectors turn with `Q`, tensors as
+/// `Q σ Qᵀ`, and points as `Q (x − T)`.
 #[allow(clippy::too_many_arguments)]
 pub fn step_fields(
-    radius_from: &[f64],
-    f_delta: &[f64],
-    movable: &[bool],
-    v_sl: &[DVec3],
-    normal: &[DVec3],
-    j_ero: &[f64],
-    j_dep: &[f64],
-    d_radial: &[f64],
+    from: &[DVec3],
+    mech: &Mechanics,
+    mc: &super::transport::ModeC,
     slack: &[f64],
-    g_face: &[DVec3],
-    stress: &[[f64; 6]],
+    d_normal: Vec<f64>,
     runout: &[[f64; 4]],
     flow_active: bool,
     frame: Option<&FrameReport>,
-    body: &Body,
 ) -> StepFields {
-    let nv = body.topo.n_vertices();
-    let nf = body.topo.n_faces();
-    let Some(frame) = frame.filter(|report| report.applied) else {
-        return StepFields {
-            radius_from: fit_copy(radius_from, nv, 0.0),
-            f_delta: fit_copy(f_delta, nv, 0.0),
-            movable: fit_copy(movable, nv, false),
-            v_sl: fit_copy(v_sl, nv, DVec3::ZERO),
-            normal: fit_copy(normal, nv, DVec3::ZERO),
-            j_ero: fit_copy(j_ero, nv, 0.0),
-            j_dep: fit_copy(j_dep, nv, 0.0),
-            d_radial: fit_copy(d_radial, nv, 0.0),
-            slack: fit_copy(slack, nf, 0.0),
-            g_face: fit_copy(g_face, nf, DVec3::ZERO),
-            stress: fit_copy(stress, nf, [0.0; 6]),
-            runout: runout.to_vec(),
-            flow_active,
-        };
+    let cl = &mech.class;
+    let (q, t) = match frame.filter(|r| r.applied) {
+        Some(r) => (r.rotation, r.translation),
+        None => (IDENTITY, DVec3::ZERO),
     };
-    let q = frame.rotation;
-    let index = DirIndex::build(&body.topo.dirs);
-    let movable_w: Vec<f64> = (0..nv)
-        .map(|i| {
-            if movable.get(i).copied().unwrap_or(false) {
-                1.0
-            } else {
-                0.0
-            }
-        })
-        .collect();
-    let v_rot: Vec<DVec3> = (0..v_sl.len()).map(|i| mul_q(q, v_sl[i])).collect();
-    let n_rot: Vec<DVec3> = (0..normal.len())
-        .map(|i| {
-            let turned = mul_q(q, normal[i]);
-            turned.try_normalize().unwrap_or(turned)
-        })
-        .collect();
-    let g_rot: Vec<DVec3> = (0..g_face.len()).map(|i| mul_q(q, g_face[i])).collect();
-    let mut out_f = vec![0.0; nv];
-    let mut out_m = vec![false; nv];
-    let mut out_v = vec![DVec3::ZERO; nv];
-    let mut out_n = vec![DVec3::ZERO; nv];
-    let mut out_ero = vec![0.0; nv];
-    let mut out_dep = vec![0.0; nv];
-    for i in 0..nv {
-        let x_new = body.topo.dirs[i] * body.radius[i];
-        let dir = old_direction(q, frame.translation, x_new, body.topo.dirs[i]);
-        let (ids, w) = locate_vertex(&body.topo, &index, dir);
-        out_f[i] = blend_f64(f_delta, ids, w);
-        out_m[i] = blend_f64(&movable_w, ids, w) > 0.5;
-        out_v[i] = blend_vec(&v_rot, ids, w);
-        out_n[i] = blend_vec(&n_rot, ids, w)
-            .try_normalize()
-            .unwrap_or(body.topo.dirs[i]);
-        out_ero[i] = blend_f64(j_ero, ids, w);
-        out_dep[i] = blend_f64(j_dep, ids, w);
-    }
-    let positions = body.positions();
-    let mut out_slack = vec![0.0; nf];
-    let mut out_g = vec![DVec3::ZERO; nf];
-    let mut out_stress = vec![[0.0; 6]; nf];
-    for (f, tri) in body.topo.faces.iter().enumerate() {
-        let [a, b, c] = tri.map(|i| positions[i as usize]);
-        let centroid = (a + b + c) * (1.0 / 3.0);
-        let fallback = body
-            .topo
-            .face_dirs
-            .get(f)
-            .copied()
-            .unwrap_or(DVec3::new(0.0, 0.0, 1.0));
-        let dir = old_direction(q, frame.translation, centroid, fallback);
-        let face = locate_face(&body.topo, &index, dir);
-        out_slack[f] = slack.get(face).copied().unwrap_or(0.0);
-        out_g[f] = g_rot.get(face).copied().unwrap_or(DVec3::ZERO);
-        out_stress[f] = stress.get(face).map_or([0.0; 6], |t| rotate_sym(q, *t));
-    }
+    let turn = |v: &DVec3| mul_q(q, *v);
     StepFields {
-        radius_from: fit_copy(radius_from, nv, 0.0),
-        f_delta: out_f,
-        movable: out_m,
-        v_sl: out_v,
-        normal: out_n,
-        j_ero: out_ero,
-        j_dep: out_dep,
-        d_radial: fit_copy(d_radial, nv, 0.0),
-        slack: out_slack,
-        g_face: out_g,
-        stress: out_stress,
-        // x_new = Q (x_old − t): the paths were traced before the realignment.
+        positions_from: from.iter().map(|x| mul_q(q, *x - t)).collect(),
+        f_delta: cl.f_delta.clone(),
+        movable: cl.movable.clone(),
+        v_sl: cl.v_sl.iter().map(turn).collect(),
+        normal: cl.normal.iter().map(turn).collect(),
+        j_ero: mc.j_ero.clone(),
+        j_dep: mc.j_dep.clone(),
+        d_normal,
+        slack: slack.to_vec(),
+        g_face: mech.g_face.iter().map(turn).collect(),
+        stress: mech.surface_stress.iter().map(|s| rotate_sym(q, *s)).collect(),
         runout: runout
             .iter()
             .map(|p| {
-                let x = mul_q(q, DVec3::new(p[0], p[1], p[2]) - frame.translation);
+                let x = mul_q(q, DVec3::new(p[0], p[1], p[2]) - t);
                 [x.x, x.y, x.z, p[3]]
             })
             .collect(),
@@ -1317,45 +1331,10 @@ fn rotate_sym(q: [[f64; 3]; 3], t: [f64; 6]) -> [f64; 6] {
     [r[0][0], r[1][1], r[2][2], r[0][1], r[0][2], r[1][2]]
 }
 
-fn fit_copy<T: Copy>(src: &[T], n: usize, zero: T) -> Vec<T> {
-    let mut out = vec![zero; n];
-    for (slot, value) in out.iter_mut().zip(src) {
-        *slot = *value;
-    }
-    out
-}
-
 fn mul_q(q: [[f64; 3]; 3], v: DVec3) -> DVec3 {
     DVec3::new(
         q[0][0] * v.x + q[0][1] * v.y + q[0][2] * v.z,
         q[1][0] * v.x + q[1][1] * v.y + q[1][2] * v.z,
         q[2][0] * v.x + q[2][1] * v.y + q[2][2] * v.z,
     )
-}
-
-fn mul_qt(q: [[f64; 3]; 3], v: DVec3) -> DVec3 {
-    DVec3::new(
-        q[0][0] * v.x + q[1][0] * v.y + q[2][0] * v.z,
-        q[0][1] * v.x + q[1][1] * v.y + q[2][1] * v.z,
-        q[0][2] * v.x + q[1][2] * v.y + q[2][2] * v.z,
-    )
-}
-
-fn old_direction(q: [[f64; 3]; 3], translation: DVec3, x_new: DVec3, fallback: DVec3) -> DVec3 {
-    (mul_qt(q, x_new) + translation)
-        .try_normalize()
-        .unwrap_or(fallback)
-}
-
-fn blend_f64(field: &[f64], ids: [usize; 3], w: [f64; 3]) -> f64 {
-    ids.iter()
-        .zip(w)
-        .map(|(id, weight)| field.get(*id).copied().unwrap_or(0.0) * weight)
-        .sum()
-}
-
-fn blend_vec(field: &[DVec3], ids: [usize; 3], w: [f64; 3]) -> DVec3 {
-    ids.iter().zip(w).fold(DVec3::ZERO, |acc, (id, weight)| {
-        acc + field.get(*id).copied().unwrap_or(DVec3::ZERO) * weight
-    })
 }

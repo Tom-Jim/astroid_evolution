@@ -54,16 +54,3 @@ fn jets_reproduce_the_scalar_recursion_and_its_gradient() {
     }
 }
 
-#[test]
-fn fit_recovers_a_low_degree_surface() {
-    let n = 400;
-    let dirs: Vec<DVec3> = (0..n).map(|i| point(i, n)).collect();
-    let truth = |d: DVec3| 100.0 + 8.0 * d.z * d.z + 3.0 * d.x * d.y;
-    let radii: Vec<f64> = dirs.iter().map(|d| truth(*d)).collect();
-    let w = vec![4.0 * PI / n as f64; n];
-    let fit = SurfaceFit::fit(4, &dirs, &radii, &w).unwrap();
-    assert!(fit.max_relative_error(&dirs, &radii) < 1e-8);
-    let (r, nrm) = fit.normal(DVec3::new(0.0, 0.0, 1.0));
-    assert!((r - 108.0).abs() < 1e-6);
-    assert!((nrm.z - 1.0).abs() < 1e-9);
-}

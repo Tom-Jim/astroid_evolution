@@ -8,13 +8,14 @@
 
 use rayon::prelude::*;
 
-use crate::common::math::DVec3;
+use crate::common::error::SimError;
+use crate::common::math::{DMat3, DVec3, Sym6, sym_mat};
 use crate::rheo::Material;
 use crate::rheo::closure::dynamic_friction;
 
 use super::body::Topology;
 use super::forward::Loading;
-use super::transport::{DirIndex, locate_face, locate_vertex};
+use super::surface::{SurfaceIndex, barycentric};
 
 /// Substep fraction `θ_r` (§2.8b).
 pub const THETA: f64 = 0.2;
@@ -23,8 +24,12 @@ const ESCAPE: f64 = 3.0;
 /// Above this multiple of the largest radius a packet climbing under outward effective
 /// gravity has escaped.
 const EARLY: f64 = 1.05;
-/// Below this multiple the face under a flying packet is looked up every substep.
-const LOOKUP: f64 = 1.02;
+/// Above this fraction of the mean radius a flight takes the exterior self-gravity
+/// instead of the face expansion, whose error grows as `(h/R̄)²` (§2.8b).
+pub const FAR: f64 = 0.1;
+/// A far flight reuses the linear expansion `g₀ + H₀ (x − x₀)` of its last exterior value
+/// while `|x − x₀| ≤ REUSE h`: the same `O((|x − x₀|/h)²)` budget as the face expansion.
+const REUSE: f64 = 0.1;
 /// Path samples kept per packet for the viewer.
 pub const PATH_SAMPLES: usize = 12;
 /// Hard cap on substeps; a packet that reaches it is counted as timed out.
@@ -33,11 +38,18 @@ const MAX_SUBSTEPS: usize = 100_000;
 /// The frozen surface and loads of one step.
 pub struct RunoutField<'a> {
     pub topo: &'a Topology,
-    pub index: &'a DirIndex,
+    /// Closest-point and segment queries on `Γ` (G9).
+    pub index: &'a SurfaceIndex,
     /// Vertex positions (m).
     pub positions: &'a [DVec3],
     /// `g_eff` at the face centres (step 1).
     pub g_face: &'a [DVec3],
+    /// Finite-part Hessian `Hess U` of the self-potential at the face centres; empty for
+    /// none. With `rho_face` (`ρ_K` there) and `grav_const` it gives the exterior one-sided
+    /// Hessian `H⁺ = H^FP + 2πGρ_K n nᵀ` of the flight expansion (Proposition 2.7.1(5)).
+    pub hess_face: &'a [Sym6],
+    pub rho_face: &'a [f64],
+    pub grav_const: f64,
     pub load: Loading,
     pub material: &'a Material,
     /// `T_run` (s) and `ε_stop`.
@@ -86,8 +98,11 @@ struct Faces {
     /// A vertex of the face, for the ray–plane intersection.
     anchor: Vec<DVec3>,
     edge: Vec<f64>,
+    centre: Vec<DVec3>,
     /// Self-gravity at the face centre: `g_eff` minus the centrifugal and tidal terms.
     grav: Vec<DVec3>,
+    /// Exterior one-sided Hessian `H⁺` of the self-potential at the face centre.
+    hess: Vec<DMat3>,
 }
 
 impl RunoutField<'_> {
@@ -99,16 +114,16 @@ impl RunoutField<'_> {
             normal: Vec::with_capacity(nf),
             anchor: Vec::with_capacity(nf),
             edge: Vec::with_capacity(nf),
+            centre: Vec::with_capacity(nf),
             grav: Vec::with_capacity(nf),
+            hess: Vec::with_capacity(nf),
         };
         for (k, tri) in self.topo.faces.iter().enumerate() {
             let [a, b, c] = tri.map(|v| self.positions[v as usize]);
             let cross = (b - a).cross(c - a);
-            let mut n = cross.try_normalize().unwrap_or(DVec3::Z);
+            // Faces are consistently oriented (G): the cross product is outward.
+            let n = cross.try_normalize().unwrap_or(DVec3::Z);
             let centre = (a + b + c) / 3.0;
-            if n.dot(centre) < 0.0 {
-                n = -n;
-            }
             for v in tri {
                 smooth[*v as usize] += n * cross.length();
             }
@@ -117,6 +132,16 @@ impl RunoutField<'_> {
             f.edge.push(((b - a).length() + (c - b).length() + (a - c).length()) / 3.0);
             let g = self.g_face.get(k).copied().unwrap_or(DVec3::ZERO);
             f.grav.push(g - frame_terms(centre, self.load));
+            f.centre.push(centre);
+            let h = match (self.hess_face.get(k), self.rho_face.get(k)) {
+                (Some(h), Some(rho)) => {
+                    let jump = 2.0 * std::f64::consts::PI * self.grav_const * rho;
+                    sym_mat(*h) + DMat3::from_cols(n * n.x, n * n.y, n * n.z) * jump
+                }
+                (Some(h), None) => sym_mat(*h),
+                _ => DMat3::ZERO,
+            };
+            f.hess.push(h);
         }
         f.smooth = smooth.into_iter().map(|n| n.try_normalize().unwrap_or(DVec3::Z)).collect();
         f
@@ -125,191 +150,319 @@ impl RunoutField<'_> {
     /// Smooth normal at `x` on face `f` (barycentric blend of the vertex normals).
     fn smooth_normal(&self, faces: &Faces, f: usize, x: DVec3) -> DVec3 {
         let [i, j, k] = self.topo.faces[f].map(|v| v as usize);
-        let (a, b, c) = (self.positions[i], self.positions[j], self.positions[k]);
-        let n = (b - a).cross(c - a);
-        let area = n.length_squared().max(1e-300);
-        let wa = (c - b).cross(x - b).dot(n) / area;
-        let wb = (a - c).cross(x - c).dot(n) / area;
-        let wc = 1.0 - wa - wb;
-        (faces.smooth[i] * wa + faces.smooth[j] * wb + faces.smooth[k] * wc)
+        let w = barycentric(x, self.positions[i], self.positions[j], self.positions[k]);
+        (faces.smooth[i] * w[0] + faces.smooth[j] * w[1] + faces.smooth[k] * w[2])
             .try_normalize()
             .unwrap_or(faces.normal[f])
     }
 
-    /// Trace every source vertex; `sources` are the vertices with `J_ero > 0`.
+    /// Trace every source vertex; `sources` are the vertices with `J_ero > 0`. Flights take
+    /// their self-gravity from the face expansion at every height.
     pub fn trace(&self, sources: &[usize]) -> Vec<Arrival> {
+        self.trace_with(sources, None)
+            .unwrap_or_else(|_| unreachable!("no exterior evaluation was requested"))
+    }
+
+    /// Trace every source vertex. A flight higher than `FAR R̄` above `Γ` takes its
+    /// self-gravity from `exterior` (§2.8b). The packets run in parallel until each is done
+    /// or waits for such a value; the waiting points go to `exterior` as one batch, and the
+    /// round repeats.
+    pub fn trace_with(
+        &self,
+        sources: &[usize],
+        exterior: Option<&Exterior<'_>>,
+    ) -> Result<Vec<Arrival>, SimError> {
         let faces = self.faces();
-        let r_max = self
-            .positions
+        let scale = Scale::of(self.positions);
+        let far = exterior.is_some();
+        let mut packets: Vec<Packet> = sources
             .iter()
-            .map(|p| p.length())
-            .fold(0.0, f64::max);
-        sources
-            .par_iter()
-            .map(|&i| self.packet(&faces, r_max, i, DVec3::ZERO))
-            .collect()
+            .map(|&i| Packet::new(self, i, DVec3::ZERO))
+            .collect();
+        let mut waiting: Vec<Option<DVec3>> = packets
+            .par_iter_mut()
+            .map(|p| p.run(self, &faces, scale, far, None))
+            .collect();
+        if let Some(exterior) = exterior {
+            loop {
+                let ids: Vec<usize> = (0..waiting.len()).filter(|&k| waiting[k].is_some()).collect();
+                if ids.is_empty() {
+                    break;
+                }
+                let points: Vec<DVec3> = ids.iter().filter_map(|&k| waiting[k]).collect();
+                let g = exterior(&points)?;
+                if g.len() != points.len() {
+                    return Err(SimError::solver(format!(
+                        "exterior gravity returned {} values for {} points",
+                        g.len(),
+                        points.len()
+                    )));
+                }
+                let mut given = vec![None; packets.len()];
+                for (slot, &k) in ids.iter().enumerate() {
+                    given[k] = Some(g[slot]);
+                }
+                waiting = packets
+                    .par_iter_mut()
+                    .zip(given)
+                    .map(|(p, g)| g.and_then(|g| p.run(self, &faces, scale, far, Some(g))))
+                    .collect();
+            }
+        }
+        Ok(packets.into_iter().map(|p| p.finish(self)).collect())
     }
 
     /// One packet from vertex `source` with the initial tangential velocity `v0`.
     pub fn launch(&self, source: usize, v0: DVec3) -> Arrival {
         let faces = self.faces();
-        let r_max = self.positions.iter().map(|p| p.length()).fold(0.0, f64::max);
-        self.packet(&faces, r_max, source, v0)
+        let mut p = Packet::new(self, source, v0);
+        p.run(self, &faces, Scale::of(self.positions), false, None);
+        p.finish(self)
     }
 
-    /// The surface point and face in direction `dir` (ray–face intersection).
-    fn on_surface(&self, faces: &Faces, dir: DVec3) -> (usize, DVec3) {
-        let f = locate_face(self.topo, self.index, dir);
-        let n = faces.normal[f];
-        let den = n.dot(dir);
-        let r = if den > 1e-12 {
-            n.dot(faces.anchor[f]) / den
-        } else {
-            faces.anchor[f].length()
-        };
-        (f, dir * r)
+    /// `π(x)`, the closest point of `Γ`, and its face (G9).
+    fn ground(&self, x: DVec3) -> (usize, DVec3) {
+        let c = self.index.closest(x);
+        (c.face, c.point)
     }
 
-    fn packet(&self, faces: &Faces, r_max: f64, source: usize, v0: DVec3) -> Arrival {
-        let m = self.material;
+    /// Self-gravity at `x` from the face expansion `g(c_f) + H⁺_f (x − c_f)` about the
+    /// closest face (§2.8b), and the height `|x − π(x)|` above `Γ`.
+    fn expansion(&self, faces: &Faces, f: usize, foot: DVec3, x: DVec3) -> (DVec3, f64) {
+        let g = faces.grav[f] + faces.hess[f] * (x - faces.centre[f]);
+        (g, (x - foot).length())
+    }
+}
+
+/// Self-gravity and its Hessian at a batch of points outside the body (the exterior
+/// route of §3.11).
+pub type Exterior<'a> = dyn Fn(&[DVec3]) -> Result<Vec<(DVec3, DMat3)>, SimError> + 'a;
+
+/// Length scales of the frozen surface.
+#[derive(Clone, Copy)]
+struct Scale {
+    /// Largest and mean vertex distance from the frame origin.
+    r_max: f64,
+    r_bar: f64,
+}
+
+impl Scale {
+    fn of(positions: &[DVec3]) -> Self {
+        let n = positions.len().max(1) as f64;
+        Self {
+            r_max: positions.iter().map(|p| p.length()).fold(0.0, f64::max),
+            r_bar: positions.iter().map(|p| p.length()).sum::<f64>() / n,
+        }
+    }
+}
+
+/// The state of one packet between substeps.
+struct Packet {
+    source: usize,
+    start: DVec3,
+    face: usize,
+    x: DVec3,
+    /// Surface point below the packet (equal to x while sliding).
+    foot: DVec3,
+    v: DVec3,
+    t: f64,
+    kappa: f64,
+    airborne: bool,
+    distance: f64,
+    hops: usize,
+    max_hop: f64,
+    substeps: usize,
+    /// The last exterior value of a far flight: `(x₀, g₀, H₀)`.
+    anchor: Option<(DVec3, DVec3, DMat3)>,
+    end: Option<End>,
+    trail: Trail,
+}
+
+impl Packet {
+    fn new(field: &RunoutField, source: usize, v0: DVec3) -> Self {
+        let start = field.positions[source];
+        let (face, x) = field.ground(start);
+        Self {
+            source,
+            start,
+            face,
+            x,
+            foot: x,
+            v: v0,
+            t: 0.0,
+            kappa: 0.0,
+            airborne: false,
+            distance: 0.0,
+            hops: 0,
+            max_hop: 0.0,
+            substeps: 0,
+            anchor: None,
+            end: None,
+            trail: Trail::new(x),
+        }
+    }
+
+    /// Substeps until the packet stops (`None`) or, with `far`, until a flight above
+    /// `FAR R̄` leaves the reach of its last exterior value and needs a new one at the
+    /// returned point. `fresh` is that value for the substep that asked for it.
+    fn run(
+        &mut self,
+        field: &RunoutField,
+        faces: &Faces,
+        scale: Scale,
+        far: bool,
+        mut fresh: Option<(DVec3, DMat3)>,
+    ) -> Option<DVec3> {
+        let m = field.material;
         let s = &m.spec;
-        let omega = DVec3::new(0.0, 0.0, self.load.omega);
-        let start = self.positions[source];
-        let start_dir = start.try_normalize().unwrap_or(DVec3::Z);
-        let (mut face, mut x) = self.on_surface(faces, start_dir);
-        // Surface point below the packet (equal to x while sliding).
-        let mut foot = x;
-        let mut foot_radius = x.length();
-        let mut v = v0;
-        let (mut t, mut kappa) = (0.0, 0.0);
-        let mut airborne = false;
-        let (mut distance, mut hops, mut max_hop) = (0.0, 0usize, 0.0_f64);
-        let mut end = End::TimedOut;
-        let mut trail = Trail::new(x);
-        for _ in 0..MAX_SUBSTEPS {
-            if t >= self.time_limit {
+        let omega = DVec3::new(0.0, 0.0, field.load.omega);
+        let r_max = scale.r_max;
+        while self.end.is_none() {
+            if self.substeps >= MAX_SUBSTEPS || self.t >= field.time_limit {
+                self.end = Some(End::TimedOut);
                 break;
             }
-            let edge = faces.edge[face].max(1e-9);
-            if !airborne {
-                let n = faces.normal[face];
-                let g = self.g_face[face];
+            let edge = faces.edge[self.face].max(1e-9);
+            if !self.airborne {
+                self.substeps += 1;
+                let n = faces.normal[self.face];
+                let g = field.g_face[self.face];
                 let g_t = g - n * g.dot(n);
-                let speed = v.length();
-                let normal = -g.dot(n) + 2.0 * omega.cross(v).dot(n) - kappa * speed * speed;
+                let speed = self.v.length();
+                let normal =
+                    -g.dot(n) + 2.0 * omega.cross(self.v).dot(n) - self.kappa * speed * speed;
                 if normal <= 0.0 {
-                    airborne = true;
-                    hops += 1;
+                    self.airborne = true;
+                    self.hops += 1;
                     continue;
                 }
-                let v_stop = self.stop * (g.length() * s.h_s).sqrt();
+                let v_stop = field.stop * (g.length() * s.h_s).sqrt();
                 if speed <= v_stop && g_t.length() <= s.mu_s * normal {
-                    end = End::Arrested;
+                    self.end = Some(End::Arrested);
                     break;
                 }
                 let accel = g_t.length() + friction(m, speed, normal) * normal;
-                let tau = substep(self.theta, edge, speed, accel, self.load.omega)
-                    .min(self.time_limit - t);
+                let tau = substep(field.theta, edge, speed, accel, field.load.omega)
+                    .min(field.time_limit - self.t);
                 // Drive, the exact tangential Coriolis turn, then friction without reversal.
-                let v_old = v;
-                v += g_t * tau;
+                let v_old = self.v;
+                let mut v = self.v + g_t * tau;
                 let angle = -2.0 * omega.dot(n) * tau;
                 v = v * angle.cos() + n.cross(v) * angle.sin();
                 let sp = v.length();
                 let drop = friction(m, sp, normal) * normal * tau;
                 v = if sp > drop { v * ((sp - drop) / sp) } else { DVec3::ZERO };
-                // Back onto Γ along the ray, and onto the new tangent plane at the same speed.
-                // Trapezoidal drift: exact for a constant deceleration.
-                let dir = (x + (v_old + v) * (0.5 * tau)).try_normalize().unwrap_or(start_dir);
-                let (next_face, next) = self.on_surface(faces, dir);
-                let step = next - x;
+                // Back onto Γ at the closest point, and onto the new tangent plane at the same
+                // speed. Trapezoidal drift: exact for a constant deceleration.
+                let (next_face, next) = field.ground(self.x + (v_old + v) * (0.5 * tau));
+                let step = next - self.x;
                 let len = step.length();
                 let n_next = faces.normal[next_face];
                 // κ_v on the smooth surface: facet edges would otherwise read as kinks.
                 let (s0, s1) = (
-                    self.smooth_normal(faces, face, x),
-                    self.smooth_normal(faces, next_face, next),
+                    field.smooth_normal(faces, self.face, self.x),
+                    field.smooth_normal(faces, next_face, next),
                 );
-                kappa = if len > 1e-12 { (s1 - s0).dot(step) / (len * len) } else { 0.0 };
+                self.kappa = if len > 1e-12 { (s1 - s0).dot(step) / (len * len) } else { 0.0 };
                 let sp = v.length();
-                v = (v - n_next * v.dot(n_next)).try_normalize().map_or(DVec3::ZERO, |u| u * sp);
-                distance += len;
-                x = next;
-                foot = next;
-                face = next_face;
-                t += tau;
+                self.v = (v - n_next * v.dot(n_next))
+                    .try_normalize()
+                    .map_or(DVec3::ZERO, |u| u * sp);
+                self.distance += len;
+                self.x = next;
+                self.foot = next;
+                self.face = next_face;
+                self.t += tau;
             } else {
-                // Above the highest point of Γ the face below is kept, not looked up.
-                let high = x.length() > LOOKUP * r_max;
-                if !high {
-                    let dir = x.try_normalize().unwrap_or(start_dir);
-                    let (below, ground) = self.on_surface(faces, dir);
-                    face = below;
-                    foot_radius = ground.length();
-                }
-                let r = x.length().max(1e-9);
-                let g = faces.grav[face] * (foot_radius * foot_radius / (r * r)) + frame_terms(x, self.load);
-                // Outward, under outward effective gravity, well above the body: beyond the
-                // synchronous radius the outward pull grows with height, so it does not return.
-                let up = x / r;
-                if r > EARLY * r_max && v.dot(up) > 0.0 && g.dot(up) >= 0.0 {
-                    end = End::Escaped;
-                    break;
-                }
-                let tau = substep(self.theta, edge, v.length(), g.length(), self.load.omega)
-                    .min(self.time_limit - t);
-                // Exact Coriolis turn about e_z, then gravity, then the trapezoidal drift.
-                let angle = -2.0 * self.load.omega * tau;
-                let (c, sn) = (angle.cos(), angle.sin());
-                let v_old = v;
-                v = DVec3::new(c * v.x - sn * v.y, sn * v.x + c * v.y, v.z) + g * tau;
-                x += (v_old + v) * (0.5 * tau);
-                t += tau;
-                if x.length() > ESCAPE * r_max {
-                    end = End::Escaped;
-                    break;
-                }
-                if x.length() <= LOOKUP * r_max {
-                    let dir = x.try_normalize().unwrap_or(start_dir);
-                    let (landing, ground) = self.on_surface(faces, dir);
-                    distance += (ground - foot).length();
-                    foot = ground;
-                    face = landing;
-                    foot_radius = ground.length();
-                    let height = x.length() - foot_radius;
-                    max_hop = max_hop.max(height);
-                    if height <= 0.0 {
-                        // Perfectly inelastic in the normal direction (e_n = 0).
-                        let n = faces.normal[landing];
-                        v -= n * v.dot(n);
-                        x = ground;
-                        kappa = 0.0;
-                        airborne = false;
+                let x = self.x;
+                let (below, ground) = field.ground(x);
+                self.face = below;
+                // Near Γ the expansion about the closest face, higher up the exterior field.
+                let (near, height) = field.expansion(faces, below, ground, x);
+                let g_self = if far && height > FAR * scale.r_bar {
+                    if let Some((g, h)) = fresh.take() {
+                        self.anchor = Some((x, g, h));
+                    }
+                    match self.anchor {
+                        Some((x0, g0, h0)) if (x - x0).length() <= REUSE * height => {
+                            g0 + h0 * (x - x0)
+                        }
+                        _ => return Some(x),
                     }
                 } else {
-                    max_hop = max_hop.max(x.length() - foot_radius);
+                    near
+                };
+                self.substeps += 1;
+                let g = g_self + frame_terms(x, field.load);
+                // Outward, under outward effective gravity, well above the body: beyond the
+                // synchronous radius the outward pull grows with height, so it does not return.
+                let r = x.length().max(1e-9);
+                let up = x / r;
+                if r > EARLY * r_max && self.v.dot(up) > 0.0 && g.dot(up) >= 0.0 {
+                    self.end = Some(End::Escaped);
+                    break;
+                }
+                // In flight the length scale is the height above Γ: the field varies on it,
+                // and a step of θ_r h cannot pass the ground before the landing test.
+                let ell = edge.max(height);
+                let tau = substep(field.theta, ell, self.v.length(), g.length(), field.load.omega)
+                    .min(field.time_limit - self.t);
+                // Exact Coriolis turn about e_z, then gravity, then the trapezoidal drift.
+                let angle = -2.0 * field.load.omega * tau;
+                let (c, sn) = (angle.cos(), angle.sin());
+                let v_old = self.v;
+                let v = self.v;
+                self.v = DVec3::new(c * v.x - sn * v.y, sn * v.x + c * v.y, v.z) + g * tau;
+                let drift = (v_old + self.v) * (0.5 * tau);
+                self.t += tau;
+                self.max_hop = self.max_hop.max(height);
+                // Landing at the first crossing of the drift segment with Γ (G9).
+                if let Some((t, landing)) = field.index.first_hit(x, drift, 1e-6, 1.0) {
+                    let point = x + drift * t;
+                    self.distance += (point - self.foot).length();
+                    self.foot = point;
+                    self.face = landing;
+                    // Perfectly inelastic in the normal direction (e_n = 0).
+                    let n = faces.normal[landing];
+                    self.v -= n * self.v.dot(n);
+                    self.x = point;
+                    self.kappa = 0.0;
+                    self.airborne = false;
+                } else {
+                    self.x += drift;
+                    if self.x.length() > ESCAPE * r_max {
+                        self.end = Some(End::Escaped);
+                        break;
+                    }
                 }
             }
-            trail.push([x.x, x.y, x.z, f64::from(u8::from(airborne))]);
+            let x = self.x;
+            self.trail.push([x.x, x.y, x.z, f64::from(u8::from(self.airborne))]);
         }
-        if matches!(end, End::Escaped) {
-            x = start;
-            distance = 0.0;
-        }
-        let end_dir = x.try_normalize().unwrap_or(start_dir);
-        let (ids, weights) = locate_vertex(self.topo, self.index, end_dir);
+        None
+    }
+
+    fn finish(self, field: &RunoutField) -> Arrival {
+        let escaped = matches!(self.end, Some(End::Escaped));
+        let (x, distance) = if escaped { (self.start, 0.0) } else { (self.x, self.distance) };
+        let (face, foot) = field.ground(x);
+        let [a, b, c] = field.topo.faces[face].map(|v| v as usize);
+        let w = barycentric(foot, field.positions[a], field.positions[b], field.positions[c])
+            .map(|w| w.max(0.0));
+        let sum: f64 = w.iter().sum();
+        let (ids, weights) = ([a, b, c], w.map(|w| w / sum.max(1e-300)));
         let lat = |p: DVec3| (p.z / p.length().max(1e-300)).clamp(-1.0, 1.0).asin().abs();
         Arrival {
-            source,
+            source: self.source,
             ids,
             weights,
             distance,
-            dlat: lat(x) - lat(start),
-            hops,
-            max_hop,
-            escaped: matches!(end, End::Escaped),
-            timed_out: matches!(end, End::TimedOut),
-            path: trail.samples(),
+            dlat: lat(x) - lat(self.start),
+            hops: self.hops,
+            max_hop: self.max_hop,
+            escaped,
+            timed_out: matches!(self.end, Some(End::TimedOut)),
+            path: self.trail.samples(),
         }
     }
 }
@@ -478,11 +631,12 @@ pub fn route_relief(
     area: &[f64],
     jac: &[f64],
     removed: &[f64],
-    prm: &super::params::ModeCParams,
-) -> Routing {
+    spread: &super::transport::Spread,
+    exterior: Option<&Exterior<'_>>,
+) -> Result<Routing, SimError> {
     let nv = area.len();
     let sources: Vec<usize> = (0..nv).filter(|&i| removed[i] > 0.0 && jac[i] > 0.0).collect();
-    let arrivals = field.trace(&sources);
+    let arrivals = field.trace_with(&sources, exterior)?;
     let masses: Vec<f64> = arrivals.iter().map(|a| jac[a.source] * removed[a.source]).collect();
     // Mass per area at the sources, carried to the arrival points, then spread.
     let mut per_area = vec![0.0; nv];
@@ -490,15 +644,15 @@ pub fn route_relief(
         per_area[a.source] = m / area[a.source];
     }
     let moved = moved_source(area, &per_area, &arrivals);
-    let spread = super::transport::deposit(field.topo, area, &moved, prm);
+    let spread = spread.spread(&moved);
     let delta = (0..nv)
         .map(|j| if jac[j] > 0.0 { spread[j] * area[j] / jac[j] } else { 0.0 })
         .collect();
-    Routing {
+    Ok(Routing {
         delta,
         arrivals,
         masses,
-    }
+    })
 }
 
 /// The `count` heaviest paths (by packet mass), `PATH_SAMPLES` points each.

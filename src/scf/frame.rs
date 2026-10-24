@@ -15,7 +15,6 @@ use crate::common::math::DVec3;
 use super::body::Body;
 use super::forward::{Forward, Moments, inertia_matrix};
 use super::params::GeometryParams;
-use super::transport::{DirIndex, interp_vertex_field};
 use crate::common::error::SimError;
 
 fn v3(v: DVec3) -> Vector3<f64> {
@@ -139,67 +138,36 @@ pub struct FrameReport {
     pub after: FrameDeparture,
     pub mass_change: f64,
     pub volume_change: f64,
-    pub max_radius_change: f64,
 }
 
-fn mean_radius(b: &Body) -> f64 {
-    b.radius.iter().sum::<f64>() / b.radius.len() as f64
-}
-
-/// Apply `x' = Q (x − c)` and re-sample radii along the fixed directions.
-///
-/// The outermost ray crossing is kept. A missed ray or a non-positive radius is an error.
-fn apply_once(body: &Body, c: DVec3, q: &Matrix3<f64>) -> Result<Body, SimError> {
-    let p = body.positions();
-    let moved: Vec<DVec3> = p.iter().map(|x| d3(q * (v3(*x) - v3(c)))).collect();
-    let faces = body.topo.faces.clone();
-    let mesh = match crate::common::geometry::TriMesh::try_new(moved.clone(), faces.clone()) {
-        Ok(mesh) => mesh,
-        Err(_) => {
-            // The body entering this map already passed the same test. A rigid
-            // image that fails it is the coplanar tolerance, not a new intersection.
-            body.mesh()?;
-            crate::common::geometry::TriMesh::from_rigid_copy(moved, faces)?
-        }
-    };
-    let radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
-    let topo = body.topo.clone();
+/// The rigid motion `x' = Q (x − c)` of the vertices and the cores (G8): `ρ_s` stays on its
+/// vertices, and a core keeps its shape, `S' = Q S Qᵀ`. Nothing is re-sampled.
+fn rigid(body: &Body, q: &Matrix3<f64>, c: DVec3, t: DVec3) -> Result<Body, SimError> {
+    let qm = crate::common::math::DMat3::from_cols_array_2d(&[
+        [q[(0, 0)], q[(1, 0)], q[(2, 0)]],
+        [q[(0, 1)], q[(1, 1)], q[(2, 1)]],
+        [q[(0, 2)], q[(1, 2)], q[(2, 2)]],
+    ]);
+    let map = |x: DVec3| qm * (x - c) + t;
     let kernels: Vec<CauchyKernel> = body
         .kernels
         .iter()
         .map(|k| {
-            // A rotated core keeps its shape: S' = Q S Qᵀ.
-            let centre = d3(q * (v3(k.center) - v3(c)));
-            let qm = crate::common::math::DMat3::from_cols_array_2d(&[
-                [q[(0, 0)], q[(1, 0)], q[(2, 0)]],
-                [q[(0, 1)], q[(1, 1)], q[(2, 1)]],
-                [q[(0, 2)], q[(1, 2)], q[(2, 2)]],
-            ]);
             let metric = crate::common::math::mat_sym(qm * k.metric_mat() * qm.transpose());
-            CauchyKernel::try_anisotropic(centre, k.weight, metric, k.alpha)
+            CauchyKernel::try_anisotropic(map(k.center), k.weight, metric, k.alpha)
         })
         .collect::<Result<_, _>>()?;
-    // Material transfer of ρ_s (§10.4.4 step 8b (vi)): barycentric interpolation only.
-    // The new vertex i sits at x' = R'_i ω̂_i, i.e. at the old point Qᵀ x' + c.
-    // No global multiplicative rescaling: the barycentric interpolation error is
-    // recorded in frame_mass_change of the FrameReport.
-    let mut rho_s = vec![0.0; radius.len()];
-    let old_dirs = DirIndex::build(&body.topo.dirs);
-    for i in 0..radius.len() {
-        let x_new = v3(topo.dirs[i]) * radius[i];
-        let x_old = q.transpose() * x_new + v3(c);
-        let dir_old = d3(x_old).try_normalize().unwrap_or(body.topo.dirs[i]);
-        rho_s[i] = interp_vertex_field(&body.topo, &old_dirs, &body.rho_s, dir_old);
-    }
-    let next = Body::new(topo, radius, body.bulk, kernels, rho_s)?;
-    Ok(next)
+    Body::new(
+        body.topo.clone(),
+        body.positions.iter().map(|x| map(*x)).collect(),
+        body.bulk,
+        kernels,
+        body.rho_s.clone(),
+    )
 }
 
 /// The inverse of the accumulated frame map: a body expressed in a realigned frame
-/// `x = R (x₀ − T)` is returned in the frame of `x₀`, with its radii re-sampled along the
-/// same fixed directions from the old origin. The cores move and turn back with the mesh
-/// (`c₀ = Rᵀ c + T`, `S₀ = Rᵀ S R`); `ρ_s` is interpolated barycentrically. The identity
-/// map returns the body unchanged.
+/// `x = R (x₀ − T)` is returned in the frame of `x₀` (`x₀ = Rᵀ x + T`).
 pub fn undo_frame(
     body: &Body,
     rotation: [[f64; 3]; 3],
@@ -209,65 +177,12 @@ pub fn undo_frame(
     let q = Matrix3::new(
         r[0][0], r[0][1], r[0][2], r[1][0], r[1][1], r[1][2], r[2][0], r[2][1], r[2][2],
     );
-    if q == Matrix3::identity() && translation == DVec3::ZERO {
-        return Ok(body.clone());
-    }
-    let qt = q.transpose();
-    let t = v3(translation);
-    let back: Vec<DVec3> = body
-        .positions()
-        .iter()
-        .map(|x| d3(qt * v3(*x) + t))
-        .collect();
-    let faces = body.topo.faces.clone();
-    let mesh = match crate::common::geometry::TriMesh::try_new(back.clone(), faces.clone()) {
-        Ok(mesh) => mesh,
-        // A rigid image of a valid body; see `apply_once`.
-        Err(_) => crate::common::geometry::TriMesh::from_rigid_copy(back, faces)?,
-    };
-    let radius = Body::radii_from_mesh(&mesh, DVec3::ZERO, &body.topo.dirs)?;
-    let qtm = crate::common::math::DMat3::from_cols_array_2d(&[
-        [qt[(0, 0)], qt[(1, 0)], qt[(2, 0)]],
-        [qt[(0, 1)], qt[(1, 1)], qt[(2, 1)]],
-        [qt[(0, 2)], qt[(1, 2)], qt[(2, 2)]],
-    ]);
-    let kernels: Vec<CauchyKernel> = body
-        .kernels
-        .iter()
-        .map(|k| {
-            let centre = d3(qt * v3(k.center) + t);
-            let metric = crate::common::math::mat_sym(qtm * k.metric_mat() * qtm.transpose());
-            CauchyKernel::try_anisotropic(centre, k.weight, metric, k.alpha)
-        })
-        .collect::<Result<_, _>>()?;
-    let index = DirIndex::build(&body.topo.dirs);
-    let rho_s: Vec<f64> = (0..radius.len())
-        .map(|i| {
-            let x_back = v3(body.topo.dirs[i]) * radius[i];
-            let x_now = q * (x_back - t);
-            let dir = d3(x_now).try_normalize().unwrap_or(body.topo.dirs[i]);
-            interp_vertex_field(&body.topo, &index, &body.rho_s, dir)
-        })
-        .collect();
-    Body::new(body.topo.clone(), radius, body.bulk, kernels, rho_s)
-}
-
-/// Dual area of every vertex (`Σ_f A_f / 3`).
-pub fn vertex_areas(body: &Body) -> Vec<f64> {
-    let geo = body.face_geometry();
-    let mut a = vec![0.0; body.topo.n_vertices()];
-    for (f, t) in body.topo.faces.iter().enumerate() {
-        for v in t {
-            a[*v as usize] += geo[f].2 / 3.0;
-        }
-    }
-    a
+    rigid(body, &q.transpose(), DVec3::ZERO, translation)
 }
 
 /// Re-align `body` (centroid at the origin, `I_zz` maximal, `I_xx` minimal). `force` skips the
-/// trigger test for the first pass (initialisation). At most three passes: the ray re-sampling
-/// perturbs the moments at the discretisation level, so the frame is re-verified after every
-/// pass and the loop stops as soon as the thresholds hold.
+/// trigger test for the first pass (initialisation). The motion is rigid, so one pass
+/// normally suffices; the frame is re-verified after every pass, up to three.
 ///
 /// After three passes, the residual departure is verified. If it still exceeds
 /// `ε_frame · R_ref` (centroid) or `ε_frame · I₁` (off-diagonal), the function returns
@@ -290,11 +205,10 @@ pub fn realign(
             bound
         }
     };
-    let r_ref = mean_radius(&current);
+    let r_ref = current.r_mean();
     let before = departure(&fwd.moments, r_ref, prm.eps_deg);
     let m0 = fwd.moments.mass;
     let v0 = fwd.moments.volume;
-    let r0 = current.radius.clone();
     let mut q_acc = Matrix3::identity();
     let mut t_acc = Vector3::zeros();
     let mut passes = 0;
@@ -302,7 +216,7 @@ pub fn realign(
         let c = fwd.moments.centroid;
         let ic = inertia_about_centroid(&fwd.moments);
         let q = principal_rotation(&ic, prm.eps_deg);
-        current = apply_once(&current, c, &q)?;
+        current = rigid(&current, &q, c, DVec3::ZERO)?;
         // x_orig = q_accᵀ x_cur + t_acc  ⇒  compose.
         t_acc += q_acc.transpose() * v3(c);
         q_acc = q * q_acc;
@@ -323,12 +237,6 @@ pub fn realign(
     }
     let trace = q_acc.trace();
     let angle = ((trace - 1.0) / 2.0).clamp(-1.0, 1.0).acos().to_degrees();
-    let max_change = current
-        .radius
-        .iter()
-        .zip(&r0)
-        .map(|(a, b)| ((a - b) / b).abs())
-        .fold(0.0, f64::max);
     let rotation = [
         [q_acc[(0, 0)], q_acc[(0, 1)], q_acc[(0, 2)]],
         [q_acc[(1, 0)], q_acc[(1, 1)], q_acc[(1, 2)]],
@@ -344,7 +252,6 @@ pub fn realign(
         after,
         mass_change: (fwd.moments.mass - m0) / m0,
         volume_change: (fwd.moments.volume - v0) / v0,
-        max_radius_change: max_change,
     };
     Ok((current, report, fwd))
 }

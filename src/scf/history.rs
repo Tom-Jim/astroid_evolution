@@ -25,7 +25,6 @@ use super::spin::SpinSchedule;
 use crate::common::density::CauchyKernel;
 use crate::common::error::SimError;
 use crate::common::math::{DMat3, DVec3, sym_mat};
-use crate::rheo::RheoGpu;
 
 /// Unnormalized degree-2 coefficients at `r_ref`, in the principal frame:
 /// `C₂₀ = −(C − (A + B)/2)/(M r²)`, `C₂₂ = (B − A)/(4 M r²)` with `A ≤ B ≤ C`.
@@ -89,7 +88,7 @@ pub fn fit_core(body: &Body, g: f64, target: &GravityTarget) -> Result<(Body, Co
         };
         Body::new(
             body.topo.clone(),
-            body.radius.clone(),
+            body.positions.clone(),
             bulk,
             kernels,
             body.rho_s.clone(),
@@ -163,7 +162,7 @@ pub struct Inversion {
 #[derive(Clone, Copy, Debug)]
 pub struct InversionOptions {
     pub max_iterations: usize,
-    /// Stop when the RMS radius misfit is below this (m).
+    /// Stop when the RMS vertex misfit is below this (m).
     pub tol: f64,
     /// `β` of `X₀ ← X₀ + β (X_p − F(X₀))`, in `(0, 1]`.
     pub damping: f64,
@@ -174,7 +173,6 @@ pub struct InversionOptions {
 /// The returned `initial` is the iterate whose forward run misses `X_p` least.
 pub fn invert(
     project: &Project,
-    gpu: &RheoGpu,
     schedule: &SpinSchedule,
     present: &Body,
     opts: &InversionOptions,
@@ -186,7 +184,7 @@ pub fn invert(
             opts.damping
         )));
     }
-    let n = present.radius.len();
+    let n = present.positions.len();
     let mut initial = present.clone();
     let mut steps = Vec::new();
     let mut last_run = Vec::new();
@@ -209,7 +207,6 @@ pub fn invert(
         };
         let res = evolve::run(
             project,
-            gpu,
             schedule,
             state,
             fwd,
@@ -228,24 +225,25 @@ pub fn invert(
             res.state.frame_translation,
         )?;
         let fin = &fin_body;
-        if fin.radius.len() != n {
+        if fin.positions.len() != n {
             return Err(SimError::geometry(
                 "the forward run changed the vertex count",
             ));
         }
-        let e: Vec<f64> = present
-            .radius
+        // Vertex identity is kept by the normal updates and the rigid frame (G4, G8).
+        let e: Vec<DVec3> = present
+            .positions
             .iter()
-            .zip(&fin.radius)
-            .map(|(p, f)| p - f)
+            .zip(&fin.positions)
+            .map(|(p, f)| *p - *f)
             .collect();
-        let rms = (e.iter().map(|v| v * v).sum::<f64>() / n as f64).sqrt();
-        let max = e.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let rms = (e.iter().map(|v| v.length_squared()).sum::<f64>() / n as f64).sqrt();
+        let max = e.iter().fold(0.0f64, |m, v| m.max(v.length()));
         let departure = initial
-            .radius
+            .positions
             .iter()
-            .zip(&present.radius)
-            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+            .zip(&present.positions)
+            .fold(0.0f64, |m, (a, b)| m.max((*a - *b).length()));
         steps.push(InversionStep {
             iteration: k,
             rms,
@@ -268,11 +266,11 @@ pub fn invert(
         }
         // Update every field by the present-minus-final misfit.
         let b = opts.damping;
-        let radius: Vec<f64> = initial
-            .radius
+        let positions: Vec<DVec3> = initial
+            .positions
             .iter()
             .zip(&e)
-            .map(|(r, d)| (r + b * d).max(1e-3 * r))
+            .map(|(x, d)| *x + *d * b)
             .collect();
         let rho_s: Vec<f64> = initial
             .rho_s
@@ -300,7 +298,7 @@ pub fn invert(
         } else {
             initial.kernels.clone()
         };
-        initial = Body::new(initial.topo.clone(), radius, initial.bulk, kernels, rho_s)?;
+        initial = Body::new(initial.topo.clone(), positions, initial.bulk, kernels, rho_s)?;
     }
     if let Some((_, body, records)) = best {
         initial = body;

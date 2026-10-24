@@ -55,12 +55,12 @@ tol = 1.0e-10
 
 [stokes]
 l_surface = 4
-l_velocity = 2
-l_pressure = 3
-k_pressure = 3
-n_theta = 4
-n_phi = 8
-n_radial = 3
+l_velocity = 5
+l_pressure = 7
+k_pressure = 5
+n_theta = 28
+n_phi = 56
+n_radial = 8
 p_ext = 0.0
 picard_max = 30
 tol_picard = 5.0e-2

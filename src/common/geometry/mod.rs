@@ -2,4 +2,4 @@
 
 pub mod tri_mesh;
 
-pub use tri_mesh::{RadialAlignReport, TriMesh, align_radial_cones};
+pub use tri_mesh::TriMesh;

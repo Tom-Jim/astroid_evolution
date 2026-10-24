@@ -1,26 +1,12 @@
-//! Unit tests of `scf::relax`, moved out of `src/scf/relax.rs`.
+//! Unit tests of `scf::relax`.
 
-mod ctx {
-    pub use astroid_evolution::common::error::SimError;
-    pub use astroid_evolution::common::math::DVec3;
-    pub use astroid_evolution::rheo::{RheoGpu, VelocityField};
-    pub use astroid_evolution::scf::body::{Body, Topology};
-    pub use astroid_evolution::scf::forward::{
-        Forward, Loading, deviator, effective_gravity, hessian_w,
-    };
-    pub use astroid_evolution::scf::mechanics::{face_chain, fit_surface, quad_form};
-    pub use astroid_evolution::scf::params::Project;
-    pub use astroid_evolution::scf::socp::{Kind, SocpInput, mass_jacobian, solve};
-    pub use std::path::Path;
-}
-use ctx::*;
-
+use astroid_evolution::scf::socp::Kind;
 use astroid_evolution::scf::body::Topology;
 use astroid_evolution::scf::relax::*;
 
 #[test]
 fn subcritical_vertices_stay_locked() {
-    let topo = Topology::icosphere(2);
+    let (topo, _) = Topology::icosphere(2);
     let nv = topo.n_vertices();
     let nf = topo.n_faces();
     let tri = topo.faces[0];

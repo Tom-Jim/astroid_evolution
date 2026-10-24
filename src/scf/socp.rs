@@ -8,7 +8,7 @@
 //!      ‖g × n̂(d)‖ / |g| ≤ sin φ + t,   t ≥ 0          (slope, face centre)
 //!      g · n̂(d) ≤ −ε_n |g|                            (anti-overhang)
 //!      Dℳ d + s_M = M − ℳ
-//!      |d_i| ≤ Δ for i in A
+//!      |d_i| ≤ Δ, lower_i ≤ d_i ≤ upper_i for i in A (clearance, loose mass)
 //! ```
 //!
 //! The solver unknown of a displacement is `x = d / R₀`, so the stored
@@ -27,7 +27,6 @@ use crate::common::density::CauchyDensity;
 use crate::common::math::DVec3;
 
 use super::body::Body;
-use super::socp_gpu::{FaceFrame, face_frames};
 use crate::common::error::SimError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +60,11 @@ pub struct SocpInput<'a> {
     pub mass: f64,
     /// Trust radius `Δ` (metres).
     pub trust: f64,
+    /// Bounds on `d_i` (metres) per vertex inside the box `|d_i| ≤ Δ`, or empty: the
+    /// clearance rows `−θ_g t⁻ ≤ d ≤ θ_g t⁺` of (G4) and the loose-mass bound of a
+    /// promoted vertex (§2.8c). `±∞` where there is none.
+    pub lower: &'a [f64],
+    pub upper: &'a [f64],
     pub eps_n: f64,
     pub varrho: f64,
     /// Saddle point of a previous assembly, indexed by vertex and face.
@@ -188,12 +192,14 @@ enum RowId {
     TrustLo(usize),
 }
 
-/// `∂ℳ/∂R_i = ω̂_i · Σ_{f ∋ i} n_f ∫_f ρ φ_i dS` (edge-midpoint rule, exact for `ρ` linear).
+/// `(Dℳ)_i = ∂ℳ/∂d_i = N_i · Σ_{f ∋ i} n_f ∫_f ρ φ_i dS` for the normal increment
+/// `X_i ← X_i + d_i N_i` (G4; edge-midpoint rule, exact for `ρ` linear, and
+/// `ρ |A_i|` for constant `ρ`).
 pub fn mass_jacobian(body: &Body, density: &CauchyDensity) -> Vec<f64> {
     let p = body.positions();
     let geo = body.face_geometry();
     let faces = &body.topo.faces;
-    let dirs = &body.topo.dirs;
+    let normals = body.vertex_normals();
     let nv = body.topo.n_vertices();
     let nf = faces.len();
     let nthreads = rayon::current_num_threads().max(1);
@@ -214,7 +220,7 @@ pub fn mass_jacobian(body: &Body, density: &CauchyDensity) -> Vec<f64> {
                     share * 0.5 * (mac + mbc),
                 ];
                 for (k, v) in [a, b, c].into_iter().enumerate() {
-                    j[v] += dirs[v].dot(n) * flux[k];
+                    j[v] += normals[v].dot(n) * flux[k];
                 }
                 f += nthreads;
             }
@@ -232,24 +238,33 @@ pub fn mass_jacobian(body: &Body, density: &CauchyDensity) -> Vec<f64> {
         .unwrap_or_else(|| vec![0.0; nv])
 }
 
+/// Unit normal `n̂` of a face and the columns `∂n̂/∂x_k`, `x_k = d_k / R₀`, for the
+/// normal increments of its three vertices.
+#[derive(Clone, Copy, Debug)]
+pub struct FaceFrame {
+    pub n: DVec3,
+    pub nj: [DVec3; 3],
+}
+
+/// `u = (b − a) × (c − a)` has `∂u/∂X_a · v = v × (b − c)` (cyclically), and
+/// `∂n̂ = (I − n̂ n̂ᵀ) ∂u / |u|`. `ps` are the vertices over `R₀`.
+pub fn face_frame(ps: &[DVec3], normals: &[DVec3], tri: [u32; 3]) -> FaceFrame {
+    let [a, b, c] = tri.map(|v| ps[v as usize]);
+    let u = (b - a).cross(c - a);
+    let len = u.length().max(1e-300);
+    let n = u / len;
+    let opposite = [b - c, c - a, a - b];
+    let nj = std::array::from_fn(|k| {
+        let du = normals[tri[k] as usize].cross(opposite[k]) / len;
+        du - n * n.dot(du)
+    });
+    FaceFrame { n, nj }
+}
+
 fn require_frame(frames: &[Option<FaceFrame>], f: usize) -> Result<&FaceFrame, SimError> {
-    let frame = frames[f]
+    frames[f]
         .as_ref()
-        .ok_or_else(|| SimError::gpu(format!("face {f}: slope frame was not evaluated")))?;
-    if !frame.n.is_finite() || (frame.n.length() - 1.0).abs() > 1.0e-4 {
-        return Err(SimError::gpu(format!(
-            "face {f}: double-single normal is not a finite unit vector (|n| = {})",
-            frame.n.length()
-        )));
-    }
-    for (k, column) in frame.nj.iter().enumerate() {
-        if !column.is_finite() {
-            return Err(SimError::gpu(format!(
-                "face {f}: double-single normal sensitivity column {k} is not finite"
-            )));
-        }
-    }
-    Ok(frame)
+        .ok_or_else(|| SimError::solver(format!("face {f}: slope frame was not evaluated")))
 }
 
 #[derive(Default)]
@@ -272,12 +287,12 @@ impl Block {
 }
 
 pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
-    let mut assemble = super::timing::span("socp_assemble");
+    let assemble = super::timing::span("socp_assemble");
     let body = inp.body;
     let topo = &body.topo;
     let nv = topo.n_vertices();
     let nf = topo.n_faces();
-    let r0 = body.radius.iter().sum::<f64>() / nv as f64;
+    let r0 = body.r_mean();
     let mscale = inp.mass;
     // Unknown numbering: mobile displacements, slope slacks, mass slacks.
     let mut col_of = vec![usize::MAX; nv];
@@ -290,22 +305,22 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     }
     let p = body.positions();
     let ps: Vec<DVec3> = p.iter().map(|x| *x * (1.0 / r0)).collect();
-    // Slope cones are the only rows that use n̂ and ∂n̂/∂R.
-    let active: Vec<usize> = (0..nf).filter(|&f| inp.slope_row[f]).collect();
-    let active_faces: Vec<[u32; 3]> = active.iter().map(|&f| topo.faces[f]).collect();
-    assemble.pause();
-    let computed = {
-        let _span = super::timing::span("socp_face_frames");
-        face_frames(&ps, &topo.dirs, &active_faces).map_err(SimError::gpu)?
+    // The slope cones and the anti-overhang rows use n̂ and ∂n̂/∂R. Every face with a
+    // free vertex carries the anti-overhang row (§2.8c), so its frame is needed even
+    // when it has no slope row.
+    let has_free = |f: usize| {
+        topo.faces[f]
+            .iter()
+            .any(|v| inp.kind[*v as usize] == Kind::Mobile)
     };
-    assemble.resume();
-    if computed.len() != active.len() {
-        return Err(SimError::gpu(format!(
-            "face-frame kernel returned {} frames for {} slope faces",
-            computed.len(),
-            active.len()
-        )));
-    }
+    let active: Vec<usize> = (0..nf)
+        .filter(|&f| inp.slope_row[f] || has_free(f))
+        .collect();
+    let normals = body.vertex_normals();
+    let computed: Vec<FaceFrame> = active
+        .par_iter()
+        .map(|&f| face_frame(&ps, &normals, topo.faces[f]))
+        .collect();
     let mut frames = vec![None; nf];
     for (slot, &f) in active.iter().enumerate() {
         frames[f] = Some(computed[slot]);
@@ -329,11 +344,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         let gnorm = inp.gravity[f].length();
         let overhang_ok =
             gnorm > 1e-14 && frame.n.dot(inp.gravity[f] * (1.0 / gnorm)) <= -inp.eps_n;
-        if overhang_ok
-            && topo.faces[f]
-                .iter()
-                .any(|v| inp.kind[*v as usize] == Kind::Mobile)
-        {
+        if overhang_ok && has_free(f) {
             t_col[f] = na + nt;
             nt += 1;
         }
@@ -429,7 +440,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let mut dropped = 0usize;
     for f in 0..nf {
         let tri = topo.faces[f].map(|x| x as usize);
-        if !tri.iter().any(|v| col_of[*v] != usize::MAX) || !inp.slope_row[f] {
+        if !tri.iter().any(|v| col_of[*v] != usize::MAX) {
             continue;
         }
         let frame = require_frame(&frames, f)?;
@@ -488,15 +499,23 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     // |d_i| ≤ Δ on the free nodes, written |x| ≤ Δ/R₀. Two nonnegative rows
     // per mobile vertex. A Euclidean ball of the same radius would also force
     // the patch RMS down by √N, which §2.13's per-node linearization does not ask for.
+    // `x_box[j]` keeps the interval of free column j for the fold test below.
+    let mut x_box = vec![(0.0, 0.0); na];
     for i in 0..nv {
         let j = col_of[i];
         if j == usize::MAX {
             continue;
         }
-        let hi = nn.row(delta);
+        let bound = |b: Option<&f64>, sign: f64| match b {
+            Some(v) if v.is_finite() => (sign * v / r0).clamp(-delta, delta),
+            _ => delta,
+        };
+        let (u, l) = (bound(inp.upper.get(i), 1.0), bound(inp.lower.get(i), -1.0));
+        x_box[j] = (-l, u);
+        let hi = nn.row(u);
         nn.put(hi, j, 1.0);
         nn_ids.push(RowId::TrustHi(i));
-        let lo = nn.row(delta);
+        let lo = nn.row(l);
         nn.put(lo, j, -1.0);
         nn_ids.push(RowId::TrustLo(i));
     }
@@ -544,19 +563,22 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         .warm
         .and_then(|seed| scatter_seed(seed, &col_ids, &row_ids, r0, n_eq, n_nn, n_soc, n_trust));
     drop(assemble);
-    // Inside the box, a·x cannot leave [-a_span, a_span]. When the mass target
+    // Inside the bounds, a·x cannot leave [reach.0, reach.1]. When the mass target
     // sits outside that interval, σ = s_M/M cannot change sign, and ϱ|s_M| is
     // the linear function ϱ M |b − a·x|. Folding it into q removes the mass
     // columns, which otherwise sit ϱ M away from the slope penalty and stall
     // the saddle. The assembled ±1 columns are what the output still reports.
+    // A reachable target keeps the hard equality: the exact penalty holds σ = 0.
     let b_mass = inp.mass_residual / mscale - known_mass;
     let mut a_coeff = vec![0.0; nx];
-    let mut a_span = 0.0_f64;
+    let mut reach = (0.0_f64, 0.0_f64);
     for &(r, c, v) in &eq.trip {
         if r == 0 {
             a_coeff[c] = v;
             if c < na {
-                a_span += v.abs() * delta;
+                let (lo, hi) = x_box[c];
+                reach.0 += (v * lo).min(v * hi);
+                reach.1 += (v * lo).max(v * hi);
             }
         }
     }
@@ -566,7 +588,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         // penalty keeps σ = 0. The mass row is then a hard equality without the σ±
         // columns, which would otherwise sit ϱ M away from the slope penalty.
         if fold && std::env::var_os("PDHG_LOG").is_some() {
-            eprintln!("socp fold mass b={b_mass:.3e} span={a_span:.3e} mobile={na}");
+            eprintln!("socp fold mass b={b_mass:.3e} reach=[{:.3e}, {:.3e}] mobile={na}", reach.0, reach.1);
         }
         let drop_row: Vec<bool> = row_ids
             .iter()
@@ -662,7 +684,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         }
         Ok(Some((solved, x_full, y_full, sigma)))
     };
-    let first = b_mass.abs() > 1.0e-4;
+    let first = b_mass < reach.0 || b_mass > reach.1;
     let (solved, x_full, y_full, sigma) = match attempt(first)? {
         Some(done) => done,
         None => attempt(false)?.ok_or_else(|| SimError::solver("hard mass row did not solve"))?,

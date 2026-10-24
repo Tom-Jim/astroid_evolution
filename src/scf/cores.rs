@@ -78,6 +78,45 @@ fn dmat(m: Matrix3<f64>) -> DMat3 {
     DMat3::from_cols_slice(m.as_slice())
 }
 
+/// `max ‖dev ∇v_adv(c_k)‖_F` over the moving cores at their current centres: the rate
+/// of the core step bound `Δt_core` (§10.4.1). Zero when every core is anchored.
+pub fn strain_rate(
+    kernels: &[CauchyKernel],
+    v_adv: &Velocity<'_>,
+    inside: &dyn Fn(DVec3) -> bool,
+    h: f64,
+    params: &CoreParams,
+) -> f64 {
+    if kernels.is_empty() || !params.lagrangian() {
+        return 0.0;
+    }
+    let centres: Vec<DVec3> = kernels.iter().map(|k| k.center).collect();
+    let v0 = v_adv(&centres);
+    let mut probe = Vec::with_capacity(centres.len() * 6);
+    for c in &centres {
+        for a in DVec3::AXES {
+            probe.push(*c + a * h);
+            probe.push(*c - a * h);
+        }
+    }
+    let vp = v_adv(&probe);
+    let mut rate = 0.0_f64;
+    for (k, kern) in kernels.iter().enumerate() {
+        if !(inside(kern.center) && v0[k] != DVec3::ZERO) {
+            continue;
+        }
+        let row = &vp[6 * k..6 * k + 6];
+        let grad = DMat3::from_cols(
+            (row[0] - row[1]) / (2.0 * h),
+            (row[2] - row[3]) / (2.0 * h),
+            (row[4] - row[5]) / (2.0 * h),
+        );
+        let trace = grad.x_axis.x + grad.y_axis.y + grad.z_axis.z;
+        rate = rate.max(mat(grad - DMat3::IDENTITY * (trace / 3.0)).norm());
+    }
+    rate
+}
+
 /// Level 0 (§9.10.3). `inside(c)` tells a core centre inside the moving material;
 /// a core outside it, or where the velocity is masked, is anchored.
 pub fn predict(
@@ -174,49 +213,6 @@ pub fn close_mass(kernels: &mut [CauchyKernel], mass: f64, bulk_mass: f64, targe
 pub struct Quadrature {
     pub pts: Vec<DVec3>,
     pub w: Vec<f64>,
-}
-
-/// Directions of the Level 2 quadrature at most. The cores are smooth on the
-/// scale of a few hundred mesh vertices, so a finer surface is binned.
-pub const MAX_QUAD_DIRS: usize = 8192;
-
-impl Quadrature {
-    /// Star-shaped volume quadrature: one ray per direction bin, Gauss–Jacobi (ζ²)
-    /// nodes along it. Above `MAX_QUAD_DIRS` vertices are binned to the nearest of
-    /// a Fibonacci set; a bin keeps its solid angle, its solid-angle-weighted
-    /// direction and the radius `(Σ Ω R³ / Σ Ω)^{1/3}` of the same volume.
-    pub fn star(dirs: &[DVec3], radius: &[f64], solid: &[f64], zeta: &[f64], wr: &[f64]) -> Self {
-        let (bd, br, bs) = if dirs.len() <= MAX_QUAD_DIRS {
-            (dirs.to_vec(), radius.to_vec(), solid.to_vec())
-        } else {
-            let fib = crate::common::math::fibonacci_directions(MAX_QUAD_DIRS);
-            let index = super::transport::DirIndex::build(&fib);
-            let bin: Vec<usize> = dirs.par_iter().map(|d| index.nearest(&fib, *d)).collect();
-            let mut acc = vec![(DVec3::ZERO, 0.0f64, 0.0f64); fib.len()];
-            for (i, &b) in bin.iter().enumerate() {
-                acc[b].0 += dirs[i] * solid[i];
-                acc[b].1 += solid[i] * radius[i].powi(3);
-                acc[b].2 += solid[i];
-            }
-            let kept: Vec<_> = acc.into_iter().filter(|a| a.2 > 0.0).collect();
-            (
-                kept.iter().map(|a| a.0.normalize()).collect(),
-                kept.iter().map(|a| (a.1 / a.2).cbrt()).collect(),
-                kept.iter().map(|a| a.2).collect(),
-            )
-        };
-        let mut quad = Quadrature {
-            pts: Vec::with_capacity(bd.len() * zeta.len()),
-            w: Vec::with_capacity(bd.len() * zeta.len()),
-        };
-        for ((d, r), s) in bd.iter().zip(&br).zip(&bs) {
-            for (z, w) in zeta.iter().zip(wr) {
-                quad.pts.push(*d * (z * r));
-                quad.w.push(w * r.powi(3) * s);
-            }
-        }
-        quad
-    }
 }
 
 /// Number of parameters per core: weight, centre, Cholesky factor (log diagonal).

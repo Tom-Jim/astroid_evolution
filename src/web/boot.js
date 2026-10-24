@@ -144,6 +144,11 @@ async function start() {
     if (data.kind === "status" || data.kind === "frame" || data.kind === "finished" || data.kind === "failed") {
       deliver(data.kind, data.payload || "");
     }
+    if (data.kind === "failed") {
+      // A failed run never resumes; its workers would keep their wasm memory (GBs).
+      run.worker.terminate();
+      run.gpu.terminate();
+    }
   }
 
   globalThis.asteroid = {
@@ -188,21 +193,41 @@ async function start() {
       const sab = new SharedArrayBuffer(256 + 96 * 1024 * 1024);
       const channel = new MessageChannel();
       const module = viewerModuleUrl();
-      const wasm = viewerWasmUrl();
       const gpu = new Worker(new URL("gpu_worker.js", document.baseURI), { type: "module" });
       const worker = new Worker(new URL("worker.js", document.baseURI), { type: "module" });
-      run = { sab, header: new Int32Array(sab, 0, 16), gpu, worker };
+      const started = { sab, header: new Int32Array(sab, 0, 16), gpu, worker };
+      run = started;
       gpu.onmessage = onWorker;
       worker.onmessage = onWorker;
-      gpu.postMessage({ kind: "start", sab, module, wasm, port: channel.port2 }, [channel.port2]);
       const files = [...installed].map(([path, bytes]) => ({ path, bytes: bytes.slice().buffer }));
       globalThis.asteroid.timing = {};
-      worker.postMessage(
-        { kind: "start", config, sab, module, wasm, files, port: channel.port1, timing: query.has("timing") },
-        [channel.port1, ...files.map((file) => file.bytes)],
-      );
+      compiledWasm()
+        .then((wasm) => {
+          if (run !== started) {
+            return;
+          }
+          gpu.postMessage({ kind: "start", sab, module, wasm, port: channel.port2 }, [channel.port2]);
+          worker.postMessage(
+            { kind: "start", config, sab, module, wasm, files, port: channel.port1, timing: query.has("timing") },
+            [channel.port1, ...files.map((file) => file.bytes)],
+          );
+        })
+        .catch(fail);
     },
   };
+
+  // The workers of every run share one compiled module instead of compiling the
+  // viewer wasm twice per run; compiling starts while the mesh is decoded.
+  let compiled = null;
+  function compiledWasm() {
+    if (!compiled) {
+      const url = viewerWasmUrl();
+      compiled = WebAssembly.compileStreaming(fetch(url)).catch(async () =>
+        WebAssembly.compile(await (await fetch(url)).arrayBuffer()),
+      );
+    }
+    return compiled;
+  }
 
   // Without a query the page opens the run the desktop shell opens.
   const defaults = JSON.parse(viewer_defaults());
@@ -218,6 +243,7 @@ async function start() {
     max_steps: maxSteps ? Number(maxSteps) : null,
   });
   status.textContent = "Decoding the mesh on the GPU…";
+  compiledWasm().catch(fail);
   await prepare_viewer(config);
   status.textContent = "";
   dispatchEvent(new Event("asteroid-ready"));

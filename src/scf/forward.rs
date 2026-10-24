@@ -5,7 +5,7 @@
 //! * interior: `Field` role at the Stokes quadrature points (gradient and Hessian);
 //! * moments: mass, centroid and inertia of `ρ_K` from `density_integrals`.
 
-use crate::common::math::{DVec3, Sym6};
+use crate::common::math::{DMat3, DVec3, Sym6, sym_mat};
 use crate::rtfp::api::{FieldMask, PointRole, PointSet};
 use crate::rtfp::{RtfpOptions, RtfpSolver};
 
@@ -117,7 +117,7 @@ impl Forward {
     pub fn eval_faces(&mut self, body: &Body) -> Result<(), SimError> {
         let centres: Vec<DVec3> = body.face_geometry().iter().map(|f| f.0).collect();
         // Same bound mesh, density and G, and the same sample points: the integral
-        // is already stored. A radius change moves the centres and misses this.
+        // is already stored. A vertex move shifts the centres and misses this.
         if self.face.points == centres
             && self.face.grad_u.len() == centres.len()
             && self.face.hess_u.len() == centres.len()
@@ -146,6 +146,32 @@ impl Forward {
         Ok(())
     }
 
+    /// The GPU acceleration structure of the bound polyhedron (ray queries of §8.0).
+    pub fn body_mesh(&self) -> &crate::rtfp::mesh::BodyMesh {
+        &self.solver.body
+    }
+
+    /// Gradient and finite-part Hessian at points on face interiors of `Γ`.
+    pub fn eval_surface(&self, points: &[DVec3]) -> Result<PointFields, SimError> {
+        let batch = {
+            let _span = super::timing::span("rtfp_surface");
+            self.solver.eval(
+                &PointSet::from_points(points),
+                PointRole::SurfaceFace,
+                FieldMask {
+                    potential: false,
+                    gradient: true,
+                    hessian: true,
+                },
+            )?
+        };
+        Ok(PointFields {
+            points: points.to_vec(),
+            grad_u: batch.gradient,
+            hess_u: batch.hessian,
+        })
+    }
+
     /// Gradient and Hessian at interior points (classical convergence).
     pub fn eval_field(&self, points: &[DVec3], hessian: bool) -> Result<PointFields, SimError> {
         let mask = if hessian {
@@ -167,6 +193,13 @@ impl Forward {
             grad_u: batch.gradient,
             hess_u: batch.hessian,
         })
+    }
+
+    /// Gravity and its Hessian at points outside the body: the exterior route of the
+    /// runout flights (§2.8b).
+    pub fn eval_exterior(&self, points: &[DVec3]) -> Result<Vec<(DVec3, DMat3)>, SimError> {
+        let f = self.eval_field(points, true)?;
+        Ok(f.grad_u.into_iter().zip(f.hess_u).map(|(g, h)| (g, sym_mat(h))).collect())
     }
 }
 
