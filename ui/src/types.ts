@@ -54,6 +54,7 @@ export interface Status {
   interior: boolean;
   cut: number;
   wireframe: boolean;
+  spin_axis: boolean;
   rho_range: [number, number];
   view_m: number;
 }
@@ -72,6 +73,7 @@ export type Command =
   | { cmd: "layer"; mode: number }
   | { cmd: "interior"; on: boolean; offset: number }
   | { cmd: "wireframe"; on: boolean }
+  | { cmd: "spin_axis"; on: boolean }
   | { cmd: "reset_view" }
   | { cmd: "screenshot" }
   | { cmd: "seek"; index: number | null }

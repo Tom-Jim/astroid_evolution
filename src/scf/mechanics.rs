@@ -19,7 +19,7 @@ use super::domain::SurfacePoints;
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
 use super::harmonics::SurfaceFit;
 use super::params::Project;
-use super::stokes::{Loads, Operators, StokesSolution, solve};
+use super::stokes::{Guess, Loads, Operators, StokesSolution, solve};
 use super::surface::SurfaceIndex;
 use crate::common::error::SimError;
 use crate::common::time::wall_seconds;
@@ -270,6 +270,9 @@ fn geometry(
             return Ok((index.clone(), ops.clone()));
         }
     }
+    // Release the stale geometry (its resident classification rows are GBs) before the
+    // new operators are built, so the two never coexist.
+    *last = None;
     let _span = super::timing::span("stokes_operators");
     let index = Arc::new(SurfaceIndex::build(&body.positions, &body.topo.faces));
     let surf = SurfaceFit::sphere(body.r_star());
@@ -290,7 +293,7 @@ pub fn evaluate(
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
-    guess: Option<&[f64]>,
+    guess: Option<&Guess>,
 ) -> Result<Mechanics, SimError> {
     let material = &project.material;
     let (index, ops) = geometry(project, body, fwd)?;

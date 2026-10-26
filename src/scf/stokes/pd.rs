@@ -12,8 +12,8 @@ use crate::rheo::Material;
 use super::super::params::StokesParams;
 use super::pressure::Pressure;
 use super::{
-    Loads, Operators, StokesSolution, assemble_f, assemble_k, d6_dot, eta_eval, factor_range,
-    load_scale, solve_range, strain_fields,
+    Guess, Loads, Operators, StokesSolution, assemble_f, d6_dot, eta_eval, load_scale, pd_metric,
+    solve_range, strain_fields,
 };
 
 /// `φ'(s) = s η(s)` and `φ''(s) = η + s ∂η/∂γ̇` at frozen `c`, `p̃` (Proposition 2.17.1).
@@ -94,7 +94,7 @@ pub(super) fn solve_pd(
     ld: &Loads,
     prm: &StokesParams,
     m: &Material,
-    guess: Option<&[f64]>,
+    guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
     let n_u = ops.lay.n_u;
     let np = ops.vol.pts.len();
@@ -108,8 +108,7 @@ pub(super) fn solve_pd(
     let w = &ops.vol.w;
     let s2 = std::f64::consts::SQRT_2;
     // P is factored once per geometry; Π_K^P P⁻¹ r is the range-space solve.
-    let metric = assemble_k(ops, &vec![1.0; np]);
-    let rs = factor_range(ops, &metric)?;
+    let (metric, rs) = pd_metric(ops)?;
     // The equilibrium residual F − Σ w_i e_iᵀ ς_i − B_rbᵀ λ with the multiplier that the
     // rigid modes absorb, λ = (B Bᵀ)⁻¹ B (F − Σ w_i e_iᵀ ς_i).
     let bbt = Cholesky::new(&ops.rigid * ops.rigid.transpose())
@@ -120,10 +119,10 @@ pub(super) fn solve_pd(
         let resid = &r - ops.rigid.transpose() * &lambda;
         (resid.norm() / f_norm, lambda)
     };
-    let p_norm = |v: &DVector<f64>| v.dot(&(&metric * v)).max(0.0).sqrt();
+    let p_norm = |v: &DVector<f64>| v.dot(&(metric * v)).max(0.0).sqrt();
     let strain = |u: &DVector<f64>| linalg::mul(&ops.rows.d, u) * s2;
     let start = match guess {
-        Some(g) if g.len() == n_u => DVector::from_column_slice(g),
+        Some(g) if g.u.len() == n_u => DVector::from_column_slice(&g.u),
         _ => DVector::zeros(n_u),
     };
     // P-orthogonal projection of the warm start onto K = ker B_rb.
@@ -137,12 +136,16 @@ pub(super) fn solve_pd(
     let mut total = 0usize;
     let mut at = 0usize;
     let mut warm = start.clone();
+    // The pressure is itself a fixed-point iteration in p̃ (Pressure::update); it starts
+    // from the guess's coefficients, then from each level's.
+    let p_start: &[f64] = guess.map_or(&[], |g| &g.p);
+    let mut warm_p = p_start.to_vec();
     loop {
         let level = levels[at];
         at += 1;
         let eps = m.spec.gamma_eps * 10f64.powi(level as i32);
         let mut u = warm.clone();
-        let mut pr = Pressure::new(ops, p_min);
+        let mut pr = Pressure::warm(ops, p_min, &warm_p);
         // The pressure of the warm start, so that the first dual steps see its strength.
         let mut fields = strain_fields(ops, &u);
         pr.update(ops, ld, prm, m, eps, &coh, &gcoh, &u, &fields)?;
@@ -195,7 +198,7 @@ pub(super) fn solve_pd(
             }
             // (U) u ← u − τ_p Π_K^P P⁻¹ (Σ w_i e_iᵀ ς_i − F), then the extrapolation.
             let r = strain_adjoint(ops, &sig) - &f_load;
-            let (step, _) = solve_range(ops, &rs, &r);
+            let (step, _) = solve_range(ops, rs, &r);
             let un = &u - step * tau_p;
             let du = p_norm(&(&un - &u)) / p_norm(&un).max(1e-300);
             ubar = &un * 2.0 - &u;
@@ -293,8 +296,10 @@ pub(super) fn solve_pd(
             levels.extend((1..=prm.continuation).rev());
             levels.push(0);
             warm = start.clone();
+            warm_p = p_start.to_vec();
         } else {
             warm = u;
+            warm_p = pr.coeff.as_slice().to_vec();
         }
         if at >= levels.len() {
             return Err(SimError::rheology_not_converged(format!(

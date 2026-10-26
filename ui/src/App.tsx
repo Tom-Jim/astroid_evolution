@@ -258,6 +258,12 @@ export function App({ host }: { host: Host }) {
             title="Wireframe (W)"
             onChange={(on) => send({ cmd: "wireframe", on })}
           />
+          <Toggle
+            on={status?.spin_axis ?? true}
+            label={<Label en="AXIS" />}
+            title="Spin axis and sense of rotation (A)"
+            onChange={(on) => send({ cmd: "spin_axis", on })}
+          />
           <span className="grow" />
           <button className="icon" title="Reset view (R)" onClick={() => send({ cmd: "reset_view" })}>
             <Icon name="reset" />
@@ -494,6 +500,9 @@ function useKeys(host: Host, status: Status | null) {
       } else if (key === "KeyW") {
         host.send({ cmd: "wireframe", on: !s.wireframe });
         ref.current = { ...s, wireframe: !s.wireframe };
+      } else if (key === "KeyA") {
+        host.send({ cmd: "spin_axis", on: !s.spin_axis });
+        ref.current = { ...s, spin_axis: !s.spin_axis };
       } else if (key === "KeyR") {
         host.send({ cmd: "reset_view" });
       } else if (key === "KeyP") {

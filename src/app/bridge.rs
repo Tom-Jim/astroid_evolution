@@ -44,6 +44,9 @@ pub enum Command {
     Wireframe {
         on: bool,
     },
+    SpinAxis {
+        on: bool,
+    },
     ResetView,
     Screenshot,
     /// Hold the view on stored step `index`; `None` follows the run again.
@@ -158,6 +161,7 @@ pub struct Status {
     pub interior: bool,
     pub cut: f32,
     pub wireframe: bool,
+    pub spin_axis: bool,
     pub rho_range: [f32; 2],
     /// Metres per view unit.
     pub view_m: f64,
@@ -224,6 +228,7 @@ pub fn status(
         interior: mode.interior,
         cut: mode.cut_offset,
         wireframe,
+        spin_axis: mode.spin_axis,
         rho_range,
         view_m: if scene.scale > 0.0 {
             1.0 / scene.scale
@@ -358,6 +363,7 @@ pub fn apply_commands(
                     }
                 }
             }
+            Command::SpinAxis { on } => mode.spin_axis = on,
             Command::ResetView => {
                 for (mut transform, mut camera) in &mut cameras {
                     *transform = ui::home_transform();

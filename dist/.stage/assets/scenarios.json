@@ -5,13 +5,13 @@
       "name": "Ryugu",
       "designation": "162173",
       "project": "assets/projects/ryugu.toml",
-      "note": "YORP spin-down −4.1×10⁻⁷ °/day² (Cho 2021): 3.40 h → 7.6326 h",
+      "note": "YORP spin-down −4.1×10⁻⁷ °/day² (Cho 2021): 3.76 h → 7.6326 h",
       "scenarios": [
         {
           "id": "past",
           "label": "Reconstruction → today",
-          "span": "−9.41 Myr → 0",
-          "spin": "linear:5.1333213e-4,-9.585919e-19,2.969610e14",
+          "span": "−7.79 Myr → 0",
+          "spin": "linear:4.6418331e-4,-9.585919e-19,2.456891e14",
           "snapshot": "output/ryugu/history/initial.json"
         },
         {
@@ -24,8 +24,8 @@
         {
           "id": "measured",
           "label": "Measured shape, fast-spin history",
-          "span": "9.41 Myr",
-          "spin": "linear:5.1333213e-4,-9.585919e-19,2.969610e14",
+          "span": "7.79 Myr",
+          "spin": "linear:4.6418331e-4,-9.585919e-19,2.456891e14",
           "snapshot": null
         }
       ]

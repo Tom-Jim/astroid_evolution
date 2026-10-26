@@ -10,7 +10,7 @@ use crate::rheo::Material;
 use super::super::params::StokesParams;
 use super::pressure::Pressure;
 use super::{
-    Loads, Operators, StokesSolution, assemble_f, assemble_k, eta_eval, factor_range, load_scale,
+    Guess, Loads, Operators, StokesSolution, assemble_f, assemble_k, eta_eval, factor_range, load_scale,
     solve_range, strain_fields,
 };
 
@@ -20,7 +20,7 @@ pub(super) fn solve_picard(
     ld: &Loads,
     prm: &StokesParams,
     m: &Material,
-    guess: Option<&[f64]>,
+    guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
     let n_u = ops.lay.n_u;
     let np = ops.vol.pts.len();
@@ -28,21 +28,22 @@ pub(super) fn solve_picard(
     let f_load = assemble_f(ops, ld);
     let f_norm = load_scale(ops, ld);
     let mut u = match guess {
-        Some(g) if g.len() == n_u => DVector::from_column_slice(g),
+        Some(g) if g.u.len() == n_u => DVector::from_column_slice(&g.u),
         _ => DVector::zeros(n_u),
     };
     let coh: Vec<f64> = ops.vol.depth.iter().map(|d| m.cohesion_at(*d)).collect();
     let gcoh: Vec<DVec3> = (0..np)
         .map(|p| ops.vol.gdepth[p] * m.cohesion_slope(ops.vol.depth[p]))
         .collect();
-    let mut pr = Pressure::new(ops, p_min);
+    let p_start: &[f64] = guess.map_or(&[], |g| &g.p);
+    let mut pr = Pressure::warm(ops, p_min, p_start);
     let mut eta_prev: Vec<f64> = Vec::new();
     let mut total_iters = 0;
     let mut converged = false;
     let mut last = (f64::INFINITY, 0.0);
     let mut lambda = DVector::zeros(6);
     // Previous-sweep un-truncated Poisson pressure (for the L² pressure criterion (a)).
-    let mut p_prev = vec![p_min; np];
+    let mut p_prev = pr.p_vals.clone();
     let mut eps_used = m.spec.gamma_eps;
     let mut theta = prm.theta_eta;
     let mut theta_retries = 0u32;
@@ -129,8 +130,8 @@ pub(super) fn solve_picard(
         }
         if !converged && level == 0 && homotopy_armed {
             u = u_guess.clone();
-            pr = Pressure::new(ops, p_min);
-            p_prev.fill(p_min);
+            pr = Pressure::warm(ops, p_min, p_start);
+            p_prev.clone_from(&pr.p_vals);
             eta_prev.clear();
             theta = theta_guess;
             theta_retries = 0;

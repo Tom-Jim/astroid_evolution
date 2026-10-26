@@ -73,6 +73,34 @@ impl Pressure {
         }
     }
 
+    /// The pressure of the coefficients `coeff` (a nearby solution's), or `p_min` when they
+    /// do not fit this space. Only the start of the fixed-point iteration changes.
+    pub fn warm(ops: &Operators, p_min: f64, coeff: &[f64]) -> Self {
+        let mut pr = Self::new(ops, p_min);
+        if coeff.len() == pr.coeff.len() && coeff.iter().all(|c| c.is_finite()) {
+            pr.coeff = DVector::from_column_slice(coeff);
+            pr.sample(ops, p_min);
+        }
+        pr
+    }
+
+    /// `p`, `p̃`, `∇p` at the volume and boundary rules from `coeff`.
+    fn sample(&mut self, ops: &Operators, p_min: f64) {
+        let pv = linalg::mul(&ops.q_vol.val, &self.coeff);
+        let gp = linalg::mul(&ops.q_vol.grad, &self.coeff);
+        for p in 0..ops.vol.pts.len() {
+            self.p_vals[p] = pv[p];
+            self.ptil[p] = pv[p].max(p_min);
+            self.gradp[p] = DVec3::new(gp[3 * p], gp[3 * p + 1], gp[3 * p + 2]);
+        }
+        let pb = &ops.q_bnd.val * &self.coeff;
+        let gb = &ops.q_bnd.grad * &self.coeff;
+        for b in 0..ops.bnd.pts.len() {
+            self.bnd_p[b] = pb[b];
+            self.bnd_gradp[b] = DVec3::new(gb[3 * b], gb[3 * b + 1], gb[3 * b + 2]);
+        }
+    }
+
     /// One Nitsche solve (G3) with the flow stress of the current velocity `u`:
     /// `a_N(p, q) = ∫ f·∇q − ∮ (f·n) q − ∮ p_Γ ∂_n q + (γ_N/h_N) ∮ p_Γ q`, with
     /// `p_Γ = p_ext + n·T_tide·n + 2η n·D·n` on the boundary rule.
@@ -136,19 +164,7 @@ impl Pressure {
         }
         rhs += ops.q_bnd.val.tr_mul(&wq) - ops.q_bnd_dn.tr_mul(&wdn);
         self.coeff = ops.nitsche.solve(&rhs);
-        let pv = linalg::mul(&ops.q_vol.val, &self.coeff);
-        let gp = linalg::mul(&ops.q_vol.grad, &self.coeff);
-        for p in 0..np {
-            self.p_vals[p] = pv[p];
-            self.ptil[p] = pv[p].max(p_min);
-            self.gradp[p] = DVec3::new(gp[3 * p], gp[3 * p + 1], gp[3 * p + 2]);
-        }
-        let pb = &ops.q_bnd.val * &self.coeff;
-        let gb = &ops.q_bnd.grad * &self.coeff;
-        for b in 0..nb {
-            self.bnd_p[b] = pb[b];
-            self.bnd_gradp[b] = DVec3::new(gb[3 * b], gb[3 * b + 1], gb[3 * b + 2]);
-        }
+        self.sample(ops, p_min);
         Ok(())
     }
 

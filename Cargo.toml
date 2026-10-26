@@ -38,6 +38,7 @@ tier3 = [
     "bevy/tonemapping_luts",
     "bevy/zstd_rust",
     "bevy/bevy_picking",
+    "bevy/bevy_gizmos_render",
     "bevy/mesh_picking",
     "bevy/pan_orbit_camera",
     "bevy/mouse",

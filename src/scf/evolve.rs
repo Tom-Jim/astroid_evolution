@@ -25,6 +25,7 @@ use super::runout::RunoutReport;
 use super::settle::{SettleReport, settle};
 use super::socp::{Kind, SocpSeed, mass_jacobian};
 use super::spin::SpinSchedule;
+use super::stokes::Guess;
 use super::transport::{surface_flow, transport};
 use crate::common::error::SimError;
 
@@ -223,11 +224,11 @@ pub fn run(
     let snap_tol = 1e-12 * t_end.max(1.0);
     let mut records = Vec::new();
     let mut mass_target = fwd.moments.mass;
-    let mut guess: Option<Vec<f64>> = if state.velocity.is_empty() {
-        None
-    } else {
-        Some(state.velocity.clone())
-    };
+    // A resumed snapshot carries the velocity only; its pressure starts cold.
+    let mut guess: Option<Guess> = (!state.velocity.is_empty()).then(|| Guess {
+        u: state.velocity.clone(),
+        p: Vec::new(),
+    });
     let mut socp_seed: Option<SocpSeed> = None;
     let mut steps_done = 0usize;
 
@@ -256,7 +257,7 @@ pub fn run(
             omega,
             tide: spin.tide(state.t),
         };
-        let mech = evaluate(project, &state.body, &mut fwd, load, guess.as_deref())?;
+        let mech = evaluate(project, &state.body, &mut fwd, load, guess.as_ref())?;
         let cl = &mech.class;
         let area = {
             let _span = super::timing::span("vertex_areas");
@@ -309,7 +310,7 @@ pub fn run(
             centroid_offset: fwd.moments.centroid.length(),
             ..StepRecord::default()
         };
-        guess = Some(mech.sol.u.clone());
+        guess = Some(mech.sol.guess());
         state.velocity = mech.sol.u.clone();
 
         // Stage equilibrium (2.15(c)): the whole body in the rigid core (an interior

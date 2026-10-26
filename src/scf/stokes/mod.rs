@@ -108,6 +108,9 @@ pub struct Operators {
     /// Gravity at the volume and boundary points; independent of the spin.
     pub vol_field: std::sync::OnceLock<super::forward::PointFields>,
     pub bnd_field: std::sync::OnceLock<super::forward::PointFields>,
+    /// The primal–dual metric `G` (the stiffness at `η ≡ 1`) and its range-space
+    /// factorization: fixed by the geometry, so a spin-only step reuses them.
+    pd_metric: std::sync::OnceLock<(DMatrix<f64>, RangeSolve)>,
 }
 
 impl Operators {
@@ -190,6 +193,7 @@ impl Operators {
             class_mesh: std::sync::OnceLock::new(),
             vol_field: std::sync::OnceLock::new(),
             bnd_field: std::sync::OnceLock::new(),
+            pd_metric: std::sync::OnceLock::new(),
         })
     }
 }
@@ -332,6 +336,23 @@ pub struct StokesSolution {
     pub gamma_eps: f64,
 }
 
+/// A warm start of the Stokes–pressure pair: the velocity and pressure coefficients of a
+/// nearby solution. A part whose length does not fit the current spaces is ignored.
+#[derive(Clone, Debug, Default)]
+pub struct Guess {
+    pub u: Vec<f64>,
+    pub p: Vec<f64>,
+}
+
+impl StokesSolution {
+    pub fn guess(&self) -> Guess {
+        Guess {
+            u: self.u.clone(),
+            p: [self.pres_c.as_slice(), &self.lift].concat(),
+        }
+    }
+}
+
 pub(super) fn d6_dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
@@ -367,6 +388,18 @@ pub(super) fn strain_fields(ops: &Operators, u: &DVector<f64>) -> Fields {
         })
         .collect();
     Fields { shear, d }
+}
+
+/// `G` and its range-space factorization, built on the first primal–dual solve of this
+/// geometry.
+pub(super) fn pd_metric(ops: &Operators) -> Result<&(DMatrix<f64>, RangeSolve), SimError> {
+    if let Some(m) = ops.pd_metric.get() {
+        return Ok(m);
+    }
+    let _span = super::timing::span("pd_metric");
+    let metric = assemble_k(ops, &vec![1.0; ops.vol.pts.len()]);
+    let rs = factor_range(ops, &metric)?;
+    Ok(ops.pd_metric.get_or_init(|| (metric, rs)))
 }
 
 pub(super) fn assemble_k(ops: &Operators, eta: &[f64]) -> DMatrix<f64> {
@@ -460,7 +493,7 @@ pub fn solve(
     ld: &Loads,
     prm: &StokesParams,
     m: &Material,
-    guess: Option<&[f64]>,
+    guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
     match prm.solver.as_str() {
         "picard" => solve_picard(ops, ld, prm, m, guess),

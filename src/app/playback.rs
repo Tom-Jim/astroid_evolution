@@ -26,6 +26,8 @@ pub struct VisMode {
     /// Interior density cutaway, and the plane offset from the centre (view units).
     pub interior: bool,
     pub cut_offset: f32,
+    /// Spin axis and rotation gizmos.
+    pub spin_axis: bool,
 }
 
 impl Default for VisMode {
@@ -34,6 +36,7 @@ impl Default for VisMode {
             mode: 4,
             interior: false,
             cut_offset: 0.0,
+            spin_axis: true,
         }
     }
 }
@@ -62,6 +65,9 @@ pub struct Playback {
     pub faces: Vec<[u32; 3]>,
     pub bulk: f32,
     pub rho_range: [f32; 2],
+    /// Spin rate of the frame on screen (rad/s) and its largest radius (view units).
+    pub omega: f32,
+    pub reach: f32,
     cores_gpu: Vec<[f32; 4]>,
     runout_gpu: Vec<[f32; 4]>,
     surface_gpu: Vec<[f32; 4]>,
@@ -88,6 +94,8 @@ impl Default for Playback {
             faces: Vec::new(),
             bulk: 0.0,
             rho_range: [0.0, 1.0],
+            omega: 0.0,
+            reach: 0.0,
             cores_gpu: vec![[0.0; 4]; 3],
             runout_gpu: vec![[0.0; 4]],
             surface_gpu: vec![[0.0; 4]],
@@ -172,6 +180,11 @@ pub fn show(play: &mut Playback, snap: StepSnapshot) {
 }
 
 fn adopt(play: &mut Playback, snap: StepSnapshot) {
+    let reach = snap
+        .position_to
+        .iter()
+        .map(|p| Vec3::from_array(*p).length())
+        .fold(0.0, f32::max);
     let same = play.generation > 0 && play.from.position.len() == snap.position_to.len();
     let from = if same {
         mix_key(&play.from, &play.to, smoothstep(play.tau), play.fade)
@@ -201,6 +214,8 @@ fn adopt(play: &mut Playback, snap: StepSnapshot) {
     play.stream_gpu = pack_stream(&snap.stream);
     play.bulk = snap.bulk;
     play.rho_range = snap.rho_range;
+    play.omega = snap.omega as f32;
+    play.reach = reach;
     play.cores_gpu = snap.cores;
     play.runout_gpu = if snap.runout.is_empty() {
         vec![[0.0; 4]]

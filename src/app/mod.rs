@@ -2,6 +2,7 @@
 //! playback snapshot; the shader morphs radii and colours the surface fields.
 
 pub mod bridge;
+pub mod gizmo;
 pub mod history;
 pub mod material;
 pub mod pan_orbit_input;
@@ -72,6 +73,7 @@ impl Plugin for AsteroidPlugin {
                     )
                         .chain(),
                 )
+                .add_systems(Update, gizmo::draw_spin.after(playback::advance_playback))
                 .add_systems(Last, ui::stop_on_exit);
             #[cfg(target_arch = "wasm32")]
             app.add_systems(Startup, ui::spawn_wire.after(ui::spawn_scene))
