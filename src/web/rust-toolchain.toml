@@ -1,0 +1,6 @@
+# The browser build only (Trunk runs Cargo from this directory): wasm threads need the
+# standard library rebuilt with atomics, which only nightly can do. The desktop app,
+# the command-line tools and the tests build from the repository root on stable.
+[toolchain]
+channel = "nightly"
+components = ["rust-src"]

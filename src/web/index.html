@@ -6,6 +6,7 @@
   <title>Asteroid Evolution</title>
   <base data-trunk-public-url />
   <link data-trunk rel="copy-dir" href="../../dist/.stage/assets/projects" data-target-path="assets/projects" />
+  <link data-trunk rel="copy-dir" href="../../dist/.stage/cache" data-target-path="cache" />
   <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/ryugu.glb" data-target-path="assets/models" />
   <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/Phobos.glb" data-target-path="assets/models" />
   <link data-trunk rel="copy-file" href="../../dist/.stage/assets/models/Deimos.glb" data-target-path="assets/models" />
@@ -41,6 +42,6 @@
   <!-- wasm-opt validates against the MVP unless told otherwise; these are the features
        rustc enables for wasm32-unknown-unknown (`rustc --print cfg`), plus SIMD128 from
        .cargo/config.toml. -->
-  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="3" data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-multivalue --enable-mutable-globals --enable-nontrapping-float-to-int --enable-reference-types --enable-sign-ext --enable-simd" data-bindgen-target="web" />
+  <link data-trunk rel="rust" href="../../Cargo.toml" data-target-name="astroid_evolution" data-cargo-no-default-features data-cargo-features="tier2,bevy-web" data-wasm-opt="3" data-wasm-opt-params="--enable-bulk-memory --enable-bulk-memory-opt --enable-multivalue --enable-mutable-globals --enable-nontrapping-float-to-int --enable-reference-types --enable-sign-ext --enable-simd --enable-threads" data-bindgen-target="web" />
 </body>
 </html>

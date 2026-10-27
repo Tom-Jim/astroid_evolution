@@ -79,8 +79,14 @@ self.onmessage = async (event) => {
   port = event.data.port;
   installBridge();
   try {
-    const { default: init, install_asset, worker_main, enable_timing } = await import(event.data.module);
+    const pkg = await import(event.data.module);
+    const { default: init, install_asset, worker_main, enable_timing } = pkg;
     await init({ module_or_path: event.data.wasm });
+    // Rayon threads for this worker's CPU work (a threaded build exports the pool). The
+    // page and the GPU worker keep one thread each.
+    if (pkg.initThreadPool) {
+      await pkg.initThreadPool(Math.max(1, (navigator.hardwareConcurrency || 2) - 1));
+    }
     if (event.data.timing) {
       enable_timing();
     }

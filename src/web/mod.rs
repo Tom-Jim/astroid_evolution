@@ -12,8 +12,8 @@ mod host;
 mod wire;
 
 pub use host::{
-    boot, call_gpu, deliver, prepare_viewer, set_pause_flag, set_quit_flag, spawn_evolution,
-    worker_main,
+    boot, cache_header, cache_name, call_gpu, deliver, prepare_viewer, set_pause_flag, set_quit_flag,
+    spawn_evolution, worker_main,
 };
 
 static WORKER_MESH: AtomicBool = AtomicBool::new(false);

@@ -1,0 +1,20 @@
+# Wasm threads for the browser build (`trunk serve` / `trunk build` from src/web).
+# Cargo merges this with the repository's .cargo/config.toml; the root flags (SIMD128,
+# the getrandom backend) still apply.
+[target.wasm32-unknown-unknown]
+# The linker does not infer shared memory from the features: shared, imported memory
+# with a maximum (the evolution worker needs more than 1 GiB), and the thread-local
+# storage symbols wasm-bindgen sets up for every thread.
+rustflags = [
+    "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals",
+    "-C", "link-arg=--shared-memory",
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--max-memory=4294967296",
+    "-C", "link-arg=--export=__wasm_init_tls",
+    "-C", "link-arg=--export=__tls_size",
+    "-C", "link-arg=--export=__tls_align",
+    "-C", "link-arg=--export=__tls_base",
+]
+
+[unstable]
+build-std = ["panic_abort", "std"]

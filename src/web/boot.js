@@ -92,7 +92,8 @@ async function start() {
     fail("Trunk did not publish the viewer bindings.");
     return;
   }
-  const { boot, install_asset, deliver, prepare_viewer, viewer_defaults, ui_command } = bindings;
+  const { boot, install_asset, deliver, prepare_viewer, viewer_defaults, ui_command, cache_name, cache_header, import_cache } =
+    bindings;
   const query = new URLSearchParams(location.search);
   // Files installed in this page's memory table; every new worker gets a copy.
   const installed = new Map();
@@ -124,6 +125,37 @@ async function start() {
       paths.push(snapshot);
     }
     await Promise.all(paths.map(install));
+  }
+
+  // Cache names already looked for; `?live` always computes.
+  const looked = new Set();
+  const MAGIC = "AECACHE1";
+
+  /** Install the cache file of a run when the site ships one (`src/app/cache.rs`). */
+  async function findCache(request) {
+    if (query.has("live")) {
+      return;
+    }
+    let name;
+    try {
+      name = cache_name(JSON.stringify(request));
+    } catch (err) {
+      console.warn("cache", err);
+      return;
+    }
+    if (looked.has(name)) {
+      return;
+    }
+    looked.add(name);
+    const response = await fetch(new URL(name, document.baseURI)).catch(() => null);
+    if (!response || !response.ok) {
+      return;
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    // A dev server may answer a missing file with the page itself.
+    if (new TextDecoder().decode(bytes.subarray(0, MAGIC.length)) === MAGIC) {
+      install_asset(name, bytes);
+    }
   }
 
   function onWorker(event) {
@@ -180,7 +212,23 @@ async function start() {
     },
     async restart(request) {
       await ensure(request.project, request.spin, request.snapshot);
+      await findCache(request);
       ui_command(JSON.stringify({ cmd: "restart", ...request }));
+    },
+    // Play a cache file the user picked; the run it holds replaces the current one.
+    async importCache(bytes) {
+      const run = JSON.parse(cache_header(bytes));
+      await ensure(run.project, run.spin, run.snapshot);
+      import_cache(bytes);
+    },
+    // An exported cache file, as a download. The bytes are a view of wasm memory.
+    download(name, bytes) {
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "application/octet-stream" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
     },
     startWorker(config) {
       // A new run gets new workers and a new buffer; the old ones stop mid-step.
@@ -236,12 +284,9 @@ async function start() {
   const snapshot = query.get("snapshot");
   const maxSteps = query.get("max_steps");
   await ensure(project, spin, snapshot);
-  const config = JSON.stringify({
-    project,
-    spin,
-    snapshot,
-    max_steps: maxSteps ? Number(maxSteps) : null,
-  });
+  const request = { project, spin, snapshot, max_steps: maxSteps ? Number(maxSteps) : null };
+  await findCache(request);
+  const config = JSON.stringify(request);
   status.textContent = "Decoding the mesh on the GPU…";
   compiledWasm().catch(fail);
   await prepare_viewer(config);

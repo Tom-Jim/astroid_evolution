@@ -37,6 +37,9 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = asteroid, js_name = waitGate)]
     fn wait_gate_js() -> u32;
+
+    #[wasm_bindgen(js_namespace = asteroid, js_name = download)]
+    fn download(name: &str, bytes: &[u8]);
 }
 
 #[derive(serde::Deserialize)]
@@ -77,6 +80,10 @@ pub fn boot(config_json: &str) {
     match load_config(config_json) {
         Ok(config) => {
             crate::app::bridge::set_sink(status_js);
+            crate::app::bridge::set_saver(|name, bytes| {
+                download(name, bytes);
+                Ok(format!("downloaded {name}"))
+            });
             crate::app::run_viewer(config)
         }
         Err(err) => {
@@ -84,6 +91,33 @@ pub fn boot(config_json: &str) {
             note(&err);
         }
     }
+}
+
+/// The cache file the page looks for before it computes a run (`app::cache::name`).
+/// The project of the request is installed already.
+pub fn cache_name(request_json: &str) -> Result<String, String> {
+    let request: crate::app::bridge::RunRequest =
+        serde_json::from_str(request_json).map_err(|err| format!("run request: {err}"))?;
+    let mut config = AppConfig::load(
+        std::path::Path::new(&request.project),
+        &request.spin,
+        request.max_steps,
+        request.snapshot.map(PathBuf::from),
+    )?;
+    config.apply_overrides(&request.overrides)?;
+    Ok(crate::app::cache::name(&config, std::path::Path::new("")))
+}
+
+/// The run request of a cache file, so the page can install what the run needs.
+pub fn cache_header(bytes: &[u8]) -> Result<String, String> {
+    let (header, _) = crate::app::cache::header(bytes)?;
+    Ok(serde_json::json!({
+        "project": header.project,
+        "spin": header.spin,
+        "snapshot": header.snapshot,
+        "max_steps": header.max_steps,
+    })
+    .to_string())
 }
 
 /// Hand the same run to a new worker (the page stops the previous one). Bevy keeps
@@ -217,6 +251,10 @@ pub fn set_quit_flag() {
 }
 
 pub fn call_gpu(payload: &[u8]) -> Result<Vec<u8>, String> {
+    // Only the evolution worker's own thread has the GPU bridge; a rayon pool thread does not.
+    if rayon::current_thread_index().is_some() {
+        return Err("a GPU call from a rayon pool thread: GPU work must stay on the worker thread".into());
+    }
     gpu_call(payload).map_err(js_error)
 }
 
