@@ -12,7 +12,8 @@ use crate::rheo::Material;
 
 use super::super::basis::{VelRows, contract_pressure};
 use super::super::params::StokesParams;
-use super::{Fields, Loads, Operators, d_apply, d6_dot, eta_eval};
+use super::super::evolving::dilatation::{Dilatational, deviator};
+use super::{Fields, Loads, Local, Operators, d_apply, d6_dot, eta_eval};
 
 /// `f = ρ g_eff + ∇·T_tide + η Δv + 2 D ∇η` at one point, with `∇η` by the chain rule
 /// through `γ̇`, `p̃` and `c` (§8.7). `p` is the unclipped pressure there.
@@ -20,14 +21,14 @@ use super::{Fields, Loads, Operators, d_apply, d6_dot, eta_eval};
 fn body_force(
     m: &Material,
     eps: f64,
-    (c, gc): (f64, DVec3),
+    l: &Local,
     (d6, lap, gd): (&[f64], &[f64], &[f64]),
     (ptil, p, gp): (f64, f64, DVec3),
     rho_g: DVec3,
     tide_div: DVec3,
 ) -> DVec3 {
     let shear = (2.0 * d6_dot(d6, d6)).sqrt();
-    let ev = eta_eval(m, c, shear, ptil, eps);
+    let ev = eta_eval(m, l, shear, ptil, eps);
     let mut grad_eta = DVec3::ZERO;
     if shear > 1e-300 {
         let gs: [f64; 3] =
@@ -37,9 +38,36 @@ fn body_force(
     if ptil > m.spec.p_min && p > m.spec.p_min {
         grad_eta += gp * ev.d_p;
     }
-    // The cohesion profile varies in space (§4.3a): ∂η/∂c ∇c.
-    grad_eta += gc * ev.d_c;
+    // The strength varies in space (§4.3a, Chapter 11): ∂η/∂c ∇c + ∂η/∂ξ ∇ξ.
+    grad_eta += l.gc * ev.d_c + l.gxi * ev.d_xi;
     rho_g + tide_div + DVec3::from_slice(lap) * ev.eta + d_apply(d6, grad_eta) * 2.0
+}
+
+/// The A-Ξ terms at one point (§11.4): `∇·τ_flow = η(Δv + ⅓∇(∇·v)) + 2D'∇η` with
+/// `v = v_σ + ∇χ`, so `Δv + ⅓∇(∇·v) = Δv_σ + (4/3)∇Δχ`; `∂D'` gains `dev ∂D(∇χ)`. With
+/// `strain`, the deviatoric strain of `∇χ` is added to `d6` as well.
+fn add_dilatation(dil: Option<&Dilatational>, x: DVec3, strain: bool, d6: &mut [f64; 6], lap: &mut [f64; 3], gd: &mut [f64; 18]) {
+    let Some(f) = dil else { return };
+    if strain {
+        let d = deviator(f.strain(x));
+        (0..6).for_each(|c| d6[c] += d[c]);
+    }
+    let l = f.laplacian(x) * (4.0 / 3.0);
+    (0..3).for_each(|a| lap[a] += l[a]);
+    let g = f.strain_gradient(x);
+    for k in 0..3 {
+        let d = deviator(std::array::from_fn(|c| g[6 * k + c]));
+        (0..6).for_each(|c| gd[6 * k + c] += d[c]);
+    }
+}
+
+/// Copies of the point slices, so that the A-Ξ terms can be added.
+fn point(d: &[f64], lap: &[f64], gd: &[f64]) -> ([f64; 6], [f64; 3], [f64; 18]) {
+    (
+        std::array::from_fn(|c| d[c]),
+        std::array::from_fn(|c| lap[c]),
+        std::array::from_fn(|c| gd[c]),
+    )
 }
 
 /// `v`, `D`, `Δv`, `∂D` of the coefficient vector `u` at every point of `rows`.
@@ -112,10 +140,9 @@ impl Pressure {
         prm: &StokesParams,
         m: &Material,
         eps: f64,
-        coh: &[f64],
-        gcoh: &[DVec3],
         u: &DVector<f64>,
         fields: &Fields,
+        dil: Option<&Dilatational>,
     ) -> Result<(), SimError> {
         let (np, nb) = (ops.vol.pts.len(), ops.bnd.pts.len());
         let p_min = m.spec.p_min;
@@ -123,15 +150,19 @@ impl Pressure {
         let [_, lap, gd] = strains(&ops.rows, u);
         let mut wf = DVector::zeros(3 * np);
         for p in 0..np {
+            // `fields.d` already holds the total deviatoric strain.
+            let (d6, mut lp, mut g) = point(
+                &fields.d.as_slice()[6 * p..6 * p + 6],
+                &lap.as_slice()[3 * p..3 * p + 3],
+                &gd.as_slice()[18 * p..18 * p + 18],
+            );
+            let mut d6 = d6;
+            add_dilatation(dil, ops.vol.pts[p], false, &mut d6, &mut lp, &mut g);
             let f = body_force(
                 m,
                 eps,
-                (coh[p], gcoh[p]),
-                (
-                    &fields.d.as_slice()[6 * p..6 * p + 6],
-                    &lap.as_slice()[3 * p..3 * p + 3],
-                    &gd.as_slice()[18 * p..18 * p + 18],
-                ),
+                &ld.strength.vol[p],
+                (&d6, &lp, &g),
                 (self.ptil[p], self.p_vals[p], self.gradp[p]),
                 ld.g_eff[p] * ops.vol.rho[p],
                 ops.vol.grho[p] * tide_div,
@@ -141,24 +172,29 @@ impl Pressure {
             }
         }
         let mut rhs = linalg::tr_mul(&ops.q_vol.grad, &wf);
-        // Boundary terms on the interior trace, depth 0: c = c_s and ∇c = −c'(0) n.
+        // Boundary terms on the interior trace, depth 0 (Strengths::profile).
         let [d, lap, gd] = strains(&ops.bnd_rows, u);
-        let (c_s, slope) = (m.cohesion_at(0.0), m.cohesion_slope(0.0));
         let (mut wq, mut wdn) = (DVector::zeros(nb), DVector::zeros(nb));
         for b in 0..nb {
             let n = ops.bnd.normals[b];
-            let d6 = &d.as_slice()[6 * b..6 * b + 6];
+            let (mut d6, mut lp, mut g) = point(
+                &d.as_slice()[6 * b..6 * b + 6],
+                &lap.as_slice()[3 * b..3 * b + 3],
+                &gd.as_slice()[18 * b..18 * b + 18],
+            );
+            add_dilatation(dil, ops.bnd.pts[b], true, &mut d6, &mut lp, &mut g);
+            let d6 = &d6[..];
             let ptil = self.bnd_p[b].max(p_min);
             let f = body_force(
                 m,
                 eps,
-                (c_s, n * -slope),
-                (d6, &lap.as_slice()[3 * b..3 * b + 3], &gd.as_slice()[18 * b..18 * b + 18]),
+                &ld.strength.bnd[b],
+                (d6, &lp, &g),
                 (ptil, self.bnd_p[b], self.bnd_gradp[b]),
                 ld.g_bnd[b] * ops.bnd_rho[b],
                 ops.bnd_grho[b] * tide_div,
             );
-            let p_gamma = traction(m, prm, eps, c_s, d6, ptil, &ld.tide_bnd[b], n);
+            let p_gamma = traction(m, prm, eps, &ld.strength.bnd[b], d6, ptil, &ld.tide_bnd[b], n);
             wq[b] = ops.bnd.w[b] * (ops.gamma_over_h * p_gamma - f.dot(n));
             wdn[b] = ops.bnd.w[b] * p_gamma;
         }
@@ -184,22 +220,27 @@ impl Pressure {
         m: &Material,
         eps: f64,
         u: &DVector<f64>,
+        dil: Option<&Dilatational>,
     ) -> Result<Vec<f64>, SimError> {
         let (pres_c, lift) = self.split(ops);
         let p_face = contract_pressure(&ops.surf, &ops.play, &ops.faces.pts, &pres_c, &lift);
         let d = ops.surf_d.contract(u.as_slice()).map_err(SimError::gpu)?;
-        let c_s = m.cohesion_at(0.0);
         Ok((0..ops.faces.pts.len())
             .map(|f| {
+                let mut d6: [f64; 6] = std::array::from_fn(|c| d[6 * f + c]);
+                if let Some(fl) = dil {
+                    let e = deviator(fl.strain(ops.faces.pts[f]));
+                    (0..6).for_each(|c| d6[c] += e[c]);
+                }
                 let ev = eta_eval(
                     m,
-                    c_s,
-                    (2.0 * d6_dot(&d[6 * f..6 * f + 6], &d[6 * f..6 * f + 6])).sqrt(),
+                    &ld.strength.face[f],
+                    (2.0 * d6_dot(&d6, &d6)).sqrt(),
                     p_face[f].max(m.spec.p_min),
                     eps,
                 );
                 let n = ops.faces.normals[f];
-                prm.p_ext + ld.tide_nn[f] + 2.0 * ev.eta * d_apply(&d[6 * f..6 * f + 6], n).dot(n)
+                prm.p_ext + ld.tide_nn[f] + 2.0 * ev.eta * d_apply(&d6, n).dot(n)
             })
             .collect())
     }
@@ -212,24 +253,25 @@ impl Pressure {
         ld: &Loads,
         m: &Material,
         eps: f64,
-        coh: &[f64],
-        gcoh: &[DVec3],
         u: &DVector<f64>,
         fields: &Fields,
+        dil: Option<&Dilatational>,
     ) -> f64 {
         let tide_div = tide_divergence(ld, m);
         let [_, lap, gd] = strains(&ops.rows, u);
         let (mut num, mut den) = (0.0, 0.0);
         for p in 0..ops.vol.pts.len() {
+            let (mut d6, mut lp, mut g) = point(
+                &fields.d.as_slice()[6 * p..6 * p + 6],
+                &lap.as_slice()[3 * p..3 * p + 3],
+                &gd.as_slice()[18 * p..18 * p + 18],
+            );
+            add_dilatation(dil, ops.vol.pts[p], false, &mut d6, &mut lp, &mut g);
             let f = body_force(
                 m,
                 eps,
-                (coh[p], gcoh[p]),
-                (
-                    &fields.d.as_slice()[6 * p..6 * p + 6],
-                    &lap.as_slice()[3 * p..3 * p + 3],
-                    &gd.as_slice()[18 * p..18 * p + 18],
-                ),
+                &ld.strength.vol[p],
+                (&d6, &lp, &g),
                 (self.ptil[p], self.p_vals[p], self.gradp[p]),
                 ld.g_eff[p] * ops.vol.rho[p],
                 ops.vol.grho[p] * tide_div,
@@ -252,12 +294,12 @@ fn traction(
     m: &Material,
     prm: &StokesParams,
     eps: f64,
-    c: f64,
+    l: &Local,
     d6: &[f64],
     ptil: f64,
     tide: &[f64; 6],
     n: DVec3,
 ) -> f64 {
-    let ev = eta_eval(m, c, (2.0 * d6_dot(d6, d6)).sqrt(), ptil, eps);
+    let ev = eta_eval(m, l, (2.0 * d6_dot(d6, d6)).sqrt(), ptil, eps);
     prm.p_ext + super::super::mechanics::quad_form(*tide, n) + 2.0 * ev.eta * d_apply(d6, n).dot(n)
 }

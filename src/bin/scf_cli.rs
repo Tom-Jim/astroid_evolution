@@ -82,6 +82,9 @@ enum Command {
         max_steps: Option<usize>,
         #[arg(long)]
         until: Option<f64>,
+        /// Evaluate the deep state on every step instead of reusing it within the lag budget.
+        #[arg(long)]
+        no_lag: bool,
         #[arg(long)]
         out_dir: PathBuf,
         /// Write `checkpoint.json` every N steps.
@@ -311,6 +314,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
             relax_first,
             max_steps,
             until,
+            no_lag,
             out_dir,
             checkpoint_every,
             quiet,
@@ -365,7 +369,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
             let ck = out_dir.join("checkpoint.json");
             let n_vertices = state.body.topo.n_vertices();
             let n_faces = state.body.topo.n_faces();
-            let opts = RunOptions { max_steps, until };
+            let opts = RunOptions { max_steps, until, lag: !no_lag };
             timing::set_phase("step");
             let mut obs =
                 |r: &StepRecord, s: &State, _fields: &StepFields| -> Result<(), SimError> {
@@ -529,11 +533,13 @@ fn run(cli: Cli) -> Result<(), SimError> {
             let state = initial_state(&p, snapshot.as_deref())?;
             let mut fwd = Forward::bind(&state.body, p.g)?;
             let m = mechanics::evaluate(
+                &mut Default::default(),
                 &p,
                 &state.body,
                 &mut fwd,
                 Loading { omega, tide: 0.0 },
                 None,
+                Default::default(),
             )?;
             let dep = departure(
                 &fwd.moments,

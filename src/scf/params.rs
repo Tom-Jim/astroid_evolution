@@ -12,6 +12,7 @@ use crate::common::math::DVec3;
 use crate::rheo::{Material, MaterialSpec, SolverSpec};
 
 use super::cores::CoreParams;
+use super::evolving::{DamageParams, DilatancyParams, MarkerParams, SpinLawParams, ThermalParams};
 use crate::common::error::SimError;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -242,6 +243,17 @@ struct ProjectFile {
     geometry: GeometryParams,
     relief: ReliefParams,
     cores: CoreParams,
+    /// Chapter 11 switches: an absent section is the hypothesis off.
+    #[serde(default)]
+    spin_law: Option<SpinLawParams>,
+    #[serde(default)]
+    thermal: Option<ThermalParams>,
+    #[serde(default)]
+    markers: Option<MarkerParams>,
+    #[serde(default)]
+    damage: Option<DamageParams>,
+    #[serde(default)]
+    dilatancy: Option<DilatancyParams>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -264,6 +276,16 @@ pub struct Project {
     pub relief: ReliefParams,
     /// Lagrangian transport and refit of the density cores (§9.10).
     pub cores: CoreParams,
+    /// A-L (§11.7): spin from the angular momentum; `None` keeps the exogenous table.
+    pub spin_law: Option<SpinLawParams>,
+    /// A-Θ (§11.6): thermal fatigue of the surface skin and the radiative torque.
+    pub thermal: Option<ThermalParams>,
+    /// The state markers of §11.1–11.2, required by A-ϖ and A-Ξ.
+    pub markers: Option<MarkerParams>,
+    /// A-ϖ (§11.5): damage of the cohesion.
+    pub damage: Option<DamageParams>,
+    /// A-Ξ (§11.3–11.4): rate-type dilatancy.
+    pub dilatancy: Option<DilatancyParams>,
     pub base_dir: PathBuf,
 }
 
@@ -308,8 +330,35 @@ impl Project {
     pub fn parse(text: &str, base_dir: PathBuf) -> Result<Self, SimError> {
         let f: ProjectFile = toml::from_str(text)
             .map_err(|e| SimError::model_not_closed(format!("project file: {e}")))?;
-        let material = Material::new(f.material, f.solver)?;
+        let mut material = Material::new(f.material, f.solver)?;
         f.cores.validate()?;
+        if let Some(s) = &f.spin_law {
+            s.validate()?;
+            if s.torque == "radiative" && f.thermal.is_none() {
+                return Err(SimError::model_not_closed(
+                    "spin_law.torque = \"radiative\" needs the [thermal] section (A-Θ)",
+                ));
+            }
+        }
+        if let Some(t) = &f.thermal {
+            t.validate()?;
+        }
+        if let Some(d) = &f.damage {
+            d.validate()?;
+        }
+        if let Some(d) = &f.dilatancy {
+            d.validate(material.spec.mu_s)?;
+            material.dilatancy = Some([d.k * d.d_nu, d.i_nu]);
+        }
+        match &f.markers {
+            Some(m) => m.validate()?,
+            None if f.damage.is_some() || f.dilatancy.is_some() => {
+                return Err(SimError::model_not_closed(
+                    "[damage] and [dilatancy] need the [markers] section (§11.1)",
+                ));
+            }
+            None => {}
+        }
         positive("gravity.g", f.gravity.g)?;
         let b = &f.body;
         if b.level > 6 {
@@ -451,6 +500,11 @@ impl Project {
             geometry: f.geometry,
             relief: f.relief,
             cores: f.cores,
+            spin_law: f.spin_law,
+            thermal: f.thermal,
+            markers: f.markers,
+            damage: f.damage,
+            dilatancy: f.dilatancy,
             base_dir,
         })
     }

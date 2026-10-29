@@ -18,7 +18,7 @@ use crate::common::math::DVec3;
 
 use super::body::{Body, Topology};
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
-use super::mechanics::{face_node, quad_form};
+use super::mechanics::{FaceLaw, face_node, quad_form};
 use super::params::Project;
 use super::socp::{Kind, SocpInput, mass_jacobian, solve};
 use crate::common::error::SimError;
@@ -216,7 +216,7 @@ pub struct SweepRecord {
     pub socp_iterations: u32,
     /// Vertices free in this sweep (incident to a supercritical face, not crater-locked).
     pub n_active: usize,
-    /// Metal-PDHG solve time, in seconds.
+    /// Cone solve time, in seconds.
     pub socp_seconds: f64,
     pub dropped_overhang: usize,
     pub mass_residual: f64,
@@ -250,6 +250,7 @@ pub fn slope_state(
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
+    laws: Option<&[FaceLaw]>,
 ) -> Result<SlopeState, SimError> {
     fwd.eval_faces(body)?;
     let faces = body.face_geometry();
@@ -260,7 +261,7 @@ pub fn slope_state(
             let g = effective_gravity(fwd.face.grad_u[f], x, load);
             let tide = deviator(hessian_w(fwd.face.hess_u[f], load)).map(|v| m.tide_coef * v);
             let p = project.stokes.p_ext + quad_form(tide, n);
-            (g, face_node(m, x, n, DVec3::ZERO, &[0.0; 6], g, tide, p))
+            (g, face_node(m, x, n, DVec3::ZERO, &[0.0; 6], g, tide, p, laws.map_or_else(|| FaceLaw::intact(m), |l| l[f]), 0.0))
         })
         .collect();
     Ok(SlopeState {
@@ -354,7 +355,7 @@ pub fn relax(
     let mut fwd = Forward::bind(&current, project.g)?;
     let mass_target = fwd.moments.mass;
     let mut sweeps = Vec::new();
-    let mut state = slope_state(project, &current, &mut fwd, load)?;
+    let mut state = slope_state(project, &current, &mut fwd, load, None)?;
     let measure = |st: &SlopeState| -> (f64, usize, usize) {
         let mut max_slack = 0.0_f64;
         let mut count = 0;
@@ -433,7 +434,6 @@ pub fn relax(
                 lower: &[],
                 upper: &[],
                 varrho: g.varrho,
-                warm: None,
             };
             // A cone solve that misses the KKT tolerance is a rejected attempt
             // (§10.4.3): the smaller box is a better-conditioned program.
@@ -471,14 +471,12 @@ pub fn relax(
                     continue;
                 }
             };
-            match accept(&bound, mass_target, g.eps_mass) {
-                Ok(resid) => {
-                    let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-                    break (built, bound, resid, out, dmax);
-                }
+            let (cand, mut cand_fwd, resid) = match accept(&bound, mass_target, g.eps_mass) {
+                Ok(resid) => (built, bound, resid),
                 Err(AcceptError::Geometry(why)) => {
                     last_failure = format!("geometry: {why}");
                     shrink(&mut trust, &mut retries, &last_failure)?;
+                    continue;
                 }
                 Err(AcceptError::Mass(resid)) => {
                     // §2.14: the nonlinear remainder is corrected in the mobile set.
@@ -502,15 +500,13 @@ pub fn relax(
                     .and_then(|cb| Forward::bind(&cb, project.g).map(|cf| (cb, cf)));
                     match corrected {
                         Ok((cb, cf)) => match accept(&cf, mass_target, g.eps_mass) {
-                            Ok(cr) => {
-                                let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-                                break (cb, cf, cr, out, dmax);
-                            }
+                            Ok(cr) => (cb, cf, cr),
                             Err(e) => {
                                 last_failure = format!(
                                     "mass residual {resid:.3e} after mobile-set correction ({e})"
                                 );
                                 shrink(&mut trust, &mut retries, &last_failure)?;
+                                continue;
                             }
                         },
                         Err(e) => {
@@ -518,15 +514,33 @@ pub fn relax(
                                 "mass residual {resid:.3e}; mobile-set correction was rejected ({e})"
                             );
                             shrink(&mut trust, &mut retries, &last_failure)?;
+                            continue;
                         }
                     }
                 }
+            };
+            // §2.8c: a sweep that raises the largest loose-face slack is rejected like a
+            // geometric failure; once the box is exhausted the relaxation stops where it is.
+            let cand_state = slope_state(project, &cand, &mut cand_fwd, load, None)?;
+            let (cand_slack, _, _) = measure(&cand_state);
+            if cand_slack > max_slack {
+                if trust * g.trust_shrink < g.trust_min * r_mean {
+                    break None;
+                }
+                last_failure = format!("largest slack rose from {max_slack:.4e} to {cand_slack:.4e}");
+                shrink(&mut trust, &mut retries, &last_failure)?;
+                continue;
             }
+            let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            break Some((cand, cand_fwd, cand_state, resid, out, dmax));
         };
-        let (b, f, resid, out, dmax) = accepted;
+        let Some((b, f, st, resid, out, dmax)) = accepted else {
+            stalled = true;
+            break;
+        };
         current = b;
         fwd = f;
-        state = slope_state(project, &current, &mut fwd, load)?;
+        state = st;
         sweeps.push(SweepRecord {
             sweep,
             max_slack,

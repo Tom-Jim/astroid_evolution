@@ -14,19 +14,25 @@ use crate::common::math::DVec3;
 use super::basis::{Want, contract_velocity_rays};
 use super::body::Body;
 use super::cores::{self, CoreReport, Quadrature};
+use super::evolving::spin::principal;
+use super::evolving::markers::{Driving, Reconstruction};
+use super::evolving::material;
+use super::evolving::{Evolving, MaterialReport, Markers, SpinLaw, SpinReport, StateField, Thermal, ThermalReport};
+use super::stokes::MaterialField;
+use super::surface::SurfaceIndex;
 use super::domain::volume_rule;
 use super::forward::Forward;
 use super::forward::Loading;
 use super::frame::{FrameReport, realign};
-use super::mechanics::{Mechanics, evaluate};
+use super::mechanics::{Evolution, Mechanics, evaluate};
 use super::params::Project;
 use super::relief::{Relief, clearance, relieve};
 use super::runout::RunoutReport;
 use super::settle::{SettleReport, settle};
-use super::socp::{Kind, SocpSeed, mass_jacobian};
+use super::socp::{Kind, mass_jacobian};
 use super::spin::SpinSchedule;
 use super::stokes::Guess;
-use super::transport::{surface_flow, transport};
+use super::transport::{advect, surface_flow, transport};
 use crate::common::error::SimError;
 
 /// Everything that defines a restartable state of the run.
@@ -41,6 +47,8 @@ pub struct State {
     pub frame_translation: DVec3,
     /// Velocity coefficients of the last solve (`u⁰` of the next step).
     pub velocity: Vec<f64>,
+    /// The state of Chapter 11.
+    pub evolving: Evolving,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -101,6 +109,9 @@ pub struct StepRecord {
     pub transport_fix: f64,
     pub rho_s_total: f64,
     pub frame_applied: bool,
+    /// The deep state (Stokes, classification, face chain) was reused from an earlier
+    /// step within the lag budget (§10.4.4).
+    pub lagged: bool,
     pub frame_angle_deg: f64,
     pub frame_mass_change: f64,
     /// `C_N` of Proposition 8.0.6 for the Nitsche pressure problem of this geometry.
@@ -115,6 +126,16 @@ pub struct StepRecord {
     pub relief_mass: f64,
     /// The surface settling after the creep step (step S).
     pub settle: SettleReport,
+    /// A-L (§11.7); inactive while the spin is the exogenous table. Inactive reports
+    /// are left out of the step log.
+    #[serde(skip_serializing_if = "SpinReport::inactive")]
+    pub spin: SpinReport,
+    /// A-Θ (§11.6); inactive without the thermal section.
+    #[serde(skip_serializing_if = "ThermalReport::inactive")]
+    pub thermal: ThermalReport,
+    /// The state markers, A-ϖ and A-Ξ (§11.1–11.5); inactive without them.
+    #[serde(skip_serializing_if = "MaterialReport::inactive")]
+    pub material: MaterialReport,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +143,9 @@ pub struct RunOptions {
     pub max_steps: Option<usize>,
     /// Stop at this time instead of `T_end` of the schedule.
     pub until: Option<f64>,
+    /// Reuse the deep state within the lag budget (§10.4.4 step 4+); `false` evaluates it
+    /// on every step (audit runs).
+    pub lag: bool,
 }
 
 pub struct RunResult {
@@ -203,6 +227,7 @@ pub fn start(project: &Project, body: Body) -> Result<(State, Forward), SimError
             frame_rotation: rot,
             frame_translation: trans,
             velocity: Vec::new(),
+            evolving: Evolving::default(),
         },
         fwd,
     ))
@@ -218,6 +243,25 @@ pub fn run(
     observer: &mut dyn FnMut(&StepRecord, &State, &StepFields) -> Result<(), SimError>,
 ) -> Result<RunResult, SimError> {
     spin.validate()?;
+    let law = SpinLaw::new(project.spin_law.as_ref(), spin)?;
+    if let Some(l) = &law {
+        l.init(&mut state.evolving.spin, state.t, &fwd.moments);
+    }
+    let mut thermal = project.thermal.as_ref().map(Thermal::new);
+    if thermal.is_some() && state.evolving.surface_damage.is_none() {
+        state.evolving.surface_damage = Some(vec![0.0; state.body.topo.n_vertices()]);
+    }
+    let rho_bulk = project.material.rho_bulk;
+    // §11.1: one marker per volume node of the initial body (A-ϖ, A-Ξ).
+    if project.markers.is_some() && state.evolving.markers.is_none() {
+        let s = &project.stokes;
+        let (pts, ..) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
+        state.evolving.markers = Some(Markers::seed(
+            &pts,
+            project.dilatancy.as_ref().map_or(0.0, |d| d.initial),
+            project.damage.as_ref().map_or(0.0, |d| d.initial),
+        ));
+    }
     let g = &project.geometry;
     let st = &project.step;
     let t_end = opts.until.unwrap_or_else(|| spin.t_end());
@@ -229,8 +273,13 @@ pub fn run(
         u: state.velocity.clone(),
         p: Vec::new(),
     });
-    let mut socp_seed: Option<SocpSeed> = None;
     let mut steps_done = 0usize;
+    // The last evaluated deep state, and whether the next step must evaluate a new one.
+    let mut deep: Option<Deep> = None;
+    let mut fresh_deep = true;
+    // Chapter 11 state follows the fresh fields every step, so it never lags.
+    let mut geometry_cache = super::mechanics::GeometryCache::default();
+    let lag_allowed = opts.lag && law.is_none() && thermal.is_none() && project.markers.is_none();
 
     while state.t < t_end - snap_tol {
         if let Some(m) = opts.max_steps {
@@ -249,15 +298,61 @@ pub fn run(
         let positions_from = state.body.positions.clone();
         let sample = spin.sample(state.t);
         let t_next = sample.t_next.min(t_end);
-        let omega = sample.omega;
+        // A-L: ω_n = L_n / I_1⁽ⁿ⁾ on the current (settled) inertia; else the table.
+        let omega = match &state.evolving.spin {
+            Some(s) if law.is_some() => SpinLaw::omega(s, &fwd.moments),
+            _ => sample.omega,
+        };
         state.omega = omega;
-
+        let r_star = state.body.r_star();
         // Steps 1–4: the deep state of the slow operator (§10.4.4).
         let load = Loading {
             omega,
             tide: spin.tide(state.t),
         };
-        let mech = evaluate(project, &state.body, &mut fwd, load, guess.as_ref())?;
+        let lagged = lag_allowed
+            && !fresh_deep
+            && deep.as_ref().is_some_and(|d| d.origin.within(&state.body, load, st.eps_omega));
+        // Released before a new evaluation: its operators are reused only when no one
+        // else holds them.
+        let kept = deep.take().filter(|_| lagged);
+        let mut origin = kept.as_ref().map(|d| d.origin.clone());
+        // What Chapter 11 contributes to the step; the default is the reference closure.
+        let (mech, fallbacks) = if let Some(d) = kept {
+            (d.mech, 0)
+        } else {
+            let index = super::mechanics::geometry(&mut geometry_cache, project, &state.body, &fwd)?.0;
+            let field = match (&state.evolving.markers, &project.markers) {
+                (Some(mk), Some(mp)) => Some(StateField::new(
+                    mk,
+                    &index,
+                    mp.radius * state.body.r_mean(),
+                    project.damage.is_some(),
+                    project.dilatancy.as_ref(),
+                )),
+                _ => None,
+            };
+            let ev = Evolution {
+                field: field.as_ref().map(|f| f as &dyn MaterialField),
+                surface_damage: state.evolving.surface_damage.as_deref(),
+            };
+            let mech = evaluate(&mut geometry_cache, project, &state.body, &mut fwd, load, guess.as_ref(), ev)?;
+            origin = Some(DeepOrigin::of(&state.body, load));
+            (mech, field.map_or(0, |f| f.fallbacks.into_inner()))
+        };
+        fresh_deep = false;
+        // A-Θ on the frozen shape: fatigue rates and the radiative torque of law L2.
+        let heat = thermal
+            .as_mut()
+            .map(|th| th.evaluate(&state.body, &mech.index, omega, fwd.moments.centroid));
+        let t_rad = heat.as_ref().map_or(0.0, |h| h.report.torque);
+        if let (Some(l), Some(s)) = (&law, state.evolving.spin.as_mut()) {
+            l.calibrate(s, state.t, t_rad)?;
+        }
+        let dt_theta = match (&thermal, &heat) {
+            (Some(th), Some(h)) => th.dt_bound(&h.rate, &state.body.rho_s, rho_bulk, omega),
+            _ => f64::INFINITY,
+        };
         let cl = &mech.class;
         let area = {
             let _span = super::timing::span("vertex_areas");
@@ -308,16 +403,40 @@ pub fn run(
             rheo_seconds: mech.rheo_stats.seconds,
             mass: fwd.moments.mass,
             centroid_offset: fwd.moments.centroid.length(),
+            thermal: heat.as_ref().map(|h| h.report).unwrap_or_default(),
+            material: MaterialReport {
+                active: state.evolving.markers.is_some(),
+                fallbacks,
+                ..MaterialReport::default()
+            },
             ..StepRecord::default()
         };
-        guess = Some(mech.sol.guess());
-        state.velocity = mech.sol.u.clone();
+        rec.lagged = lagged;
+        if !lagged {
+            guess = Some(mech.sol.guess());
+            state.velocity = mech.sol.u.clone();
+        }
 
         // Stage equilibrium (2.15(c)): the whole body in the rigid core (an interior
         // yielded pocket would move the cores even with a locked surface) and a settled
         // surface. The stage then jumps to its end.
         let all_core = cl.in_core.iter().all(|c| *c);
-        if n_mobile == 0 && spin.is_stages() && all_core {
+        // Proposition 11.14: the stage shortcut needs the slow state of Chapter 11 at rest.
+        let thermal_rest = heat.as_ref().is_none_or(|h| h.rate.iter().all(|r| *r == 0.0))
+            && project.thermal.as_ref().is_none_or(|p| {
+                p.healing == 0.0
+                    || state.evolving.surface_damage.as_ref().is_none_or(|d| d.iter().all(|v| *v == 0.0))
+            });
+        let material_rest = project.damage.as_ref().is_none_or(|d| {
+            d.healing == 0.0
+                || state.evolving.markers.as_ref().is_none_or(|m| m.damage.iter().all(|v| *v == 0.0))
+        });
+        let stage_jump = spin.is_stages()
+            && law.as_ref().is_none_or(SpinLaw::allows_stage_jump)
+            && thermal_rest
+            && material_rest;
+        if n_mobile == 0 && stage_jump && all_core {
+            let creep_m = fwd.moments;
             let settled = settle(
                 project,
                 load,
@@ -327,8 +446,8 @@ pub fn run(
                 &cl.f_delta,
                 t_next - state.t,
                 mass_target,
-                &mut socp_seed,
                 state.step,
+                Some(&mech.face_law),
             )?;
             let quiet = settled.report.sweeps == 0;
             state.body = settled.body;
@@ -341,7 +460,9 @@ pub fn run(
                 rec.dt_bound = "t_next";
                 rec.n_locked = nv;
                 rec.settle = settled.report;
+                let t0 = state.t;
                 advance_time(&mut state, spin, dt, t_next, snap_tol);
+                spin_step(&law, &mut state, t0, t_rad, omega, &creep_m, &fwd.moments, &mut rec)?;
                 state.step += 1;
                 steps_done += 1;
                 let fields = step_fields(
@@ -360,11 +481,60 @@ pub fn run(
             }
         }
 
+        // Definition 11.3: the driving rate on the volume nodes of this geometry, shared by
+        // Δt_ϖ, J_ν and the markers.
+        let driving = match (&state.evolving.markers, &project.markers) {
+            (Some(_), Some(mp)) => Some(Driving::new(
+                &mech.ops.vol.pts,
+                &mech.ops.vol.w,
+                &mech.class.plastic_rate,
+                &mech.class.inertial_vol,
+                mp.nonlocal_length(r_star, project.stokes.l_velocity),
+                mp.radius * r_mean,
+                &mech.index,
+            )),
+            _ => None,
+        };
+        // A-ϖ (§11.5): Δt_ϖ.
+        let dt_damage = match (&project.damage, &state.evolving.markers, &project.markers, &driving) {
+            (Some(d), Some(mk), Some(mp), Some(dr)) => {
+                let rec_d = Reconstruction::new(mk, &mech.index, mp.radius * r_mean);
+                material::dt_bound(d, mk, &rec_d, &dr.rate, &mech.ops.vol.pts)
+            }
+            _ => f64::INFINITY,
+        };
+        if project.damage.is_some() {
+            rec.material.dt_damage = dt_damage;
+        }
+        // A-Ξ (§11.4): the density ratio J_ν of the material over the step, and Δt_Ξ.
+        let dil_ratio = match (&project.dilatancy, &state.evolving.markers, &project.markers, &driving) {
+            (Some(d), Some(mk), Some(mp), Some(dr)) => Some(DilatationRatio::new(d, mk, mp, &mech, dr, r_mean)),
+            _ => None,
+        };
+        let dt_xi = match (&project.dilatancy, &mech.sol.dilatancy) {
+            (Some(d), Some(s)) if d.k > 0.0 && s.driving_max > 0.0 => {
+                d.theta_step / (d.k * d.range().hi * s.driving_max)
+            }
+            _ => f64::INFINITY,
+        };
+        if let Some(s) = &mech.sol.dilatancy {
+            rec.material.dilatation_defect = s.defect;
+            rec.material.dt_xi = dt_xi;
+        }
+
         // Step 6: step size of the slow operator.
-        let omega_bound = if spin.is_stages() {
-            f64::INFINITY
-        } else {
-            st.eps_omega * omega.max(st.omega_ref) / sample.omega_dot.abs().max(1e-30)
+        let omega_bound = match (&law, &state.evolving.spin) {
+            (Some(l), Some(s)) => {
+                let torque = l.torque(s, state.t, t_rad);
+                if torque == 0.0 {
+                    f64::INFINITY
+                } else {
+                    let i1 = principal(&fwd.moments).moments[0];
+                    SpinLaw::dt_bound(st.eps_omega, st.omega_ref, omega, i1, torque)
+                }
+            }
+            _ if spin.is_stages() => f64::INFINITY,
+            _ => st.eps_omega * omega.max(st.omega_ref) / sample.omega_dot.abs().max(1e-30),
         };
         rec.dt_omega = omega_bound;
         // Single-valued core map: τ ‖dev ∇v_adv‖_F ≤ θ_ch at every moving core, with the
@@ -393,13 +563,16 @@ pub fn run(
             let mut tries = 0;
             loop {
                 let mut r = CoreReport::default();
+                let tau = st.lambda * *dt;
+                let ratio = |m: &[DVec3]| dil_ratio.as_ref().map_or_else(|| vec![1.0; m.len()], |d| d.at(m, tau));
                 let ks = cores::predict(
                     &state.body.kernels,
-                    st.lambda * *dt,
+                    tau,
                     &v_adv,
                     &in_body,
                     probe_h,
                     &project.cores,
+                    dil_ratio.as_ref().map(|_| &ratio as &cores::Ratio),
                     &mut r,
                 );
                 tries += 1;
@@ -410,12 +583,15 @@ pub fn run(
                 *dt *= st.theta_char / r.strain_step;
             }
         };
-        let (creep_d, frep) = if n_mobile == 0 {
+        let (creep_d, frep, creep_m) = if n_mobile == 0 {
             // No yielded surface: the creep step leaves the surface in place, but an
             // interior yielded pocket still moves the cores (6b, 8c), and the frame is
             // re-aligned (8b).
             let bounds = [
                 ("core", dt_core),
+                ("thermal", dt_theta),
+                ("dilatancy", dt_xi),
+                ("damage", dt_damage),
                 ("omega", omega_bound),
                 ("dt_max", st.dt_max),
                 ("t_next", t_next - state.t),
@@ -430,11 +606,27 @@ pub fn run(
             }
             let advance = st.lambda * dt;
             let mut body = state.body.clone();
-            if core_rate > 0.0 {
+            if core_rate > 0.0 || dil_ratio.is_some() {
                 body.kernels = kernels_pred;
                 fwd.set_density(body.density()?)?;
-                close_cores(project, &mech, &state.body, &mut body, &mut fwd, mass_target, advance, &mut rec.cores)?;
+                close_cores(
+                    project,
+                    &mech,
+                    &state.body,
+                    &mut body,
+                    &mut fwd,
+                    mass_target,
+                    advance,
+                    dil_ratio.as_ref(),
+                    &mut rec.cores,
+                )?;
             }
+            if let (Some(th), Some(h)) = (&thermal, &heat) {
+                let dmg = state.evolving.surface_damage.as_mut().expect("A-Θ state");
+                rec.thermal.produced_mass =
+                    th.advance(advance, omega, &h.rate, &area, rho_bulk, dmg, &mut body.rho_s);
+            }
+            let creep_m = fwd.moments;
             let (body, frep, new_fwd) = realign(&body, Some(fwd), project.g, g, false)?;
             rec.kind = "spin-only";
             rec.dt = dt;
@@ -442,7 +634,7 @@ pub fn run(
             rec.dt_bound = name;
             state.body = body;
             fwd = new_fwd;
-            (vec![0.0; nv], frep)
+            (vec![0.0; nv], frep, creep_m)
         } else {
             // §10.4.1 writes θ h_Γ,min / max s, with θ ≤ 1/2. That product is a
             // sufficient bound. The accuracy it protects is local: a movable node
@@ -463,6 +655,9 @@ pub fn run(
                 ("core", dt_core),
                 ("cfl", dt_cfl),
                 ("characteristic", dt_char),
+                ("thermal", dt_theta),
+                ("dilatancy", dt_xi),
+                ("damage", dt_damage),
                 ("omega", omega_bound),
                 ("dt_max", st.dt_max),
                 ("t_next", t_next - state.t),
@@ -520,10 +715,25 @@ pub fn run(
             if cores_on {
                 fwd.set_density(density_cand.clone())?;
             }
-            let jac = {
+            let mut jac = {
                 let _span = super::timing::span("mass_jacobian");
                 mass_jacobian(&state.body, &density_cand)
             };
+            // A-Ξ: ρ_cand = ρ_K(θ_pred) − ρ_b (1 − J_ν). The deficit enters (DM)_i at the
+            // vertices and, integrated over the body, the target of the mass row (§11.4).
+            let mut cone_target = mass_target;
+            if let Some(r) = &dil_ratio {
+                let tau = st.lambda * dt;
+                let bulk = state.body.bulk;
+                let jv = r.arriving(&state.body.positions, tau);
+                let av = state.body.area_vectors();
+                for i in 0..nv {
+                    jac[i] -= bulk * (1.0 - jv[i]) * av[i].length();
+                }
+                let vol = &mech.ops.vol;
+                let jq = r.arriving(&vol.pts, tau);
+                cone_target += bulk * vol.w.iter().zip(&jq).map(|(w, j)| w * (1.0 - j)).sum::<f64>();
+            }
             // Clearance rows of (G4): −θ_g t⁻ ≤ d ≤ θ_g t⁺ along the vertex normals, with
             // t^± the distance to the next crossing of Γ (two first-hit queries).
             let (lower, upper) = clearance(
@@ -547,12 +757,12 @@ pub fn run(
                 jac: &jac,
                 lower: &lower,
                 upper: &upper,
-                mass_target,
+                mass_target: cone_target,
                 scale: st.lambda,
                 routing: None,
                 step: state.step,
             };
-            let rel = relieve(&relief, &fwd, &mut socp_seed)?;
+            let rel = relieve(&relief, &fwd)?;
             rec.trust = rel.trust;
             rec.trust_retries = rel.retries;
             rec.cone_unresolved = rel.unresolved;
@@ -578,9 +788,18 @@ pub fn run(
             rec.transport_fix = fix;
             let mut body = rel.body;
             body.rho_s = rho_s;
+            // A-Θ over λΔt: ϖ_Γ moves with the slipping rock surface (§11.6), then the
+            // surface damage and the shielded production (Proposition 11.11).
+            if let (Some(th), Some(h)) = (&thermal, &heat) {
+                let dmg = state.evolving.surface_damage.as_mut().expect("A-Θ state");
+                let rock = surface_flow(&state.body, &cl.normal, &cl.v_sl, &yielded);
+                *dmg = advect(&state.body, &rock, dmg, rec.advance);
+                rec.thermal.produced_mass =
+                    th.advance(rec.advance, omega, &h.rate, &area_new, rho_bulk, dmg, &mut body.rho_s);
+            }
             let mut new_fwd = rel.fwd;
             // 8c: Levels 1 and 2 of the core transport (§9.10.4–5).
-            if cores_on {
+            if cores_on || dil_ratio.is_some() {
                 close_cores(
                     project,
                     &mech,
@@ -589,16 +808,44 @@ pub fn run(
                     &mut new_fwd,
                     mass_target,
                     rec.advance,
+                    dil_ratio.as_ref(),
                     &mut rec.cores,
                 )?;
             }
             // 8b: frame re-alignment (only when triggered).
+            let creep_m = new_fwd.moments;
             let (body, frep, new_fwd) = realign(&body, Some(new_fwd), project.g, g, false)?;
             state.body = body;
             fwd = new_fwd;
-            (creep_d, frep)
+            (creep_d, frep, creep_m)
         };
+        // 8a+ (§11.1): the markers move along v_adv with the exact state update at the
+        // midpoints (Propositions 11.5, 11.9), then follow the rigid motion of 8b.
+        if let (Some(mk), Some(mp), Some(dr)) = (state.evolving.markers.as_mut(), &project.markers, &driving) {
+            let rate = |pts: &[DVec3]| {
+                let (g, ic) = dr.at(pts);
+                let nu_c = ic
+                    .iter()
+                    .map(|i| project.dilatancy.as_ref().map_or(0.0, |d| d.nu_c(*i)))
+                    .collect();
+                (g, nu_c)
+            };
+            material::advance(
+                mk,
+                rec.advance,
+                &|p| advection(&mech, p),
+                &rate,
+                project.damage.as_ref(),
+                project.dilatancy.as_ref(),
+            );
+            if frep.applied {
+                mk.realign(frep.rotation, frep.translation);
+            }
+            rec.material.ell_ratio = mp.nonlocal;
+        }
         rec.frame_applied = frep.applied;
+        // A realignment moves every vertex: the next step evaluates afresh.
+        fresh_deep |= frep.applied;
         rec.frame_angle_deg = frep.angle_deg;
         rec.frame_mass_change = frep.mass_change;
         if frep.applied {
@@ -607,8 +854,6 @@ pub fn run(
             state.frame_translation = trans;
             guess = None;
             state.velocity.clear();
-            // The seed is indexed by vertex, and realignment keeps the vertices, so it
-            // stays a warm start for the next cone.
             mass_target = fwd.moments.mass;
         }
 
@@ -622,8 +867,8 @@ pub fn run(
             &cl.f_delta,
             rec.advance,
             mass_target,
-            &mut socp_seed,
             state.step,
+            Some(&mech.face_law),
         )?;
         state.body = settled.body;
         fwd = settled.fwd;
@@ -646,11 +891,22 @@ pub fn run(
             (0..nv).map(|i| a[i] * state.body.rho_s[i]).sum()
         };
         rec.settle = settled.report;
+        rec.thermal.max_surface_damage = state
+            .evolving
+            .surface_damage
+            .as_ref()
+            .map_or(0.0, |d| d.iter().copied().fold(0.0, f64::max));
         let moved = n_mobile > 0 || rec.settle.sweeps > 0;
         let d_normal: Vec<f64> = creep_d.iter().zip(&settled.d_normal).map(|(c, s)| c + s).collect();
+        // S7 (§11.1): marker maintenance on the settled geometry.
+        if let (Some(mk), Some(mp)) = (state.evolving.markers.as_mut(), &project.markers) {
+            maintain_markers(project, mp, mk, &state.body, &fwd, &yielded, &d_normal, &mut rec.material)?;
+        }
 
         // 9: advance time.
+        let t0 = state.t;
         advance_time(&mut state, spin, rec.advance, t_next, snap_tol);
+        spin_step(&law, &mut state, t0, t_rad, omega, &creep_m, &fwd.moments, &mut rec)?;
         state.step += 1;
         steps_done += 1;
         let fields = step_fields(
@@ -664,6 +920,7 @@ pub fn run(
             Some(&frep),
         );
         observer(&rec, &state, &fields)?;
+        deep = origin.map(|origin| Deep { mech, origin });
         records.push(rec);
     }
     let complete = state.t >= t_end - snap_tol;
@@ -672,6 +929,56 @@ pub fn run(
         records,
         complete,
     })
+}
+
+/// Largest vertex displacement since the deep state, as a fraction of the shortest edge,
+/// that still reuses it (§10.4.4): the lag error is then of the order of one explicit step.
+const LAG_THETA: f64 = 0.1;
+
+/// Where a deep state (Stokes solution, classification, face chain) was evaluated.
+#[derive(Clone)]
+struct DeepOrigin {
+    positions: Vec<DVec3>,
+    kernels: Vec<crate::common::density::CauchyKernel>,
+    load: Loading,
+    /// `θ_lag h_Γ,min` of that geometry.
+    budget: f64,
+}
+
+impl DeepOrigin {
+    fn of(body: &Body, load: Loading) -> Self {
+        let p = &body.positions;
+        let h_min = body
+            .topo
+            .faces
+            .iter()
+            .flat_map(|t| (0..3).map(move |e| (t[e] as usize, t[(e + 1) % 3] as usize)))
+            .map(|(a, b)| (p[a] - p[b]).length())
+            .fold(f64::INFINITY, f64::min);
+        Self { positions: p.clone(), kernels: body.kernels.clone(), load, budget: LAG_THETA * h_min }
+    }
+
+    /// The body, its density cores and the loads are still within the lag budget.
+    fn within(&self, body: &Body, load: Loading, eps_load: f64) -> bool {
+        let near = |a: f64, b: f64| (a - b).abs() <= eps_load * b.abs() || a == b;
+        near(load.omega, self.load.omega)
+            && near(load.tide, self.load.tide)
+            && body.positions.len() == self.positions.len()
+            && body.positions.iter().zip(&self.positions).all(|(x, x0)| (*x - *x0).length() <= self.budget)
+            && body.kernels.len() == self.kernels.len()
+            && body.kernels.iter().zip(&self.kernels).all(|(k, k0)| {
+                (k.center - k0.center).length() <= self.budget
+                    && (k.weight - k0.weight).abs() <= 1e-3 * k0.weight.abs()
+                    && k.metric.iter().zip(&k0.metric).all(|(m, m0)| (m - m0).abs() <= 1e-3 * m0.abs().max(1e-300))
+                    && k.alpha == k0.alpha
+            })
+    }
+}
+
+/// The deep state kept for the next step.
+struct Deep {
+    mech: Mechanics,
+    origin: DeepOrigin,
 }
 
 /// The masked slip velocity `v_adv = χ_Y (v − a − θ × x)` at arbitrary points (§9.10.2).
@@ -690,7 +997,10 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
             if !cl.movable_near(*x) {
                 return DVec3::ZERO;
             }
-            DVec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]) - cl.core_a - cl.core_theta.cross(*x)
+            // The total velocity, with the dilatational field of A-Ξ (§11.4).
+            DVec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]) + mech.sol.v_eps(*x)
+                - cl.core_a
+                - cl.core_theta.cross(*x)
         })
         .collect()
 }
@@ -699,7 +1009,9 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
 /// then, when the misfit or the closure exceeds its threshold, the refit.
 #[allow(clippy::too_many_arguments)]
 /// 8c: Levels 1 and 2 of the core transport (§9.10.4–5) on the new body, which carries
-/// the predicted cores; `fwd` is bound to it and gets the closed density.
+/// the predicted cores; `fwd` is bound to it and gets the closed density. Under A-Ξ
+/// the closure is the two-scalar fit of §11.4, which may rescale `ρ_b`, and Level 3 may
+/// spawn signed cores.
 #[allow(clippy::too_many_arguments)]
 fn close_cores(
     project: &Project,
@@ -709,16 +1021,24 @@ fn close_cores(
     fwd: &mut Forward,
     mass_target: f64,
     tau: f64,
+    ratio: Option<&DilatationRatio>,
     rep: &mut CoreReport,
 ) -> Result<(), SimError> {
     let _span = super::timing::span("core_refit");
-    let (ks, refit) = closed_cores(project, mech, old, body, fwd, mass_target, tau, rep)?;
+    let (bulk, ks, refit) = closed_cores(project, mech, old, body, fwd, mass_target, tau, ratio, rep)?;
+    body.bulk = bulk;
     body.kernels = ks;
     fwd.set_density(body.density()?)?;
     if refit {
-        // The refit holds the quadrature mass only; close the exact mass again.
+        // The refit holds the quadrature mass only; close the exact mass again, on the
+        // cores, or on ρ_b when there is no core mass to scale.
         let bulk_mass = body.bulk * fwd.moments.volume;
-        cores::close_mass(&mut body.kernels, fwd.moments.mass, bulk_mass, mass_target);
+        let core = fwd.moments.mass - bulk_mass;
+        if body.kernels.is_empty() || core.abs() < 1e-12 * fwd.moments.mass.abs() {
+            body.bulk = (mass_target - core) / fwd.moments.volume;
+        } else {
+            cores::close_mass(&mut body.kernels, fwd.moments.mass, bulk_mass, mass_target);
+        }
         fwd.set_density(body.density()?)?;
     }
     Ok(())
@@ -733,23 +1053,172 @@ fn closed_cores(
     fwd: &Forward,
     mass_target: f64,
     tau: f64,
+    ratio: Option<&DilatationRatio>,
     rep: &mut CoreReport,
-) -> Result<(Vec<crate::common::density::CauchyKernel>, bool), SimError> {
+) -> Result<(f64, Vec<crate::common::density::CauchyKernel>, bool), SimError> {
+    use crate::common::density::CauchyDensity;
     let mut ks = new.kernels.clone();
-    let bulk_mass = new.bulk * fwd.moments.volume;
-    rep.xi = cores::close_mass(&mut ks, fwd.moments.mass, bulk_mass, mass_target);
+    let mut bulk = new.bulk;
     // Volume quadrature of V⁽ⁿ⁺¹⁾: the ray-segment rule of (G2).
     let s = &project.stokes;
     let (pts, w, _, _) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
     let quad = Quadrature { pts, w };
-    let target = cores::departure_density(&old.density()?, &quad, tau, &|p| advection(mech, p));
-    let closed = crate::common::density::CauchyDensity::try_new(new.bulk, ks.clone())?;
-    rep.e_rho = cores::misfit(&closed, &quad, &target);
-    let refit = rep.e_rho > project.cores.eps_rho || rep.xi.abs() > project.cores.eps_xi;
-    if refit {
-        ks = cores::refit(new.bulk, &ks, &quad, &target, &project.cores, rep);
+    let mut target = cores::departure_density(&old.density()?, &quad, tau, &|p| advection(mech, p));
+    match ratio {
+        Some(r) => {
+            // Level 2 target J_ν ρ_K(X_d) and the two-scalar Level 1 (§11.4).
+            let j = r.arriving(&quad.pts, tau);
+            target.iter_mut().zip(&j).for_each(|(t, j)| *t *= j);
+            let core_mass = fwd.moments.mass - bulk * fwd.moments.volume;
+            let (sb, sc) = cores::close_two(bulk, &ks, &quad, &target, fwd.moments.volume, core_mass, mass_target);
+            bulk *= sb;
+            ks.iter_mut().for_each(|k| k.weight *= sc);
+            rep.s_bulk = sb;
+            rep.s_core = sc;
+            rep.xi = sc - 1.0;
+        }
+        None => {
+            rep.xi = cores::close_mass(&mut ks, fwd.moments.mass, bulk * fwd.moments.volume, mass_target);
+        }
     }
-    Ok((ks, refit))
+    rep.e_rho = cores::misfit(&CauchyDensity::try_new(bulk, ks.clone())?, &quad, &target);
+    let mut refit = rep.e_rho > project.cores.eps_rho || rep.xi.abs() > project.cores.eps_xi;
+    if refit && !ks.is_empty() {
+        ks = cores::refit(bulk, &ks, &quad, &target, &project.cores, rep);
+        rep.e_rho = cores::misfit(&CauchyDensity::try_new(bulk, ks.clone())?, &quad, &target);
+    }
+    // Level 3 spawn (optional, A-Ξ): a signed core at the largest residual cluster, kept
+    // only when e_ρ drops by the configured factor and ρ_K stays positive at the nodes.
+    if let (Some(_), Some(d)) = (ratio, &project.dilatancy) {
+        while rep.spawned < d.spawn_max && rep.e_rho > project.cores.eps_rho {
+            let current = CauchyDensity::try_new(bulk, ks.clone())?;
+            let Some(k) = cores::spawn(&current, &quad, &target, d.spawn_alpha, d.spawn_scale) else { break };
+            let mut trial = ks.clone();
+            trial.push(k);
+            let mut r2 = rep.clone();
+            let trial = cores::refit(bulk, &trial, &quad, &target, &project.cores, &mut r2);
+            let dens = CauchyDensity::try_new(bulk, trial.clone())?;
+            let e = cores::misfit(&dens, &quad, &target);
+            if !(e < d.spawn_gain * rep.e_rho) || quad.pts.iter().any(|x| dens.rho(*x) <= 0.0) {
+                break;
+            }
+            ks = trial;
+            rep.e_rho = e;
+            rep.spawned += 1;
+            refit = true;
+        }
+    }
+    Ok((bulk, ks, refit))
+}
+
+/// The dilatational density ratio `J_ν` of A-Ξ on one step (Proposition 11.5): `ν` from
+/// the markers, the nonlocal driving rate and `ν_c(I_c)` of the classification.
+struct DilatationRatio<'a> {
+    d: &'a super::evolving::DilatancyParams,
+    rec: Reconstruction<'a>,
+    nu: Vec<f64>,
+    driving: &'a Driving<'a>,
+    mech: &'a Mechanics,
+}
+
+impl<'a> DilatationRatio<'a> {
+    fn new(
+        d: &'a super::evolving::DilatancyParams,
+        mk: &Markers,
+        mp: &super::evolving::MarkerParams,
+        mech: &'a Mechanics,
+        driving: &'a Driving<'a>,
+        r_mean: f64,
+    ) -> Self {
+        Self {
+            d,
+            rec: Reconstruction::new(mk, &mech.index, mp.radius * r_mean),
+            nu: mk.nu.clone(),
+            driving,
+            mech,
+        }
+    }
+
+    /// `J_ν` of the material whose step midpoints are `mid`, over `τ`.
+    fn at(&self, mid: &[DVec3], tau: f64) -> Vec<f64> {
+        let (fit, _) = self.rec.fit(mid, &[(&self.nu, self.d.range())]);
+        let (g, ic) = self.driving.at(mid);
+        fit[0]
+            .iter()
+            .zip(&g)
+            .zip(&ic)
+            .map(|((f, g), i)| self.d.exact_nu(f.value, self.d.nu_c(*i), tau * g) / f.value)
+            .collect()
+    }
+
+    /// `J_ν` of the material arriving at `pts` over `τ` (midpoints `x − τ/2 v_adv(x)`).
+    fn arriving(&self, pts: &[DVec3], tau: f64) -> Vec<f64> {
+        let v = advection(self.mech, pts);
+        let mid: Vec<DVec3> = pts.iter().zip(&v).map(|(x, v)| *x - *v * (0.5 * tau)).collect();
+        self.at(&mid, tau)
+    }
+}
+
+/// S7 of §11.1: delete, insert and merge markers on the settled body, and report the
+/// state ranges. A new point carries the deposit state when its closest vertex was
+/// locked and received a deposit at least as thick as the point's depth.
+#[allow(clippy::too_many_arguments)]
+fn maintain_markers(
+    project: &Project,
+    mp: &super::evolving::MarkerParams,
+    mk: &mut Markers,
+    body: &Body,
+    fwd: &Forward,
+    yielded: &[bool],
+    d_normal: &[f64],
+    rep: &mut MaterialReport,
+) -> Result<(), SimError> {
+    let index = SurfaceIndex::build(&body.positions, &body.topo.faces);
+    let s = &project.stokes;
+    let (nodes, ..) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
+    let deposit_at = |x: DVec3| {
+        let c = index.closest(x);
+        let v = body.topo.faces[c.face]
+            .map(|v| v as usize)
+            .into_iter()
+            .min_by(|a, b| (body.positions[*a] - x).length().total_cmp(&(body.positions[*b] - x).length()))
+            .expect("triangle");
+        !yielded[v] && d_normal[v] > 0.0 && c.dist2.sqrt() <= d_normal[v]
+    };
+    let state = (
+        project.dilatancy.as_ref().map_or(0.0, |d| d.deposit),
+        project.damage.as_ref().map_or(0.0, |d| d.deposit),
+    );
+    material::maintain(mk, &index, &nodes, mp.radius * body.r_mean(), mp.n_min, mp.n_max, state, &deposit_at, rep);
+    let n = mk.len().max(1) as f64;
+    rep.max_damage = mk.damage.iter().copied().fold(0.0, f64::max);
+    rep.mean_damage = mk.damage.iter().sum::<f64>() / n;
+    rep.nu_min = mk.nu.iter().copied().fold(f64::INFINITY, f64::min);
+    rep.nu_max = mk.nu.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if let Some(d) = &project.dilatancy {
+        rep.max_xi = mk.nu.iter().map(|n| (d.k * (n - d.nu_c0)).abs()).fold(0.0, f64::max);
+    }
+    Ok(())
+}
+
+/// Step 9+ under A-L: advance `L` over `[t0, state.t]` and read `ω` on the settled inertia.
+#[allow(clippy::too_many_arguments)]
+fn spin_step(
+    law: &Option<SpinLaw>,
+    state: &mut State,
+    t0: f64,
+    t_rad: f64,
+    omega_n: f64,
+    creep: &super::forward::Moments,
+    settled: &super::forward::Moments,
+    rec: &mut StepRecord,
+) -> Result<(), SimError> {
+    if let (Some(l), Some(s)) = (law, state.evolving.spin.as_mut()) {
+        let (omega, report) = l.finish(s, t0, state.t, t_rad, omega_n, creep, settled)?;
+        state.omega = omega;
+        rec.spin = report;
+    }
+    Ok(())
 }
 
 /// Advance the clock; the state then carries the spin of its own time, so a snapshot
@@ -760,37 +1229,6 @@ fn advance_time(state: &mut State, spin: &SpinSchedule, dt: f64, t_next: f64, to
         state.t = t_next;
     }
     state.omega = spin.sample(state.t).omega;
-}
-
-/// Slope promotion (§2.8c, hypothesis A-C4): the geometric mobile set and the promoted flags.
-///
-/// `yielded` is `χ_Y` of the classifier. Every vertex of a face whose repose slack exceeds
-/// `tol` that is not already yielded and carries loose material (`ρ_s > 0`) is promoted.
-/// The rule is local: a yielded vertex elsewhere on the body does not switch it off.
-/// A promoted vertex stays in the rigid core for creep, mode C, runout sources and the
-/// core advection; it only becomes a free variable of the slope cone, with `d_pred = 0`.
-pub fn slope_promotion(
-    faces: &[[u32; 3]],
-    yielded: &[bool],
-    slack: &[f64],
-    rho_s: &[f64],
-    tol: f64,
-) -> (Vec<bool>, Vec<bool>) {
-    let mut movable = yielded.to_vec();
-    let mut promoted = vec![false; yielded.len()];
-    for (tri, s) in faces.iter().zip(slack) {
-        if !(*s > tol) {
-            continue;
-        }
-        for &v in tri {
-            let i = v as usize;
-            if !yielded[i] && rho_s[i] > 0.0 {
-                movable[i] = true;
-                promoted[i] = true;
-            }
-        }
-    }
-    (movable, promoted)
 }
 
 /// Repetitions of the step-6b core prediction after a midpoint violation.

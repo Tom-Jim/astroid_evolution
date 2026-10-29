@@ -15,6 +15,7 @@ use bevy::prelude::*;
 use bevy::window::{CursorMoved, PrimaryWindow, WindowEvent};
 use serde::{Deserialize, Serialize};
 
+use crate::app::cache;
 use crate::app::pipeline::EvolutionPool;
 use crate::app::history::History;
 use crate::app::playback::{self, Playback, VisMode};
@@ -49,6 +50,8 @@ pub enum Command {
     },
     ResetView,
     Screenshot,
+    /// Save the timeline of the run as a cache file (`app::cache`).
+    ExportCache,
     /// Hold the view on stored step `index`; `None` follows the run again.
     Seek {
         #[serde(default)]
@@ -86,8 +89,13 @@ pub struct RunRequest {
 
 static INBOX: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 static POINTER: Mutex<Vec<Command>> = Mutex::new(Vec::new());
+/// Cache files to play, as read by the shell.
+static IMPORTS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 type Sink = Box<dyn Fn(&str) + Send + Sync>;
 static SINK: Mutex<Option<Sink>> = Mutex::new(None);
+/// Takes a file name and its bytes, and says where the file went.
+type Saver = Box<dyn Fn(&str, &[u8]) -> Result<String, String> + Send + Sync>;
+static SAVER: Mutex<Option<Saver>> = Mutex::new(None);
 
 /// Queue one JSON command for the next frame.
 pub fn send(json: &str) -> Result<(), String> {
@@ -105,14 +113,38 @@ pub fn set_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
     *SINK.lock().unwrap() = Some(Box::new(sink));
 }
 
+/// Where exported files go (a folder of the desktop, a download in the browser).
+/// Without one they are written under the data root.
+pub fn set_saver(saver: impl Fn(&str, &[u8]) -> Result<String, String> + Send + Sync + 'static) {
+    *SAVER.lock().unwrap() = Some(Box::new(saver));
+}
+
+/// Play a cache file on the next frame. The run it holds replaces the current one.
+pub fn import_cache(bytes: Vec<u8>) {
+    IMPORTS.lock().unwrap().push(bytes);
+}
+
 /// Directory `RunRequest` paths are relative to: the bundle's resources, `dist/.stage`,
 /// or the page root.
 #[derive(Resource, Clone, Default)]
 pub struct DataRoot(pub PathBuf);
 
-/// The last failed command, shown by the panels until the next one succeeds.
+/// The last failed command, or the file the last export wrote; the panels show it
+/// until the next command succeeds.
 #[derive(Resource, Default)]
-pub struct Notice(pub Option<String>);
+pub struct Notice {
+    pub text: Option<String>,
+    pub fault: bool,
+}
+
+impl Notice {
+    fn set(&mut self, outcome: Result<String, String>) {
+        (self.text, self.fault) = match outcome {
+            Ok(text) => (Some(text), false),
+            Err(text) => (Some(text), true),
+        };
+    }
+}
 
 /// Project keys the panels read back (and may override).
 pub const PARAMS: &[&str] = &[
@@ -139,11 +171,15 @@ pub struct Status {
     pub phase: Phase,
     pub status: String,
     pub notice: Option<String>,
+    /// The notice is a failure, not a report.
+    pub notice_fault: bool,
     pub project: String,
     pub mesh: String,
     pub mesh_unit: String,
     pub spin: String,
     pub snapshot: Option<String>,
+    /// The frames come from a cache file.
+    pub cached: bool,
     pub params: BTreeMap<String, f64>,
     pub stats: Option<FrameStats>,
     pub time_myr: Option<f64>,
@@ -206,11 +242,13 @@ pub fn status(
         phase: evolution.phase,
         status: evolution.status.clone(),
         notice: None,
+        notice_fault: false,
         project: config.project_path.clone(),
         mesh: config.mesh_path.clone(),
         mesh_unit: config.mesh_unit.clone(),
         spin: config.spin.clone(),
         snapshot: config.snapshot.as_ref().map(|p| p.display().to_string()),
+        cached: evolution.cached,
         params,
         stats,
         time_myr: stats.map(|s| s.time / MYR),
@@ -266,7 +304,8 @@ pub fn publish_status(
         playback.rho_range,
         views.iter().any(|w| w),
     );
-    out.notice = notice.0.clone();
+    out.notice = notice.text.clone();
+    out.notice_fault = notice.fault;
     let Ok(json) = serde_json::to_string(&out) else {
         return;
     };
@@ -319,32 +358,15 @@ pub fn apply_commands(
                 }
                 _ => {}
             },
-            Command::Restart(request) => {
-                match restart(&root.0, &request) {
-                    Ok((next, next_scene)) => {
-                        // The old worker stops at its next step gate; its channel is dropped.
-                        evolution.control.request_quit();
-                        *evolution = Evolution::default();
-                        *playback = Playback::default();
-                        history.clear();
-                        let positions = display_imported(
-                            &next_scene.vertices,
-                            next_scene.center,
-                            next_scene.scale,
-                        );
-                        for (_, mesh) in &views {
-                            if let Some(mut slot) = meshes.get_mut(&mesh.0) {
-                                *slot = imported_mesh(positions.clone(), &next_scene.faces);
-                            }
-                        }
-                        *config = next;
-                        *scene = next_scene;
-                        ui::start_worker(&mut evolution, &config, scene.scale, &pool);
-                        notice.0 = None;
-                    }
-                    Err(err) => notice.0 = Some(err),
+            Command::Restart(request) => match restart(&root.0, &request) {
+                Ok((next, next_scene)) => {
+                    replace_run(next, next_scene, &mut config, &mut scene, &mut evolution, &mut playback, &mut history, &mut meshes, &views);
+                    ui::start_run(&mut evolution, &mut history, &config, &root.0, scene.scale, &pool);
+                    notice.text = None;
                 }
-            }
+                Err(err) => notice.set(Err(err)),
+            },
+            Command::ExportCache => notice.set(export(&config, &root.0, &history)),
             Command::Layer { mode: layer } => mode.mode = layer.clamp(1, 5),
             Command::Interior { on, offset } => {
                 mode.interior = on;
@@ -383,6 +405,82 @@ pub fn apply_commands(
             Command::Pointer { .. } | Command::Wheel { .. } => {}
         }
     }
+    let imports = std::mem::take(&mut *IMPORTS.lock().unwrap());
+    // Only the last file of a frame is worth decoding.
+    if let Some(bytes) = imports.last() {
+        match import(&root.0, bytes) {
+            Ok((next, next_scene, cached)) => {
+                replace_run(next, next_scene, &mut config, &mut scene, &mut evolution, &mut playback, &mut history, &mut meshes, &views);
+                ui::play_cached(&mut evolution, &mut history, cached);
+                notice.text = None;
+            }
+            Err(err) => notice.set(Err(err)),
+        }
+    }
+}
+
+/// Stop the current run and load the scene of the next one.
+#[allow(clippy::too_many_arguments)]
+fn replace_run(
+    next: AppConfig,
+    next_scene: Scene,
+    config: &mut AppConfig,
+    scene: &mut Scene,
+    evolution: &mut Evolution,
+    playback: &mut Playback,
+    history: &mut History,
+    meshes: &mut Assets<Mesh>,
+    views: &Query<(Entity, &Mesh3d), With<SurfaceView>>,
+) {
+    // The old worker stops at its next step gate; its channel is dropped.
+    evolution.control.request_quit();
+    *evolution = Evolution::default();
+    *playback = Playback::default();
+    history.clear();
+    let positions = display_imported(&next_scene.vertices, next_scene.center, next_scene.scale);
+    for (_, mesh) in views {
+        if let Some(mut slot) = meshes.get_mut(&mesh.0) {
+            *slot = imported_mesh(positions.clone(), &next_scene.faces);
+        }
+    }
+    *config = next;
+    *scene = next_scene;
+}
+
+/// Write the timeline as the cache file of the run.
+fn export(config: &AppConfig, root: &std::path::Path, history: &History) -> Result<String, String> {
+    if history.is_empty() {
+        return Err("cache: no step to save yet".into());
+    }
+    let bytes = cache::encode(&cache::Header::of(config, root), history)?;
+    let name = cache::name(config, root);
+    match SAVER.lock().unwrap().as_ref() {
+        Some(save) => save(name.rsplit('/').next().unwrap_or(&name), &bytes),
+        None => {
+            let path = root.join(&name);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            Ok(path.display().to_string())
+        }
+    }
+}
+
+/// The run a cache file holds, with its scene, ready to play.
+fn import(root: &std::path::Path, bytes: &[u8]) -> Result<(AppConfig, Scene, History), String> {
+    let (header, cached) = cache::decode(bytes)?;
+    let request = RunRequest {
+        project: header.project,
+        spin: header.spin,
+        overrides: BTreeMap::new(),
+        snapshot: header.snapshot,
+        max_steps: header.max_steps,
+    };
+    let (mut next, next_scene) = restart(root, &request)?;
+    // The run used these values (its overrides included).
+    next.project_text = header.project_text;
+    Ok((next, next_scene, cached))
 }
 
 fn restart(root: &std::path::Path, request: &RunRequest) -> Result<(AppConfig, Scene), String> {

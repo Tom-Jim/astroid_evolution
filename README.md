@@ -28,15 +28,17 @@ src/
   rtfp/      Tier 1  RTFP gravity: ray integrals, Metal hardware ray tracing (software BVH on WebGPU)
   rheo/      μ(I) rheology and the friction-angle chain (GPU, double-single)
   scf/       Tier 2  quasi-static Stokes / Picard, yield classification, slope promotion and SOCP relief, Mode C,
-             rotating-frame runout of released regolith (Coriolis, μ(I), ballistic hops), inversion
+             rotating-frame runout of released regolith (Coriolis, μ(I), ballistic hops), inversion;
+             scf/evolving/ the optional state of mathstrict Chapter 11 (spin feedback, thermal fatigue,
+             damage, dilatancy)
   shsmooth/  spherical-harmonic mesh smoothing
   gpu/       wgpu compute executor (buffer pool, WESL shaders compiled by src/build.rs)
-  app/       Tier 3  Bevy view: playback, shaders, JSON bridge to the panels (bridge.rs)
+  app/       Tier 3  Bevy view: playback, shaders, JSON bridge to the panels (bridge.rs), cached runs (cache.rs)
   web/       browser side: page, evolution worker, GPU worker (SharedArrayBuffer)
   bin/       command-line tools scf-cli, rtfp-cli, rheo-cli, sh-cli
 src-tauri/   desktop shell: Tauri 2 window, Bevy renders natively under a transparent webview
 ui/          React + TypeScript control panels (plain HTML/CSS/SVG, no 3D library)
-dist/.stage/ projects, models, scenario catalog scenarios.json, reconstruction snapshots
+dist/.stage/ projects, models, scenario catalog scenarios.json, reconstruction snapshots, cache/ (cached runs)
 tests/       all tests (src holds no test code)
 ```
 
@@ -47,7 +49,7 @@ Bevy draws all 3D. React draws only the panels around it: body and scenario choi
 - Rust stable (edition 2024; tested with 1.99)
 - [bun](https://bun.sh) for the panels
 - Desktop: macOS (Metal). Windows and Linux packages are built by CI but not yet verified on hardware.
-- Browser: [Trunk](https://trunkrs.dev) 0.22, `rustup target add wasm32-unknown-unknown`, and a WebGPU browser (desktop Chrome)
+- Browser: [Trunk](https://trunkrs.dev) 0.22, nightly Rust with `rust-src` (`rustup component add rust-src --toolchain nightly`), and a WebGPU browser (desktop Chrome). The page computes on several threads (wasm threads), which only nightly can build; `src/web/rust-toolchain.toml` and `src/web/.cargo/config.toml` select it for builds run from `src/web`, so everything else stays on stable
 
 ## Build and run
 
@@ -79,7 +81,7 @@ Then open <http://127.0.0.1:8080>. Release build: `trunk build --release --cargo
 
 `?timing=1` on the page URL records the time of every module of the run; the totals are in `asteroid.timing` (`[calls, seconds]` per module) in the browser console. The CLI does the same with `SCF_TIMING=1` (written to `timing.json` in the output directory).
 
-The cone program of each geometry step runs in double precision on the CPU; `AE_PDHG=gpu` runs the double-single GPU kernels instead.
+The cone program of each geometry step is solved by an interior-point method ([Clarabel](https://github.com/oxfordcontrol/Clarabel.rs)) in double precision on the CPU.
 
 The desktop app and the page each load the GPU fully; do not run both at once.
 
@@ -95,6 +97,19 @@ The desktop app and the page each load the GPU fully; do not run both at once.
 | P | Screenshot (desktop: `Pictures/Asteroid Evolution`; browser: download) |
 | Mouse | Right drag orbits, left drag pans, wheel zooms |
 
+### Cached runs
+
+A cached run (`.aecache`) is the stored timeline of a run: at most 480 frames, quantized to 16 bits and deflated. Playing one does not compute anything. The two import/export buttons at the right of the transport bar are:
+
+- **Export cache** saves the timeline of the current run. The desktop writes it to `dist/.stage/cache/` from the source tree, or to the app data folder for a bundle. The browser downloads it.
+- **Import cache** plays a file. The run it holds replaces the current one, and its project and spin come with it.
+
+The page looks for `cache/<project>-<key>.aecache` before it computes a run, and plays it if found. `<key>` is a hash of the project after the slider overrides, the spin schedule, the step limit and the start snapshot, so an exported file is found again when it is copied to `dist/.stage/cache/` and the page is rebuilt. `?live` on the page URL always computes. The desktop always computes; it plays a cache only on import.
+
+### Chapter 11 options
+
+The project sections `[spin_law]`, `[thermal]`, `[markers]`, `[damage]` and `[dilatancy]` switch on the evolving-state hypotheses of mathstrict Chapter 11. They are A-L (spin from the angular momentum), A-Θ (diurnal thermal fatigue and the radiative torque), A-ϖ (damage that weakens cohesion) and A-Ξ (dilatancy and compaction). Damage and dilatancy need `[markers]`; the radiative torque needs `[thermal]`. A project without these sections runs exactly as before.
+
 ## Command line
 
 ```bash
@@ -102,7 +117,7 @@ cargo build --release --features tier2 --bins
 target/release/scf-cli --help
 ```
 
-`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `export`, `history` (inversion). To reproduce the three runs of the report:
+`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `export`, `history` (inversion). `run-sim --no-lag` evaluates the deep state on every step instead of reusing it while the surface has barely moved (for audits). To reproduce the three runs of the report:
 
 ```bash
 cargo build --release --features tier2 --bin scf-cli
@@ -116,7 +131,7 @@ python3 dist/.stage/output/evaluate.py    # compare with measurements, write eva
 cargo test --features tier3
 ```
 
-161 tests: 149 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required.
+146 tests: 134 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required. Run them one at a time (`-- --test-threads=1`) on a small machine: the Tier 2 runs each use the GPU and every core.
 
 ## Cargo features
 

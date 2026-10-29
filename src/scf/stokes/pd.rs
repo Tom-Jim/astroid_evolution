@@ -6,28 +6,28 @@ use nalgebra::{Cholesky, DVector};
 
 use crate::common::error::SimError;
 use crate::common::linalg;
-use crate::common::math::DVec3;
 use crate::rheo::Material;
 
 use super::super::params::StokesParams;
+use super::super::evolving::dilatation::deviator;
 use super::pressure::Pressure;
 use super::{
-    Guess, Loads, Operators, StokesSolution, assemble_f, d6_dot, eta_eval, load_scale, pd_metric,
-    solve_range, strain_fields,
+    DilatancyState, Guess, Loads, Local, Operators, StokesSolution, assemble_f, d6_dot, eta_eval, load_scale,
+    pd_metric, solve_range, strain_fields, strain_fields_with,
 };
 
 /// `φ'(s) = s η(s)` and `φ''(s) = η + s ∂η/∂γ̇` at frozen `c`, `p̃` (Proposition 2.17.1).
-fn flow_slope(m: &Material, c: f64, p_tilde: f64, eps: f64, s: f64) -> (f64, f64) {
-    let ev = eta_eval(m, c, s, p_tilde, eps);
+fn flow_slope(m: &Material, l: &Local, p_tilde: f64, eps: f64, s: f64) -> (f64, f64) {
+    let ev = eta_eval(m, l, s, p_tilde, eps);
     (s * ev.eta, ev.eta + s * ev.d_shear)
 }
 
 /// The root `s ≥ 0` of `τ s + φ'(s) = t`: safeguarded Newton on `[0, t/τ]` from `s0`.
-fn prox_rate(m: &Material, c: f64, p_tilde: f64, eps: f64, tau: f64, t: f64, s0: f64) -> f64 {
+fn prox_rate(m: &Material, l: &Local, p_tilde: f64, eps: f64, tau: f64, t: f64, s0: f64) -> f64 {
     let (mut lo, mut hi) = (0.0, t / tau);
     let mut s = s0.clamp(lo, hi);
     for _ in 0..100 {
-        let (f1, f2) = flow_slope(m, c, p_tilde, eps, s);
+        let (f1, f2) = flow_slope(m, l, p_tilde, eps, s);
         let h = tau * s + f1 - t;
         if h.abs() <= 1e-14 * t {
             break;
@@ -48,7 +48,7 @@ fn prox_rate(m: &Material, c: f64, p_tilde: f64, eps: f64, tau: f64, t: f64, s0:
 
 /// `∫_a^b (φ'(r) − t) dr` by 8-point Gauss–Legendre: the convexity part of the
 /// Fenchel–Young gap, with `φ'(a) = t`.
-fn slope_excess(m: &Material, c: f64, p_tilde: f64, eps: f64, a: f64, b: f64, t: f64) -> f64 {
+fn slope_excess(m: &Material, l: &Local, p_tilde: f64, eps: f64, a: f64, b: f64, t: f64) -> f64 {
     const X: [f64; 4] = [
         0.183_434_642_495_649_8,
         0.525_532_409_916_329,
@@ -66,10 +66,52 @@ fn slope_excess(m: &Material, c: f64, p_tilde: f64, eps: f64, a: f64, b: f64, t:
     for k in 0..4 {
         for sign in [-1.0, 1.0] {
             let r = mid + sign * half * X[k];
-            acc += W[k] * (flow_slope(m, c, p_tilde, eps, r).0 - t);
+            acc += W[k] * (flow_slope(m, l, p_tilde, eps, r).0 - t);
         }
     }
     acc * half
+}
+
+/// The frozen dilatational shift of A-Ξ (§11.4): `e_i^ε = √2 dev D(v_ε)(x_i)`, the
+/// rigid offset `b_ε = (∫ρ v_ε, ∫ρ x × v_ε)`, and the state that produced them.
+struct Shift {
+    e: DVector<f64>,
+    b: DVector<f64>,
+    state: Option<DilatancyState>,
+}
+
+impl Shift {
+    fn none(np: usize) -> Self {
+        Self { e: DVector::zeros(6 * np), b: DVector::zeros(6), state: None }
+    }
+
+    fn set(ops: &Operators, state: DilatancyState) -> Self {
+        let s2 = std::f64::consts::SQRT_2;
+        let np = ops.vol.pts.len();
+        let mut e = DVector::zeros(6 * np);
+        let mut b = DVector::zeros(6);
+        for (p, x) in ops.vol.pts.iter().enumerate() {
+            let d = deviator(state.field.strain(*x));
+            for c in 0..6 {
+                e[6 * p + c] = s2 * d[c];
+            }
+            let v = state.field.velocity(*x) * (ops.vol.w[p] * ops.vol.rho[p]);
+            let m = x.cross(v);
+            for a in 0..3 {
+                b[a] += v[a];
+                b[3 + a] += m[a];
+            }
+        }
+        Self { e, b, state: Some(state) }
+    }
+
+    fn active(&self) -> Option<&DVector<f64>> {
+        self.state.as_ref().map(|_| &self.e)
+    }
+
+    fn field(&self) -> Option<&super::super::evolving::dilatation::Dilatational> {
+        self.state.as_ref().map(|s| &s.field)
+    }
 }
 
 /// `Σ_i w_i e_iᵀ ς_i` with `e_i = √2 D_i u`.
@@ -101,10 +143,7 @@ pub(super) fn solve_pd(
     let p_min = m.spec.p_min;
     let f_load = assemble_f(ops, ld);
     let f_norm = load_scale(ops, ld);
-    let coh: Vec<f64> = ops.vol.depth.iter().map(|d| m.cohesion_at(*d)).collect();
-    let gcoh: Vec<DVec3> = (0..np)
-        .map(|p| ops.vol.gdepth[p] * m.cohesion_slope(ops.vol.depth[p]))
-        .collect();
+    let coh = &ld.strength.vol;
     let w = &ops.vol.w;
     let s2 = std::f64::consts::SQRT_2;
     // P is factored once per geometry; Π_K^P P⁻¹ r is the range-space solve.
@@ -125,11 +164,13 @@ pub(super) fn solve_pd(
         Some(g) if g.u.len() == n_u => DVector::from_column_slice(&g.u),
         _ => DVector::zeros(n_u),
     };
-    // P-orthogonal projection of the warm start onto K = ker B_rb.
-    let start = {
-        let lam = rs.s_chol.solve(&(&ops.rigid * &start));
-        &start - &rs.y * lam
+    // P-orthogonal projection onto the affine K_ε = {B_rb u = −b_ε} (K = ker B_rb
+    // without A-Ξ, Proposition 11.8): the solve step stays in K, so only the start moves.
+    let project = |u: &DVector<f64>, b: &DVector<f64>| {
+        let lam = rs.s_chol.solve(&(&ops.rigid * u + b));
+        u - &rs.y * lam
     };
+    let start = project(&start, &DVector::zeros(6));
 
     let mut levels = vec![0usize];
     let mut ladder = prm.continuation > 0;
@@ -148,7 +189,15 @@ pub(super) fn solve_pd(
         let mut pr = Pressure::warm(ops, p_min, &warm_p);
         // The pressure of the warm start, so that the first dual steps see its strength.
         let mut fields = strain_fields(ops, &u);
-        pr.update(ops, ld, prm, m, eps, &coh, &gcoh, &u, &fields)?;
+        let mut shift = Shift::none(np);
+        pr.update(ops, ld, prm, m, eps, &u, &fields, None)?;
+        // A-Ξ: the first dilatational field, the affine start, and its pressure.
+        if let Some(src) = ld.dilatancy {
+            shift = Shift::set(ops, src.field(m, coh, &fields.shear, &pr.ptil, eps));
+            u = project(&u, &shift.b);
+            fields = strain_fields_with(ops, &u, shift.active());
+            pr.update(ops, ld, prm, m, eps, &u, &fields, shift.field())?;
+        }
         let mut p_prev = pr.p_vals.clone();
         // ς⁰ = η e(u⁰); the dual step τ_d is η_ref, the weighted geometric mean of η⁰, and
         // τ_p τ_d < 1 (Proposition 10.4).
@@ -157,7 +206,7 @@ pub(super) fn solve_pd(
         let mut rate = vec![0.0; np];
         let (mut lsum, mut wsum) = (0.0, 0.0);
         for i in 0..np {
-            let ev = eta_eval(m, coh[i], fields.shear[i], pr.ptil[i], eps);
+            let ev = eta_eval(m, &coh[i], fields.shear[i], pr.ptil[i], eps);
             for c in 0..6 {
                 sig[6 * i + c] = ev.eta * e0[6 * i + c];
             }
@@ -171,7 +220,12 @@ pub(super) fn solve_pd(
         let mut ubar = u.clone();
         let mut converged = false;
         let mut last = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        // ‖u‖_P halfway through the level, for the collapse certificate.
+        let mut u_half = 0.0;
         for k in 0..prm.pd_max {
+            if k == prm.pd_max / 2 {
+                u_half = p_norm(&u);
+            }
             total += 1;
             // (D) pointwise prox of φ_i* at the frozen pressure: ς = z φ'(s)/|z| with
             // τ_d s + φ'(s) = |z| (Moreau).
@@ -179,7 +233,7 @@ pub(super) fn solve_pd(
             for i in 0..np {
                 let mut z = [0.0; 6];
                 for c in 0..6 {
-                    z[c] = sig[6 * i + c] + tau_d * eb[6 * i + c];
+                    z[c] = sig[6 * i + c] + tau_d * (eb[6 * i + c] + shift.e[6 * i + c]);
                 }
                 let t = d6_dot(&z, &z).sqrt();
                 if t == 0.0 {
@@ -189,9 +243,9 @@ pub(super) fn solve_pd(
                     }
                     continue;
                 }
-                let s = prox_rate(m, coh[i], pr.ptil[i], eps, tau_d, t, rate[i]);
+                let s = prox_rate(m, &coh[i], pr.ptil[i], eps, tau_d, t, rate[i]);
                 rate[i] = s;
-                let mag = flow_slope(m, coh[i], pr.ptil[i], eps, s).0;
+                let mag = flow_slope(m, &coh[i], pr.ptil[i], eps, s).0;
                 for c in 0..6 {
                     sig[6 * i + c] = z[c] * (mag / t);
                 }
@@ -205,8 +259,8 @@ pub(super) fn solve_pd(
             u = un;
             // (P) and (S) every N_p iterations.
             if (k + 1) % prm.pd_pressure_every.max(1) == 0 {
-                fields = strain_fields(ops, &u);
-                let e = strain(&u);
+                fields = strain_fields_with(ops, &u, shift.active());
+                let e = strain(&u) + &shift.e;
                 // Relative Fenchel–Young gap at the frozen pressure,
                 // φ(γ̇) + φ*(|ς|) − ⟨ς, e⟩, with φ'(s*) = |ς| from the prox.
                 let (mut gap, mut scale) = (0.0, 0.0);
@@ -215,7 +269,7 @@ pub(super) fn solve_pd(
                     let el = &e.as_slice()[6 * i..6 * i + 6];
                     let t = d6_dot(sl, sl).sqrt();
                     let g = fields.shear[i];
-                    let fy = slope_excess(m, coh[i], pr.ptil[i], eps, rate[i], g, t)
+                    let fy = slope_excess(m, &coh[i], pr.ptil[i], eps, rate[i], g, t)
                         + (t * g - d6_dot(sl, el));
                     gap += w[i] * fy.max(0.0);
                     scale += w[i] * t * g.max(rate[i]);
@@ -224,7 +278,13 @@ pub(super) fn solve_pd(
                 // pointwise pairs and the dual infeasibility, which is the equilibrium residual.
                 let (fy, eq) = (gap / scale.max(1e-300), equilibrium(&sig).0);
                 let r_gap = fy.max(eq);
-                pr.update(ops, ld, prm, m, eps, &coh, &gcoh, &u, &fields)?;
+                pr.update(ops, ld, prm, m, eps, &u, &fields, shift.field())?;
+                // A-Ξ: the dilatational field follows the strain and pressure (PO-23).
+                if let Some(src) = ld.dilatancy {
+                    shift = Shift::set(ops, src.field(m, coh, &fields.shear, &pr.ptil, eps));
+                    u = project(&u, &shift.b);
+                    ubar = u.clone();
+                }
                 let num: f64 = (0..np).map(|p| w[p] * (pr.p_vals[p] - p_prev[p]).powi(2)).sum();
                 let den: f64 = (0..np).map(|p| w[p] * pr.p_vals[p].powi(2)).sum();
                 let dp = (num / den.max(1e-300)).sqrt();
@@ -254,12 +314,12 @@ pub(super) fn solve_pd(
                     prm.tol_momentum
                 )));
             }
-            let fields = strain_fields(ops, &u);
+            let fields = strain_fields_with(ops, &u, shift.active());
             let eta_final: Vec<f64> = (0..np)
-                .map(|p| eta_eval(m, coh[p], fields.shear[p], pr.ptil[p], eps).eta)
+                .map(|p| eta_eval(m, &coh[p], fields.shear[p], pr.ptil[p], eps).eta)
                 .collect();
-            let eps_rot = pr.rotational_residual(ops, ld, m, eps, &coh, &gcoh, &u, &fields);
-            let p_surface = pr.face_traction(ops, ld, prm, m, eps, &u)?;
+            let eps_rot = pr.rotational_residual(ops, ld, m, eps, &u, &fields, shift.field());
+            let p_surface = pr.face_traction(ops, ld, prm, m, eps, &u, shift.field())?;
             let (pres_c, lift) = pr.split(ops);
             let wsum: f64 = w.iter().sum();
             let tensile = (0..np)
@@ -287,7 +347,27 @@ pub(super) fn solve_pd(
                 tensile_fraction: tensile,
                 inverse_ekman: 0.0,
                 gamma_eps: eps,
+                dilatancy: shift.state,
             });
+        }
+        // Collapse certificate (Proposition 2.17.1): ‖u‖_P grows linearly while the stress
+        // is pinned at τ_max = c + (μ_2 + ξ + K_Ξ Δν_c) p̃ somewhere. L* does not depend on
+        // γ̇_ε, so the continuation ladder cannot help.
+        let saturation = (0..np)
+            .map(|i| {
+                let s = &sig.as_slice()[6 * i..6 * i + 6];
+                let mu_max = m.spec.mu_2 + coh[i].xi + m.dilatancy.map_or(0.0, |d| d[0]);
+                d6_dot(s, s).sqrt() / (coh[i].c + mu_max * pr.ptil[i])
+            })
+            .fold(0.0, f64::max);
+        let growth = p_norm(&u) / u_half.max(1e-300);
+        if saturation >= COLLAPSE_SATURATION && growth >= COLLAPSE_GROWTH {
+            return Err(SimError::limit_load_collapse(format!(
+                "the velocity grew {growth:.2}× over the second half of {} primal–dual iterations with \
+                 the stress at {saturation:.4} of τ_max (equilibrium residual {:.3e}): no quasi-static \
+                 state at this pressure",
+                prm.pd_max, last.1
+            )));
         }
         if level == 0 && ladder {
             // Continuation ladder 10^c γ̇_ε, …, 10 γ̇_ε, γ̇_ε from the incoming guess,
@@ -313,4 +393,8 @@ pub(super) fn solve_pd(
 
 /// `τ_p τ_d` of the primal–dual steps (below 1, Proposition 10.4).
 const PD_THETA: f64 = 0.99;
+/// Collapse certificate: `max |ς_i| / τ_max,i` at least this, and `‖u‖_P` at least this
+/// many times its value halfway through the level (linear growth gives 2, convergence 1).
+const COLLAPSE_SATURATION: f64 = 0.999;
+const COLLAPSE_GROWTH: f64 = 1.8;
 

@@ -28,6 +28,18 @@ fn moved(body: &Body, d: &[f64]) -> Body {
     next
 }
 
+/// The interior point reached its full tolerances in the tens of iterations it takes on a
+/// well-posed program: `AlmostSolved` or a long run here is a conditioning regression.
+fn assert_solved(out: &SocpOutput) {
+    assert_eq!(out.status, "Solved", "after {} iterations", out.iterations);
+    assert!((1..=60).contains(&out.iterations), "{} iterations", out.iterations);
+}
+
+/// `Σ (Dℳ)_i d_i + s_M`, the linearised mass change the step books.
+fn mass_row(jac: &[f64], out: &SocpOutput) -> f64 {
+    jac.iter().zip(&out.d).map(|(j, d)| j * d).sum::<f64>() + out.mass_slack
+}
+
 fn max_slope(body: &Body, g: &[DVec3]) -> f64 {
     body.face_geometry()
         .iter()
@@ -64,17 +76,20 @@ fn spike_is_relaxed_with_mass_conserved() {
         lower: &[],
         upper: &[],
         varrho: 1e3,
-        warm: None,
     };
     let out = solve(&inp).unwrap();
+    assert_solved(&out);
     let next = moved(&body, &out.d);
     let before = max_slope(&body, &gravity);
     let after = max_slope(&next, &gravity);
     assert!(out.d[0] < -0.01, "spike moved by {}", out.d[0]);
     assert!(after < before, "{before} -> {after}");
-    let dm: f64 = (0..nv).map(|i| jac[i] * out.d[i]).sum();
-    // The normalised mass row is held to the PDHG tolerance, about 1e-3.
-    assert!(dm.abs() < 5.0e-3 * 4.0e3, "mass change {dm}");
+    // A reachable target is a hard equality, met to the feasibility tolerance of the
+    // normalised row; the slack stays zero.
+    let dm = mass_row(&jac, &out);
+    assert!(dm.abs() <= 1.0e-6 * 4.0e3, "mass change {dm}");
+    assert!(out.mass_slack.abs() <= 1.0e-6 * 4.0e3, "mass slack {}", out.mass_slack);
+    assert!(out.d.iter().all(|d| d.abs() <= 0.05 * (1.0 + 1.0e-6)), "trust box left");
 }
 
 /// Same spike, with Ryugu's radius and mass. The boxed penalty is `ϱ|s_M|`
@@ -109,10 +124,18 @@ fn spike_at_ryugu_scale_still_meets_kkt() {
         lower: &[],
         upper: &[],
         varrho: 1e3,
-        warm: None,
     };
     let out = solve(&inp).expect("ryugu-scale spike");
-    assert!(out.iterations < 40_000, "iters {}", out.iterations);
+    assert_solved(&out);
+    assert!(out.d[0] < -0.5, "spike moved by {}", out.d[0]);
+    assert!(after_slope_drops(&body, &out.d, &gravity));
+    let dm = mass_row(&jac, &out);
+    assert!(dm.abs() <= 1.0e-6 * mass, "mass change {dm} kg");
+    assert!(out.d.iter().all(|d| d.abs() <= 8.0 * (1.0 + 1.0e-6)), "trust box left");
+}
+
+fn after_slope_drops(body: &Body, d: &[f64], g: &[DVec3]) -> bool {
+    max_slope(&moved(body, d), g) < max_slope(body, g)
 }
 
 /// A yielded patch at Ryugu's mass and radius: thousands of free nodes, a few
@@ -192,22 +215,16 @@ fn ryugu_patch_meets_kkt_with_relative_mass_slack() {
         lower: &[],
         upper: &[],
         varrho,
-        warm: None,
     })
     .expect("ryugu patch");
+    assert_solved(&out);
+    let closed = mass_row(&jac, &out);
     assert!(
-        out.iterations < 8_000,
-        "patch took {} iterations",
-        out.iterations
-    );
-    assert!((out.mass_col_plus - 1.0).abs() < 1e-12);
-    assert!((out.mass_col_minus + 1.0).abs() < 1e-12);
-    assert!((out.mass_cost - varrho * mass).abs() <= 1.0);
-    let closed: f64 = jac.iter().zip(&out.d).map(|(j, d)| j * d).sum::<f64>() + out.mass_slack;
-    assert!(
-        (closed - mass_residual).abs() < 1e-3 * mass,
+        (closed - mass_residual).abs() <= 1e-6 * mass,
         "mass row {closed} vs residual {mass_residual}"
     );
+    // The box cannot absorb the residual, so the exact penalty books the rest in s_M.
+    assert!(out.mass_slack.abs() > 0.0, "an unreachable residual left no mass slack");
     for (i, d) in out.d.iter().enumerate() {
         if kind[i] == Kind::Mobile {
             assert!(
@@ -222,6 +239,47 @@ fn ryugu_patch_meets_kkt_with_relative_mass_slack() {
         out.d.iter().fold(0.0_f64, |m, d| m.max(d.abs())) > 1.0,
         "the patch did not move by a metre"
     );
+}
+
+/// A trust radius of millimetres at Ryugu's mass (late in a relaxation that shrank Δ):
+/// the box cannot reach the mass residual, so the program folds `ϱ M |b − a·x|` into
+/// its linear cost, of order 10¹¹ against a quadratic of order 10⁵. The interior point
+/// must still solve it rather than report an unbounded direction, and book the
+/// unreachable rest in `s_M` with every free node at the box edge it is pushed to.
+#[test]
+fn a_folded_mass_row_at_a_millimetre_trust_radius_is_solved() {
+    let (topo, _, mut body) = star(4, |i| 400.0 + 3.0 * ((i * 13 % 7) as f64 / 7.0));
+    body.bulk = 2000.0;
+    let nv = topo.n_vertices();
+    let nf = topo.n_faces();
+    let jac = mass_jacobian(&body, &body.density().unwrap());
+    let gravity: Vec<DVec3> = body.face_geometry().iter().map(|(c, _, _)| c.try_normalize().unwrap() * -1.0e-4).collect();
+    let (mass, trust, residual) = (4.5e11, 3.0e-3, 1.0e9);
+    let out = solve(&SocpInput {
+        body: &body,
+        kind: &vec![Kind::Mobile; nv],
+        d_pred: &vec![0.0; nv],
+        weight: &body.vertex_areas(),
+        gravity: &gravity,
+        sin_phi: &vec![0.35; nf],
+        slope_row: &vec![true; nf],
+        mass_jac: &jac,
+        mass_residual: residual,
+        mass,
+        trust,
+        eps_n: 0.01,
+        lower: &[],
+        upper: &[],
+        varrho: 1e3,
+    })
+    .expect("folded cone program");
+    assert_solved(&out);
+    let reach: f64 = jac.iter().map(|j| j.abs() * trust).sum();
+    assert!(reach < residual, "the box reaches the residual: the fold is not exercised");
+    assert!((mass_row(&jac, &out) - residual).abs() <= 1e-6 * mass, "mass row {} vs {residual}", mass_row(&jac, &out));
+    // The penalty outweighs the slope terms: every node goes to the edge that adds mass.
+    let at_edge = out.d.iter().zip(&jac).filter(|(d, j)| (**d - trust * j.signum()).abs() <= 1e-6 * trust).count();
+    assert!(at_edge * 10 >= nv * 9, "{at_edge} of {nv} nodes at the box edge");
 }
 
 /// `∂n̂/∂x_k` of the CPU face frame against central differences of the normal of the
@@ -312,7 +370,6 @@ fn supercritical_patch_socp_finishes_quickly() {
         lower: &[],
         upper: &[],
         varrho: 1e3,
-        warm: None,
     };
     let wall = std::time::Instant::now();
     let out = solve(&inp).expect("local SOCP");
@@ -321,270 +378,11 @@ fn supercritical_patch_socp_finishes_quickly() {
         .filter(|i| kind[*i] == Kind::Locked)
         .any(|i| out.d[i].abs() > 1e-12);
     eprintln!(
-        "local SOCP: faces={nf} slope_rows={n_cap} mobile={n_active} pdhg={:.3}s wall={:.3}s iters={} status={}",
+        "local SOCP: faces={nf} slope_rows={n_cap} mobile={n_active} ipm={:.3}s wall={:.3}s iters={} status={}",
         out.solve_seconds, wall_s, out.iterations, out.status
     );
     assert!(!moved_locked, "a locked vertex left static friction");
-    assert!(
-        wall_s < 600.0 && out.solve_seconds < 600.0,
-        "Metal-PDHG wall {wall_s:.1}s, reported {:.1}s",
-        out.solve_seconds
-    );
-}
-
-struct Spike {
-    body: Body,
-    kind: Vec<Kind>,
-    d_pred: Vec<f64>,
-    weight: Vec<f64>,
-    gravity: Vec<DVec3>,
-    sin_phi: Vec<f64>,
-    slope_row: Vec<bool>,
-    jac: Vec<f64>,
-}
-
-impl Spike {
-    fn new() -> Self {
-        let (topo, _, body) = star(2, |i| if i == 0 { 1.25 } else { 1.0 });
-        let nv = topo.n_vertices();
-        let nf = topo.n_faces();
-        let dens = body.density().unwrap();
-        let gravity: Vec<DVec3> = body
-            .face_geometry()
-            .iter()
-            .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
-            .collect();
-        let jac = mass_jacobian(&body, &dens);
-        Self {
-            kind: vec![Kind::Mobile; nv],
-            d_pred: vec![0.0; nv],
-            weight: vec![1.0; nv],
-            sin_phi: vec![0.35; nf],
-            slope_row: vec![true; nf],
-            jac,
-            gravity,
-            body,
-        }
-    }
-
-    fn input<'a>(&'a self, trust: f64, warm: Option<&'a SocpSeed>) -> SocpInput<'a> {
-        SocpInput {
-            body: &self.body,
-            kind: &self.kind,
-            d_pred: &self.d_pred,
-            weight: &self.weight,
-            gravity: &self.gravity,
-            sin_phi: &self.sin_phi,
-            slope_row: &self.slope_row,
-            mass_jac: &self.jac,
-            mass_residual: 0.0,
-            mass: 4.0e3,
-            trust,
-            eps_n: 0.01,
-            lower: &[],
-            upper: &[],
-            varrho: 1e3,
-            warm,
-        }
-    }
-}
-
-#[test]
-fn the_same_cone_program_accepts_its_own_multipliers() {
-    let spike = Spike::new();
-    let first = solve(&spike.input(0.05, None)).expect("cold SOCP");
-    let second = solve(&spike.input(0.05, Some(&first.seed))).expect("warm SOCP");
-    assert_eq!(
-        second.iterations, 0,
-        "warm start took {}",
-        second.iterations
-    );
-    for (a, b) in first.d.iter().zip(&second.d) {
-        assert!((a - b).abs() < 1e-8, "{a} vs {b}");
-    }
-}
-
-#[test]
-fn a_tighter_trust_region_starts_closer_than_the_origin() {
-    let spike = Spike::new();
-    let wide = solve(&spike.input(10.0, None)).expect("wide trust");
-    let reach = wide.d.iter().fold(0.0_f64, |m, d| m.max(d.abs()));
-    let narrow_trust = (reach * 2.0).max(0.05);
-    assert!(
-        narrow_trust < 10.0,
-        "the wide step filled its trust box ({reach})"
-    );
-    let cold = solve(&spike.input(narrow_trust, None)).expect("cold narrow");
-    let hot = solve(&spike.input(narrow_trust, Some(&wide.seed))).expect("warm narrow");
-    assert!(
-        hot.initial_metric < cold.initial_metric,
-        "warm {:.3e} cold {:.3e}",
-        hot.initial_metric,
-        cold.initial_metric
-    );
-    for (a, b) in hot.d.iter().zip(&cold.d) {
-        // Both points meet KKT_TOL. With ϱ on every face, ||q|| is large, so
-        // that test allows the two displacements to differ by about a centimetre.
-        assert!((a - b).abs() < 2.0e-2, "warm {a} cold {b}");
-    }
-}
-
-#[test]
-fn dropping_one_slope_face_keeps_the_other_multipliers() {
-    let mut spike = Spike::new();
-    let full = solve(&spike.input(0.05, None)).expect("full cones");
-    let face = full
-        .seed
-        .y_soc
-        .iter()
-        .position(|cone| cone.iter().any(|v| v.abs() > 1e-8))
-        .unwrap_or(0);
-    let kept = (face + 1) % spike.slope_row.len();
-    assert!(
-        full.seed.y_soc[kept].iter().any(|v| v.is_finite()),
-        "remaining cone multiplier is not finite"
-    );
-    spike.slope_row[face] = false;
-    let cold = solve(&spike.input(0.05, None)).expect("cold reduced");
-    let hot = solve(&spike.input(0.05, Some(&full.seed))).expect("warm reduced");
-    // Dropping the cone removes the multiplier that was balancing one node,
-    // so the reloaded point is not closer than the origin on the per-variable
-    // stationarity test. Both solves still have to agree.
-    println!(
-        "warm {} cold {} iterations",
-        hot.iterations, cold.iterations
-    );
-    assert!(hot.iterations < 80_000 && cold.iterations < 80_000);
-    for (a, b) in hot.d.iter().zip(&cold.d) {
-        assert!((a - b).abs() < 2.0e-2, "warm {a} cold {b}");
-    }
-}
-
-/// A regular tetrahedron of circumradius `radius`, outward faces.
-fn tetrahedron(radius: f64) -> Body {
-    let s = radius / 3.0_f64.sqrt();
-    let x = vec![
-        DVec3::new(s, s, s),
-        DVec3::new(s, -s, -s),
-        DVec3::new(-s, s, -s),
-        DVec3::new(-s, -s, s),
-    ];
-    let faces = vec![[0u32, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]];
-    let topo = Arc::new(Topology::new(4, faces));
-    let body = Body::new(topo, x, 1000.0, vec![], vec![0.0; 4]).unwrap();
-    assert!(body.mesh().unwrap().signed_volume() > 0.0);
-    body
-}
-
-#[test]
-fn one_vertex_uses_the_documented_weight_and_varrho() {
-    // §10.4.3: ½ w (d − d_pred)² + ϱ (t + |s_M|). The solver unknown is
-    // x = d/R₀ and the mass slack is σ = s_M/M, so the stored coefficients
-    // are w R₀², −w R₀ d_pred, ϱ on each slope slack, and ϱ M on σ.
-    let radius = 2.0;
-    let body = tetrahedron(radius);
-    let nv = body.topo.n_vertices();
-    let nf = body.topo.n_faces();
-    let r0 = body.r_mean();
-    let mut kind = vec![Kind::Locked; nv];
-    kind[0] = Kind::Mobile;
-    let mut d_pred = vec![0.0; nv];
-    let predictor = 0.25;
-    d_pred[0] = predictor;
-    let mut weight = vec![0.0; nv];
-    let w = 4.0;
-    weight[0] = w;
-    let face = body
-        .topo
-        .faces
-        .iter()
-        .position(|tri| tri.contains(&0u32))
-        .unwrap();
-    let mut slope_row = vec![false; nf];
-    slope_row[face] = true;
-    let varrho = 1.0e3;
-    let mass = 4.0e3;
-    let jac = mass_jacobian(&body, &body.density().unwrap());
-    let gravity: Vec<DVec3> = body
-        .face_geometry()
-        .iter()
-        .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
-        .collect();
-    let out = solve(&SocpInput {
-        body: &body,
-        kind: &kind,
-        d_pred: &d_pred,
-        weight: &weight,
-        gravity: &gravity,
-        sin_phi: &vec![0.35; nf],
-        slope_row: &slope_row,
-        mass_jac: &jac,
-        mass_residual: 0.0,
-        mass,
-        trust: 0.1,
-        eps_n: 0.01,
-        lower: &[],
-        upper: &[],
-        varrho,
-        warm: None,
-    })
-    .expect("one vertex");
-    assert!(
-        (out.vertex_p[0] / (r0 * r0) - w).abs() < 1e-9,
-        "documented weight {}, stored p {}",
-        w,
-        out.vertex_p[0]
-    );
-    assert!((out.vertex_q[0] / r0 + w * predictor).abs() < 1e-9);
-    assert!((out.slope_cost[face] - varrho).abs() < 1e-12);
-    assert!((out.mass_cost - varrho * mass).abs() < 1e-6);
-    assert!((out.mass_col_plus - 1.0).abs() < 1e-12);
-    assert!((out.mass_col_minus + 1.0).abs() < 1e-12);
-    assert!((out.vertex_p[0] - w / weight.iter().sum::<f64>()).abs() > 1.0);
-    assert!((out.slope_cost[face] - varrho / nf as f64).abs() > 1.0);
-}
-
-#[test]
-fn two_mobile_vertices_have_one_trust_ball() {
-    let body = tetrahedron(1.0);
-    let nv = body.topo.n_vertices();
-    let nf = body.topo.n_faces();
-    let mut kind = vec![Kind::Locked; nv];
-    kind[0] = Kind::Mobile;
-    kind[1] = Kind::Mobile;
-    let jac = mass_jacobian(&body, &body.density().unwrap());
-    let gravity: Vec<DVec3> = body
-        .face_geometry()
-        .iter()
-        .map(|(c, _, _)| c.try_normalize().unwrap() * -9.8)
-        .collect();
-    let out = solve(&SocpInput {
-        body: &body,
-        kind: &kind,
-        d_pred: &vec![0.0; nv],
-        weight: &vec![1.0; nv],
-        gravity: &gravity,
-        sin_phi: &vec![0.35; nf],
-        slope_row: &vec![false; nf],
-        mass_jac: &jac,
-        mass_residual: 0.0,
-        mass: 4.0e3,
-        trust: 0.2,
-        eps_n: 0.01,
-        lower: &[],
-        upper: &[],
-        varrho: 1.0e3,
-        warm: None,
-    })
-    .expect("two vertices");
-    assert_eq!(
-        out.n_trust, 0,
-        "the trust region is a box, not a second-order cone"
-    );
-    assert_eq!(out.n_soc, 0);
-    assert_eq!(
-        out.n_nn, 10,
-        "s⁺, s⁻, two box rows on each of two vertices, and the anti-overhang row of \
-         each of the four faces with a free vertex (§2.8c)"
-    );
+    assert_solved(&out);
+    // The interior point is the smaller share of the call; assembly of 327k faces the rest.
+    assert!(out.solve_seconds <= wall_s, "reported {:.2}s > wall {wall_s:.2}s", out.solve_seconds);
 }

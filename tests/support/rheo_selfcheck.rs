@@ -263,7 +263,7 @@ pub fn sphere_closed_form(gpu: &RheoGpu) -> Result<Check, SimError> {
     ))
 }
 
-fn closure_input(n: &NodeResult, gravity: DVec3, pressure: f64) -> ClosureInput {
+fn closure_input(n: &NodeResult, gravity: DVec3, pressure: f64, c_s: f64) -> ClosureInput {
     ClosureInput {
         s0: n.s0,
         tg: n.tg,
@@ -272,6 +272,9 @@ fn closure_input(n: &NodeResult, gravity: DVec3, pressure: f64) -> ClosureInput 
         g_norm: gravity.length(),
         g_cross_n: gravity.cross(n.normal).length(),
         tide_frob: n.tide_frob,
+        cohesion: c_s,
+        shallow_cohesion: c_s,
+        xi: 0.0,
     }
 }
 
@@ -303,7 +306,7 @@ pub fn closure_double_single(gpu: &RheoGpu) -> Result<Vec<Check>, SimError> {
         for (i, n) in r.nodes.iter().enumerate() {
             let c = closure(
                 &material,
-                &closure_input(n, nodes.gravity[i], nodes.pressure[i]),
+                &closure_input(n, nodes.gravity[i], nodes.pressure[i], material.spec.cohesion_surface),
             );
             let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-300);
             shear = shear.max(rel(n.shear, c.shear));

@@ -35,11 +35,15 @@ export interface Status {
   phase: Phase;
   status: string;
   notice: string | null;
+  /** The notice reports a failed command (otherwise a saved file). */
+  notice_fault: boolean;
   project: string;
   mesh: string;
   mesh_unit: string;
   spin: string;
   snapshot: string | null;
+  /** The frames are played from a cache file, not computed. */
+  cached: boolean;
   params: Record<string, number>;
   stats: FrameStats | null;
   time_myr: number | null;
@@ -76,6 +80,7 @@ export type Command =
   | { cmd: "spin_axis"; on: boolean }
   | { cmd: "reset_view" }
   | { cmd: "screenshot" }
+  | { cmd: "export_cache" }
   | { cmd: "seek"; index: number | null }
   | { cmd: "pointer"; x: number; y: number; button?: number; down?: boolean }
   | { cmd: "wheel"; dy: number };

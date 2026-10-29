@@ -57,6 +57,12 @@ pub struct ClosureInput {
     pub g_cross_n: f64,
     /// `||T_tide||_F`.
     pub tide_frob: f64,
+    /// Continuum cohesion `c` at the node (flow strength), `c_s` of §4.3a when undamaged.
+    pub cohesion: f64,
+    /// Shallow cohesion `c_Γ` of the repose proxy (§10.3, §11.6), `c_s` when undamaged.
+    pub shallow_cohesion: f64,
+    /// Static dilatancy shift `ξ = K_Ξ (ν − ν_c⁰)` of the friction (A-Ξ), zero without it.
+    pub xi: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -93,8 +99,9 @@ pub fn closure(m: &Material, input: &ClosureInput) -> ClosureOutput {
     if input.tg > 0.0 {
         converged = false;
         for it in 0..m.max_iter {
-            let (mu_d, _) = dynamic_friction(m, g2.sqrt(), p_star);
-            let tau = s.cohesion_surface + mu_d * p_tilde;
+            let (mu_cs, i_c) = dynamic_friction(m, g2.sqrt(), p_star);
+            let mu_d = mu_cs + input.xi + m.dilatancy_rate_term(i_c).0;
+            let tau = input.cohesion + mu_d * p_tilde;
             let next = input.s0 + input.tg / (tau * tau) * (g2 + eps2);
             iterations = it + 1;
             if !next.is_finite() || next > 1.0e30 {
@@ -110,16 +117,17 @@ pub fn closure(m: &Material, input: &ClosureInput) -> ClosureOutput {
         }
     }
     let shear = g2.sqrt();
-    let (mu_d, inertial) = dynamic_friction(m, shear, p_star);
-    let tau = s.cohesion_surface + mu_d * p_tilde;
+    let (mu_cs, inertial) = dynamic_friction(m, shear, p_star);
+    let mu_d = mu_cs + input.xi + m.dilatancy_rate_term(inertial).0;
+    let tau = input.cohesion + mu_d * p_tilde;
     let eta = tau / (g2 + eps2).sqrt();
     let p_ref = m.rho_bulk * input.g_dot_n.abs() * s.h_s;
     let p_star_ref = (p_ref + m.p_c).max(s.p_min);
     let mu_proj = match m.mode {
         MuProjMode::Dynamic => mu_d,
-        MuProjMode::Static => m.mu_y,
+        MuProjMode::Static => m.mu_y + input.xi,
     };
-    let num = s.cohesion_surface + mu_proj * p_ref - input.tide_frob / std::f64::consts::SQRT_2;
+    let num = input.shallow_cohesion + mu_proj * p_ref - input.tide_frob / std::f64::consts::SQRT_2;
     let mu_eff = num.max(0.0) / p_star_ref;
     let sin2 = mu_eff * mu_eff / (1.0 + mu_eff * mu_eff);
     let sin_slope = input.g_cross_n / input.g_norm;

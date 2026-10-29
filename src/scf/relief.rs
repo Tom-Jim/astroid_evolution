@@ -14,7 +14,7 @@ use super::forward::Forward;
 use super::params::Project;
 use super::relax::{AcceptError, accept, mass_correction};
 use super::runout::{self, Arrival, RunoutField};
-use super::socp::{Kind, SocpInput, SocpOutput, SocpSeed, solve};
+use super::socp::{Kind, SocpInput, SocpOutput, solve};
 use super::transport::Spread;
 
 /// Where the removed relief runs out: the frozen field, the vertex areas and spread, and
@@ -70,7 +70,7 @@ pub struct Relieved {
 
 /// Solve, route, build and accept one increment, shrinking the trust radius on a rejected
 /// attempt; time does not advance on a rejected attempt.
-pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result<Relieved, SimError> {
+pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
     let g = &r.project.geometry;
     let topo = &r.body.topo;
     let nv = topo.n_vertices();
@@ -99,7 +99,7 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
             let fwd = Forward::bind(&body, r.project.g)?;
             let mass_residual = (fwd.moments.mass - r.mass_target).abs() / r.mass_target;
             return Ok(Relieved {
-                out: SocpOutput::unresolved(nv, topo.n_faces()),
+                out: SocpOutput::unresolved(nv),
                 dmax: 0.0,
                 body,
                 fwd,
@@ -118,8 +118,7 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
             *trust *= g.trust_shrink;
             *retries += 1;
         };
-        // One cone solve. A warm seed is never discarded, and a mass or volume miss does
-        // not start PDHG again.
+        // One cone solve; a mass or volume miss does not solve it again.
         let inp = SocpInput {
             body: r.body,
             kind: r.kind,
@@ -136,14 +135,12 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
             lower: r.lower,
             upper: r.upper,
             varrho: g.varrho,
-            warm: seed.as_ref(),
         };
         let out = match solve(&inp) {
             Ok(out) => out,
-            // A cone solve that misses KKT_TOL is a rejected attempt like a bad geometry:
-            // the smaller box is a better-conditioned program.
+            // A cone solve that does not converge is a rejected attempt like a bad
+            // geometry: the smaller box is a better-conditioned program.
             Err(err) if err.kind == "SolverFailure" => {
-                *seed = None;
                 reject(format!("cone solve: {}", err.detail), &mut trust, &mut retries);
                 continue;
             }
@@ -177,7 +174,6 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
                 let second = SocpInput {
                     kind: &k2,
                     d_pred: &d2,
-                    warm: Some(&out.seed),
                     ..inp
                 };
                 match solve(&second) {
@@ -191,7 +187,6 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
                         (out2, Cow::Owned(k2), d2, Some((routed, gap)))
                     }
                     Err(err) if err.kind == "SolverFailure" => {
-                        *seed = None;
                         reject(format!("cone solve (routed): {}", err.detail), &mut trust, &mut retries);
                         continue;
                     }
@@ -200,7 +195,6 @@ pub fn relieve(r: &Relief, fwd: &Forward, seed: &mut Option<SocpSeed>) -> Result
             }
             _ => (out, Cow::Borrowed(r.kind), r.d_pred.to_vec(), None),
         };
-        *seed = Some(out.seed.clone());
         let (max_locked_step, max_deposit_miss) = class_steps(&kind_used, &d_used, &out.d);
         // 8a: X⁽ⁿ⁺¹⁾ = X⁽ⁿ⁾ + scale · d_* N (G4).
         let moved: Vec<DVec3> = (0..nv)

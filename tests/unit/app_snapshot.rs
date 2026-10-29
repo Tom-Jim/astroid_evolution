@@ -107,6 +107,7 @@ fn a_spin_step_snapshot_keeps_zero_radial_increment_and_stays_on_the_seed() {
         frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         frame_translation: DVec3::ZERO,
         velocity: Vec::new(),
+        evolving: Default::default(),
     };
     let fields = StepFields {
         positions_from: dirs.clone(),
@@ -183,6 +184,7 @@ fn the_initial_snapshot_is_a_still_tier2_pose() {
         frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         frame_translation: DVec3::ZERO,
         velocity: Vec::new(),
+        evolving: Default::default(),
     };
     let snapshot = pack_initial(&state, 9.0, 0.5, 0.01);
     assert_eq!(snapshot.position_from, snapshot.position_to);
@@ -230,6 +232,7 @@ fn the_history_returns_each_recorded_step_within_quantization() {
             frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             frame_translation: DVec3::ZERO,
             velocity: Vec::new(),
+            evolving: Default::default(),
         };
         let fields = StepFields {
             positions_from: state.body.positions.clone(),
@@ -290,4 +293,26 @@ fn the_history_returns_each_recorded_step_within_quantization() {
         assert_eq!(history.stats(i).unwrap().step, original.step);
     }
     assert!(history.frame(3).is_none());
+
+    // A cache file returns the stored frames exactly, and playback moves them in order.
+    use astroid_evolution::app::cache;
+    let header = cache::Header {
+        project: "assets/projects/ryugu.toml".into(),
+        spin: "const:".into(),
+        max_steps: Some(3),
+        snapshot: None,
+        project_text: "[body]\n".into(),
+    };
+    let bytes = cache::encode(&header, &history).unwrap();
+    assert_eq!(cache::header(&bytes).unwrap().0.project, header.project);
+    let (_, mut stored) = cache::decode(&bytes).unwrap();
+    assert!(cache::decode(&bytes[..bytes.len() / 2]).is_err());
+    let mut played = History::default();
+    for i in 0..3 {
+        assert!(stored.move_first_to(&mut played));
+        let (a, b) = (played.frame(i).unwrap(), history.frame(i).unwrap());
+        assert_eq!((a.step, &a.faces, &a.position_to), (b.step, &b.faces, &b.position_to));
+        assert_eq!(a.runout, b.runout);
+    }
+    assert!(!stored.move_first_to(&mut played));
 }

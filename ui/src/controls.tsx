@@ -158,13 +158,15 @@ export function Gauge(props: { en: string; sub?: string; fraction: number | null
   );
 }
 
-export function Icon(props: { name: "play" | "pause" | "reset" | "camera" | "restart" }) {
+export function Icon(props: { name: "play" | "pause" | "reset" | "camera" | "restart" | "import" | "export" }) {
   const paths: Record<string, string> = {
     play: "M8 5v14l11-7z",
     pause: "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z",
     reset: "M12 5a7 7 0 1 1-6.6 4.7M5 4v5h5",
     camera: "M4 8h3l2-3h6l2 3h3v11H4zM12 16.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z",
     restart: "M5 12a7 7 0 1 0 2-4.9M5 4v4h4",
+    import: "M12 4v11M7.5 10.5 12 15l4.5-4.5M5 15v4h14v-4",
+    export: "M12 15V4M7.5 8.5 12 4l4.5 4.5M5 15v4h14v-4",
   };
   const filled = props.name === "play" || props.name === "pause";
   return (

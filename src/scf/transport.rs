@@ -167,6 +167,24 @@ pub fn geodesic(topo: &Topology, x: &[DVec3], a: usize, disp: DVec3) -> (usize, 
     (f, barycentric(p, c[0], c[1], c[2]))
 }
 
+/// One semi-Lagrangian step of an intensive vertex field: the barycentric value at the
+/// foot point of `−τ v_T`, with no Jacobian (the surface damage of §11.6).
+pub fn advect(body: &Body, flow: &SurfaceFlow, q: &[f64], tau: f64) -> Vec<f64> {
+    let topo = &body.topo;
+    let x = &body.positions;
+    (0..x.len())
+        .into_par_iter()
+        .map(|a| {
+            if flow.v_t[a] == DVec3::ZERO {
+                return q[a];
+            }
+            let (f, w) = geodesic(topo, x, a, flow.v_t[a] * -tau);
+            let t = topo.faces[f].map(|v| v as usize);
+            w[0] * q[t[0]] + w[1] * q[t[1]] + w[2] * q[t[2]]
+        })
+        .collect()
+}
+
 /// One semi-Lagrangian step of `ρ_s` (G5): foot point along `−τ v_T`, barycentric value,
 /// the tangent Jacobian, then `ρ_s = m / A_new` and one global factor that restores
 /// `Σ A ρ_s`. Returns the field and the relative size of that factor.

@@ -65,7 +65,14 @@ pub struct CoreReport {
     pub gn_iterations: usize,
     /// `τ max |∇v|` over the moving cores.
     pub strain_step: f64,
+    /// A-Ξ: the two-scalar closure `(s_b, s_c)` and the spawned cores (§11.4).
+    pub s_bulk: f64,
+    pub s_core: f64,
+    pub spawned: usize,
 }
+
+/// The dilatational density ratio `J_ν` at a batch of points (A-Ξ, Proposition 11.5).
+pub type Ratio<'a> = dyn Fn(&[DVec3]) -> Vec<f64> + 'a;
 
 /// The masked advection velocity `v_adv = χ_Y v_sl` at a batch of points.
 pub type Velocity<'a> = dyn Fn(&[DVec3]) -> Vec<DVec3> + 'a;
@@ -126,6 +133,7 @@ pub fn predict(
     inside: &dyn Fn(DVec3) -> bool,
     h: f64,
     params: &CoreParams,
+    ratio: Option<&Ratio<'_>>,
     report: &mut CoreReport,
 ) -> Vec<CauchyKernel> {
     if kernels.is_empty() || tau == 0.0 || !params.lagrangian() {
@@ -148,6 +156,9 @@ pub fn predict(
         }
     }
     let vp = v_adv(&probe);
+    // A-Ξ (§11.4): J_ν at the midpoints; the physical dilatation −ln J / τ is added back
+    // to the deviatoric gradient, and the weight follows the density, w' = J w.
+    let jac = ratio.map_or_else(|| vec![1.0; mid.len()], |r| r(&mid));
     let mut out = Vec::with_capacity(kernels.len());
     for (k, kern) in kernels.iter().enumerate() {
         let moving = inside(kern.center) && v0[k] != DVec3::ZERO;
@@ -166,6 +177,7 @@ pub fn predict(
         let trace = grad.x_axis.x + grad.y_axis.y + grad.z_axis.z;
         let l = grad - DMat3::IDENTITY * (trace / 3.0);
         report.strain_step = report.strain_step.max(tau * mat(l).norm());
+        let l = l + DMat3::IDENTITY * (-jac[k].ln() / (3.0 * tau));
         let f = dmat((mat(l) * tau).exp());
         let finv = f.inverse();
         let c_new = kern.center + row[0] * tau;
@@ -177,7 +189,7 @@ pub fn predict(
             mat_sym(s)
         };
         report.max_shift = report.max_shift.max((c_new - kern.center).length());
-        match CauchyKernel::try_anisotropic(c_new, kern.weight, metric, kern.alpha) {
+        match CauchyKernel::try_anisotropic(c_new, kern.weight * jac[k], metric, kern.alpha) {
             Ok(n) => out.push(n),
             Err(_) => {
                 report.anchored += 1;
@@ -207,6 +219,91 @@ pub fn close_mass(kernels: &mut [CauchyKernel], mass: f64, bulk_mass: f64, targe
         k.weight *= 1.0 + xi;
     }
     xi
+}
+
+/// Level 1 under A-Ξ (§11.4): the mass-constrained two-scalar fit
+/// `min Σ ω (s_b ρ_b + s_c ρ_c − ρ̃)²` subject to `s_b ρ_b V + s_c M_c = M`, a 3 × 3 KKT
+/// system. Falls back to one scalar when a part is absent or the two are dependent.
+/// Returns `(s_b, s_c)`; the mass is exact in every case.
+pub fn close_two(
+    bulk: f64,
+    kernels: &[CauchyKernel],
+    quad: &Quadrature,
+    target: &[f64],
+    volume: f64,
+    core_mass: f64,
+    mass: f64,
+) -> (f64, f64) {
+    let bulk_mass = bulk * volume;
+    let has_core = !kernels.is_empty() && core_mass.abs() > 1e-12 * mass.abs();
+    if bulk_mass <= 0.0 {
+        return (1.0, if has_core { mass / core_mass } else { 1.0 });
+    }
+    if !has_core {
+        return ((mass - core_mass) / bulk_mass, 1.0);
+    }
+    let cores = CauchyDensity::try_new(0.0, kernels.to_vec()).expect("validated cores");
+    let (mut a11, mut a12, mut a22, mut b1, mut b2) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for ((x, w), t) in quad.pts.iter().zip(&quad.w).zip(target) {
+        let c = cores.rho(*x);
+        a11 += w * bulk * bulk;
+        a12 += w * bulk * c;
+        a22 += w * c * c;
+        b1 += w * bulk * t;
+        b2 += w * c * t;
+    }
+    // [[a11 a12 V_b], [a12 a22 M_c], [V_b M_c 0]] [s_b s_c λ] = [b1 b2 M].
+    let k = nalgebra::Matrix3::new(a11, a12, bulk_mass, a12, a22, core_mass, bulk_mass, core_mass, 0.0);
+    let dependent = (a11 * a22 - a12 * a12).abs() <= 1e-10 * a11 * a22;
+    match k.try_inverse().filter(|_| !dependent) {
+        Some(inv) => {
+            let s = inv * nalgebra::Vector3::new(b1, b2, mass);
+            (s[0], s[1])
+        }
+        None => (1.0, (mass - bulk_mass) / core_mass),
+    }
+}
+
+/// Level 3 spawn under A-Ξ (§11.4): a signed core at the largest residual cluster of
+/// `ρ̃ − ρ_K` on the quadrature, with exponent `alpha`, metric `scale (C + h² I)⁻¹` from the
+/// `|r|`-weighted covariance `C` of the cluster, and the residual of its node nearest the
+/// centre as weight. `None` when there is no residual.
+pub fn spawn(density: &CauchyDensity, quad: &Quadrature, target: &[f64], alpha: f64, scale: f64) -> Option<CauchyKernel> {
+    let r: Vec<f64> = quad.pts.iter().zip(target).map(|(x, t)| t - density.rho(*x)).collect();
+    let (top, peak) = r.iter().enumerate().fold((0, 0.0f64), |a, (i, v)| if v.abs() > a.1 { (i, v.abs()) } else { a });
+    if !(peak > 0.0) {
+        return None;
+    }
+    // The connected cluster of {|r| ≥ peak/2} around the peak, linked within two node spacings.
+    let spacing = quad.w.iter().map(|w| w.cbrt()).sum::<f64>() / quad.w.len() as f64;
+    let grid = super::surface::PointGrid::build(&quad.pts);
+    let sign = r[top].signum();
+    let mut seen = vec![false; r.len()];
+    let mut stack = vec![top];
+    let mut cluster = Vec::new();
+    seen[top] = true;
+    while let Some(i) = stack.pop() {
+        cluster.push(i);
+        for (_, j) in grid.within(quad.pts[i], 2.0 * spacing) {
+            if !seen[j] && r[j] * sign >= 0.5 * peak {
+                seen[j] = true;
+                stack.push(j);
+            }
+        }
+    }
+    let wsum: f64 = cluster.iter().map(|i| quad.w[*i] * r[*i].abs()).sum();
+    let c = cluster.iter().fold(DVec3::ZERO, |s, i| s + quad.pts[*i] * (quad.w[*i] * r[*i].abs())) / wsum;
+    let mut cov = Matrix3::identity() * (spacing * spacing);
+    for i in &cluster {
+        let d = quad.pts[*i] - c;
+        let d = nalgebra::Vector3::new(d.x, d.y, d.z);
+        cov += d * d.transpose() * (quad.w[*i] * r[*i].abs() / wsum);
+    }
+    let metric = cov.try_inverse()? * scale;
+    let near = cluster
+        .iter()
+        .min_by(|a, b| (quad.pts[**a] - c).length().total_cmp(&(quad.pts[**b] - c).length()))?;
+    CauchyKernel::try_anisotropic(c, r[*near], mat_sym(dmat(metric)), alpha).ok()
 }
 
 /// Volume quadrature for Level 2: points, weights.

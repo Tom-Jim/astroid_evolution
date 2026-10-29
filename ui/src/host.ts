@@ -10,12 +10,15 @@ export interface Host {
   send(command: Command): void;
   /** Fetch whatever the run needs (the page installs files in memory), then restart. */
   restart(request: RunRequest): Promise<void>;
+  /** Play a cache file (`.aecache`); the run it holds replaces the current one. */
+  importCache(bytes: Uint8Array): Promise<void>;
   onStatus(listener: (status: Status) => void): () => void;
 }
 
 interface PageBridge {
   command(json: string): void;
   restart(request: RunRequest): Promise<void>;
+  importCache(bytes: Uint8Array): Promise<void>;
   last?: string;
 }
 
@@ -40,6 +43,10 @@ async function tauriHost(): Promise<Host> {
     async restart(request) {
       send({ cmd: "restart", ...request });
     },
+    async importCache(bytes) {
+      // A typed array goes to the command as the raw request body.
+      await invoke("cache_import", bytes);
+    },
     onStatus(listener) {
       const stop = listen<string>("status", (event) => listener(JSON.parse(event.payload)));
       return () => {
@@ -62,6 +69,9 @@ function pageHost(): Host {
     },
     restart(request) {
       return bridge().restart(request);
+    },
+    importCache(bytes) {
+      return bridge().importCache(bytes);
     },
     onStatus(listener) {
       const handler = (event: Event) => listener(JSON.parse((event as CustomEvent<string>).detail));

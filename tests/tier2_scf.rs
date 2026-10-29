@@ -3,8 +3,7 @@
 
 use std::path::PathBuf;
 
-use astroid_evolution::common::SimError;
-use astroid_evolution::scf::evolve::{self, RunOptions};
+use astroid_evolution::scf::evolve::{self, RunOptions, State};
 use astroid_evolution::scf::forward::Loading;
 use astroid_evolution::scf::frame;
 use astroid_evolution::scf::io::{Snapshot, initial_body, read_snapshot, write_snapshot};
@@ -23,19 +22,6 @@ fn sample_text(level: usize) -> String {
 
 fn project(level: usize) -> Project {
     Project::parse(&sample_text(level), projects()).expect("sample project is closed")
-}
-
-/// A primal–dual stop with a converged velocity and a stalled gap: the limit-load signature.
-fn limit_load(e: &SimError, tol: f64) -> bool {
-    let field = |key: &str| {
-        e.detail
-            .split(key)
-            .nth(1)
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<f64>().ok())
-    };
-    e.kind == "RheologyNotConverged"
-        && matches!((field("velocity change "), field("gap ")), (Some(du), Some(gap)) if du <= tol && gap > tol)
 }
 
 #[test]
@@ -80,6 +66,57 @@ fn snapshot_round_trip_and_standard_frame() {
     let _ = std::fs::remove_file(path);
 }
 
+/// A spin at which the Ryugu-density sample body has a quasi-static state.
+const SLOW_HOURS: f64 = 6.0;
+
+/// The sample body (out.obj, metres) at icosphere `level` with Ryugu's three Cauchy
+/// kernels. Centres stay in metres.
+fn ryugu_density(level: usize) -> Project {
+    let text = sample_text(level).replace(
+        "kernels = []",
+        "kernels = [\n  { center = [0.0, 0.0, 0.0], weight = 280.0, sigma = 0.0020, alpha = 1.2 },\n  { center = [0.0, 80.0, 140.0], weight = 160.0, sigma = 0.0080, alpha = 0.55 },\n  { center = [-110.0, 40.0, 20.0], weight = 140.0, sigma = 0.0100, alpha = 2.4 },\n]",
+    );
+    Project::parse(&text, projects()).expect("Ryugu density on out.obj")
+}
+
+fn opts(max_steps: usize, lag: bool) -> RunOptions {
+    RunOptions { max_steps: Some(max_steps), until: None, lag }
+}
+
+/// What every accepted step must satisfy, whatever the body does: finite fields, the
+/// momentum audit inside its tolerance, mass held to `ε_M` of the start, time booked by
+/// the advance of each record (zero for a settling step) at the exogenous spin, and the
+/// cone program solved.
+fn audit_records(p: &Project, res: &evolve::RunResult, mass0: f64, spin: &SpinSchedule, t0: f64) {
+    let mut t = t0;
+    for r in &res.records {
+        let at = format!("step {} ({})", r.step, r.kind);
+        // `t` is where the step starts and `advance` what it books (zero for settling).
+        assert!(r.advance >= 0.0 && (r.t - t).abs() <= 1e-9 * t.max(1.0), "{at}: starts at {} instead of {t}", r.t);
+        let (a, b) = (spin.sample(r.t).omega, spin.sample(r.t + r.advance).omega);
+        let tol = 1e-12 * a.abs().max(b.abs());
+        assert!(r.omega >= a.min(b) - tol && r.omega <= a.max(b) + tol, "{at}: spin {} outside [{a}, {b}]", r.omega);
+        t = r.t + r.advance;
+        assert!(r.mass.is_finite() && ((r.mass - mass0) / mass0).abs() <= p.geometry.eps_mass, "{at}: mass {} vs {mass0}", r.mass);
+        assert!(r.eps_momentum < p.stokes.tol_momentum, "{at}: eps_mom {}", r.eps_momentum);
+        for (name, v) in [
+            ("max_slack", r.max_slack),
+            ("max_displacement", r.max_displacement),
+            ("yielded_fraction", r.yielded_fraction),
+            ("mobile_area_fraction", r.mobile_area_fraction),
+            ("eps_lambda", r.eps_lambda),
+            ("dt", r.dt),
+        ] {
+            assert!(v.is_finite() && v >= 0.0, "{at}: {name} = {v}");
+        }
+        assert!(r.yielded_fraction <= 1.0 && r.mobile_area_fraction <= 1.0, "{at}: fractions");
+        assert!(!r.cone_unresolved, "{at}: the cone program was not solved");
+        assert_eq!(r.rheo_unconverged, 0, "{at}: rheology did not converge");
+    }
+    assert!((res.state.t - t).abs() <= 1e-9 * t.max(1.0), "the state is at {} after records to {t}", res.state.t);
+    assert!(res.state.body.positions.iter().all(|x| x.is_finite()), "a vertex is not finite");
+}
+
 #[test]
 fn relaxation_and_stage_run_on_gpu() {
     let clock = std::time::Instant::now();
@@ -91,15 +128,8 @@ fn relaxation_and_stage_run_on_gpu() {
         );
     };
     let t = std::time::Instant::now();
-    // out.obj (metres) with Ryugu's three Cauchy kernels. Centres stay in metres.
-    let text = sample_text(4).replace(
-        "kernels = []",
-        "kernels = [\n  { center = [0.0, 0.0, 0.0], weight = 280.0, sigma = 0.0020, alpha = 1.2 },\n  { center = [0.0, 80.0, 140.0], weight = 160.0, sigma = 0.0080, alpha = 0.55 },\n  { center = [-110.0, 40.0, 20.0], weight = 140.0, sigma = 0.0100, alpha = 2.4 },\n]",
-    );
-    let p = Project::parse(&text, projects()).expect("Ryugu density on out.obj");
+    let p = ryugu_density(4);
     mark("parse project", t);
-    let t = std::time::Instant::now();
-    mark("Metal rheology pipeline", t);
     let t = std::time::Instant::now();
     let body = initial_body(&p).unwrap();
     eprintln!(
@@ -127,8 +157,27 @@ fn relaxation_and_stage_run_on_gpu() {
     mark("mass check gravity", t);
     assert!(((m1 - mass0) / mass0).abs() <= p.geometry.eps_mass * 1.0001);
 
-    // 3.8 h per revolution. Do not require stage equilibrium: that was the empty-kernel spin.
+    // At 3.8 h this body is past its limit load (L* > 1, §2.17.1): no quasi-static state
+    // exists, and the solver must say so instead of iterating on.
     let schedule = SpinSchedule::parse(&format!("const:{omega:.8e}@1e5")).unwrap();
+    let t = std::time::Instant::now();
+    let collapse = evolve::run(
+        &p,
+        &schedule,
+        state.clone(),
+        fwd,
+        &opts(5, true),
+        &mut |_, _, _| Ok(()),
+    )
+    .err()
+    .expect("3.8 h is past the limit load");
+    mark("collapse", t);
+    assert_eq!(collapse.kind, "LimitLoadCollapse", "{collapse}");
+
+    // At SLOW_HOURS a quasi-static state exists. Do not require stage equilibrium.
+    let slow = 2.0 * std::f64::consts::PI / (SLOW_HOURS * 3600.0);
+    let schedule = SpinSchedule::parse(&format!("const:{slow:.8e}@1e5")).unwrap();
+    let fwd = astroid_evolution::scf::forward::Forward::bind(&state.body, p.g).unwrap();
     let mut seen = 0;
     let t = std::time::Instant::now();
     let res = evolve::run(
@@ -136,10 +185,7 @@ fn relaxation_and_stage_run_on_gpu() {
         &schedule,
         state,
         fwd,
-        &RunOptions {
-            max_steps: Some(5),
-            until: None,
-        },
+        &opts(5, true),
         &mut |_, _, _| {
             seen += 1;
             Ok(())
@@ -155,13 +201,66 @@ fn relaxation_and_stage_run_on_gpu() {
         );
     }
     assert_eq!(seen, res.records.len());
-    assert!(!res.records.is_empty());
+    assert!(res.records.len() == 5 || res.complete, "the run stopped after {} steps", res.records.len());
     for r in &res.records {
         eprintln!(
-            "record kind={} mass={:.6e} eps_momentum={:.3e}",
-            r.kind, r.mass, r.eps_momentum
+            "record kind={} mass={:.6e} eps_momentum={:.3e} lagged={}",
+            r.kind, r.mass, r.eps_momentum, r.lagged
         );
     }
+    assert!(!res.records[0].lagged, "the first step has no deep state to lag");
+    audit_records(&p, &res, mass0, &schedule, 0.0);
+}
+
+/// Ryugu at icosphere level 4 (`level = 5` in the project) at a spin of `hours`, slowly
+/// varying so that there is no stage target (§2.15) and the run goes on; and its start.
+fn ryugu_level4(hours: f64) -> (Project, SpinSchedule, State, f64) {
+    let text = include_str!("../dist/.stage/assets/projects/ryugu.toml").replacen("level = 5", "level = 4", 1);
+    let p = Project::parse(&text, projects()).expect("ryugu project");
+    let omega = 2.0 * std::f64::consts::PI / (hours * 3600.0);
+    let schedule = SpinSchedule::parse(&format!("linear:{omega:.8e},1e-22,1e13")).unwrap();
+    let (state, fwd) = evolve::start(&p, initial_body(&p).unwrap()).unwrap();
+    (p, schedule, state, fwd.moments.mass)
+}
+
+fn run_from(p: &Project, schedule: &SpinSchedule, state: &State, steps: usize, lag: bool) -> evolve::RunResult {
+    let fwd = astroid_evolution::scf::forward::Forward::bind(&state.body, p.g).unwrap();
+    evolve::run(p, schedule, state.clone(), fwd, &opts(steps, lag), &mut |_, _, _| Ok(())).unwrap()
+}
+
+/// The lagged deep state (§10.4.4 step 4+) is reused only while the surface and the
+/// density cores stay within `θ_lag h_Γ,min` and the loads within `ε_ω`. On Ryugu's quiet
+/// surface at its present 7.63 h spin nothing moves, every step after the first lags,
+/// and the run is exactly the one that evaluates every step.
+#[test]
+fn lagged_steps_on_a_quiet_surface_repeat_the_evaluated_run() {
+    let (p, schedule, state, mass0) = ryugu_level4(7.63);
+    let (lagged, exact) = (run_from(&p, &schedule, &state, 6, true), run_from(&p, &schedule, &state, 6, false));
+    audit_records(&p, &lagged, mass0, &schedule, 0.0);
+    audit_records(&p, &exact, mass0, &schedule, 0.0);
+    assert!(exact.records.iter().all(|r| !r.lagged), "lag switched off, yet a step lagged");
+    assert!(!lagged.records[0].lagged, "the first step has no deep state to lag");
+    assert!(lagged.records[1..].iter().all(|r| r.lagged), "a quiet step evaluated the deep state again");
+    assert_eq!(lagged.records.len(), exact.records.len());
+    for (a, b) in lagged.records.iter().zip(&exact.records) {
+        assert_eq!((a.kind, a.advance, a.max_displacement, a.mass), (b.kind, b.advance, b.max_displacement, b.mass), "step {}", a.step);
+    }
+    assert_eq!(lagged.state.body.positions, exact.state.body.positions);
+}
+
+/// A run depends on its request only: run again in the same process (the viewer's
+/// restart), it repeats itself bit for bit, sliding surface and moving cores included.
+#[test]
+fn a_rerun_in_the_same_process_repeats_the_run() {
+    let (p, schedule, state, mass0) = ryugu_level4(3.4);
+    let first = run_from(&p, &schedule, &state, 3, true);
+    let again = run_from(&p, &schedule, &state, 3, true);
+    audit_records(&p, &first, mass0, &schedule, 0.0);
+    assert!(first.records.iter().any(|r| r.max_displacement > 0.0), "nothing moved: the rerun proves little");
+    for (a, b) in again.records.iter().zip(&first.records) {
+        assert_eq!((a.kind, a.max_displacement, a.mass, a.yielded_fraction), (b.kind, b.max_displacement, b.mass, b.yielded_fraction), "step {} differs on a rerun", a.step);
+    }
+    assert_eq!(again.state.body.positions, first.state.body.positions, "a rerun ends elsewhere");
 }
 
 /// Relax is only the pre-evolution shape. Tier 2 then calls RTFP, the rheology
@@ -215,16 +314,13 @@ fn cauchy_meshes_evolve_past_relax() {
             &schedule,
             state,
             fwd,
-            &RunOptions {
-                max_steps: Some(2),
-                until: None,
-            },
+            &opts(2, true),
             &mut |_, _, _| Ok(()),
         ) {
             Ok(res) => res,
-            // Over-spun past its limit load (e.g. Deimos at 4 h with glass-bead friction), the
-            // velocity settles while the gap stalls: a reported collapse, not a solver defect.
-            Err(e) if limit_load(&e, p.stokes.pd_tol) => {
+            // Deimos at 4 h with glass-bead friction is past its limit load: a reported
+            // collapse (§2.17.1), not a solver defect. Ryugu and Phobos have a state.
+            Err(e) if e.kind == "LimitLoadCollapse" && name == "deimos" => {
                 eprintln!("{name}: limit load reached ({})", e.detail);
                 continue;
             }

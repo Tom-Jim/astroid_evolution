@@ -1,6 +1,6 @@
 //! Unit tests of `scf::runout` (mathstrict §2.8b, hypothesis A-C3).
 
-use astroid_evolution::common::math::DVec3;
+use astroid_evolution::common::math::{DMat3, DVec3, mat_sym};
 use astroid_evolution::rheo::{Material, MaterialSpec, SolverSpec};
 use std::sync::Arc;
 
@@ -217,6 +217,75 @@ fn an_unbound_packet_escapes_and_stays_at_its_source() {
     assert_eq!(a.distance, 0.0);
     let back = end_point(&sphere, a.ids, a.weights);
     assert!((back - sphere.positions[equator]).length() < 1e-6 * r);
+}
+
+/// Gravity and potential Hessian `GM (3 x xᵀ − r² I) / r⁵` of a point mass at the origin.
+fn point_mass(gm: f64, x: DVec3) -> (DVec3, DMat3) {
+    let r = x.length();
+    let xx = DMat3::from_cols(x * x.x, x * x.y, x * x.z);
+    (x * (-gm / r.powi(3)), (xx * 3.0 - DMat3::IDENTITY * (r * r)) * (gm / r.powi(5)))
+}
+
+/// A far flight takes its self-gravity from the exterior field (§2.8b). Off a
+/// non-rotating sphere a packet ejected straight up at `v² = 1.2 GM/R` rises to
+/// `R / (1 − v² R / 2GM) − R` and falls back onto its source; ejected at 45° it reaches the
+/// apoapsis of its Kepler ellipse, both to 2 % at `θ_r = 0.2` (the velocity-Verlet flight is
+/// second order). The prefetch rows serve each flight in a few batched calls. Without the
+/// exterior field the face expansion, extrapolated a radius up, turns outward and the
+/// packet is lost.
+#[test]
+fn a_far_flight_follows_the_kepler_orbit_in_few_exterior_calls() {
+    let (gm, r) = (100.0, 1000.0);
+    let sphere = Sphere::new(5, r);
+    let m = material(0.70, 0.96);
+    let g = sphere.gravity(|c, _| point_mass(gm, c).0);
+    let hess: Vec<_> = (0..sphere.topo.faces.len()).map(|f| mat_sym(point_mass(gm, sphere.face(f).0).1)).collect();
+    let mut field = sphere.field(&g, Loading { omega: 0.0, tide: 0.0 }, &m, 1.0e7);
+    field.hess_face = &hess;
+    let pole = sphere.vertex(DVec3::Z);
+    let up = sphere.positions[pole].normalize();
+    let v2 = 1.2 * gm / r;
+
+    let (calls, points) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+    let exterior = |xs: &[DVec3]| {
+        calls.set(calls.get() + 1);
+        points.set(points.get() + xs.len());
+        assert!(xs.iter().all(|x| x.length() > r), "an exterior request inside the body");
+        Ok(xs.iter().map(|x| point_mass(gm, *x)).collect())
+    };
+    let fly = |v0: DVec3| {
+        (calls.set(0), points.set(0));
+        let a = field.launch_with(pole, v0, Some(&exterior)).unwrap();
+        (a, calls.get(), points.get())
+    };
+
+    // Straight up: energy alone fixes the height, and the packet comes down where it left.
+    let (a, n_calls, n_points) = fly(up * v2.sqrt());
+    let climb = r / (1.0 - v2 * r / (2.0 * gm)) - r;
+    assert!(!a.escaped && !a.timed_out && a.hops == 1, "{a:?}");
+    assert!((a.max_hop - climb).abs() < 0.02 * climb, "height {:.1} m, energy {climb:.1} m", a.max_hop);
+    let back = end_point(&sphere, a.ids, a.weights);
+    assert!((back - sphere.positions[pole]).length() < 0.02 * r, "landed {:.1} m away", (back - sphere.positions[pole]).length());
+    assert!((1..=4).contains(&n_calls) && n_points <= 200, "{n_calls} calls, {n_points} points");
+
+    // At 45°: the apoapsis of the ellipse with energy ε = v²/2 − GM/R and angular momentum
+    // h = R v sin 45°.
+    let tilt = (up + DVec3::X).normalize();
+    let (a, n_calls, n_points) = fly(tilt * v2.sqrt());
+    let eps = 0.5 * v2 - gm / r;
+    let h = r * v2.sqrt() * std::f64::consts::FRAC_1_SQRT_2;
+    let e = (1.0 + 2.0 * eps * h * h / (gm * gm)).sqrt();
+    let apo = -gm / (2.0 * eps) * (1.0 + e) - r;
+    assert!(!a.escaped && a.hops >= 1, "{a:?}");
+    assert!((a.max_hop - apo).abs() < 0.02 * apo, "apoapsis height {:.1} m, Kepler {apo:.1} m", a.max_hop);
+    assert!((1..=4).contains(&n_calls) && n_points <= 200, "{n_calls} calls, {n_points} points");
+
+    let lost = field.launch(pole, up * v2.sqrt());
+    assert!(lost.escaped || (lost.max_hop - climb).abs() > 0.3 * climb, "the face expansion alone matched: {lost:?}");
+
+    // Past the escape speed the flight leaves and the packet stays at its source.
+    let (gone, _, _) = fly(up * (2.2 * gm / r).sqrt());
+    assert!(gone.escaped && gone.distance == 0.0, "{gone:?}");
 }
 
 /// Moving the sources and spreading them conserves mass exactly; arrivals at their own

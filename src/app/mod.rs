@@ -2,6 +2,7 @@
 //! playback snapshot; the shader morphs radii and colours the surface fields.
 
 pub mod bridge;
+pub mod cache;
 pub mod gizmo;
 pub mod history;
 pub mod material;
@@ -66,6 +67,7 @@ impl Plugin for AsteroidPlugin {
                         bridge::apply_commands,
                         ui::begin_evolution,
                         playback::poll_snapshot,
+                        playback::replay_cache,
                         playback::advance_playback,
                         playback::sync_material,
                         ui::autoshot,

@@ -238,6 +238,29 @@ impl PointGrid {
         }
     }
 
+    /// Every point within `r` of `x`, as `(|d|, index)` in no particular order.
+    pub fn within(&self, x: DVec3, r: f64) -> Vec<(f64, usize)> {
+        let lo = [0, 1, 2].map(|a| (((x[a] - r - self.lo[a]) / self.cell).floor() as i64).max(0));
+        let hi = [0, 1, 2].map(|a| {
+            (((x[a] + r - self.lo[a]) / self.cell).floor() as i64).min(self.dims[a] as i64 - 1)
+        });
+        let mut out = Vec::new();
+        for k in lo[2]..=hi[2] {
+            for j in lo[1]..=hi[1] {
+                for i in lo[0]..=hi[0] {
+                    let cell = ((k as usize * self.dims[1]) + j as usize) * self.dims[0] + i as usize;
+                    for &p in &self.items[self.start[cell] as usize..self.start[cell + 1] as usize] {
+                        let d = (self.pts[p as usize] - x).length();
+                        if d < r {
+                            out.push((d, p as usize));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Index of the point nearest to `x`.
     pub fn nearest(&self, x: DVec3) -> usize {
         self.k_nearest(x, 1, |_| false).first().map_or(0, |(_, p)| *p)

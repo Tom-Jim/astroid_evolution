@@ -4,7 +4,6 @@
 use nalgebra::DVector;
 
 use crate::common::error::SimError;
-use crate::common::math::DVec3;
 use crate::rheo::Material;
 
 use super::super::params::StokesParams;
@@ -22,6 +21,11 @@ pub(super) fn solve_picard(
     m: &Material,
     guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
+    if ld.dilatancy.is_some() {
+        return Err(SimError::model_not_closed(
+            "A-Ξ (dilatancy) needs stokes.solver = \"primal-dual\"",
+        ));
+    }
     let n_u = ops.lay.n_u;
     let np = ops.vol.pts.len();
     let p_min = m.spec.p_min;
@@ -31,10 +35,7 @@ pub(super) fn solve_picard(
         Some(g) if g.u.len() == n_u => DVector::from_column_slice(&g.u),
         _ => DVector::zeros(n_u),
     };
-    let coh: Vec<f64> = ops.vol.depth.iter().map(|d| m.cohesion_at(*d)).collect();
-    let gcoh: Vec<DVec3> = (0..np)
-        .map(|p| ops.vol.gdepth[p] * m.cohesion_slope(ops.vol.depth[p]))
-        .collect();
+    let coh = &ld.strength.vol;
     let p_start: &[f64] = guess.map_or(&[], |g| &g.p);
     let mut pr = Pressure::warm(ops, p_min, p_start);
     let mut eta_prev: Vec<f64> = Vec::new();
@@ -69,10 +70,10 @@ pub(super) fn solve_picard(
                 total_iters += 1;
                 let fields = strain_fields(ops, &u);
                 // (P1) pressure from the frozen (u^k, p̃^k).
-                pr.update(ops, ld, prm, m, eps, &coh, &gcoh, &u, &fields)?;
+                pr.update(ops, ld, prm, m, eps, &u, &fields, None)?;
                 // (P2) viscosity from (γ̇(u^k), p̃^{k+1}).
                 let mut eta: Vec<f64> = (0..np)
-                    .map(|p| eta_eval(m, coh[p], fields.shear[p], pr.ptil[p], eps).eta)
+                    .map(|p| eta_eval(m, &coh[p], fields.shear[p], pr.ptil[p], eps).eta)
                     .collect();
                 if !eta_prev.is_empty() {
                     for p in 0..np {
@@ -152,7 +153,7 @@ pub(super) fn solve_picard(
     // Criterion (b) on the final iterate with the unrelaxed viscosity.
     let fields = strain_fields(ops, &u);
     let eta_final: Vec<f64> = (0..np)
-        .map(|p| eta_eval(m, coh[p], fields.shear[p], pr.ptil[p], eps_used).eta)
+        .map(|p| eta_eval(m, &coh[p], fields.shear[p], pr.ptil[p], eps_used).eta)
         .collect();
     let k = assemble_k(ops, &eta_final);
     let resid = &k * &u + ops.rigid.transpose() * &lambda - &f_load;
@@ -172,8 +173,8 @@ pub(super) fn solve_picard(
         )));
     }
     // Strong-form rotational residual f - ∇p (diagnostic of §8.7).
-    let eps_rot = pr.rotational_residual(ops, ld, m, eps_used, &coh, &gcoh, &u, &fields);
-    let p_surface = pr.face_traction(ops, ld, prm, m, eps_used, &u)?;
+    let eps_rot = pr.rotational_residual(ops, ld, m, eps_used, &u, &fields, None);
+    let p_surface = pr.face_traction(ops, ld, prm, m, eps_used, &u, None)?;
     let (pres_c, lift) = pr.split(ops);
     let wsum: f64 = ops.vol.w.iter().sum();
     let tensile = (0..np)
@@ -201,5 +202,6 @@ pub(super) fn solve_picard(
         tensile_fraction: tensile,
         inverse_ekman: 0.0,
         gamma_eps: eps_used,
+        dilatancy: None,
     })
 }

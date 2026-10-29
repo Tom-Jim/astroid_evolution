@@ -177,7 +177,7 @@ pub enum Phase {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameStats {
     pub step: usize,
     pub time: f64,
@@ -199,7 +199,7 @@ pub struct FrameStats {
     pub mobile_area_fraction: f64,
     pub dt: f64,
     pub dt_cfl: f64,
-    pub dt_bound: &'static str,
+    pub dt_bound: crate::app::snapshot::Tag,
     /// Largest principal Cauchy stress on the surface (Pa, tension positive).
     pub tension_max: f64,
     /// Runout of the eroded packets (§2.8b): packets, mass-weighted mean distance (m),
@@ -233,7 +233,7 @@ impl FrameStats {
             mobile_area_fraction: s.audit.mobile_area_fraction,
             dt: s.audit.dt,
             dt_cfl: s.audit.dt_cfl,
-            dt_bound: s.dt_bound.0,
+            dt_bound: s.dt_bound,
             tension_max: s.tension_max,
             runout_traced: s.audit.runout_traced,
             runout_distance: s.audit.runout_distance,
@@ -250,6 +250,10 @@ pub struct Evolution {
     pub control: Arc<Control>,
     pub stats: Option<FrameStats>,
     pub receiver: Mutex<Option<Receiver<WorkerMessage>>>,
+    /// The frames of a cached run not yet played (`app::cache`).
+    pub replay: Option<crate::app::history::History>,
+    /// The frames come from a cache file, not from a live computation.
+    pub cached: bool,
 }
 
 impl Default for Evolution {
@@ -260,6 +264,8 @@ impl Default for Evolution {
             control: Arc::default(),
             stats: None,
             receiver: Mutex::new(None),
+            replay: None,
+            cached: false,
         }
     }
 }

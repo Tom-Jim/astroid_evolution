@@ -103,6 +103,11 @@ gltf = { version = "1.4", default-features = false, features = ["utils"] }
 base64 = "0.22"
 chull = "0.2"
 futures-channel = "0.3"
+# Cache files (`.aecache`): postcard frames, deflated.
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+miniz_oxide = "0.8"
+# The cone program of §2.13: interior-point conic solver, pure Rust (QDLDL), runs in wasm.
+clarabel = "0.11"
 wgpu = { version = "30", default-features = false, features = ["wgsl", "std"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -116,11 +121,11 @@ wgpu = { version = "30", default-features = false, features = ["metal", "wgsl", 
 wgpu = { version = "30", default-features = false, features = ["vulkan", "wgsl", "std", "parking_lot"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# GPU jobs and snapshots cross the worker boundary as postcard bytes.
-postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# The evolution worker's rayon pool (wasm threads; the browser build is nightly).
+wasm-bindgen-rayon = { version = "1.3", features = ["no-bundler"] }
 web-sys = { version = "0.3", features = ["console"] }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgpu"] }
 

@@ -114,7 +114,7 @@ fn running() -> Evolution {
             mobile_area_fraction: 0.4,
             dt: 1.0e4,
             dt_cfl: 2.0e4,
-            dt_bound: "mode_c",
+            dt_bound: astroid_evolution::app::snapshot::Tag("mode_c"),
             tension_max: 12.5,
             runout_traced: 40,
             runout_distance: 35.0,
@@ -300,10 +300,19 @@ fn ryugu_step_matches_the_quasi_static_audit() {
         posed_positions(&snap.position_from, &snap.position_to, 0.0),
         snap.position_from
     );
-    assert_eq!(
-        posed_positions(&snap.position_from, &snap.position_to, 1.0),
-        snap.position_to
-    );
+    // `a + (b − a)·1` may round one ulp away from `b` in f32, as it does in the shader.
+    for (shown, end) in posed_positions(&snap.position_from, &snap.position_to, 1.0)
+        .iter()
+        .zip(&snap.position_to)
+    {
+        for k in 0..3 {
+            let scale = shown[k].abs().max(end[k].abs()).max(1.0);
+            assert!(
+                (shown[k] - end[k]).abs() <= 4.0 * f32::EPSILON * scale,
+                "pose at τ = 1 {shown:?} is not the endpoint {end:?}"
+            );
+        }
+    }
     for (shown, vertex) in snap.position_to.iter().zip(&snap.vertices_m) {
         for k in 0..3 {
             assert!(
@@ -314,6 +323,39 @@ fn ryugu_step_matches_the_quasi_static_audit() {
     }
 
     let audit = &snap.audit;
+    // Printed quantities are not convergence tests (§2.15), but each must be a number in
+    // its range: a NaN would pass every `<=` above unnoticed.
+    for (name, v) in [
+        ("max_slack", snap.max_slack),
+        ("max_displacement", snap.max_displacement),
+        ("mass", snap.mass),
+        ("dt", audit.dt),
+        ("trust", audit.trust),
+        ("slope_slack", audit.slope_slack),
+        ("eps_picard", audit.eps_picard),
+        ("tensile_fraction", audit.tensile_fraction),
+        ("inverse_ekman", audit.inverse_ekman),
+    ] {
+        assert!(v.is_finite() && v >= 0.0, "{name} = {v}");
+    }
+    // A bound that does not apply (no yielded face for the CFL bound) is +∞, never NaN,
+    // and the step never exceeds a bound.
+    for (name, v) in [("dt_cfl", audit.dt_cfl), ("dt_char", audit.dt_char)] {
+        assert!(v >= audit.dt * (1.0 - 1e-12), "{name} = {v} below the step {}", audit.dt);
+    }
+    // τ_C is no bound under A-T1 (it must be far below the step); +∞ without erosion.
+    assert!(audit.dt_c > 0.0, "τ_C = {}", audit.dt_c);
+    assert!(audit.mass_residual.is_finite() && audit.mass_slack.is_finite(), "mass row");
+    for (name, v) in [
+        ("yielded", snap.yielded_fraction),
+        ("mobile area", audit.mobile_area_fraction),
+        ("core mass", audit.core_mass_fraction),
+        ("tensile", audit.tensile_fraction),
+    ] {
+        assert!((0.0..=1.0).contains(&v), "{name} fraction {v}");
+    }
+    assert!(!snap.dt_bound.0.is_empty(), "the step bound is not named");
+    assert!(snap.vertices_m.iter().flatten().all(|x| x.is_finite()), "a vertex is not finite");
     eprintln!(
         "tier3 census wall={wall:.3}s complete={complete} bound={} dt={:.3e} dt_cfl={:.3e} dt_c={:.3e} dt_char={:.3e}",
         snap.dt_bound.0, audit.dt, audit.dt_cfl, audit.dt_c, audit.dt_char

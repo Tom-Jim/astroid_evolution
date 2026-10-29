@@ -16,6 +16,7 @@ use crate::scf::runout::PATH_SAMPLES;
 use crate::app::resources::{
     AppConfig, Evolution, Phase, RegolithView, Scene, SurfaceView, display_imported,
 };
+use crate::app::history::History;
 
 /// Scene background, near-black `#050608`, under the HUD panels of `ui/src/style.css`.
 pub const BACKGROUND: Color = Color::srgb(0.02, 0.024, 0.031);
@@ -150,11 +151,46 @@ pub fn begin_evolution(
     config: Res<AppConfig>,
     scene: Res<Scene>,
     pool: Res<EvolutionPool>,
+    root: Res<crate::app::bridge::DataRoot>,
     mut evolution: ResMut<Evolution>,
+    mut history: ResMut<History>,
 ) {
     if evolution.phase == Phase::Idle && time.elapsed_secs() > 1.0 {
-        start_worker(&mut evolution, &config, scene.scale, &*pool);
+        start_run(&mut evolution, &mut history, &config, &root.0, scene.scale, &pool);
     }
+}
+
+/// Start a run. The browser plays the cached file of the run when the page found one
+/// (`app::cache`); otherwise, and always on the desktop, the run is computed.
+pub fn start_run(
+    evolution: &mut Evolution,
+    history: &mut History,
+    config: &AppConfig,
+    root: &std::path::Path,
+    scale: f64,
+    pool: &EvolutionPool,
+) {
+    #[cfg(target_arch = "wasm32")]
+    if let Ok(bytes) = crate::io::memfs::read(&root.join(crate::app::cache::name(config, root))) {
+        match crate::app::cache::decode(&bytes) {
+            Ok((_, cached)) => return play_cached(evolution, history, cached),
+            Err(err) => warn!("{err}; computing the run"),
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (history, root);
+    start_worker(evolution, config, scale, pool);
+}
+
+/// Stop the current run and play `cached` in its place.
+pub fn play_cached(evolution: &mut Evolution, history: &mut History, cached: History) {
+    evolution.control.request_quit();
+    *evolution = Evolution::default();
+    history.clear();
+    evolution.status = format!("playing a cached run ({} frames)", cached.len());
+    evolution.replay = Some(cached);
+    evolution.cached = true;
+    evolution.phase = Phase::Running;
 }
 
 pub fn start_worker(evolution: &mut Evolution, config: &AppConfig, scale: f64, pool: &EvolutionPool) {

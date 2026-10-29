@@ -170,6 +170,40 @@ pub fn poll_snapshot(
     }
 }
 
+/// Play a cached run (`app::cache`) as if it were computed: every `REPLAY_SECONDS` the
+/// next stored frame joins the timeline and, unless the timeline is held, the screen.
+pub fn replay_cache(
+    time: Res<Time>,
+    mut evolution: ResMut<Evolution>,
+    mut playback: ResMut<Playback>,
+    mut history: ResMut<History>,
+    mut due: Local<f32>,
+) {
+    let now = time.elapsed_secs();
+    let evolution = &mut *evolution;
+    let Some(source) = evolution.replay.as_mut() else {
+        return;
+    };
+    if evolution.phase == Phase::Paused || now < *due {
+        return;
+    }
+    if !source.move_first_to(&mut history) {
+        evolution.replay = None;
+        evolution.phase = Phase::Done;
+        evolution.status = "cached run complete".into();
+        return;
+    }
+    *due = now + crate::app::cache::REPLAY_SECONDS;
+    let newest = history.len() - 1;
+    evolution.stats = history.stats(newest);
+    if history.view.is_none()
+        && let Some(mut snap) = history.frame(newest)
+    {
+        snap.wall_seconds = f64::from(crate::app::cache::REPLAY_SECONDS);
+        adopt(&mut playback, snap);
+    }
+}
+
 /// Put a stored step on screen as a still pose (no morph from the previous one).
 pub fn show(play: &mut Playback, snap: StepSnapshot) {
     let generation = play.generation;

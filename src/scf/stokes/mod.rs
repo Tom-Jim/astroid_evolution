@@ -27,6 +27,7 @@ use super::basis::{
     surface_strain,
 };
 use super::domain::{SurfacePoints, VolumeSet};
+use super::evolving::dilatation::Dilatational;
 use super::harmonics::SurfaceFit;
 use super::params::StokesParams;
 use super::surface::SurfaceIndex;
@@ -71,6 +72,88 @@ impl<T: Entry> QRows<T> {
     }
 }
 
+/// Where a point's basis rows come from when a geometry is rebuilt: point `i` of the
+/// previous volume rule, or point `j` of the newly evaluated ones.
+#[derive(Clone, Copy)]
+enum Source {
+    Old(usize),
+    New(usize),
+}
+
+/// Relative distance `δ / R_ref` within which a node takes the rows of an old node: the
+/// integrand of that node is then off by `O(L δ / R_ref)` (§8.1), below 1e-4 relative.
+const REUSE_DISTANCE: f64 = 1.0e-5;
+
+/// Each point of `pts` mapped to the nearest point of `old` within `reach`, or to the
+/// list of points to evaluate.
+fn reuse_map(pts: &[DVec3], old: &[DVec3], reach: f64) -> (Vec<Source>, Vec<DVec3>) {
+    let cell = |p: &DVec3| (*p / reach).floor().as_i64vec3().to_array();
+    let mut grid: std::collections::HashMap<[i64; 3], Vec<usize>> = std::collections::HashMap::new();
+    for (i, p) in old.iter().enumerate() {
+        grid.entry(cell(p)).or_default().push(i);
+    }
+    let mut fresh = Vec::new();
+    let src = pts
+        .iter()
+        .map(|p| {
+            let c = cell(p);
+            let mut best: Option<(f64, usize)> = None;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &i in grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]).into_iter().flatten() {
+                            let d = (old[i] - *p).length();
+                            if d <= reach && best.is_none_or(|b| d < b.0) {
+                                best = Some((d, i));
+                            }
+                        }
+                    }
+                }
+            }
+            match best {
+                Some((_, i)) => Source::Old(i),
+                None => {
+                    fresh.push(*p);
+                    Source::New(fresh.len() - 1)
+                }
+            }
+        })
+        .collect();
+    (src, fresh)
+}
+
+/// Rows of `stride` per point, each taken from the old or the new block: one contiguous
+/// copy per point and column, the columns in parallel.
+fn gather<T: Entry + Send + Sync>(old: &DMatrix<T>, new: &DMatrix<T>, src: &[Source], stride: usize) -> DMatrix<T> {
+    use rayon::prelude::*;
+    let cols = old.ncols().max(new.ncols());
+    let rows = stride * src.len();
+    let mut out = DMatrix::from_element(rows, cols, T::of(0.0));
+    if rows == 0 {
+        return out;
+    }
+    let (no, nn) = (old.nrows(), new.nrows());
+    out.as_mut_slice().par_chunks_mut(rows).enumerate().for_each(|(c, col)| {
+        for (p, s) in src.iter().enumerate() {
+            let (from, at) = match *s {
+                Source::Old(i) => (&old.as_slice()[c * no..(c + 1) * no], stride * i),
+                Source::New(j) => (&new.as_slice()[c * nn..(c + 1) * nn], stride * j),
+            };
+            col[stride * p..stride * (p + 1)].copy_from_slice(&from[at..at + stride]);
+        }
+    });
+    out
+}
+
+/// What the next geometry takes over from this one: the basis scale `R_ref` (§8.1) and
+/// the volume rows by point. Everything else of the old geometry is released first.
+pub struct Reuse {
+    pub r_ref: f64,
+    pts: Vec<DVec3>,
+    rows: VelRows<f32>,
+    q_vol: QRows<f32>,
+}
+
 /// Geometry-dependent operators, built once per geometry and density.
 pub struct Operators {
     /// The enclosing-ball fit `R ≡ R_*` that drives the basis kernels (G1).
@@ -99,10 +182,6 @@ pub struct Operators {
     pub rigid: DMatrix<f64>,
     /// Smallest singular value of the row-normalised rigid-body constraint matrix.
     pub rigid_sigma_min: f64,
-    /// Velocity rows on the classification mesh `X_Y`, kept from the second use of this
-    /// geometry on (a step that moves the geometry classifies it once).
-    pub class_rows: std::sync::OnceLock<super::basis::ResidentVelocity>,
-    pub class_uses: std::sync::atomic::AtomicUsize,
     /// The classification mesh `X_Y` of (G7).
     pub class_mesh: std::sync::OnceLock<super::classify::ClassMesh>,
     /// Gravity at the volume and boundary points; independent of the spin.
@@ -115,6 +194,32 @@ pub struct Operators {
 
 impl Operators {
     #[allow(clippy::too_many_arguments)]
+    /// `v` and the scaled strain six-vector `D` at the volume nodes, from the host rows.
+    pub fn vol_velocity(&self, u: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let u = DVector::from_column_slice(u);
+        let v = linalg::mul(&self.rows.v, &u);
+        let d = linalg::mul(&self.rows.d, &u);
+        (v.as_slice().to_vec(), d.as_slice().to_vec())
+    }
+
+    /// The pressure `P c + lift` at the volume nodes, from the host rows.
+    pub fn vol_pressure(&self, pres_c: &[f64], lift: &[f64]) -> Vec<f64> {
+        let coeff = DVector::from_iterator(pres_c.len() + lift.len(), pres_c.iter().chain(lift).copied());
+        linalg::mul(&self.q_vol.val, &coeff).as_slice().to_vec()
+    }
+
+    /// The rows and scale the next geometry can reuse; the rest is released.
+    pub fn into_reuse(self) -> Reuse {
+        Reuse {
+            r_ref: self.surf.coeff[0] / (4.0 * PI).sqrt(),
+            pts: self.vol.pts,
+            rows: self.rows,
+            q_vol: self.q_vol,
+        }
+    }
+
+    /// `prev` (same basis scale) supplies the rows of the volume nodes that moved by at
+    /// most `REUSE_DISTANCE · R_ref` (the crossings of most rays barely move in a step).
     pub fn build(
         surf: &SurfaceFit,
         density: &CauchyDensity,
@@ -122,12 +227,14 @@ impl Operators {
         index: &SurfaceIndex,
         faces: SurfacePoints,
         prm: &StokesParams,
+        prev: Option<Reuse>,
     ) -> Result<Self, SimError> {
         let lay = VelLayout::new(prm.l_velocity);
         let play = PresLayout {
             l_max: prm.l_pressure,
             k_max: prm.k_pressure,
         };
+        let span = super::timing::span("operators_rule");
         let vol = VolumeSet::build(
             mesh,
             index,
@@ -141,17 +248,48 @@ impl Operators {
             .map(|f| (faces.pts[f], faces.normals[f], faces.w[f]))
             .collect();
         let bnd = SurfacePoints::clustered(&face_triples, prm.n_boundary);
-        let rows = eval_velocity_rays_as(surf, &lay, &vol.pts, 1, Want::ALL);
-        let bnd_rows = eval_velocity_rays_as(surf, &lay, &bnd.pts, 1, Want::ALL);
-        let surf_d = surface_strain(surf, &lay, &faces.pts).map_err(SimError::gpu)?;
+        drop(span);
+        let span = super::timing::span("operators_volume_rows");
+        // Rows of another basis scale are other functions: they are never taken over.
+        let h_n = surf.coeff[0] / (4.0 * PI).sqrt();
+        let prev = prev.filter(|old| (old.r_ref - h_n).abs() <= 1e-12 * h_n);
+        let (rows, q_vol) = match prev {
+            Some(old) => {
+                let (src, fresh) = reuse_map(&vol.pts, &old.pts, REUSE_DISTANCE * old.r_ref);
+                let r = eval_velocity_rays_as::<f32>(surf, &lay, &fresh, 1, Want::ALL);
+                let q = QRows::<f32>::eval(surf, &play, &fresh);
+                let _gather = super::timing::span("operators_volume_gather");
+                (
+                    VelRows {
+                        n_points: vol.pts.len(),
+                        v: gather(&old.rows.v, &r.v, &src, 3),
+                        d: gather(&old.rows.d, &r.d, &src, 6),
+                        lap: gather(&old.rows.lap, &r.lap, &src, 3),
+                        gd: gather(&old.rows.gd, &r.gd, &src, 18),
+                    },
+                    QRows {
+                        val: gather(&old.q_vol.val, &q.val, &src, 1),
+                        grad: gather(&old.q_vol.grad, &q.grad, &src, 3),
+                    },
+                )
+            }
+            None => (
+                eval_velocity_rays_as(surf, &lay, &vol.pts, 1, Want::ALL),
+                QRows::eval(surf, &play, &vol.pts),
+            ),
+        };
         let rigid = rigid_matrix(&vol, &rows, lay.n_u);
         let rigid_sigma_min = rigid_rank(&rigid, prm.rigid_sigma_min)?;
+        drop(span);
+        let span = super::timing::span("operators_boundary_rows");
+        let bnd_rows = eval_velocity_rays_as(surf, &lay, &bnd.pts, 1, Want::ALL);
+        let surf_d = surface_strain(surf, &lay, &faces.pts).map_err(SimError::gpu)?;
+        drop(span);
+        let _span = super::timing::span("operators_nitsche");
 
         // Nitsche matrix a_N (G3) with h_N = R_* and γ_N = 4 C_N.
-        let q_vol = QRows::eval(surf, &play, &vol.pts);
         let q_bnd = QRows::eval(surf, &play, &bnd.pts);
         let q_bnd_dn = q_bnd.normal(&bnd.normals);
-        let h_n = surf.coeff[0] / (4.0 * PI).sqrt();
         let stiff = linalg::weighted_gram(&q_vol.grad, 3, &vol.w);
         let weighted = |m: &DMatrix<f64>| {
             let mut out = m.clone();
@@ -188,8 +326,6 @@ impl Operators {
             surf_d,
             rigid,
             rigid_sigma_min,
-            class_rows: std::sync::OnceLock::new(),
-            class_uses: std::sync::atomic::AtomicUsize::new(0),
             class_mesh: std::sync::OnceLock::new(),
             vol_field: std::sync::OnceLock::new(),
             bnd_field: std::sync::OnceLock::new(),
@@ -256,41 +392,109 @@ fn rigid_matrix(vol: &VolumeSet, rows: &VelRows<f32>, n_u: usize) -> DMatrix<f64
     b
 }
 
+/// Local strength of the viscoplastic law at a point: the cohesion `c` (§4.3a, under A-ϖ
+/// `(1 − ϖ) c`), the static dilatancy shift `ξ = K_Ξ (ν − ν_c⁰)` of the friction (A-Ξ,
+/// §11.3), and their gradients for `∇η` (§8.7).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Local {
+    pub c: f64,
+    pub xi: f64,
+    pub gc: DVec3,
+    pub gxi: DVec3,
+}
+
+/// The local strengths at the volume nodes, the boundary rule and the face centres.
+#[derive(Clone, Debug, Default)]
+pub struct Strengths {
+    pub vol: Vec<Local>,
+    pub bnd: Vec<Local>,
+    pub face: Vec<Local>,
+}
+
+impl Strengths {
+    /// The intact profile of A-C2: `c(d)` and `∇c = c'(d) ∇d`, no dilatancy shift. The
+    /// boundary and face values are the interior traces at depth 0, `∇d = −n`.
+    pub fn profile(ops: &Operators, m: &Material) -> Self {
+        let trace = |n: &DVec3| Local {
+            c: m.cohesion_at(0.0),
+            gc: *n * -m.cohesion_slope(0.0),
+            ..Local::default()
+        };
+        Self {
+            vol: (0..ops.vol.pts.len())
+                .map(|p| Local {
+                    c: m.cohesion_at(ops.vol.depth[p]),
+                    gc: ops.vol.gdepth[p] * m.cohesion_slope(ops.vol.depth[p]),
+                    ..Local::default()
+                })
+                .collect(),
+            bnd: ops.bnd.normals.iter().map(trace).collect(),
+            face: ops.faces.normals.iter().map(trace).collect(),
+        }
+    }
+}
+
+/// The evolving material of Chapter 11 seen by the solver: the local strengths at any
+/// points, given the intact ones there.
+pub trait MaterialField: Sync {
+    fn locals(&self, m: &Material, pts: &[DVec3], intact: &[Local]) -> Vec<Local>;
+}
+
+/// The rate-type dilatancy of A-Ξ seen by the solver (§11.4): from the total shear rate,
+/// `p̃` and the strengths at the volume nodes, the dilatational field of the next sweeps.
+pub trait DilatancySource: Sync {
+    fn field(&self, m: &Material, strength: &[Local], shear: &[f64], ptil: &[f64], eps: f64) -> DilatancyState;
+}
+
+/// One update of the dilatational field: `v_ε`, the projection defect `e_ε`, and the
+/// largest driving rate `γ̇_p^⋆` (for `Δt_Ξ`).
+#[derive(Clone, Debug)]
+pub struct DilatancyState {
+    pub field: Dilatational,
+    pub defect: f64,
+    pub driving_max: f64,
+}
+
 /// Viscosity of §4 and its partial derivatives, all analytic.
 #[derive(Clone, Copy, Debug)]
 pub struct EtaEval {
     pub eta: f64,
     pub d_shear: f64,
     pub d_p: f64,
-    /// `∂η/∂c`.
+    /// `∂η/∂c` and `∂η/∂ξ`.
     pub d_c: f64,
+    pub d_xi: f64,
     pub mu_d: f64,
     pub inertial: f64,
 }
 
-/// `η = (c + μ_d(I_c) p̃) / √(γ̇² + γ̇_ε²)`, `I_c = d_p γ̇ / √((p̃ + p_c)/ρ_p)`,
-/// with the local cohesion `c = c(d)` of §4.3a.
-pub fn eta_eval(m: &Material, c: f64, shear: f64, p_tilde: f64, eps: f64) -> EtaEval {
+/// `η = (c + μ_d p̃) / √(γ̇² + γ̇_ε²)`, `I_c = d_p γ̇ / √((p̃ + p_c)/ρ_p)`, with
+/// `μ_d = μ_cs(I_c) + ξ + K_Ξ Δν_c I_c/(I_ν + I_c)` (the last two under A-Ξ only).
+pub fn eta_eval(m: &Material, l: &Local, shear: f64, p_tilde: f64, eps: f64) -> EtaEval {
     let s = &m.spec;
     let p_star = p_tilde + m.p_c;
-    let (mu_d, inertial) = dynamic_friction(m, shear, p_star);
+    let (mu_cs, inertial) = dynamic_friction(m, shear, p_star);
+    let (extra, d_extra) = m.dilatancy_rate_term(inertial);
+    let mu_d = mu_cs + l.xi + extra;
     let scale = (p_star / s.rho_p).sqrt();
     let df = s.d_p * shear;
     let den = s.i_0 * scale + df;
     let dmu = s.mu_2 - s.mu_s;
+    // ∂I/∂γ̇ = d_p / scale, ∂I/∂p̃ = −I / (2 p_*).
     let (dmu_dg, dmu_dp) = if den > 0.0 {
         (
-            dmu * s.d_p * s.i_0 * scale / (den * den),
-            -dmu * df * s.i_0 / (2.0 * scale * s.rho_p) / (den * den),
+            dmu * s.d_p * s.i_0 * scale / (den * den) + d_extra * s.d_p / scale,
+            -dmu * df * s.i_0 / (2.0 * scale * s.rho_p) / (den * den) - d_extra * inertial / (2.0 * p_star),
         )
     } else {
         (0.0, 0.0)
     };
     let big = (shear * shear + eps * eps).sqrt();
-    let a = c + mu_d * p_tilde;
+    let a = l.c + mu_d * p_tilde;
     EtaEval {
         eta: a / big,
         d_c: 1.0 / big,
+        d_xi: p_tilde / big,
         d_shear: p_tilde * dmu_dg / big - a * shear / (big * big * big),
         d_p: (mu_d + p_tilde * dmu_dp) / big,
         mu_d,
@@ -309,6 +513,10 @@ pub struct Loads<'a> {
     /// `n · T_tide · n` at the face centres.
     pub tide_nn: &'a [f64],
     pub g_const: f64,
+    /// Local strengths (§4.3a; Chapter 11).
+    pub strength: &'a Strengths,
+    /// A-Ξ; `None` keeps the velocity exactly divergence-free.
+    pub dilatancy: Option<&'a dyn DilatancySource>,
 }
 
 #[derive(Clone, Debug)]
@@ -334,6 +542,22 @@ pub struct StokesSolution {
     pub tensile_fraction: f64,
     pub inverse_ekman: f64,
     pub gamma_eps: f64,
+    /// A-Ξ: the converged dilatational field (the total velocity is `v_ε + Σ u B`).
+    pub dilatancy: Option<DilatancyState>,
+}
+
+impl StokesSolution {
+    /// `v_ε(x)` (zero without A-Ξ).
+    pub fn v_eps(&self, x: DVec3) -> DVec3 {
+        self.dilatancy.as_ref().map_or(DVec3::ZERO, |d| d.field.velocity(x))
+    }
+
+    /// `D(v_ε)(x)` as the scaled six-vector, and `ε̇_{v,h}(x)` (zeros without A-Ξ).
+    pub fn d_eps(&self, x: DVec3) -> ([f64; 6], f64) {
+        self.dilatancy
+            .as_ref()
+            .map_or(([0.0; 6], 0.0), |d| (d.field.strain(x), d.field.divergence(x)))
+    }
 }
 
 /// A warm start of the Stokes–pressure pair: the velocity and pressure coefficients of a
@@ -373,6 +597,20 @@ pub(super) struct Fields {
     pub(super) shear: Vec<f64>,
     /// `D` at the volume points (six per point, scaled).
     pub(super) d: DVector<f64>,
+}
+
+/// `D'` of the total velocity and its shear rate at the volume nodes: the solenoidal part
+/// of `u` plus the deviatoric shift `e^ε/√2` of A-Ξ (`None`: no shift).
+pub(super) fn strain_fields_with(ops: &Operators, u: &DVector<f64>, shift: Option<&DVector<f64>>) -> Fields {
+    let mut d = linalg::mul(&ops.rows.d, u);
+    if let Some(e) = shift {
+        d += e * std::f64::consts::FRAC_1_SQRT_2;
+    }
+    let np = ops.vol.pts.len();
+    let shear = (0..np)
+        .map(|p| (2.0 * d6_dot(&d.as_slice()[6 * p..6 * p + 6], &d.as_slice()[6 * p..6 * p + 6])).sqrt())
+        .collect();
+    Fields { shear, d }
 }
 
 pub(super) fn strain_fields(ops: &Operators, u: &DVector<f64>) -> Fields {

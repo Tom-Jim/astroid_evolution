@@ -3,7 +3,7 @@
 //! centres (§10.3), all on the general domain of hypothesis (G).
 
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -16,13 +16,41 @@ use super::basis::{Want, contract_velocity_rays};
 use super::body::Body;
 use super::classify::{Classification, classify};
 use super::domain::SurfacePoints;
+use super::evolving::dilatation::{DilatationSpace, Source};
+use super::evolving::markers::Nonlocal;
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
 use super::harmonics::SurfaceFit;
 use super::params::Project;
-use super::stokes::{Guess, Loads, Operators, StokesSolution, solve};
+use super::stokes::{Guess, Loads, MaterialField, Operators, StokesSolution, Strengths, solve};
 use super::surface::SurfaceIndex;
 use crate::common::error::SimError;
 use crate::common::time::wall_seconds;
+
+/// Strength of the friction chain at a face centre (Pa): the continuum cohesion `c`, the
+/// shallow cohesion `c_Γ` of the repose proxy, and the static dilatancy shift `ξ`.
+#[derive(Clone, Copy, Debug)]
+pub struct FaceLaw {
+    pub c: f64,
+    pub shallow: f64,
+    pub xi: f64,
+}
+
+impl FaceLaw {
+    /// The surface value `c_s` of A-C2 for both cohesions and no shift.
+    pub fn intact(m: &crate::rheo::Material) -> Self {
+        let c = m.spec.cohesion_surface;
+        Self { c, shallow: c, xi: 0.0 }
+    }
+}
+
+/// What Chapter 11 contributes to one evaluation; the default is the reference closure.
+#[derive(Clone, Copy, Default)]
+pub struct Evolution<'a> {
+    /// Local strengths from the markers (A-ϖ, A-Ξ).
+    pub field: Option<&'a dyn MaterialField>,
+    /// Surface damage `ϖ_Γ` per vertex (A-Θ).
+    pub surface_damage: Option<&'a [f64]>,
+}
 
 pub struct Mechanics {
     pub omega: f64,
@@ -35,8 +63,11 @@ pub struct Mechanics {
     pub class: Classification,
     /// `g_eff` at the face centres.
     pub g_face: Vec<DVec3>,
-    /// Friction-angle chain at the face centres.
+    /// Friction-angle chain at the face centres, with the face laws it used.
     pub rheo: Vec<NodeResult>,
+    pub face_law: Vec<FaceLaw>,
+    /// Local strengths of the solve.
+    pub strength: Strengths,
     pub rheo_stats: ChainStats,
     /// Cauchy stress `σ = −p I + T_tide + 2η D` at the face centres (Pa,
     /// `(xx, yy, zz, xy, xz, yz)`).
@@ -123,6 +154,8 @@ pub(crate) fn face_node(
     g: DVec3,
     tide: [f64; 6],
     pressure: f64,
+    law: FaceLaw,
+    eps_v: f64,
 ) -> NodeResult {
     let s = std::f64::consts::FRAC_1_SQRT_2;
     let dm = [
@@ -137,7 +170,12 @@ pub(crate) fn face_node(
     };
     let d_ab = [quad(e1, e1), quad(e1, e2), quad(e2, e2)];
     let tr = d_ab[0] + d_ab[2];
-    let s0 = 2.0 * (tr * tr + d_ab[0] * d_ab[0] + 2.0 * d_ab[1] * d_ab[1] + d_ab[2] * d_ab[2]);
+    // §10.2.3 with `tr D = ε̇_v` (A-Ξ, §11.4): D_nn = ε̇_v − g^{ab} D_ab and
+    // γ̇² = 2[D_nn² + D_ab D^ab + 2 D_na D^na − ε̇_v²/3]; the D_na part comes from the tide.
+    let d_nn = eps_v - tr;
+    let s0 = 2.0
+        * (d_nn * d_nn + d_ab[0] * d_ab[0] + 2.0 * d_ab[1] * d_ab[1] + d_ab[2] * d_ab[2]
+            - eps_v * eps_v / 3.0);
     let tm = sym(tide);
     let t = [e1, e2].map(|e| n.dot(tm * e));
     let tide_frob = (tide[..3].iter().map(|x| x * x).sum::<f64>()
@@ -153,6 +191,9 @@ pub(crate) fn face_node(
             g_norm: g.length(),
             g_cross_n: g.cross(n).length(),
             tide_frob,
+            cohesion: law.c,
+            shallow_cohesion: law.shallow,
+            xi: law.xi,
         },
     );
     let d_na = t.map(|ta| if out.eta > 0.0 { -ta / (2.0 * out.eta) } else { 0.0 });
@@ -165,7 +206,7 @@ pub(crate) fn face_node(
         e2,
         metric: [1.0, 0.0, 1.0],
         d_ab,
-        d_nn: -tr,
+        d_nn,
         d_na,
         shear: out.shear,
         inertial: out.inertial,
@@ -202,27 +243,33 @@ pub fn sym(t: [f64; 6]) -> crate::common::math::DMat3 {
 fn face_chain(
     project: &Project,
     ops: &Operators,
-    u: &[f64],
+    sol: &StokesSolution,
     g_face: &[DVec3],
     tide_face: &[[f64; 6]],
     pressure: &[f64],
+    laws: &[FaceLaw],
 ) -> Result<(Vec<NodeResult>, ChainStats), SimError> {
     let start = wall_seconds();
     let f = &ops.faces;
-    let vd = contract_velocity_rays(&ops.surf, &ops.lay, &f.pts, 1, Want::VD, u);
+    let vd = contract_velocity_rays(&ops.surf, &ops.lay, &f.pts, 1, Want::VD, &sol.u);
     let nodes: Vec<NodeResult> = (0..f.pts.len())
         .into_par_iter()
         .map(|k| {
-            let v = DVec3::new(vd.v[3 * k], vd.v[3 * k + 1], vd.v[3 * k + 2]);
+            // A-Ξ: the total velocity and strain, with ε̇_v = tr D (§11.4).
+            let (de, e) = sol.d_eps(f.pts[k]);
+            let v = DVec3::new(vd.v[3 * k], vd.v[3 * k + 1], vd.v[3 * k + 2]) + sol.v_eps(f.pts[k]);
+            let d6: [f64; 6] = std::array::from_fn(|c| vd.d[6 * k + c] + de[c]);
             face_node(
                 &project.material,
                 f.pts[k],
                 f.normals[k],
                 v,
-                &vd.d[6 * k..6 * k + 6],
+                &d6,
                 g_face[k],
                 tide_face[k],
                 pressure[k],
+                laws[k],
+                e,
             )
         })
         .collect();
@@ -241,15 +288,24 @@ fn face_chain(
     Ok((nodes, stats))
 }
 
+/// `ε_R` of §8.1: a new basis scale is `R_ref = (1 + ε_R) R_*`, kept while
+/// `R_* ≤ R_ref ≤ (1 + 2 ε_R) R_*`, so a growing body keeps it for a while.
+const SCALE_SLACK: f64 = 0.02;
+
+/// The last geometry of one run: a spin-only step takes it as it is, and the next
+/// geometry its basis scale and node rows (§8.1). It belongs to the run, so a run never
+/// depends on what an earlier run in the same process left behind.
+#[derive(Default)]
+pub struct GeometryCache(Option<(u64, Arc<SurfaceIndex>, Arc<Operators>)>);
+
 /// The geometry of the step: the surface index and the Stokes operators. They depend on
 /// the vertices and the density only, not on the spin, so a spin-only step reuses them.
-fn geometry(
+pub fn geometry(
+    last: &mut GeometryCache,
     project: &Project,
     body: &Body,
     fwd: &Forward,
 ) -> Result<(Arc<SurfaceIndex>, Arc<Operators>), SimError> {
-    type Cached = (u64, Arc<SurfaceIndex>, Arc<Operators>);
-    static LAST: Mutex<Option<Cached>> = Mutex::new(None);
     let mut h = DefaultHasher::new();
     let bits = |h: &mut DefaultHasher, v: f64| v.to_bits().hash(h);
     body.positions
@@ -264,18 +320,28 @@ fn geometry(
     }
     format!("{:?}", project.stokes).hash(&mut h);
     let key = h.finish();
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((k, index, ops)) = last.as_ref() {
+    if let Some((k, index, ops)) = last.0.as_ref() {
         if *k == key {
             return Ok((index.clone(), ops.clone()));
         }
     }
-    // Release the stale geometry (its resident classification rows are GBs) before the
-    // new operators are built, so the two never coexist.
-    *last = None;
-    let _span = super::timing::span("stokes_operators");
-    let index = Arc::new(SurfaceIndex::build(&body.positions, &body.topo.faces));
-    let surf = SurfaceFit::sphere(body.r_star());
+    // Only the volume rows and the basis scale of the stale geometry are kept; the rest
+    // (its resident classification rows are GBs) is released before the new operators
+    // are built. A geometry another holder still uses is not reused.
+    let reuse = last
+        .0
+        .take()
+        .and_then(|(_, _, ops)| Arc::try_unwrap(ops).ok())
+        .map(Operators::into_reuse);
+    let index = {
+        let _span = super::timing::span("stokes_operators");
+        Arc::new(SurfaceIndex::build(&body.positions, &body.topo.faces))
+    };
+    // §8.1: the Galerkin spaces do not depend on the scale of ζ, so the previous R_ref
+    // stays while it still encloses Γ and is not too large for it.
+    let r_star = body.r_star();
+    let reuse = reuse.filter(|r| r_star <= r.r_ref && r.r_ref <= (1.0 + 2.0 * SCALE_SLACK) * r_star);
+    let surf = SurfaceFit::sphere(reuse.as_ref().map_or((1.0 + SCALE_SLACK) * r_star, |r| r.r_ref));
     let ops = Arc::new(Operators::build(
         &surf,
         &body.density()?,
@@ -283,20 +349,23 @@ fn geometry(
         &index,
         SurfacePoints::faces(&body.face_geometry()),
         &project.stokes,
+        reuse,
     )?);
-    *last = Some((key, index.clone(), ops.clone()));
+    last.0 = Some((key, index.clone(), ops.clone()));
     Ok((index, ops))
 }
 
 pub fn evaluate(
+    cache: &mut GeometryCache,
     project: &Project,
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
     guess: Option<&Guess>,
+    ev: Evolution,
 ) -> Result<Mechanics, SimError> {
     let material = &project.material;
-    let (index, ops) = geometry(project, body, fwd)?;
+    let (index, ops) = geometry(cache, project, body, fwd)?;
     fwd.eval_faces(body)?;
     // Interior fields at the volume nodes and surface fields at the boundary rule.
     let vol = match ops.vol_field.get() {
@@ -331,6 +400,38 @@ pub fn evaluate(
         .collect();
     drop(_loads);
 
+    // Local strengths: the intact profile, then the markers of Chapter 11.
+    let intact = Strengths::profile(&ops, material);
+    let strength = match ev.field {
+        Some(f) => Strengths {
+            vol: f.locals(material, &ops.vol.pts, &intact.vol),
+            bnd: f.locals(material, &ops.bnd.pts, &intact.bnd),
+            face: f.locals(material, &ops.faces.pts, &intact.face),
+        },
+        None => intact,
+    };
+    let face_law = face_laws(material, body, &strength.face, ev);
+    // A-Ξ: the dilatancy source on this geometry (§11.4).
+    let source = match &project.dilatancy {
+        Some(d) => {
+            let r_star = body.r_star();
+            let ell = project
+                .markers
+                .as_ref()
+                .expect("A-Ξ needs the markers (checked by the project)")
+                .nonlocal_length(r_star, project.stokes.l_velocity);
+            Some(Source {
+                space: DilatationSpace::build(&ops.vol.pts, &ops.vol.w, d.degree, d.regularization, r_star)?,
+                nonlocal: Nonlocal::new(&ops.vol.pts, &ops.vol.w, ell, &index),
+                params: d,
+                delta_y: project.yielding.delta_y,
+                pts: &ops.vol.pts,
+                w: &ops.vol.w,
+            })
+        }
+        None => None,
+    };
+
     let ld = Loads {
         g_eff: &g_vol,
         tide: &tide,
@@ -338,6 +439,8 @@ pub fn evaluate(
         tide_bnd: &tide_bnd,
         tide_nn: &tide_nn,
         g_const: project.g,
+        strength: &strength,
+        dilatancy: source.as_ref().map(|s| s as &dyn super::stokes::DilatancySource),
     };
     let sol = {
         let _span = super::timing::span("stokes");
@@ -355,11 +458,12 @@ pub fn evaluate(
             project.yielding.delta_y,
             project.stokes.n_radial,
             load.omega,
+            ev.field,
         )?
     };
     let (rheo, rheo_stats) = {
         let _span = super::timing::span("rheology");
-        face_chain(project, &ops, &sol.u, &g_face, &tide_face, &sol.p_surface)?
+        face_chain(project, &ops, &sol, &g_face, &tide_face, &sol.p_surface, &face_law)?
     };
     let surface_stress = rheo
         .iter()
@@ -378,5 +482,38 @@ pub fn evaluate(
         rheo,
         rheo_stats,
         surface_stress,
+        face_law,
+        strength,
     })
+}
+
+/// The face laws of the step: the continuum strength at the face centres, and the shallow
+/// cohesion `c_Γ = (1 − ϖ)(1 − ϖ_Γ) c_s` as the mean of its vertex factors (§11.6).
+fn face_laws(
+    m: &crate::rheo::Material,
+    body: &Body,
+    face: &[super::stokes::Local],
+    ev: Evolution,
+) -> Vec<FaceLaw> {
+    let c_s = m.spec.cohesion_surface;
+    let nv = body.positions.len();
+    // (1 − ϖ) at the vertices: the field's cohesion over the intact c_s.
+    let bulk: Vec<f64> = match ev.field {
+        Some(f) if c_s > 0.0 => {
+            let intact = vec![super::stokes::Local { c: c_s, ..Default::default() }; nv];
+            f.locals(m, &body.positions, &intact).iter().map(|l| l.c / c_s).collect()
+        }
+        _ => vec![1.0; nv],
+    };
+    let keep = |v: usize| bulk[v] * (1.0 - ev.surface_damage.map_or(0.0, |d| d[v]));
+    body.topo
+        .faces
+        .iter()
+        .zip(face)
+        .map(|(t, l)| FaceLaw {
+            c: l.c,
+            shallow: c_s * t.iter().map(|v| keep(*v as usize)).sum::<f64>() / 3.0,
+            xi: l.xi,
+        })
+        .collect()
 }

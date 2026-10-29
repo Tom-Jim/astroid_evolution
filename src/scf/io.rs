@@ -11,6 +11,7 @@ use crate::io::{ImportRequest, load_mesh_file};
 
 use super::body::{Body, Topology};
 use super::evolve::State;
+use super::evolving::Evolving;
 use super::params::Project;
 use crate::common::error::SimError;
 
@@ -48,6 +49,9 @@ pub struct Snapshot {
     pub frame_translation: [f64; 3],
     /// Last velocity coefficients (`u⁰` of the next step when the frame is unchanged).
     pub velocity: Vec<f64>,
+    /// The state of Chapter 11 (empty while its hypotheses are off).
+    #[serde(default)]
+    pub evolving: Evolving,
 }
 
 impl Snapshot {
@@ -87,6 +91,7 @@ impl Snapshot {
             frame_rotation,
             frame_translation: frame_translation.to_array(),
             velocity,
+            evolving: Evolving::default(),
         }
     }
 
@@ -97,7 +102,7 @@ impl Snapshot {
 
     /// Everything an evolution needs to resume: body, clock, spin, frame and velocity.
     pub fn from_state(state: &State) -> Self {
-        Self::from_body(
+        let mut snap = Self::from_body(
             &state.body,
             state.level,
             state.t,
@@ -106,7 +111,9 @@ impl Snapshot {
             state.frame_rotation,
             state.frame_translation,
             state.velocity.clone(),
-        )
+        );
+        snap.evolving = state.evolving.clone();
+        snap
     }
 
     pub fn to_state(&self) -> Result<State, SimError> {
@@ -119,6 +126,7 @@ impl Snapshot {
             frame_rotation: self.frame_rotation,
             frame_translation: DVec3::from_array(self.frame_translation),
             velocity: self.velocity.clone(),
+            evolving: self.evolving.clone(),
         })
     }
 

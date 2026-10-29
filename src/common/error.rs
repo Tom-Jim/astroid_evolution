@@ -40,6 +40,9 @@ kinds! {
     /// The Picard iteration, the weak momentum balance, or the friction chain
     /// did not converge (§2.15 a, b).
     rheology_not_converged => "RheologyNotConverged", 20;
+    /// The load exceeds the limit load at the frozen pressure (`L* > 1`, §2.17.1): no
+    /// quasi-static state exists; the primal–dual iteration showed the certificate.
+    limit_load_collapse => "LimitLoadCollapse", 21;
     /// The outer geometry acceptance failed at the trust-radius floor (§10.4.3).
     trust_exhausted => "TrustRadiusExhausted", 23;
     /// The configured `step.max_steps` limit was reached before `T_end` (§10.4.4 step 9).

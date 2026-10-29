@@ -21,6 +21,7 @@ const BUDGET: usize = 512 << 20;
 #[cfg(target_arch = "wasm32")]
 const BUDGET: usize = 256 << 20;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Quantized {
     lo: f32,
     hi: f32,
@@ -221,7 +222,151 @@ impl History {
             }
         }
     }
+}
 
+impl History {
+    /// Move the oldest frame to the end of `dest` (playback of a cached run);
+    /// `false` when none is left.
+    pub fn move_first_to(&mut self, dest: &mut History) -> bool {
+        if self.frames.is_empty() {
+            return false;
+        }
+        let frame = self.frames.remove(0);
+        if !dest.frames.last().is_some_and(|f| Arc::ptr_eq(&f.faces, &frame.faces)) {
+            dest.bytes += 12 * frame.faces.len() + 8 * 6 * frame.neighbors.len();
+        }
+        dest.bytes += frame.bytes();
+        dest.frames.push(frame);
+        if dest.bytes > BUDGET {
+            dest.thin();
+        }
+        true
+    }
+}
+
+/// The stored timeline without the shared rings: what a cache file carries
+/// (`app::cache`). Topologies are listed once; each frame names its own.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Stored {
+    topologies: Vec<Vec<[u32; 3]>>,
+    frames: Vec<StoredFrame>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredFrame {
+    topology: u32,
+    stats: FrameStats,
+    position: [Quantized; 3],
+    field: Vec<Quantized>,
+    bulk: f32,
+    cores: Vec<[f32; 4]>,
+    rho_range: [f32; 2],
+    slack_tol: f32,
+    p95: [f32; 4],
+    flow_active: bool,
+    runout: Vec<[u16; 4]>,
+}
+
+impl Stored {
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+}
+
+impl History {
+    /// The stored timeline, thinned evenly to at most `max_frames` (the newest is kept).
+    pub fn to_stored(&self, max_frames: usize) -> Stored {
+        let n = self.frames.len();
+        let keep: Vec<usize> = if n <= max_frames.max(2) {
+            (0..n).collect()
+        } else {
+            let mut k: Vec<usize> = (0..max_frames).map(|i| i * (n - 1) / (max_frames - 1)).collect();
+            k.dedup();
+            k
+        };
+        let mut topologies: Vec<Vec<[u32; 3]>> = Vec::new();
+        let mut owners: Vec<*const Vec<[u32; 3]>> = Vec::new();
+        let frames = keep
+            .into_iter()
+            .map(|i| {
+                let f = &self.frames[i];
+                let ptr = Arc::as_ptr(&f.faces);
+                let topology = match owners.iter().position(|p| *p == ptr) {
+                    Some(t) => t,
+                    None => {
+                        owners.push(ptr);
+                        topologies.push(f.faces.to_vec());
+                        topologies.len() - 1
+                    }
+                };
+                let copy = |q: &Quantized| Quantized { lo: q.lo, hi: q.hi, values: q.values.clone() };
+                StoredFrame {
+                    topology: topology as u32,
+                    stats: f.stats,
+                    position: std::array::from_fn(|c| copy(&f.position[c])),
+                    field: f.field.iter().map(copy).collect(),
+                    bulk: f.bulk,
+                    cores: f.cores.clone(),
+                    rho_range: f.rho_range,
+                    slack_tol: f.slack_tol,
+                    p95: [f.f_delta_p95, f.slack_p95, f.rho_s_p95, f.sigma_p95],
+                    flow_active: f.flow_active,
+                    runout: f.runout.clone(),
+                }
+            })
+            .collect();
+        Stored { topologies, frames }
+    }
+
+    /// A timeline from its stored form; the rings are rebuilt once per topology.
+    pub fn from_stored(stored: Stored) -> Result<Self, String> {
+        let shared: Vec<(Arc<Vec<[u32; 3]>>, Arc<Vec<Vec<usize>>>)> = stored
+            .topologies
+            .into_iter()
+            .map(|faces| {
+                let nv = faces.iter().flatten().map(|v| *v as usize + 1).max().unwrap_or(0);
+                let rings = face_neighbors(nv, &faces);
+                (Arc::new(faces), Arc::new(rings))
+            })
+            .collect();
+        let mut history = Self::default();
+        for f in stored.frames {
+            let (faces, neighbors) = shared
+                .get(f.topology as usize)
+                .cloned()
+                .ok_or("cache: a frame names a missing topology")?;
+            if f.field.len() != CHANNELS || f.position.iter().any(|p| p.values.len() != f.position[0].values.len()) {
+                return Err("cache: a frame has the wrong channel layout".into());
+            }
+            let frame = Frame {
+                stats: f.stats,
+                faces,
+                neighbors,
+                position: f.position,
+                field: f.field,
+                bulk: f.bulk,
+                cores: f.cores,
+                rho_range: f.rho_range,
+                slack_tol: f.slack_tol,
+                f_delta_p95: f.p95[0],
+                slack_p95: f.p95[1],
+                rho_s_p95: f.p95[2],
+                sigma_p95: f.p95[3],
+                flow_active: f.flow_active,
+                runout: f.runout,
+            };
+            history.bytes += frame.bytes();
+            history.frames.push(frame);
+        }
+        Ok(history)
+    }
+}
+
+impl History {
     /// Frame `index` as a still snapshot (both poses equal), ready for the playback.
     pub fn frame(&self, index: usize) -> Option<StepSnapshot> {
         let f = self.frames.get(index)?;
@@ -248,7 +393,7 @@ impl History {
             frame_applied: false,
             wall_seconds: 0.0,
             flow_active: f.flow_active,
-            dt_bound: crate::app::snapshot::Tag(s.dt_bound),
+            dt_bound: s.dt_bound,
             audit: StepAudit {
                 eps_momentum: s.eps_momentum,
                 eps_lambda: s.eps_lambda,

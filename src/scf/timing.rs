@@ -59,8 +59,7 @@ impl Span {
         };
         let seconds = wall_seconds() - start;
         let phase = PHASE.with(|p| p.get());
-        // The PDHG loop records a few hundred sub-millisecond spans. Printing
-        // each one is slower than the residual check and inflates the parent.
+        // Sub-millisecond spans are many; printing each one would inflate the parent.
         if seconds >= 0.05 {
             eprintln!("timing [{phase}] {:>10.3}s  {}", seconds, self.name);
         }
@@ -142,7 +141,7 @@ pub fn group(name: &str) -> &'static str {
     match name {
         "rtfp_bind" | "rtfp_moments" | "rtfp_faces" | "rtfp_field" => "RTFP",
         "rheology" => "rheology",
-        "socp_assemble" | "socp_pdhg" | "socp_recover" => "outer_socp",
+        "socp_assemble" | "socp_ipm" => "outer_socp",
         _ => "other",
     }
 }

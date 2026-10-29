@@ -16,12 +16,13 @@ use crate::common::error::SimError;
 use crate::common::math::DVec3;
 
 use super::body::Body;
+use super::mechanics::FaceLaw;
 use super::forward::{Forward, Loading};
 use super::params::Project;
 use super::relax::slope_state;
 use super::relief::{Relief, Routing, clearance, floor_of, layer_ledger, relieve};
 use super::runout::{self, RunoutField, RunoutReport};
-use super::socp::{Kind, SocpSeed, mass_jacobian};
+use super::socp::{Kind, mass_jacobian};
 use super::surface::SurfaceIndex;
 use super::transport::{ModeC, Spread, mode_c_over};
 
@@ -83,8 +84,8 @@ pub fn settle(
     f_delta: &[f64],
     tau: f64,
     mass_target: f64,
-    seed: &mut Option<SocpSeed>,
     step: usize,
+    laws: Option<&[FaceLaw]>,
 ) -> Result<Settled, SimError> {
     let prm = &project.mode_c;
     let tol = project.relief.tol_slack;
@@ -93,11 +94,12 @@ pub fn settle(
         let n = slack.iter().filter(|s| **s > tol).count();
         (n, slack.iter().copied().fold(0.0_f64, f64::max))
     };
-    let mut rep = SettleReport::default();
+    // Without excess there is no erosion: its e-folding time is infinite.
+    let mut rep = SettleReport { tau_surface: f64::INFINITY, ..SettleReport::default() };
     let mut first_mc: Option<ModeC> = None;
     let mut d_normal = vec![0.0; nv];
     let (mut weights, mut packets) = (Vec::new(), Vec::new());
-    let mut slope = slope_state(project, &body, &mut fwd, load)?;
+    let mut slope = slope_state(project, &body, &mut fwd, load, laws)?;
     (rep.n_supercritical_before, rep.max_slack_before) = supercritical(&slope.slack);
     for sweep in 0..project.relief.max_sweeps {
         let topo = body.topo.clone();
@@ -241,7 +243,7 @@ pub fn settle(
             }),
             step,
         };
-        let rel = match relieve(&relief, &fwd, seed) {
+        let rel = match relieve(&relief, &fwd) {
             Ok(rel) => rel,
             // No admissible increment down to the trust floor: keep the last valid shape.
             Err(err) if err.kind == "GeometryInvalid" => {
@@ -280,7 +282,7 @@ pub fn settle(
         fwd = rel.fwd;
         first_mc.get_or_insert(mc);
         let (n_before, slack_before) = supercritical(&slope.slack);
-        slope = slope_state(project, &body, &mut fwd, load)?;
+        slope = slope_state(project, &body, &mut fwd, load, laws)?;
         let (n_after, slack_after) = supercritical(&slope.slack);
         // A sweep that removes under 5 % of the supercritical faces without lowering the
         // largest slack has met what the relief cannot reduce.

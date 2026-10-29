@@ -40,7 +40,7 @@ fn affine_flow_is_reproduced_exactly() {
     .unwrap();
     let tau = 0.05;
     let mut rep = CoreReport::default();
-    let out = predict(&[k], tau, &v, &|_| true, 1e-4, &params(), &mut rep);
+    let out = predict(&[k], tau, &v, &|_| true, 1e-4, &params(), None, &mut rep);
     let s_ratio = out[0].metric_mat().determinant() / k.metric_mat().determinant();
     assert!((s_ratio - 1.0).abs() < 1e-10, "det ratio {s_ratio}");
     // Check against the exact flow map of the affine field at random points.

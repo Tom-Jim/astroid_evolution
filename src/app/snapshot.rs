@@ -713,6 +713,8 @@ fn intern(text: &str) -> &'static str {
         "dt_max" => "dt_max",
         "t_next" => "t_next",
         "core" => "core",
+        "thermal" => "thermal",
+        "dilatancy" => "dilatancy",
         "omega/max/t_next" => "omega/max/t_next",
         "" => "",
         other => Box::leak(other.to_string().into_boxed_str()),

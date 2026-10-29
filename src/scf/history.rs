@@ -204,6 +204,7 @@ pub fn invert(
             frame_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             frame_translation: DVec3::ZERO,
             velocity: Vec::new(),
+            evolving: Default::default(),
         };
         let res = evolve::run(
             project,
@@ -213,6 +214,7 @@ pub fn invert(
             &RunOptions {
                 max_steps: None,
                 until: None,
+                lag: true,
             },
             &mut |r, s, f| observer(k, r, s, f),
         )?;

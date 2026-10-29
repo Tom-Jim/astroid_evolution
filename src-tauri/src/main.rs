@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use astroid_evolution::app::bridge::{self, DataRoot};
+use astroid_evolution::app::cache;
 use astroid_evolution::app::resources::{AppConfig, DEFAULT_PROJECT, DATA_DIR, DEFAULT_SPIN};
 use astroid_evolution::app::ui::ShotDir;
 use astroid_evolution::app::AsteroidPlugin;
@@ -30,15 +31,38 @@ fn data_root(app: &tauri::App) -> PathBuf {
         .unwrap_or(source)
 }
 
+/// Exported cache files: next to the projects in the source tree, in the app data
+/// folder for a bundle (its resources are read-only).
+fn cache_dir(app: &tauri::App, root: &Path) -> PathBuf {
+    app.path()
+        .resource_dir()
+        .ok()
+        .filter(|d| root.starts_with(d))
+        .and_then(|_| app.path().app_data_dir().ok())
+        .map_or_else(|| root.join(cache::DIR), |d| d.join(cache::DIR))
+}
+
 /// One JSON command from the React panels (`app::bridge::Command`).
 #[tauri::command]
 fn ui_command(json: String) -> Result<(), String> {
     bridge::send(&json)
 }
 
+/// A cache file the user picked, as the raw request body.
+#[tauri::command]
+fn cache_import(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => {
+            bridge::import_cache(bytes.clone());
+            Ok(())
+        }
+        _ => Err("cache_import takes the file bytes".into()),
+    }
+}
+
 fn main() {
     let mut tauri_app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![ui_command])
+        .invoke_handler(tauri::generate_handler![ui_command, cache_import])
         .build(tauri::generate_context!())
         .expect("the Tauri application");
     // Configured windows appear once the event loop has started.
@@ -61,6 +85,13 @@ fn main() {
     let events = tauri_app.handle().clone();
     bridge::set_sink(move |json| {
         let _ = events.emit("status", json);
+    });
+    let saves = cache_dir(&tauri_app, &root);
+    bridge::set_saver(move |name, bytes| {
+        std::fs::create_dir_all(&saves).map_err(|e| format!("{}: {e}", saves.display()))?;
+        let path = saves.join(name);
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path.display().to_string())
     });
 
     let size = window.inner_size().expect("window size");

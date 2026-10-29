@@ -15,11 +15,11 @@ use crate::common::math::DVec3;
 use crate::rheo::Material;
 use crate::rtfp::mesh::BodyMesh;
 
-use super::basis::{ResidentVelocity, Want, contract_pressure, contract_velocity_rays};
+use super::basis::{Want, contract_pressure, contract_velocity_rays};
 use super::body::Body;
 use super::domain::{VolumeSet, depth};
 use super::quad::gauss_jacobi_zeta2;
-use super::stokes::{Operators, StokesSolution, eta_eval};
+use super::stokes::{Local, MaterialField, Operators, StokesSolution, eta_eval};
 use super::surface::{PointGrid, SurfaceIndex};
 
 /// Volume nodes each point of `X_Y` is joined to, along segments inside `𝒱`.
@@ -155,6 +155,10 @@ pub struct Classification {
     pub inverse_ekman: f64,
     /// Membership of each point of `X_Y` in the rigid core.
     pub in_core: Vec<bool>,
+    /// Plastic rate `γ̇_p = 1{F_δ>0} γ̇` at the volume nodes (§11.2).
+    pub plastic_rate: Vec<f64>,
+    /// Inertial number `I_c` at the volume nodes (for `ν_c(I_c)`, §11.3).
+    pub inertial_vol: Vec<f64>,
     grid: PointGrid,
 }
 
@@ -176,6 +180,7 @@ pub fn classify(
     delta_y: f64,
     n_radial: usize,
     omega: f64,
+    field: Option<&dyn MaterialField>,
 ) -> Result<Classification, SimError> {
     let nv = body.positions.len();
     let normal = body.vertex_normals();
@@ -187,41 +192,52 @@ pub fn classify(
         }
     };
     let (pts, layers) = (&cm.pts, cm.layers);
-    let surf = &ops.surf;
-    let (v, d, pvals) = {
-        let span = super::timing::span("classify_contract");
-        let uses = ops
-            .class_uses
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let field = if uses == 0 {
-            contract_velocity_rays(surf, &ops.lay, pts, 1, Want::VD, &sol.u)
-        } else {
-            let rows = ops.class_rows.get_or_init(|| {
-                ResidentVelocity::new(surf, &ops.lay, pts)
-                    .unwrap_or_else(|err| panic!("classification basis GPU: {err}"))
-            });
-            rows.contract(&sol.u).map_err(SimError::gpu)?
-        };
-        drop(span);
-        let _span = super::timing::span("classify_pressure");
-        let pvals = contract_pressure(surf, &ops.play, pts, &sol.pres_c, &sol.lift);
-        (field.v, field.d, pvals)
-    };
-    let _graph = super::timing::span("classify_graph");
     let np = pts.len();
-    let p_min = material.spec.p_min;
-    let rows: Vec<(f64, f64, f64)> = (0..np)
-        .into_par_iter()
-        .map(|p| {
-            let d6 = &d[6 * p..6 * p + 6];
-            let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
-            let ptil = pvals[p].max(p_min);
-            let c = material.cohesion_at(cm.depth[p]);
-            let ev = eta_eval(material, c, sh, ptil, sol.gamma_eps);
-            let tau_y = c + material.mu_y * ptil;
-            (sh, ev.eta, ev.eta * sh - (1.0 - delta_y) * tau_y)
-        })
-        .collect();
+    let n_probe = nv * layers;
+    let (mut v, mut d) = (vec![0.0; 3 * np], vec![0.0; 6 * np]);
+    let mut rows = vec![(0.0, 0.0, 0.0, 0.0); np];
+    // `(1 − δ_Y) τ_y` of each evaluated point, the scale of the inheritance margin.
+    let mut strength = vec![0.0; np];
+    let ctx = Context { ops, sol, pts, depth: &cm.depth, material, delta_y, field };
+    // Volume nodes: the operator rows are on the host already.
+    {
+        let _span = super::timing::span("classify_contract");
+        let (vv, dv) = ops.vol_velocity(&sol.u);
+        v[3 * n_probe..].copy_from_slice(&vv);
+        d[6 * n_probe..].copy_from_slice(&dv);
+    }
+    let p_vol = ops.vol_pressure(&sol.pres_c, &sol.lift);
+    let vol_idx: Vec<usize> = (n_probe..np).collect();
+    ctx.finish(&vol_idx, &p_vol, &mut v, &mut d, &mut rows, &mut strength);
+    // Probe lines (G7): the coarse vertices exactly; a probe of a midpoint vertex by
+    // inheritance when both parent probes of its layer are clearly unyielded.
+    let line = |i: usize| (i * layers..(i + 1) * layers).collect::<Vec<_>>();
+    let hierarchy = midpoint_parents(&body.topo);
+    let coarse: Vec<usize> = match &hierarchy {
+        Some((n_c, _)) => (0..*n_c).flat_map(line).collect(),
+        None => (0..nv).flat_map(line).collect(),
+    };
+    ctx.exact(&coarse, &mut v, &mut d, &mut rows, &mut strength)?;
+    if let Some((n_c, parents)) = &hierarchy {
+        // Parents are coarse vertices, all evaluated above. Each probe of a midpoint
+        // vertex inherits when both parent probes of its layer are clearly unyielded.
+        let clear = |p: usize| rows[p].2 <= -INHERIT_MARGIN * strength[p];
+        let pairs: Vec<(usize, usize, usize)> = parents
+            .iter()
+            .enumerate()
+            .flat_map(|(k, &[a, b])| (0..layers).map(move |q| ((n_c + k) * layers + q, a * layers + q, b * layers + q)))
+            .collect();
+        let (inherit, refine): (Vec<_>, Vec<_>) = pairs.into_iter().partition(|&(_, pa, pb)| clear(pa) && clear(pb));
+        for (p, pa, pb) in inherit {
+            (0..3).for_each(|c| v[3 * p + c] = 0.5 * (v[3 * pa + c] + v[3 * pb + c]));
+            (0..6).for_each(|c| d[6 * p + c] = 0.5 * (d[6 * pa + c] + d[6 * pb + c]));
+            let (ra, rb) = (rows[pa], rows[pb]);
+            rows[p] = (0.5 * (ra.0 + rb.0), 0.5 * (ra.1 + rb.1), 0.5 * (ra.2 + rb.2), 0.5 * (ra.3 + rb.3));
+        }
+        let refine: Vec<usize> = refine.into_iter().map(|r| r.0).collect();
+        ctx.exact(&refine, &mut v, &mut d, &mut rows, &mut strength)?;
+    }
+    let _graph = super::timing::span("classify_graph");
     let fdelta: Vec<f64> = rows.iter().map(|r| r.2).collect();
     let ok = |p: usize| fdelta[p] <= 0.0;
     let mut dsu = UnionFind::new(np);
@@ -265,10 +281,10 @@ pub fn classify(
         .map(|p| (vel(p) - a_c - th.cross(pts[p])).length())
         .fold(0.0, f64::max);
     // Diagnostics on the volume quadrature.
-    let r_star = surf.coeff[0] / (4.0 * std::f64::consts::PI).sqrt();
+    let r_star = ops.surf.coeff[0] / (4.0 * std::f64::consts::PI).sqrt();
     let (mut yielded, mut diss, mut wtot, mut ek_inv) = (0.0, 0.0, 0.0, 0.0_f64);
     for p in (0..np).filter(|&p| cm.weight[p] > 0.0) {
-        let (sh, eta, fd) = rows[p];
+        let (sh, eta, fd, _) = rows[p];
         wtot += cm.weight[p];
         if fd > 0.0 {
             yielded += cm.weight[p];
@@ -296,8 +312,128 @@ pub fn classify(
         plastic_dissipation: diss,
         inverse_ekman: ek_inv,
         in_core,
+        plastic_rate: (0..ops.vol.pts.len())
+            .map(|q| {
+                let (sh, _, fd, _) = rows[q + nv * layers];
+                if fd > 0.0 { sh } else { 0.0 }
+            })
+            .collect(),
+        inertial_vol: (0..ops.vol.pts.len()).map(|q| rows[q + nv * layers].3).collect(),
         grid: cm.grid.clone(),
     })
+}
+
+/// A probe of a midpoint vertex inherits when both parent probes of its layer are below
+/// yield by this fraction of `(1 − δ_Y) τ_y` (§2.8 B3, G7).
+const INHERIT_MARGIN: f64 = 0.05;
+
+/// For a subdivided icosphere: the vertex count of the previous level and the two
+/// parents of every later (midpoint) vertex, which are its neighbours of lower index.
+pub fn midpoint_parents(topo: &super::body::Topology) -> Option<(usize, Vec<[usize; 2]>)> {
+    let level = topo.icosphere.filter(|l| *l >= 1)?;
+    let n_c = 10 * 4usize.pow(level as u32 - 1) + 2;
+    let parents = (n_c..topo.n_vertices())
+        .map(|i| {
+            let low: Vec<usize> = topo.vertex_neighbors[i].iter().copied().filter(|j| *j < n_c).collect();
+            (low.len() == 2).then(|| [low[0], low[1]])
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((n_c, parents))
+}
+
+/// What the evaluation of points of `X_Y` needs.
+struct Context<'a> {
+    ops: &'a Operators,
+    sol: &'a StokesSolution,
+    pts: &'a [DVec3],
+    depth: &'a [f64],
+    material: &'a Material,
+    delta_y: f64,
+    field: Option<&'a dyn MaterialField>,
+}
+
+impl Context<'_> {
+    /// `v`, `D` and `p` at the points `idx` by one GPU contraction, then `finish`.
+    #[allow(clippy::type_complexity)]
+    fn exact(
+        &self,
+        idx: &[usize],
+        v: &mut [f64],
+        d: &mut [f64],
+        rows: &mut [(f64, f64, f64, f64)],
+        strength: &mut [f64],
+    ) -> Result<(), SimError> {
+        if idx.is_empty() {
+            return Ok(());
+        }
+        let xs: Vec<DVec3> = idx.iter().map(|p| self.pts[*p]).collect();
+        let (ops, sol) = (self.ops, self.sol);
+        let field = {
+            let _span = super::timing::span("classify_contract");
+            contract_velocity_rays(&ops.surf, &ops.lay, &xs, 1, Want::VD, &sol.u)
+        };
+        let pvals = {
+            let _span = super::timing::span("classify_pressure");
+            contract_pressure(&ops.surf, &ops.play, &xs, &sol.pres_c, &sol.lift)
+        };
+        for (k, p) in idx.iter().enumerate() {
+            v[3 * p..3 * p + 3].copy_from_slice(&field.v[3 * k..3 * k + 3]);
+            d[6 * p..6 * p + 6].copy_from_slice(&field.d[6 * k..6 * k + 6]);
+        }
+        self.finish(idx, &pvals, v, d, rows, strength);
+        Ok(())
+    }
+
+    /// The A-Ξ dilatational part (§11.4), the local strength and the closure at `idx`:
+    /// `(γ̇, η, F_δ, I_c)` and `(1 − δ_Y) τ_y`.
+    #[allow(clippy::type_complexity)]
+    fn finish(
+        &self,
+        idx: &[usize],
+        pvals: &[f64],
+        v: &mut [f64],
+        d: &mut [f64],
+        rows: &mut [(f64, f64, f64, f64)],
+        strength: &mut [f64],
+    ) {
+        let m = self.material;
+        if let Some(st) = &self.sol.dilatancy {
+            for p in idx {
+                let x = self.pts[*p];
+                let ve = st.field.velocity(x);
+                let de = super::evolving::dilatation::deviator(st.field.strain(x));
+                (0..3).for_each(|a| v[3 * p + a] += ve[a]);
+                (0..6).for_each(|c| d[6 * p + c] += de[c]);
+            }
+        }
+        let intact: Vec<Local> = idx
+            .iter()
+            .map(|p| Local { c: m.cohesion_at(self.depth[*p]), ..Local::default() })
+            .collect();
+        let local = match self.field {
+            Some(f) => f.locals(m, &idx.iter().map(|p| self.pts[*p]).collect::<Vec<_>>(), &intact),
+            None => intact,
+        };
+        let (p_min, eps, dy) = (m.spec.p_min, self.sol.gamma_eps, self.delta_y);
+        let out: Vec<((f64, f64, f64, f64), f64)> = idx
+            .par_iter()
+            .zip(pvals.par_iter())
+            .zip(local.par_iter())
+            .map(|((p, pv), l)| {
+                let d6 = &d[6 * p..6 * p + 6];
+                let sh = (2.0 * d6.iter().map(|x| x * x).sum::<f64>()).sqrt();
+                let ptil = pv.max(p_min);
+                let ev = eta_eval(m, l, sh, ptil, eps);
+                // τ_y = c + μ_y p̃, with μ_y(ν) = μ_s + ξ under A-Ξ (§11.3).
+                let s = (1.0 - dy) * (l.c + (m.mu_y + l.xi) * ptil);
+                ((sh, ev.eta, ev.eta * sh - s, ev.inertial), s)
+            })
+            .collect();
+        for (p, (r, s)) in idx.iter().zip(out) {
+            rows[*p] = r;
+            strength[*p] = s;
+        }
+    }
 }
 
 /// Least-squares rigid motion `min Σ w |v − a − θ × x|²` over `points`; `true` when the

@@ -861,6 +861,15 @@ input[type="range"].cut {
   color: #ffc9c4;
   user-select: text;
 }
+.toast.info {
+  border-color: var(--line-strong);
+}
+.toast.info .label b {
+  color: var(--text);
+}
+.toast.info p {
+  color: var(--muted);
+}
 
 /* ---- narrow windows ------------------------------------------------------------ */
 

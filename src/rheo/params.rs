@@ -77,6 +77,9 @@ pub struct Material {
     pub tide_coef: f64,
     pub max_iter: u32,
     pub tol: f64,
+    /// Rate part of the stress–dilatancy friction under A-Ξ (§11.3): `K_Ξ Δν_c` and `I_ν`.
+    /// `None` without A-Ξ.
+    pub dilatancy: Option<[f64; 2]>,
 }
 
 fn positive(name: &str, v: f64) -> Result<(), SimError> {
@@ -150,12 +153,26 @@ impl Material {
             mode,
             max_iter: solver.max_iter,
             tol: solver.tol,
+            dilatancy: None,
             spec,
         })
     }
 }
 
 impl Material {
+    /// `K_Ξ Δν_c I/(I_ν + I)` and its derivative in `I`: the rate part of `Ξ = K_Ξ (ν − ν_c(I))`
+    /// beyond the static shift `ξ = K_Ξ (ν − ν_c⁰)` (§11.3). Zero without A-Ξ.
+    pub fn dilatancy_rate_term(&self, inertial: f64) -> (f64, f64) {
+        match self.dilatancy {
+            Some([k_dnu, i_nu]) if inertial > 0.0 => {
+                let den = i_nu + inertial;
+                (k_dnu * inertial / den, k_dnu * i_nu / (den * den))
+            }
+            Some([k_dnu, i_nu]) => (0.0, k_dnu / i_nu),
+            None => (0.0, 0.0),
+        }
+    }
+
     /// `c(d) = c_b + (c_s − c_b) e^{−d/h_c}` at depth `d ≥ 0` below the free surface (§4.3a).
     pub fn cohesion_at(&self, depth: f64) -> f64 {
         let s = &self.spec;

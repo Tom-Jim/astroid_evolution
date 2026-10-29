@@ -85,15 +85,88 @@ pub fn params() -> StokesParams {
 
 /// The Stokes operators of a uniform polyhedral sphere of radius `r0` (§8.0).
 pub fn sphere_ops(r0: f64, rho: f64, prm: &StokesParams) -> Operators {
-    let (topo, dirs) = Topology::icosphere(4);
-    let nv = dirs.len();
-    let body = Body::new(Arc::new(topo), dirs.iter().map(|d| *d * r0).collect(), rho, vec![], vec![0.0; nv])
-        .unwrap();
+    let (_, dirs) = Topology::icosphere(4);
+    let positions: Vec<DVec3> = dirs.iter().map(|d| *d * r0).collect();
+    ops_on(&positions, rho, prm, None, None)
+}
+
+/// The operators of the level-4 icosphere body with vertices `positions`, at the basis
+/// scale `r_ref` (default `R_*`), taking node rows from `prev` (§8.1).
+fn ops_on(positions: &[DVec3], rho: f64, prm: &StokesParams, r_ref: Option<f64>, prev: Option<Reuse>) -> Operators {
+    let (topo, _) = Topology::icosphere(4);
+    let nv = positions.len();
+    let body = Body::new(Arc::new(topo), positions.to_vec(), rho, vec![], vec![0.0; nv]).unwrap();
     let mesh = BodyMesh::build(&body.mesh().unwrap()).unwrap();
     let index = SurfaceIndex::build(&body.positions, &body.topo.faces);
     let faces = SurfacePoints::faces(&body.face_geometry());
-    Operators::build(&SurfaceFit::sphere(body.r_star()), &body.density().unwrap(), &mesh, &index, faces, prm)
-        .unwrap()
+    let surf = SurfaceFit::sphere(r_ref.unwrap_or_else(|| body.r_star()));
+    Operators::build(&surf, &body.density().unwrap(), &mesh, &index, faces, prm, prev).unwrap()
+}
+
+/// Largest entry difference of two row blocks, relative to the largest entry of `b`.
+fn rel_diff(a: &DMatrix<f32>, b: &DMatrix<f32>) -> f64 {
+    assert_eq!(a.shape(), b.shape());
+    let scale = b.iter().fold(0.0_f32, |m, x| m.max(x.abs())) as f64;
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs() as f64).fold(0.0, f64::max) / scale
+}
+
+fn rows_diff(a: &Operators, b: &Operators) -> f64 {
+    [(&a.rows.v, &b.rows.v), (&a.rows.d, &b.rows.d), (&a.rows.lap, &b.rows.lap), (&a.rows.gd, &b.rows.gd)]
+        .into_iter()
+        .map(|(x, y)| rel_diff(x, y))
+        .fold(0.0, f64::max)
+}
+
+/// The pressure values `P c + lift` of both operators for one fixed coefficient vector.
+fn pressure_diff(a: &Operators, b: &Operators) -> f64 {
+    let fill = |n: usize, seed: usize| -> Vec<f64> { (0..n).map(|k| ((k * 7919 + seed) % 101) as f64 / 101.0 - 0.5).collect() };
+    let (c, lift) = (fill(a.play.n_p(), 0), fill(a.play.n_lift(), 13));
+    let (pa, pb) = (a.vol_pressure(&c, &lift), b.vol_pressure(&c, &lift));
+    let scale = pb.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    pa.iter().zip(&pb).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max) / scale
+}
+
+/// Node rows taken over from the previous geometry (§8.1) are those of the new nodes:
+/// exactly on the same body, to `O(L δ / R_ref)` on a body whose nodes moved by
+/// `δ ≤ δ_R R_ref`, and never across a larger move or another basis scale.
+#[test]
+fn reused_node_rows_are_the_rows_of_the_new_nodes() {
+    let (r0, rho) = (1000.0, 2000.0);
+    let prm = params();
+    let (_, dirs) = Topology::icosphere(4);
+    let at = |amp: f64| -> Vec<DVec3> {
+        dirs.iter().enumerate().map(|(i, d)| *d * (r0 * (1.0 + amp * ((i * 37 % 17) as f64 / 17.0)))).collect()
+    };
+    let base = at(0.0);
+    let r_ref = 1.02 * r0;
+    let fresh = |p: &[DVec3]| ops_on(p, rho, &prm, Some(r_ref), None);
+    let reused = |p: &[DVec3]| ops_on(p, rho, &prm, Some(r_ref), Some(fresh(&base).into_reuse()));
+
+    // The same body: every node is an old node, and the rows are bit for bit the fresh ones.
+    let (a, b) = (reused(&base), fresh(&base));
+    assert_eq!(a.vol.pts, b.vol.pts);
+    assert_eq!(rows_diff(&a, &b), 0.0);
+    assert_eq!(pressure_diff(&a, &b), 0.0);
+
+    // Nodes moved by about 3·10⁻⁶ R: inside the reuse distance, so the rows are the old
+    // nodes' (they differ from a fresh build), and off by O(L δ / R) only.
+    let moved = at(3.0e-6);
+    let (a, b) = (reused(&moved), fresh(&moved));
+    assert_eq!(a.vol.pts, b.vol.pts);
+    let (dv, dp) = (rows_diff(&a, &b), pressure_diff(&a, &b));
+    assert!(dv > 0.0 && dp > 0.0, "no node row was reused ({dv:e}, {dp:e})");
+    assert!(dv < 1.0e-4 && dp < 1.0e-4, "reused rows off by {dv:.2e} (velocity), {dp:.2e} (pressure)");
+
+    // Nodes moved by 10⁻³ R are new nodes: the rows are the fresh ones.
+    let far = at(1.0e-3);
+    let (a, b) = (reused(&far), fresh(&far));
+    assert_eq!(rows_diff(&a, &b), 0.0);
+    assert_eq!(pressure_diff(&a, &b), 0.0);
+
+    // Rows of another basis scale are other functions and are not taken over.
+    let other = ops_on(&base, rho, &prm, Some(1.03 * r0), Some(fresh(&base).into_reuse()));
+    let own = ops_on(&base, rho, &prm, Some(1.03 * r0), None);
+    assert_eq!(rows_diff(&other, &own), 0.0);
 }
 
 /// A uniform sphere in its own gravity is at rest, and the Nitsche pressure (G3) is the
@@ -109,6 +182,7 @@ fn uniform_sphere_is_hydrostatic_and_at_rest() {
     let tide = vec![[0.0; 6]; ops.vol.pts.len()];
     let tide_bnd = vec![[0.0; 6]; ops.bnd.pts.len()];
     let tide_nn = vec![0.0; ops.faces.pts.len()];
+    let strength = Strengths::profile(&ops, &material());
     let ld = Loads {
         g_eff: &g_eff,
         tide: &tide,
@@ -116,6 +190,8 @@ fn uniform_sphere_is_hydrostatic_and_at_rest() {
         tide_bnd: &tide_bnd,
         tide_nn: &tide_nn,
         g_const: g,
+        strength: &strength,
+        dilatancy: None,
     };
     let sol = solve(&ops, &ld, &prm, &material(), None).unwrap();
     let umax = sol.u.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
@@ -144,8 +220,9 @@ fn two_layer_cohesion_profile() {
     }
     // A homogeneous profile gives the single-layer viscosity of §4.3.
     let one = material();
-    let a = eta_eval(&one, one.cohesion_at(4.0), 1e-6, 30.0, 1e-9).eta;
-    let b = eta_eval(&one, one.spec.cohesion, 1e-6, 30.0, 1e-9).eta;
+    let local = |c: f64| Local { c, ..Local::default() };
+    let a = eta_eval(&one, &local(one.cohesion_at(4.0)), 1e-6, 30.0, 1e-9).eta;
+    let b = eta_eval(&one, &local(one.spec.cohesion), 1e-6, 30.0, 1e-9).eta;
     assert_eq!(a, b);
 }
 

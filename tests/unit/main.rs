@@ -24,6 +24,8 @@ mod scf_basis;
 #[cfg(feature = "tier2")]
 mod scf_body;
 #[cfg(feature = "tier2")]
+mod scf_classify;
+#[cfg(feature = "tier2")]
 mod scf_cores;
 #[cfg(feature = "tier2")]
 mod scf_evolve;
@@ -43,8 +45,6 @@ mod scf_relax;
 mod scf_runout;
 #[cfg(feature = "tier2")]
 mod scf_socp;
-#[cfg(feature = "tier2")]
-mod scf_socp_pdhg;
 #[cfg(feature = "tier2")]
 mod scf_spin;
 #[cfg(feature = "tier2")]

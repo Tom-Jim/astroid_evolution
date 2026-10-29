@@ -21,6 +21,12 @@ pub mod app;
 #[cfg(all(target_arch = "wasm32", feature = "bevy-web"))]
 pub mod web;
 
+/// The rayon pool of the browser's evolution worker (`initThreadPool` in JS). Only a build
+/// with wasm atomics has it (src/web builds on nightly); without one, rayon runs on the
+/// calling thread.
+#[cfg(all(target_arch = "wasm32", feature = "bevy-web", target_feature = "atomics"))]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 /// wasm-bindgen entry points for the browser build, which Trunk builds from this
 /// crate as a cdylib.
 #[cfg(all(target_arch = "wasm32", feature = "bevy-web"))]
@@ -83,5 +89,20 @@ mod wasm_entry {
     #[wasm_bindgen]
     pub fn deliver(kind: &str, payload: &str) {
         crate::web::deliver(kind, payload);
+    }
+
+    #[wasm_bindgen]
+    pub fn cache_name(request_json: &str) -> Result<String, JsValue> {
+        crate::web::cache_name(request_json).map_err(|err| JsValue::from_str(&err))
+    }
+
+    #[wasm_bindgen]
+    pub fn cache_header(bytes: &[u8]) -> Result<String, JsValue> {
+        crate::web::cache_header(bytes).map_err(|err| JsValue::from_str(&err))
+    }
+
+    #[wasm_bindgen]
+    pub fn import_cache(bytes: &[u8]) {
+        crate::app::bridge::import_cache(bytes.to_vec());
     }
 }

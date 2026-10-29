@@ -219,32 +219,6 @@ pub fn surface_strain(
     })
 }
 
-/// Velocity and strain rows at fixed points, kept on the device: a step that keeps its
-/// geometry contracts them with a GEMV instead of evaluating the basis again.
-pub struct ResidentVelocity {
-    inner: super::basis_gpu::GpuStrain,
-}
-
-impl ResidentVelocity {
-    pub fn new(surf: &SurfaceFit, lay: &VelLayout, pts: &[DVec3]) -> Result<Self, String> {
-        Ok(Self {
-            inner: super::basis_gpu::resident_basis(surf, lay, pts, Want::VD)?,
-        })
-    }
-
-    /// `v` (three components) and `D` (six) at every point.
-    pub fn contract(&self, u: &[f64]) -> Result<ContractedVelocity, String> {
-        let flat = self.inner.contract(u)?;
-        let np = flat.len() / 9;
-        let (mut v, mut d) = (Vec::with_capacity(3 * np), Vec::with_capacity(6 * np));
-        for row in flat.chunks_exact(9) {
-            v.extend_from_slice(&row[..3]);
-            d.extend_from_slice(&row[3..]);
-        }
-        Ok(ContractedVelocity { v, d })
-    }
-}
-
 /// Scalar pressure `P c + lift`, contracted on the device. One value per point.
 pub fn contract_pressure(
     surf: &SurfaceFit,

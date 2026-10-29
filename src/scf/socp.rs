@@ -1,4 +1,4 @@
-//! The convex step of §2.13 and §10.4.3, solved with Metal-PDHG.
+//! The convex step of §2.13 and §10.4.3, solved by the interior-point method (`socp_ipm`).
 //!
 //! The boxed program is in metres and kilograms:
 //!
@@ -19,7 +19,7 @@
 //! linearization error is per node). Slope cones stay on face centres, where
 //! §10.3 evaluates the Hessian. Star-shapedness `n · e_r ≥ c_0` is an outer
 //! acceptance test, not a row of this program. `n̂(d)` is the first-order
-//! expansion from the double-single Metal kernel.
+//! expansion of `face_frame`.
 
 use rayon::prelude::*;
 
@@ -67,8 +67,6 @@ pub struct SocpInput<'a> {
     pub upper: &'a [f64],
     pub eps_n: f64,
     pub varrho: f64,
-    /// Saddle point of a previous assembly, indexed by vertex and face.
-    pub warm: Option<&'a SocpSeed>,
 }
 
 #[derive(Clone, Debug)]
@@ -82,32 +80,12 @@ pub struct SocpOutput {
     /// Overhang rows dropped because the face already violates them.
     pub dropped_overhang: usize,
     pub solve_seconds: f64,
-    /// Accepted saddle point, ready for the next assembly.
-    pub seed: SocpSeed,
-    /// Acceptance metric of the uploaded start, before any iteration.
-    pub initial_metric: f64,
-    /// Quadratic coefficient of each vertex in the dimensionless unknown. Not free: 0.
-    pub vertex_p: Vec<f64>,
-    /// Linear coefficient of each vertex in that same unknown. Not free: 0.
-    pub vertex_q: Vec<f64>,
-    /// Linear coefficient of each face's slope slack. No slack: 0.
-    pub slope_cost: Vec<f64>,
-    /// Linear coefficient of `σ⁺`. The unknown is `s_M / M`, so this is `ϱ M`.
-    pub mass_cost: f64,
-    /// Unscaled mass-row column of `σ⁺`. The relative-mass unknown makes this `+1`.
-    pub mass_col_plus: f64,
-    /// Unscaled mass-row column of `σ⁻`.
-    pub mass_col_minus: f64,
-    pub n_nn: usize,
-    pub n_soc: usize,
-    /// Trailing trust cone length. The box `|d_i| ≤ Δ` is in the nonnegative block, so this is 0.
-    pub n_trust: usize,
 }
 
 impl SocpOutput {
     /// No geometric correction: the cone program could not be solved down to the
     /// trust-radius floor, and the step keeps its geometry (§10.4.3).
-    pub fn unresolved(nv: usize, nf: usize) -> Self {
+    pub fn unresolved(nv: usize) -> Self {
         Self {
             d: vec![0.0; nv],
             status: "Unresolved".into(),
@@ -116,80 +94,8 @@ impl SocpOutput {
             mass_slack: 0.0,
             dropped_overhang: 0,
             solve_seconds: 0.0,
-            seed: SocpSeed::blank(nv, nf),
-            initial_metric: f64::INFINITY,
-            vertex_p: vec![0.0; nv],
-            vertex_q: vec![0.0; nv],
-            slope_cost: vec![0.0; nf],
-            mass_cost: 0.0,
-            mass_col_plus: 0.0,
-            mass_col_minus: 0.0,
-            n_nn: 0,
-            n_soc: 0,
-            n_trust: 0,
         }
     }
-}
-
-/// Accepted primal-dual point, stored by mesh identity rather than by row number.
-///
-/// A later step may drop or add mobile vertices and slope faces. Missing
-/// identities stay at zero; identities that disappeared are not copied.
-#[derive(Clone, Debug)]
-pub struct SocpSeed {
-    pub d: Vec<f64>,
-    pub t: Vec<f64>,
-    pub s_plus: f64,
-    pub s_minus: f64,
-    pub y_mass: f64,
-    pub y_t: Vec<f64>,
-    pub y_s_plus: f64,
-    pub y_s_minus: f64,
-    /// Multiplier of `d_i ≤ Δ`. Locked vertices stay at 0.
-    pub y_trust_hi: Vec<f64>,
-    /// Multiplier of `−d_i ≤ Δ`. Locked vertices stay at 0.
-    pub y_trust_lo: Vec<f64>,
-    pub y_overhang: Vec<f64>,
-    pub y_soc: Vec<[f64; 4]>,
-}
-
-impl SocpSeed {
-    pub(crate) fn blank(nv: usize, nf: usize) -> Self {
-        Self {
-            d: vec![0.0; nv],
-            t: vec![0.0; nf],
-            s_plus: 0.0,
-            s_minus: 0.0,
-            y_mass: 0.0,
-            y_t: vec![0.0; nf],
-            y_s_plus: 0.0,
-            y_s_minus: 0.0,
-            y_trust_hi: vec![0.0; nv],
-            y_trust_lo: vec![0.0; nv],
-            y_overhang: vec![0.0; nf],
-            y_soc: vec![[0.0; 4]; nf],
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ColId {
-    Mobile(usize),
-    Slack(usize),
-    MassPlus,
-    MassMinus,
-}
-
-#[derive(Clone, Copy)]
-enum RowId {
-    Mass,
-    SlackNonneg(usize),
-    MassPlus,
-    MassMinus,
-    Overhang(usize),
-    Soc(usize, u8),
-    TrustHi(usize),
-    TrustLo(usize),
 }
 
 /// `(Dℳ)_i = ∂ℳ/∂d_i = N_i · Σ_{f ∋ i} n_f ∫_f ρ φ_i dS` for the normal increment
@@ -352,19 +258,6 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let sp = na + nt;
     let sm = sp + 1;
     let nx = sm + 1;
-    let mut col_ids = vec![ColId::MassPlus; nx];
-    for i in 0..nv {
-        if col_of[i] != usize::MAX {
-            col_ids[col_of[i]] = ColId::Mobile(i);
-        }
-    }
-    for f in 0..nf {
-        if t_col[f] != usize::MAX {
-            col_ids[t_col[f]] = ColId::Slack(f);
-        }
-    }
-    col_ids[sp] = ColId::MassPlus;
-    col_ids[sm] = ColId::MassMinus;
 
     // §10.4.3: ½ Σ w_i (d_i − d_pred,i)² + ϱ (Σ t_i + |s_M|).
     // x = d/R₀, so the quadratic in x is ½ (w R₀²) x² − (w R₀ d_pred) x.
@@ -374,28 +267,16 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     // Weights are the given w_i; they are not divided by Σ w.
     let mut p_diag = vec![0.0; nx];
     let mut q = vec![0.0; nx];
-    let mut vertex_p = vec![0.0; nv];
-    let mut vertex_q = vec![0.0; nv];
-    let mut slope_cost = vec![0.0; nf];
     for i in 0..nv {
         if col_of[i] != usize::MAX {
             let w = inp.weight[i];
-            let p = w * r0 * r0;
-            let qi = -w * r0 * inp.d_pred[i];
-            p_diag[col_of[i]] = p;
-            q[col_of[i]] = qi;
-            {
-                vertex_p[i] = p;
-                vertex_q[i] = qi;
-            }
+            p_diag[col_of[i]] = w * r0 * r0;
+            q[col_of[i]] = -w * r0 * inp.d_pred[i];
         }
     }
     for f in 0..nf {
         if t_col[f] != usize::MAX {
             q[t_col[f]] = inp.varrho;
-            {
-                slope_cost[f] = inp.varrho;
-            }
         }
     }
     let mass_penalty = inp.varrho * mscale;
@@ -406,8 +287,6 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let mut eq = Block::default();
     let mut nn = Block::default();
     let mut soc: Vec<Block> = Vec::new();
-    let mut nn_ids: Vec<RowId> = Vec::new();
-    let mut soc_faces: Vec<usize> = Vec::new();
 
     // Mass row.
     let mut known_mass = 0.0;
@@ -425,16 +304,10 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     eq.put(r, sp, 1.0);
     eq.put(r, sm, -1.0);
 
-    // t, s± ≥ 0.
+    // t, s± ≥ 0: rows nt and nt + 1 of this block are the mass slacks.
     for c in na..nx {
         nn.row(0.0);
         nn.put(nn.b.len() - 1, c, -1.0);
-        nn_ids.push(match col_ids[c] {
-            ColId::Slack(f) => RowId::SlackNonneg(f),
-            ColId::MassPlus => RowId::MassPlus,
-            ColId::MassMinus => RowId::MassMinus,
-            ColId::Mobile(_) => unreachable!("slack columns are the slope and mass slacks"),
-        });
     }
 
     let mut dropped = 0usize;
@@ -465,7 +338,6 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         // n·e_r ≥ c_0 is an outer check, not a row of this program.
         if n.dot(ghat) <= -inp.eps_n {
             let r = nn.row(-inp.eps_n - n0.dot(ghat));
-            nn_ids.push(RowId::Overhang(f));
             for k in 0..3 {
                 if col_of[tri[k]] != usize::MAX {
                     nn.put(r, col_of[tri[k]], nj[k].dot(ghat));
@@ -492,7 +364,6 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
                 }
             }
             soc.push(blk);
-            soc_faces.push(f);
         }
     }
 
@@ -514,10 +385,8 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         x_box[j] = (-l, u);
         let hi = nn.row(u);
         nn.put(hi, j, 1.0);
-        nn_ids.push(RowId::TrustHi(i));
         let lo = nn.row(l);
         nn.put(lo, j, -1.0);
-        nn_ids.push(RowId::TrustLo(i));
     }
 
     // Assemble. Cone order: one equality, the nonnegative block (slacks,
@@ -544,24 +413,11 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let n_eq = eq.b.len();
     let n_nn = nn.b.len();
     let n_soc = soc.len();
-    let n_trust = 0;
     push(&eq, &mut rows, &mut cols, &mut vals, &mut b);
     push(&nn, &mut rows, &mut cols, &mut vals, &mut b);
     for blk in &soc {
         push(blk, &mut rows, &mut cols, &mut vals, &mut b);
     }
-    let mut row_ids = Vec::with_capacity(b.len());
-    row_ids.push(RowId::Mass);
-    row_ids.extend(nn_ids);
-    for f in soc_faces {
-        for k in 0..4 {
-            row_ids.push(RowId::Soc(f, k as u8));
-        }
-    }
-    debug_assert_eq!(row_ids.len(), b.len());
-    let warm = inp
-        .warm
-        .and_then(|seed| scatter_seed(seed, &col_ids, &row_ids, r0, n_eq, n_nn, n_soc, n_trust));
     drop(assemble);
     // Inside the bounds, a·x cannot leave [reach.0, reach.1]. When the mass target
     // sits outside that interval, σ = s_M/M cannot change sign, and ϱ|s_M| is
@@ -582,26 +438,17 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
             }
         }
     }
-    let attempt = |fold: bool| -> Result<Option<_>, SimError> {
-        // Below that threshold the mass target is met inside the box, and ϱ M is so
-        // much larger than any multiplier the slope rows can carry that the exact
-        // penalty keeps σ = 0. The mass row is then a hard equality without the σ±
-        // columns, which would otherwise sit ϱ M away from the slope penalty.
-        if fold && std::env::var_os("PDHG_LOG").is_some() {
-            eprintln!("socp fold mass b={b_mass:.3e} reach=[{:.3e}, {:.3e}] mobile={na}", reach.0, reach.1);
-        }
-        let drop_row: Vec<bool> = row_ids
-            .iter()
-            .map(|id| match id {
-                RowId::Mass => fold,
-                RowId::MassPlus | RowId::MassMinus => true,
-                _ => false,
-            })
+    // The σ± columns never reach the solver: folded, ϱ M |b − a·x| is in q; otherwise
+    // the mass row is a hard equality. Their nonnegativity rows (nt and nt + 1 of the
+    // nonnegative block) go with them, and the mass row itself when folded.
+    let mass_slack_rows = [n_eq + nt, n_eq + nt + 1];
+    let attempt = |fold: bool| -> Result<Option<(super::socp_ipm::Solution, f64)>, SimError> {
+        let drop_row: Vec<bool> = (0..b.len())
+            .map(|r| (fold && r == 0) || mass_slack_rows.contains(&r))
             .collect();
         let solved = {
-            let _span = super::timing::span("socp_pdhg");
+            let _span = super::timing::span("socp_ipm");
             let mut q_f = q[..sp].to_vec();
-            let p_f = p_diag[..sp].to_vec();
             if fold {
                 let sign = b_mass.signum();
                 for j in 0..na {
@@ -609,9 +456,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
                 }
             }
             let new_row = new_row_of(&drop_row);
-            let mut rows_f = Vec::new();
-            let mut cols_f = Vec::new();
-            let mut vals_f = Vec::new();
+            let (mut rows_f, mut cols_f, mut vals_f) = (Vec::new(), Vec::new(), Vec::new());
             for k in 0..rows.len() {
                 if drop_row[rows[k]] || cols[k] >= sp {
                     continue;
@@ -620,47 +465,20 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
                 cols_f.push(cols[k]);
                 vals_f.push(vals[k]);
             }
-            let keep = |v: &[f64]| -> Vec<f64> {
-                v.iter()
-                    .enumerate()
-                    .filter(|(i, _)| !drop_row[*i])
-                    .map(|(_, v)| *v)
-                    .collect()
-            };
-            let b_f = keep(&b);
-            let n_eq_f = if fold { 0 } else { n_eq };
-            let n_nn_f = n_nn - 2;
-            let warm_f = if fold {
-                Some(mass_penalty_start(
-                    &p_f, &q_f, &rows_f, &cols_f, &vals_f, &b_f, n_nn_f, n_soc, delta, inp.varrho,
-                ))
-            } else {
-                warm.as_ref().map(|w| super::socp_pdhg::WarmStart {
-                    x: w.x[..sp].to_vec(),
-                    y: keep(&w.y),
-                })
-            };
-            let problem = super::socp_pdhg::Problem {
-                p_diag: p_f,
+            let b_f = b.iter().zip(&drop_row).filter(|(_, d)| !**d).map(|(v, _)| *v).collect();
+            super::socp_ipm::solve(super::socp_ipm::Problem {
+                p_diag: p_diag[..sp].to_vec(),
                 q: q_f,
                 rows: rows_f,
                 cols: cols_f,
                 vals: vals_f,
                 b: b_f,
-                n_eq: n_eq_f,
-                n_nn: n_nn_f,
+                n_eq: if fold { 0 } else { n_eq },
+                n_nn: n_nn - 2,
                 n_soc,
-                n_trust,
-                warm: warm_f,
-            };
-            super::socp_pdhg::solve(problem).map_err(|err| match err {
-                super::socp_pdhg::PdhgError::Gpu(detail) => SimError::gpu(detail),
-                super::socp_pdhg::PdhgError::Failed(detail) => {
-                    SimError::solver(format!("{detail} (mobile {na}, slope cones {nt})"))
-                }
-            })?
+            })
+            .map_err(|err| SimError::solver(format!("{} (mobile {na}, slope cones {nt})", err.detail)))?
         };
-        let _recover = super::timing::span("socp_recover");
         let adot: f64 = (0..na).map(|j| a_coeff[j] * solved.x[j]).sum();
         let sigma = if fold { b_mass - adot } else { 0.0 };
         // The fold is the exact penalty only while σ keeps the sign of the
@@ -669,69 +487,33 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         if fold && sigma * b_mass < 0.0 {
             return Ok(None);
         }
-        let mut x_full = vec![0.0; nx];
-        x_full[..solved.x.len()].copy_from_slice(&solved.x);
-        if sigma >= 0.0 {
-            x_full[sp] = sigma;
-        } else {
-            x_full[sm] = -sigma;
-        }
-        let mut y_full = vec![0.0; row_ids.len()];
-        for (i, &r) in new_row_of(&drop_row).iter().enumerate() {
-            if r != usize::MAX && r < solved.y.len() {
-                y_full[i] = solved.y[r];
-            }
-        }
-        Ok(Some((solved, x_full, y_full, sigma)))
+        Ok(Some((solved, sigma)))
     };
     let first = b_mass < reach.0 || b_mass > reach.1;
-    let (solved, x_full, y_full, sigma) = match attempt(first)? {
+    let (solved, sigma) = match attempt(first)? {
         Some(done) => done,
         None => attempt(false)?.ok_or_else(|| SimError::solver("hard mass row did not solve"))?,
     };
     let mut d = vec![0.0; nv];
     for i in 0..nv {
         d[i] = if col_of[i] != usize::MAX {
-            x_full[col_of[i]] * r0
+            solved.x[col_of[i]] * r0
         } else {
             known[i] * r0
         };
     }
     let slope_slack = (0..nf)
         .filter(|f| t_col[*f] != usize::MAX)
-        .map(|f| x_full[t_col[f]])
+        .map(|f| solved.x[t_col[f]])
         .sum();
-    let seed = pack_seed(nv, nf, r0, &col_ids, &row_ids, &x_full, &y_full);
-    let initial_metric = solved.initial_metric;
     Ok(SocpOutput {
         d,
-        status: "Solved".to_string(),
+        status: solved.status,
         iterations: solved.iterations,
         slope_slack,
         mass_slack: mscale * sigma,
         dropped_overhang: dropped,
         solve_seconds: solved.seconds,
-        seed,
-        initial_metric,
-        vertex_p,
-        vertex_q,
-        slope_cost,
-        mass_cost: mass_penalty,
-        mass_col_plus: eq
-            .trip
-            .iter()
-            .find(|t| t.1 == sp)
-            .map(|t| t.2)
-            .unwrap_or(0.0),
-        mass_col_minus: eq
-            .trip
-            .iter()
-            .find(|t| t.1 == sm)
-            .map(|t| t.2)
-            .unwrap_or(0.0),
-        n_nn,
-        n_soc,
-        n_trust,
     })
 }
 
@@ -749,206 +531,4 @@ fn new_row_of(drop_row: &[bool]) -> Vec<usize> {
             }
         })
         .collect()
-}
-
-/// Box-corner start for a mass penalty that has been folded into `q`.
-///
-/// Every free node sits on the bound the linear term points at, each slope
-/// slack opens just enough to meet its cone, and the bound multiplier cancels
-/// `P x + q`. The cone multipliers are `ϱ` and are negligible next to `ϱ M`.
-fn mass_penalty_start(
-    p: &[f64],
-    q: &[f64],
-    rows: &[usize],
-    cols: &[usize],
-    vals: &[f64],
-    b: &[f64],
-    n_nn: usize,
-    n_soc: usize,
-    delta: f64,
-    varrho: f64,
-) -> super::socp_pdhg::WarmStart {
-    let n = q.len();
-    let m = b.len();
-    let mut x = vec![0.0; n];
-    for j in 0..n {
-        if p[j] > 0.0 && q[j] != 0.0 {
-            x[j] = -q[j].signum() * delta;
-        }
-    }
-    let mut ax = vec![0.0; m];
-    let accum = |ax: &mut [f64], x: &[f64]| {
-        ax.fill(0.0);
-        for k in 0..vals.len() {
-            ax[rows[k]] += vals[k] * x[cols[k]];
-        }
-    };
-    accum(&mut ax, &x);
-    for cone in 0..n_soc {
-        let base = n_nn + 4 * cone;
-        if base + 3 >= m {
-            break;
-        }
-        let mut t_col = None;
-        let mut t_coeff = 0.0;
-        for k in 0..vals.len() {
-            if rows[k] == base && p[cols[k]] == 0.0 {
-                t_col = Some(cols[k]);
-                t_coeff = vals[k];
-            }
-        }
-        let Some(t_col) = t_col else { continue };
-        if t_coeff == 0.0 {
-            continue;
-        }
-        let s1 = b[base + 1] - ax[base + 1];
-        let s2 = b[base + 2] - ax[base + 2];
-        let s3 = b[base + 3] - ax[base + 3];
-        let spatial = (s1.hypot(s2)).hypot(s3);
-        let s0 = b[base] - ax[base];
-        // Adding t changes s0 by −t_coeff * t. t_coeff is −1, so s0 increases by t.
-        let grow = -t_coeff;
-        if grow <= 0.0 {
-            continue;
-        }
-        let t = ((spatial - s0) / grow).max(0.0);
-        x[t_col] = t;
-    }
-    accum(&mut ax, &x);
-    let mut y = vec![0.0; m];
-    for i in 0..n_nn {
-        let mut entry = None;
-        let mut count = 0usize;
-        for k in 0..vals.len() {
-            if rows[k] == i {
-                count += 1;
-                entry = Some((cols[k], vals[k]));
-            }
-        }
-        let Some((j, aval)) = entry else { continue };
-        if count != 1 || aval == 0.0 {
-            continue;
-        }
-        let slack = b[i] - aval * x[j];
-        if slack > 1.0e-8 * (1.0 + b[i].abs()) {
-            continue;
-        }
-        let mult = -(p[j] * x[j] + q[j]) / aval;
-        if mult >= 0.0 {
-            y[i] = mult;
-        }
-    }
-    for cone in 0..n_soc {
-        let base = n_nn + 4 * cone;
-        if base + 3 >= m {
-            break;
-        }
-        let s0 = b[base] - ax[base];
-        let s1 = b[base + 1] - ax[base + 1];
-        let s2 = b[base + 2] - ax[base + 2];
-        let s3 = b[base + 3] - ax[base + 3];
-        let spatial = (s1.hypot(s2)).hypot(s3);
-        if s0 < 1.0e-8 || spatial < 1.0e-8 {
-            continue;
-        }
-        // Dual on the boundary, parallel to the tight primal cone, with the
-        // leading multiplier equal to the slack's linear cost.
-        let scale = varrho / s0;
-        y[base] = varrho;
-        y[base + 1] = scale * s1;
-        y[base + 2] = scale * s2;
-        y[base + 3] = scale * s3;
-    }
-    super::socp_pdhg::WarmStart { x, y }
-}
-
-fn scatter_seed(
-    seed: &SocpSeed,
-    col_ids: &[ColId],
-    row_ids: &[RowId],
-    r0: f64,
-    n_eq: usize,
-    n_nn: usize,
-    n_soc: usize,
-    n_trust: usize,
-) -> Option<super::socp_pdhg::WarmStart> {
-    let nv = seed.d.len();
-    let nf = seed.t.len();
-    if seed.y_t.len() != nf
-        || seed.y_trust_hi.len() != nv
-        || seed.y_trust_lo.len() != nv
-        || seed.y_overhang.len() != nf
-        || seed.y_soc.len() != nf
-        || !r0.is_finite()
-        || r0 == 0.0
-    {
-        return None;
-    }
-    let mut x = vec![0.0; col_ids.len()];
-    for (j, id) in col_ids.iter().enumerate() {
-        x[j] = match *id {
-            ColId::Mobile(i) => *seed.d.get(i)?,
-            ColId::Slack(f) => *seed.t.get(f)?,
-            ColId::MassPlus => seed.s_plus,
-            ColId::MassMinus => seed.s_minus,
-        };
-        if matches!(*id, ColId::Mobile(_)) {
-            x[j] /= r0;
-        }
-    }
-    let mut y = vec![0.0; row_ids.len()];
-    for (i, id) in row_ids.iter().enumerate() {
-        y[i] = match *id {
-            RowId::Mass => seed.y_mass,
-            RowId::SlackNonneg(f) => *seed.y_t.get(f)?,
-            RowId::MassPlus => seed.y_s_plus,
-            RowId::MassMinus => seed.y_s_minus,
-            RowId::Overhang(f) => *seed.y_overhang.get(f)?,
-            RowId::Soc(f, k) => *seed.y_soc.get(f)?.get(k as usize)?,
-            RowId::TrustHi(v) => *seed.y_trust_hi.get(v)?,
-            RowId::TrustLo(v) => *seed.y_trust_lo.get(v)?,
-        };
-    }
-    if !x.iter().chain(y.iter()).all(|v| v.is_finite()) {
-        return None;
-    }
-    y = super::socp_pdhg::project_dual(&y, n_eq, n_nn, n_soc, n_trust);
-    Some(super::socp_pdhg::WarmStart { x, y })
-}
-
-fn pack_seed(
-    nv: usize,
-    nf: usize,
-    r0: f64,
-    col_ids: &[ColId],
-    row_ids: &[RowId],
-    x: &[f64],
-    y: &[f64],
-) -> SocpSeed {
-    let mut seed = SocpSeed::blank(nv, nf);
-    for (j, id) in col_ids.iter().enumerate() {
-        let value = x.get(j).copied().unwrap_or(0.0);
-        match *id {
-            ColId::Mobile(i) if i < nv => seed.d[i] = value * r0,
-            ColId::Slack(f) if f < nf => seed.t[f] = value,
-            ColId::MassPlus => seed.s_plus = value,
-            ColId::MassMinus => seed.s_minus = value,
-            _ => {}
-        }
-    }
-    for (i, id) in row_ids.iter().enumerate() {
-        let value = y.get(i).copied().unwrap_or(0.0);
-        match *id {
-            RowId::Mass => seed.y_mass = value,
-            RowId::SlackNonneg(f) if f < nf => seed.y_t[f] = value,
-            RowId::MassPlus => seed.y_s_plus = value,
-            RowId::MassMinus => seed.y_s_minus = value,
-            RowId::Overhang(f) if f < nf => seed.y_overhang[f] = value,
-            RowId::Soc(f, k) if f < nf => seed.y_soc[f][k as usize] = value,
-            RowId::TrustHi(v) if v < nv => seed.y_trust_hi[v] = value,
-            RowId::TrustLo(v) if v < nv => seed.y_trust_lo[v] = value,
-            _ => {}
-        }
-    }
-    seed
 }

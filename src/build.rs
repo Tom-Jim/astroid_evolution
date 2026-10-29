@@ -101,10 +101,6 @@ fn main() {
         }
         units.extend(split_entries(&program_name(&root, program), &source));
     }
-    // The browser runs the PDHG iteration on the CPU only (`socp_pdhg::on_cpu`).
-    let units = units
-        .into_iter()
-        .filter(|(stem, _)| target != Target::Wgsl || !stem.starts_with("scf_pdhg_"));
     for (stem, source) in units {
         let traces = source.contains("@if(rt_hw)") || source.contains("@if(!rt_hw)");
         let native_fp = target != Target::Wgsl && std::env::var_os("AE_DS_EXACT").is_none();

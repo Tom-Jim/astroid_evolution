@@ -271,6 +271,8 @@ export function App({ host }: { host: Host }) {
           <button className="icon" title="Screenshot (P)" onClick={() => send({ cmd: "screenshot" })}>
             <Icon name="camera" />
           </button>
+          <span className="sep" />
+          <CacheButtons host={host} canExport={(status?.frames ?? 0) > 0} />
         </div>
         <div className="legend">
           <span>
@@ -285,12 +287,54 @@ export function App({ host }: { host: Host }) {
       </footer>
 
       {status?.notice && (
-        <div className="toast">
-          <Label en="FAULT" sub="command not applied" />
+        <div className={`toast ${status.notice_fault ? "" : "info"}`}>
+          {status.notice_fault ? <Label en="FAULT" sub="command not applied" /> : <Label en="SAVED" sub="cache file" />}
           <p>{status.notice}</p>
         </div>
       )}
     </div>
+  );
+}
+
+/** Import a cache file (`.aecache`) to play, or export the timeline of the run as one. */
+function CacheButtons({ host, canExport }: { host: Host; canExport: boolean }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pick = async (file: File | undefined) => {
+    if (!file) {
+      return;
+    }
+    try {
+      await host.importCache(new Uint8Array(await file.arrayBuffer()));
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+  return (
+    <>
+      <input
+        ref={input}
+        type="file"
+        accept=".aecache"
+        hidden
+        onChange={(e) => {
+          pick(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      <button className="icon" title={error ?? "Import cache: play a stored run"} onClick={() => input.current?.click()}>
+        <Icon name="import" />
+      </button>
+      <button
+        className="icon"
+        title="Export cache: save this run for playback"
+        disabled={!canExport}
+        onClick={() => host.send({ cmd: "export_cache" })}
+      >
+        <Icon name="export" />
+      </button>
+    </>
   );
 }
 
@@ -378,7 +422,7 @@ function Scrubber({ status, send }: { status: Status | null; send: Host["send"] 
 
 function StatusPanel({ status, future }: { status: Status | null; future: boolean }) {
   const s = status?.stats;
-  const phase = status ? PHASE[status.phase] : null;
+  const phase = status ? (status.cached && status.phase === "running" ? "REPLAY" : PHASE[status.phase]) : null;
   const progress = status?.time_myr != null && status.t_end_myr ? status.time_myr / status.t_end_myr : null;
   return (
     <Panel

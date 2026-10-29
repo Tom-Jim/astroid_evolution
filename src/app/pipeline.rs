@@ -283,6 +283,7 @@ pub fn run_prepared(
         &RunOptions {
             max_steps,
             until: None,
+            lag: true,
         },
         &mut observer,
     )

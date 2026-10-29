@@ -27,9 +27,14 @@ const EARLY: f64 = 1.05;
 /// Above this fraction of the mean radius a flight takes the exterior self-gravity
 /// instead of the face expansion, whose error grows as `(h/R̄)²` (§2.8b).
 pub const FAR: f64 = 0.1;
-/// A far flight reuses the linear expansion `g₀ + H₀ (x − x₀)` of its last exterior value
+/// A far flight uses the linear expansion `g₀ + H₀ (x − x₀)` of an exterior value at `x₀`
 /// while `|x − x₀| ≤ REUSE h`: the same `O((|x − x₀|/h)²)` budget as the face expansion.
 const REUSE: f64 = 0.1;
+/// A flight that needs an exterior value asks for a whole row of them along its predicted
+/// arc, `PREFETCH · REUSE h` apart, at most `PREFETCH_MAX` (one batch instead of one call
+/// per value: each exterior call has a fixed cost).
+const PREFETCH: f64 = 0.5;
+const PREFETCH_MAX: usize = 256;
 /// Path samples kept per packet for the viewer.
 pub const PATH_SAMPLES: usize = 12;
 /// Hard cap on substeps; a packet that reaches it is counted as timed out.
@@ -172,24 +177,41 @@ impl RunoutField<'_> {
         sources: &[usize],
         exterior: Option<&Exterior<'_>>,
     ) -> Result<Vec<Arrival>, SimError> {
+        let packets = sources.iter().map(|&i| Packet::new(self, i, DVec3::ZERO)).collect();
+        self.drive(packets, exterior)
+    }
+
+    /// One packet from vertex `source` with the initial velocity `v0`; an outward normal
+    /// component starts it in flight (an ejection), a tangential one sliding.
+    pub fn launch(&self, source: usize, v0: DVec3) -> Arrival {
+        self.launch_with(source, v0, None)
+            .unwrap_or_else(|_| unreachable!("no exterior evaluation was requested"))
+    }
+
+    /// `launch`, with far flights on the exterior self-gravity as in `trace_with`.
+    pub fn launch_with(
+        &self,
+        source: usize,
+        v0: DVec3,
+        exterior: Option<&Exterior<'_>>,
+    ) -> Result<Arrival, SimError> {
+        let mut done = self.drive(vec![Packet::new(self, source, v0)], exterior)?;
+        Ok(done.remove(0))
+    }
+
+    /// Runs `packets` to their ends, sending the exterior requests of each round in one batch.
+    fn drive(&self, mut packets: Vec<Packet>, exterior: Option<&Exterior<'_>>) -> Result<Vec<Arrival>, SimError> {
         let faces = self.faces();
         let scale = Scale::of(self.positions);
         let far = exterior.is_some();
-        let mut packets: Vec<Packet> = sources
-            .iter()
-            .map(|&i| Packet::new(self, i, DVec3::ZERO))
-            .collect();
-        let mut waiting: Vec<Option<DVec3>> = packets
+        let mut waiting: Vec<Vec<DVec3>> = packets
             .par_iter_mut()
-            .map(|p| p.run(self, &faces, scale, far, None))
+            .map(|p| p.run(self, &faces, scale, far))
             .collect();
         if let Some(exterior) = exterior {
-            loop {
-                let ids: Vec<usize> = (0..waiting.len()).filter(|&k| waiting[k].is_some()).collect();
-                if ids.is_empty() {
-                    break;
-                }
-                let points: Vec<DVec3> = ids.iter().filter_map(|&k| waiting[k]).collect();
+            // Each round sends every waiting flight's prefetch row in one batch.
+            while waiting.iter().any(|w| !w.is_empty()) {
+                let points: Vec<DVec3> = waiting.iter().flatten().copied().collect();
                 let g = exterior(&points)?;
                 if g.len() != points.len() {
                     return Err(SimError::solver(format!(
@@ -198,26 +220,21 @@ impl RunoutField<'_> {
                         points.len()
                     )));
                 }
-                let mut given = vec![None; packets.len()];
-                for (slot, &k) in ids.iter().enumerate() {
-                    given[k] = Some(g[slot]);
+                let mut values = g.into_iter();
+                for (p, w) in packets.iter_mut().zip(&waiting) {
+                    p.anchors.extend(w.iter().map(|x| {
+                        let (g, h) = values.next().expect("one value per point");
+                        (*x, g, h)
+                    }));
                 }
                 waiting = packets
                     .par_iter_mut()
-                    .zip(given)
-                    .map(|(p, g)| g.and_then(|g| p.run(self, &faces, scale, far, Some(g))))
+                    .zip(&waiting)
+                    .map(|(p, w)| if w.is_empty() { Vec::new() } else { p.run(self, &faces, scale, far) })
                     .collect();
             }
         }
         Ok(packets.into_iter().map(|p| p.finish(self)).collect())
-    }
-
-    /// One packet from vertex `source` with the initial tangential velocity `v0`.
-    pub fn launch(&self, source: usize, v0: DVec3) -> Arrival {
-        let faces = self.faces();
-        let mut p = Packet::new(self, source, v0);
-        p.run(self, &faces, Scale::of(self.positions), false, None);
-        p.finish(self)
     }
 
     /// `π(x)`, the closest point of `Γ`, and its face (G9).
@@ -257,6 +274,7 @@ impl Scale {
 }
 
 /// The state of one packet between substeps.
+#[derive(Clone)]
 struct Packet {
     source: usize,
     start: DVec3,
@@ -272,8 +290,11 @@ struct Packet {
     hops: usize,
     max_hop: f64,
     substeps: usize,
-    /// The last exterior value of a far flight: `(x₀, g₀, H₀)`.
-    anchor: Option<(DVec3, DVec3, DMat3)>,
+    /// Exterior values `(x₀, g₀, H₀)` received for this packet's far flights.
+    anchors: Vec<(DVec3, DVec3, DMat3)>,
+    /// `(g_n, τ_n)` of the last flight substep, whose velocity still lacks the end-point
+    /// half of its kick (velocity Verlet).
+    kick: Option<(DVec3, f64)>,
     end: Option<End>,
     trail: Trail,
 }
@@ -282,6 +303,15 @@ impl Packet {
     fn new(field: &RunoutField, source: usize, v0: DVec3) -> Self {
         let start = field.positions[source];
         let (face, x) = field.ground(start);
+        // Outward against the vertex normal: a tangential `v0` slides on any facet.
+        let normal: DVec3 = field.topo.vertex_faces[source]
+            .iter()
+            .map(|&f| {
+                let [a, b, c] = field.topo.faces[f].map(|v| field.positions[v as usize]);
+                (b - a).cross(c - a)
+            })
+            .sum();
+        let airborne = v0.dot(normal) > 1e-9 * v0.length() * normal.length();
         Self {
             source,
             start,
@@ -291,28 +321,35 @@ impl Packet {
             v: v0,
             t: 0.0,
             kappa: 0.0,
-            airborne: false,
+            airborne,
             distance: 0.0,
-            hops: 0,
+            hops: usize::from(airborne),
             max_hop: 0.0,
             substeps: 0,
-            anchor: None,
+            anchors: Vec::new(),
+            kick: None,
             end: None,
             trail: Trail::new(x),
         }
     }
 
-    /// Substeps until the packet stops (`None`) or, with `far`, until a flight above
-    /// `FAR R̄` leaves the reach of its last exterior value and needs a new one at the
-    /// returned point. `fresh` is that value for the substep that asked for it.
-    fn run(
+    /// Substeps until the packet stops (empty), or, with `far`, until a flight above
+    /// `FAR R̄` has no exterior value within `REUSE h`; it then returns the points of its
+    /// prefetch row, the first being the current position.
+    fn run(&mut self, field: &RunoutField, faces: &Faces, scale: Scale, far: bool) -> Vec<DVec3> {
+        self.run_inner(field, faces, scale, far, None)
+    }
+
+    /// `run`, or with `row` the prediction of `prefetch`: missing exterior values are
+    /// estimated and their points recorded instead of ending the run.
+    fn run_inner(
         &mut self,
         field: &RunoutField,
         faces: &Faces,
         scale: Scale,
         far: bool,
-        mut fresh: Option<(DVec3, DMat3)>,
-    ) -> Option<DVec3> {
+        mut row: Option<&mut Vec<DVec3>>,
+    ) -> Vec<DVec3> {
         let m = field.material;
         let s = &m.spec;
         let omega = DVec3::new(0.0, 0.0, field.load.omega);
@@ -380,20 +417,28 @@ impl Packet {
                 // Near Γ the expansion about the closest face, higher up the exterior field.
                 let (near, height) = field.expansion(faces, below, ground, x);
                 let g_self = if far && height > FAR * scale.r_bar {
-                    if let Some((g, h)) = fresh.take() {
-                        self.anchor = Some((x, g, h));
-                    }
-                    match self.anchor {
-                        Some((x0, g0, h0)) if (x - x0).length() <= REUSE * height => {
-                            g0 + h0 * (x - x0)
+                    match (self.nearest_anchor(x, REUSE * height), row.as_deref_mut()) {
+                        (Some((x0, g0, h0)), _) => g0 + h0 * (x - x0),
+                        (None, None) => return self.prefetch(field, faces, scale),
+                        (None, Some(row)) => {
+                            if row.last().is_none_or(|p| (x - *p).length() > PREFETCH * REUSE * height) {
+                                row.push(x);
+                                if row.len() >= PREFETCH_MAX {
+                                    return Vec::new();
+                                }
+                            }
+                            self.nearest_anchor(x, height).map_or(near, |(x0, g0, h0)| g0 + h0 * (x - x0))
                         }
-                        _ => return Some(x),
                     }
                 } else {
                     near
                 };
                 self.substeps += 1;
                 let g = g_self + frame_terms(x, field.load);
+                // Velocity Verlet: the last kick takes the mean of the gravity at both ends.
+                if let Some((g0, tau0)) = self.kick.take() {
+                    self.v += (g - g0) * (0.5 * tau0);
+                }
                 // Outward, under outward effective gravity, well above the body: beyond the
                 // synchronous radius the outward pull grows with height, so it does not return.
                 let r = x.length().max(1e-9);
@@ -407,7 +452,8 @@ impl Packet {
                 let ell = edge.max(height);
                 let tau = substep(field.theta, ell, self.v.length(), g.length(), field.load.omega)
                     .min(field.time_limit - self.t);
-                // Exact Coriolis turn about e_z, then gravity, then the trapezoidal drift.
+                // Exact Coriolis turn about e_z, then gravity at the start point, then the
+                // trapezoidal drift `v τ + g τ²/2`; the next substep completes the kick.
                 let angle = -2.0 * field.load.omega * tau;
                 let (c, sn) = (angle.cos(), angle.sin());
                 let v_old = self.v;
@@ -429,6 +475,7 @@ impl Packet {
                     self.kappa = 0.0;
                     self.airborne = false;
                 } else {
+                    self.kick = Some((g, tau));
                     self.x += drift;
                     if self.x.length() > ESCAPE * r_max {
                         self.end = Some(End::Escaped);
@@ -439,7 +486,27 @@ impl Packet {
             let x = self.x;
             self.trail.push([x.x, x.y, x.z, f64::from(u8::from(self.airborne))]);
         }
-        None
+        Vec::new()
+    }
+
+    /// The received exterior value nearest to `x`, if it lies within `reach`.
+    fn nearest_anchor(&self, x: DVec3, reach: f64) -> Option<(DVec3, DVec3, DMat3)> {
+        self.anchors
+            .iter()
+            .map(|a| ((a.0 - x).length_squared(), a))
+            .filter(|(d2, _)| *d2 <= reach * reach)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, a)| *a)
+    }
+
+    /// The prefetch row of a far flight: the current position and the points where the
+    /// rest of the packet's run, predicted by a copy of it with estimated exterior values
+    /// (the nearest received one within `h`, else the face expansion), needs one, at least
+    /// `PREFETCH · REUSE h` apart. The prediction only places the points; a miss asks again.
+    fn prefetch(&self, field: &RunoutField, faces: &Faces, scale: Scale) -> Vec<DVec3> {
+        let mut row = vec![self.x];
+        self.clone().run_inner(field, faces, scale, true, Some(&mut row));
+        row
     }
 
     fn finish(self, field: &RunoutField) -> Arrival {
@@ -467,6 +534,7 @@ impl Packet {
     }
 }
 
+#[derive(Clone, Copy)]
 enum End {
     Arrested,
     Escaped,
@@ -489,6 +557,7 @@ fn substep(theta: f64, edge: f64, speed: f64, accel: f64, omega: f64) -> f64 {
 
 /// Path points with bounded memory: past `CAP` points every other one is dropped and the
 /// stride doubles, so any path keeps an even record of at most `CAP` points.
+#[derive(Clone)]
 struct Trail {
     points: Vec<[f64; 4]>,
     last: [f64; 4],
