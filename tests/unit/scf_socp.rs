@@ -282,6 +282,46 @@ fn a_folded_mass_row_at_a_millimetre_trust_radius_is_solved() {
     assert!(at_edge * 10 >= nv * 9, "{at_edge} of {nv} nodes at the box edge");
 }
 
+/// A program with nothing free (only locked and deposition vertices, no slope cone) is the
+/// fixed deposition itself: no solver call, and the mass row books what it misses in `s_M`.
+#[test]
+fn a_program_with_nothing_free_is_its_fixed_deposition() {
+    let (topo, _, body) = star(2, |_| 1.0);
+    let (nv, nf) = (topo.n_vertices(), topo.n_faces());
+    let jac = mass_jacobian(&body, &body.density().unwrap());
+    let mut kind = vec![Kind::Locked; nv];
+    let mut d_pred = vec![0.0; nv];
+    for i in (0..nv).step_by(5) {
+        kind[i] = Kind::Deposit;
+        d_pred[i] = 1e-3;
+    }
+    let gravity: Vec<DVec3> = body.face_geometry().iter().map(|(c, _, _)| c.normalize() * -9.8).collect();
+    let out = solve(&SocpInput {
+        body: &body,
+        kind: &kind,
+        d_pred: &d_pred,
+        weight: &vec![1.0; nv],
+        gravity: &gravity,
+        sin_phi: &vec![0.35; nf],
+        slope_row: &vec![false; nf],
+        mass_jac: &jac,
+        mass_residual: 7.0,
+        mass: 4.0e3,
+        trust: 0.05,
+        eps_n: 0.01,
+        lower: &[],
+        upper: &[],
+        varrho: 1e3,
+    })
+    .expect("an empty program is not an error");
+    assert_eq!(out.iterations, 0);
+    for i in 0..nv {
+        assert!((out.d[i] - d_pred[i]).abs() <= 1e-15, "vertex {i}: {} vs {}", out.d[i], d_pred[i]);
+    }
+    let booked: f64 = jac.iter().zip(&out.d).map(|(j, d)| j * d).sum();
+    assert!((booked + out.mass_slack - 7.0).abs() <= 1e-12 * 7.0);
+}
+
 /// `∂n̂/∂x_k` of the CPU face frame against central differences of the normal of the
 /// face whose vertex `k` moves along its vertex normal.
 #[test]

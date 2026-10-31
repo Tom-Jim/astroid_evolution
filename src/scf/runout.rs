@@ -57,6 +57,9 @@ pub struct RunoutField<'a> {
     pub grav_const: f64,
     pub load: Loading,
     pub material: &'a Material,
+    /// A-O (§10.4.6): the necks of the Hill region. A packet beyond a neck plane has left
+    /// and its mass is lost; without them escape is the heuristic count of §2.8b.
+    pub necks: Option<&'a super::orbit::Necks>,
     /// `T_run` (s) and `ε_stop`.
     pub time_limit: f64,
     pub stop: f64,
@@ -77,6 +80,8 @@ pub struct Arrival {
     pub hops: usize,
     pub max_hop: f64,
     pub escaped: bool,
+    /// Escaped through a neck (A-O): the mass leaves the body and is not deposited.
+    pub lost: bool,
     pub timed_out: bool,
     /// `PATH_SAMPLES` points along the path (m); `w = 1` while airborne.
     pub path: Vec<[f64; 4]>,
@@ -443,7 +448,7 @@ impl Packet {
                 // synchronous radius the outward pull grows with height, so it does not return.
                 let r = x.length().max(1e-9);
                 let up = x / r;
-                if r > EARLY * r_max && self.v.dot(up) > 0.0 && g.dot(up) >= 0.0 {
+                if field.necks.is_none() && r > EARLY * r_max && self.v.dot(up) > 0.0 && g.dot(up) >= 0.0 {
                     self.end = Some(End::Escaped);
                     break;
                 }
@@ -477,7 +482,7 @@ impl Packet {
                 } else {
                     self.kick = Some((g, tau));
                     self.x += drift;
-                    if self.x.length() > ESCAPE * r_max {
+                    if self.x.length() > ESCAPE * r_max || field.necks.is_some_and(|n| n.beyond(self.x)) {
                         self.end = Some(End::Escaped);
                         break;
                     }
@@ -528,6 +533,7 @@ impl Packet {
             hops: self.hops,
             max_hop: self.max_hop,
             escaped,
+            lost: escaped && field.necks.is_some(),
             timed_out: matches!(self.end, Some(End::TimedOut)),
             path: self.trail.samples(),
         }
@@ -624,7 +630,8 @@ fn friction(m: &Material, speed: f64, normal: f64) -> f64 {
 }
 
 /// Move each source's eroded mass rate `J_ero A` to its arrival point (barycentric split)
-/// and return the source density per vertex; the sum `Σ J A` is unchanged.
+/// and return the source density per vertex; the sum `Σ J A` is unchanged except for the
+/// packets lost through a neck (A-O), whose mass leaves.
 pub fn moved_source(area: &[f64], j_ero: &[f64], arrivals: &[Arrival]) -> Vec<f64> {
     let nv = area.len();
     let mut mass = vec![0.0; nv];
@@ -635,6 +642,9 @@ pub fn moved_source(area: &[f64], j_ero: &[f64], arrivals: &[Arrival]) -> Vec<f6
             continue;
         }
         moved[a.source] = true;
+        if a.lost {
+            continue;
+        }
         for k in 0..3 {
             mass[a.ids[k]] += rate * a.weights[k];
         }

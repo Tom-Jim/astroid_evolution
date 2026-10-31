@@ -7,6 +7,7 @@
 pub mod basis;
 mod basis_gpu;
 pub mod body;
+pub mod breakup;
 pub mod classify;
 pub mod cores;
 pub mod domain;
@@ -19,6 +20,8 @@ pub mod history;
 pub mod io;
 pub mod jets;
 pub mod mechanics;
+pub mod nbody;
+pub mod orbit;
 pub mod params;
 pub mod quad;
 pub mod relax;

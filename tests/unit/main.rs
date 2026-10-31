@@ -24,6 +24,8 @@ mod scf_basis;
 #[cfg(feature = "tier2")]
 mod scf_body;
 #[cfg(feature = "tier2")]
+mod scf_breakup;
+#[cfg(feature = "tier2")]
 mod scf_classify;
 #[cfg(feature = "tier2")]
 mod scf_cores;
@@ -37,6 +39,10 @@ mod scf_harmonics;
 mod scf_jets;
 #[cfg(feature = "tier2")]
 mod scf_domain;
+#[cfg(feature = "tier2")]
+mod scf_nbody;
+#[cfg(feature = "tier2")]
+mod scf_orbit;
 #[cfg(feature = "tier2")]
 mod scf_quad;
 #[cfg(feature = "tier2")]

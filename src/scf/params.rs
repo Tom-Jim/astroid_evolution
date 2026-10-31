@@ -12,6 +12,8 @@ use crate::common::math::DVec3;
 use crate::rheo::{Material, MaterialSpec, SolverSpec};
 
 use super::cores::CoreParams;
+use super::breakup::BreakupParams;
+use super::orbit::OrbitParams;
 use super::evolving::{DamageParams, DilatancyParams, MarkerParams, SpinLawParams, ThermalParams};
 use crate::common::error::SimError;
 
@@ -254,6 +256,12 @@ struct ProjectFile {
     damage: Option<DamageParams>,
     #[serde(default)]
     dilatancy: Option<DilatancyParams>,
+    /// A-O (§10.4.6): mass-coupled orbital decay and loss through the Hill necks.
+    #[serde(default)]
+    orbit: Option<OrbitParams>,
+    /// Chapter 12: breakup, fragments and the debris ring.
+    #[serde(default)]
+    breakup: Option<BreakupParams>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -286,6 +294,10 @@ pub struct Project {
     pub damage: Option<DamageParams>,
     /// A-Ξ (§11.3–11.4): rate-type dilatancy.
     pub dilatancy: Option<DilatancyParams>,
+    /// A-O (§10.4.6): the orbit follows the mass, which leaves through the Hill necks.
+    pub orbit: Option<OrbitParams>,
+    /// Chapter 12: how a failed satellite breaks, its fragments move, and its debris spreads.
+    pub breakup: Option<BreakupParams>,
     pub base_dir: PathBuf,
 }
 
@@ -342,6 +354,20 @@ impl Project {
         }
         if let Some(t) = &f.thermal {
             t.validate()?;
+        }
+        if let Some(b) = &f.breakup {
+            b.validate()?;
+            if f.orbit.is_none() {
+                return Err(SimError::model_not_closed("[breakup] needs the [orbit] section (A-O) for the primary"));
+            }
+        }
+        if let Some(o) = &f.orbit {
+            o.validate()?;
+            if f.spin_law.is_some() {
+                return Err(SimError::model_not_closed(
+                    "[orbit] (A-O) keeps the spin synchronous; it excludes [spin_law] (A-L)",
+                ));
+            }
         }
         if let Some(d) = &f.damage {
             d.validate()?;
@@ -505,6 +531,8 @@ impl Project {
             markers: f.markers,
             damage: f.damage,
             dilatancy: f.dilatancy,
+            orbit: f.orbit,
+            breakup: f.breakup,
             base_dir,
         })
     }

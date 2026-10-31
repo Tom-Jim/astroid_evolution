@@ -30,6 +30,7 @@ use super::relief::{Relief, clearance, relieve};
 use super::runout::RunoutReport;
 use super::settle::{SettleReport, settle};
 use super::socp::{Kind, mass_jacobian};
+use super::orbit::{Necks, OrbitLaw, OrbitReport};
 use super::spin::SpinSchedule;
 use super::stokes::Guess;
 use super::transport::{advect, surface_flow, transport};
@@ -133,6 +134,9 @@ pub struct StepRecord {
     /// A-Θ (§11.6); inactive without the thermal section.
     #[serde(skip_serializing_if = "ThermalReport::inactive")]
     pub thermal: ThermalReport,
+    /// A-O (§10.4.6); inactive without the orbit section.
+    #[serde(skip_serializing_if = "OrbitReport::inactive")]
+    pub orbit: OrbitReport,
     /// The state markers, A-ϖ and A-Ξ (§11.1–11.5); inactive without them.
     #[serde(skip_serializing_if = "MaterialReport::inactive")]
     pub material: MaterialReport,
@@ -279,9 +283,23 @@ pub fn run(
     let mut fresh_deep = true;
     // Chapter 11 state follows the fresh fields every step, so it never lags.
     let mut geometry_cache = super::mechanics::GeometryCache::default();
+    // A-O (§10.4.6): the orbit follows the ledger mass, which leaves through the necks.
+    let orbit_law = match &project.orbit {
+        Some(p) => {
+            let o = *state
+                .evolving
+                .orbit
+                .get_or_insert_with(|| OrbitLaw::start(spin, state.t, fwd.moments.mass));
+            Some(OrbitLaw::new(p, spin, o.m0)?)
+        }
+        None => None,
+    };
     let lag_allowed = opts.lag && law.is_none() && thermal.is_none() && project.markers.is_none();
 
     while state.t < t_end - snap_tol {
+        if orbit_law.zip(state.evolving.orbit).is_some_and(|(l, o)| l.ended(&o)) {
+            break;
+        }
         if let Some(m) = opts.max_steps {
             if steps_done >= m {
                 break;
@@ -299,16 +317,22 @@ pub fn run(
         let sample = spin.sample(state.t);
         let t_next = sample.t_next.min(t_end);
         // A-L: ω_n = L_n / I_1⁽ⁿ⁾ on the current (settled) inertia; else the table.
-        let omega = match &state.evolving.spin {
-            Some(s) if law.is_some() => SpinLaw::omega(s, &fwd.moments),
+        let orbit = orbit_law.zip(state.evolving.orbit);
+        let omega = match (&state.evolving.spin, orbit) {
+            (Some(s), _) if law.is_some() => SpinLaw::omega(s, &fwd.moments),
+            (_, Some((l, o))) => l.mean_motion(o.a),
             _ => sample.omega,
         };
         state.omega = omega;
         let r_star = state.body.r_star();
         // Steps 1–4: the deep state of the slow operator (§10.4.4).
-        let load = Loading {
-            omega,
-            tide: spin.tide(state.t),
+        let load = match orbit {
+            Some((l, o)) => l.load(o.a),
+            None => Loading { omega, tide: spin.tide(state.t) },
+        };
+        let necks = match orbit {
+            Some((_, o)) => Some(Necks::locate(&fwd, project.g, o.mass, load)?),
+            None => None,
         };
         let lagged = lag_allowed
             && !fresh_deep
@@ -412,6 +436,29 @@ pub fn run(
             ..StepRecord::default()
         };
         rec.lagged = lagged;
+        if let (Some((l, o)), Some(nk)) = (orbit, &necks) {
+            rec.orbit = OrbitReport {
+                active: true,
+                a: o.a,
+                n: l.mean_motion(o.a),
+                mass: o.mass,
+                r_hill: nk.r_hill,
+                lobe_margin: nk.margin(&state.body.positions),
+                ..OrbitReport::default()
+            };
+            // §2.17.3: a certified L* > 1 ends the quasi-static route.
+            let every = project.orbit.as_ref().map_or(0, |p| p.limit_every);
+            if every > 0 && !lagged && state.step % every == 0 {
+                let b = super::mechanics::limit_bracket(project, &mech, &fwd, load)?;
+                (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
+                if b.lo > 1.0 {
+                    return Err(SimError::limit_load_collapse(format!(
+                        "certified L* ≥ {:.4} > 1 at a = {:.6e} m (§2.17.3)",
+                        b.lo, o.a
+                    )));
+                }
+            }
+        }
         if !lagged {
             guess = Some(mech.sol.guess());
             state.velocity = mech.sol.u.clone();
@@ -448,6 +495,7 @@ pub fn run(
                 mass_target,
                 state.step,
                 Some(&mech.face_law),
+                None,
             )?;
             let quiet = settled.report.sweeps == 0;
             state.body = settled.body;
@@ -534,8 +582,13 @@ pub fn run(
                 }
             }
             _ if spin.is_stages() => f64::INFINITY,
-            _ => st.eps_omega * omega.max(st.omega_ref) / sample.omega_dot.abs().max(1e-30),
+            _ => {
+                let rate = orbit.map_or(sample.omega_dot, |(l, o)| l.ndot(o.a, o.mass));
+                st.eps_omega * omega.max(st.omega_ref) / rate.abs().max(1e-30)
+            }
         };
+        // A-O: the step that brings the orbit to the primary ends exactly there.
+        let primary_bound = orbit.map_or(f64::INFINITY, |(l, o)| l.time_to_floor(&o) / st.lambda);
         rec.dt_omega = omega_bound;
         // Single-valued core map: τ ‖dev ∇v_adv‖_F ≤ θ_ch at every moving core, with the
         // gradient at the current centres (§10.4.1); step 6b rechecks it at the midpoints.
@@ -593,6 +646,7 @@ pub fn run(
                 ("dilatancy", dt_xi),
                 ("damage", dt_damage),
                 ("omega", omega_bound),
+                ("primary", primary_bound),
                 ("dt_max", st.dt_max),
                 ("t_next", t_next - state.t),
             ];
@@ -659,6 +713,7 @@ pub fn run(
                 ("dilatancy", dt_xi),
                 ("damage", dt_damage),
                 ("omega", omega_bound),
+                ("primary", primary_bound),
                 ("dt_max", st.dt_max),
                 ("t_next", t_next - state.t),
             ];
@@ -736,13 +791,27 @@ pub fn run(
             }
             // Clearance rows of (G4): −θ_g t⁻ ≤ d ≤ θ_g t⁺ along the vertex normals, with
             // t^± the distance to the next crossing of Γ (two first-hit queries).
-            let (lower, upper) = clearance(
+            let (lower, mut upper) = clearance(
                 &state.body,
                 &cl.normal,
                 fwd.body_mesh(),
                 g.theta_g,
                 &vec![f64::NEG_INFINITY; nv],
             )?;
+            // A-O lobe cap (§10.4.6): movable material carried beyond a neck plane is in
+            // the outer region at rest and leaves; the cap bounds the increment there.
+            if let Some(nk) = &necks {
+                for i in 0..nv {
+                    let Some(cap) = nk.cap(state.body.positions[i], cl.normal[i]) else { continue };
+                    if kind[i] != Kind::Mobile || st.lambda * d_pred[i] <= cap {
+                        continue;
+                    }
+                    upper[i] = (cap / st.lambda).min(upper[i]).max(lower[i]);
+                    rec.orbit.escaped_cap += jac[i] * st.lambda * (d_pred[i] - upper[i]).max(0.0);
+                }
+                mass_target -= rec.orbit.escaped_cap;
+                cone_target -= rec.orbit.escaped_cap;
+            }
             let relief = Relief {
                 project,
                 body: &state.body,
@@ -869,6 +938,7 @@ pub fn run(
             mass_target,
             state.step,
             Some(&mech.face_law),
+            necks.as_ref(),
         )?;
         state.body = settled.body;
         fwd = settled.fwd;
@@ -886,6 +956,9 @@ pub fn run(
             rec.mass_residual = rep.mass_residual;
         }
         rec.runout = settled.runout;
+        rec.orbit.escaped_runout = rep.escaped_runout;
+        rec.orbit.escaped_relief = rep.escaped_relief;
+        mass_target -= rep.escaped_runout + rep.escaped_relief;
         rec.rho_s_total = {
             let a = state.body.vertex_areas();
             (0..nv).map(|i| a[i] * state.body.rho_s[i]).sum()
@@ -907,6 +980,13 @@ pub fn run(
         let t0 = state.t;
         advance_time(&mut state, spin, rec.advance, t_next, snap_tol);
         spin_step(&law, &mut state, t0, t_rad, omega, &creep_m, &fwd.moments, &mut rec)?;
+        if let (Some(l), Some(o)) = (&orbit_law, state.evolving.orbit.as_mut()) {
+            let r = &mut rec.orbit;
+            l.advance(o, rec.advance, r.escaped_runout + r.escaped_relief + r.escaped_cap)?;
+            r.escaped_total = o.escaped;
+            r.recoil_bound = 2.0 * o.escaped / o.mass * r.r_hill / r.a;
+            state.omega = l.mean_motion(o.a);
+        }
         state.step += 1;
         steps_done += 1;
         let fields = step_fields(

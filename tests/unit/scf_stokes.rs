@@ -204,6 +204,112 @@ fn uniform_sphere_is_hydrostatic_and_at_rest() {
     assert!(sol.eps_rot < 1e-2, "rot {}", sol.eps_rot);
 }
 
+/// The loads of a uniform sphere (`∇U = −k x`) in the Hill field of strength `s = n²`:
+/// `g_eff = −k x + s (3x, 0, −z)` and `T_tide = C dev H_W` with `H_W = −k I + s diag(3, 0, −1)`.
+struct Hill {
+    g_vol: Vec<DVec3>,
+    tide: Vec<[f64; 6]>,
+    g_bnd: Vec<DVec3>,
+    tide_bnd: Vec<[f64; 6]>,
+    tide_nn: Vec<f64>,
+    strength: Strengths,
+}
+
+impl Hill {
+    fn new(ops: &Operators, m: &Material, k: f64, s: f64) -> Self {
+        let g = |x: &DVec3| *x * -k + DVec3::new(3.0 * x.x, 0.0, -x.z) * s;
+        // dev diag(3, 0, −1) = diag(7, −2, −5)/3; the isotropic −k I has no deviator.
+        let t = [7.0, -2.0, -5.0, 0.0, 0.0, 0.0].map(|v| m.tide_coef * s * v / 3.0);
+        let nn = |n: &DVec3| t[0] * n.x * n.x + t[1] * n.y * n.y + t[2] * n.z * n.z;
+        Self {
+            g_vol: ops.vol.pts.iter().map(g).collect(),
+            tide: vec![t; ops.vol.pts.len()],
+            g_bnd: ops.bnd.pts.iter().map(g).collect(),
+            tide_bnd: vec![t; ops.bnd.pts.len()],
+            tide_nn: ops.faces.normals.iter().map(nn).collect(),
+            strength: Strengths::profile(ops, m),
+        }
+    }
+
+    fn loads(&self, g_const: f64) -> Loads<'_> {
+        Loads {
+            g_eff: &self.g_vol,
+            tide: &self.tide,
+            g_bnd: &self.g_bnd,
+            tide_bnd: &self.tide_bnd,
+            tide_nn: &self.tide_nn,
+            g_const,
+            strength: &self.strength,
+            dilatancy: None,
+        }
+    }
+}
+
+/// The certified bracket of `L*` (§2.17.3) on a uniform sphere of radius 1 km in a Hill
+/// tide. Its exact properties:
+/// - `lo ≤ hi`, closing as the reweighting proceeds;
+/// - without a tide the load has no deviatoric part and `L*` is the small discretization
+///   residue of the polyhedral sphere;
+/// - `L*` is homogeneous of degree 1 in the load and, without cohesion, of degree −1 in `μ`;
+/// - it agrees with the primal–dual solve: certified `L* < 1` where the solve converges,
+///   certified `L* > 1` where it reports a limit-load collapse.
+#[test]
+fn the_limit_load_bracket_is_certified_and_agrees_with_the_collapse_test() {
+    use astroid_evolution::scf::stokes::limit::{LimitData, bracket, data};
+    let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
+    let k = 4.0 * PI / 3.0 * g * rho;
+    let mut prm = params();
+    prm.pd_max = 40_000;
+    let m = material();
+    let ops = sphere_ops(r0, rho, &prm);
+    let at = |s: f64| {
+        let h = Hill::new(&ops, &m, k, s);
+        let d = data(&ops, &h.loads(g), &prm, &m).unwrap();
+        (h, d)
+    };
+    let cohesion: Vec<f64> = Strengths::profile(&ops, &m).vol.iter().map(|l| l.c).collect();
+    let (mu, p_min) = (m.spec.mu_2, m.spec.p_min);
+
+    let (_, rest) = at(0.0);
+    let b = bracket(&ops, &rest, &cohesion, mu, p_min, 1e-3).unwrap();
+    assert!(b.lo <= b.hi && b.hi < 1e-2, "no tide: L* in [{}, {}]", b.lo, b.hi);
+
+    let scan: Vec<(f64, f64, f64)> = [0.01, 0.1, 0.3, 1.0, 3.0]
+        .iter()
+        .map(|f| {
+            let b = bracket(&ops, &at(f * k).1, &cohesion, mu, p_min, 1e-3).unwrap();
+            assert!(b.lo <= b.hi * (1.0 + 1e-12), "s = {f} k: lo {} > hi {}", b.lo, b.hi);
+            (*f, b.lo, b.hi)
+        })
+        .collect();
+    eprintln!("L* scan (s/k, lo, hi): {scan:?}");
+    let (low, high) = (scan[0], scan[scan.len() - 1]);
+    assert!(low.2 < 1.0 && high.1 > 1.0, "the scan does not cross 1: {scan:?}");
+
+    // Homogeneity in the load, and in 1/μ without cohesion.
+    let (_, mid) = at(0.3 * k);
+    let double = LimitData { load: &mid.load * 2.0, p0: mid.p0.clone() };
+    let (b1, b2) = (
+        bracket(&ops, &mid, &cohesion, mu, p_min, 1e-3).unwrap(),
+        bracket(&ops, &double, &cohesion, mu, p_min, 1e-3).unwrap(),
+    );
+    assert!((b2.lo - 2.0 * b1.lo).abs() <= 1e-9 * b2.lo && (b2.hi - 2.0 * b1.hi).abs() <= 1e-9 * b2.hi);
+    let none = vec![0.0; cohesion.len()];
+    let (f1, f2) = (
+        bracket(&ops, &mid, &none, mu, p_min, 1e-3).unwrap(),
+        bracket(&ops, &mid, &none, 2.0 * mu, p_min, 1e-3).unwrap(),
+    );
+    assert!((2.0 * f2.lo - f1.lo).abs() <= 1e-9 * f1.lo && (2.0 * f2.hi - f1.hi).abs() <= 1e-9 * f1.hi);
+
+    // The primal–dual solve: a state where the bracket certifies one, none where it
+    // certifies failure.
+    let (h, _) = at(low.0 * k);
+    assert!(solve(&ops, &h.loads(g), &prm, &m, None).is_ok(), "no state at a certified L* < 1");
+    let (h, _) = at(high.0 * k);
+    let err = solve(&ops, &h.loads(g), &prm, &m, None).err().expect("a state past a certified L* > 1");
+    assert_eq!(err.kind, "LimitLoadCollapse", "{err}");
+}
+
 #[test]
 fn two_layer_cohesion_profile() {
     let mut m = material();

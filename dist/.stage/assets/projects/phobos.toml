@@ -55,13 +55,16 @@ max_iter = 40
 tol = 1.0e-10
 
 [stokes]
+# Resolution from the convergence of the failure orbit (certified limit load, frozen shape):
+# velocity degree 5 -> 6 moves it by 1.0 %, 6 -> 7 by 0.12 % (within the bracket); icosphere
+# level 5 -> 6 by 0.1 %. Degree 6 with a 32 x 64 x 9 rule is the converged choice.
 l_surface = 4
-l_velocity = 5
-l_pressure = 7
+l_velocity = 6
+l_pressure = 8
 k_pressure = 5
-n_theta = 28
-n_phi = 56
-n_radial = 8
+n_theta = 32
+n_phi = 64
+n_radial = 9
 p_ext = 0.0
 picard_max = 30
 tol_picard = 5.0e-2

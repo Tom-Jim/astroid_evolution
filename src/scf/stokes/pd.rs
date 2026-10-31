@@ -181,6 +181,9 @@ pub(super) fn solve_pd(
     // from the guess's coefficients, then from each level's.
     let p_start: &[f64] = guess.map_or(&[], |g| &g.p);
     let mut warm_p = p_start.to_vec();
+    // Extensions of a level whose suspected collapse the bracket did not confirm, and the
+    // gap at the last one: an extension must reduce it.
+    let (mut extensions, mut gap_at_extension) = (0usize, f64::INFINITY);
     loop {
         let level = levels[at];
         at += 1;
@@ -350,24 +353,56 @@ pub(super) fn solve_pd(
                 dilatancy: shift.state,
             });
         }
-        // Collapse certificate (Proposition 2.17.1): ‖u‖_P grows linearly while the stress
-        // is pinned at τ_max = c + (μ_2 + ξ + K_Ξ Δν_c) p̃ somewhere. L* does not depend on
-        // γ̇_ε, so the continuation ladder cannot help.
+        // Collapse (Proposition 2.17.1): ‖u‖_P growing while the stress is pinned at
+        // τ_max = c + (μ_2 + ξ + K_Ξ Δν_c) p̃ somewhere only suggests L* > 1; a near-critical
+        // state also converges slowly at large rates. The certified bracket of
+        // Proposition 2.17.3 at this frozen pressure decides. L* does not depend on γ̇_ε, so
+        // the continuation ladder cannot help.
+        let tau_max: Vec<f64> = (0..np)
+            .map(|i| {
+                let mu_max = m.spec.mu_2 + coh[i].xi + m.dilatancy.map_or(0.0, |d| d[0]);
+                coh[i].c + mu_max * pr.ptil[i]
+            })
+            .collect();
         let saturation = (0..np)
             .map(|i| {
                 let s = &sig.as_slice()[6 * i..6 * i + 6];
-                let mu_max = m.spec.mu_2 + coh[i].xi + m.dilatancy.map_or(0.0, |d| d[0]);
-                d6_dot(s, s).sqrt() / (coh[i].c + mu_max * pr.ptil[i])
+                d6_dot(s, s).sqrt() / tau_max[i]
             })
             .fold(0.0, f64::max);
         let growth = p_norm(&u) / u_half.max(1e-300);
         if saturation >= COLLAPSE_SATURATION && growth >= COLLAPSE_GROWTH {
-            return Err(SimError::limit_load_collapse(format!(
+            let suspect = format!(
                 "the velocity grew {growth:.2}× over the second half of {} primal–dual iterations with \
-                 the stress at {saturation:.4} of τ_max (equilibrium residual {:.3e}): no quasi-static \
-                 state at this pressure",
+                 the stress at {saturation:.4} of τ_max (equilibrium residual {:.3e})",
                 prm.pd_max, last.1
-            )));
+            );
+            // Under A-Ξ the admissible set is affine (Proposition 11.8) and the bracket does
+            // not apply: the suspicion stands as the verdict.
+            if ld.dilatancy.is_some() {
+                return Err(SimError::limit_load_collapse(format!("{suspect}: no quasi-static state at this pressure")));
+            }
+            let b = super::limit::bracket_with(ops, &f_load, &tau_max, CERTIFY_GAP)?;
+            if b.lo > 1.0 {
+                return Err(SimError::limit_load_collapse(format!(
+                    "{suspect}; certified L* in [{:.4}, {:.4}] > 1: no quasi-static state at this pressure",
+                    b.lo, b.hi
+                )));
+            }
+            if extensions >= PD_EXTENSIONS || last.1 > PD_PROGRESS * gap_at_extension {
+                return Err(SimError::rheology_not_converged(format!(
+                    "{suspect}; certified L* in [{:.4}, {:.4}] does not exclude a quasi-static state, \
+                     which {extensions} further levels of iterations did not reach",
+                    b.lo, b.hi
+                )));
+            }
+            // Not a collapse: the same level again from where it stopped, while the gap falls.
+            extensions += 1;
+            gap_at_extension = last.1;
+            levels.insert(at, level);
+            warm = u;
+            warm_p = pr.coeff.as_slice().to_vec();
+            continue;
         }
         if level == 0 && ladder {
             // Continuation ladder 10^c γ̇_ε, …, 10 γ̇_ε, γ̇_ε from the incoming guess,
@@ -397,4 +432,10 @@ const PD_THETA: f64 = 0.99;
 /// many times its value halfway through the level (linear growth gives 2, convergence 1).
 const COLLAPSE_SATURATION: f64 = 0.999;
 const COLLAPSE_GROWTH: f64 = 1.8;
+/// Relative width at which the bracket of a suspected collapse stops; the further levels of
+/// `pd_max` iterations at most that a suspicion the bracket does not confirm gets, each
+/// only while the primal–dual gap still falls below this fraction of its last value.
+const CERTIFY_GAP: f64 = 1e-3;
+const PD_EXTENSIONS: usize = 10;
+const PD_PROGRESS: f64 = 0.9;
 

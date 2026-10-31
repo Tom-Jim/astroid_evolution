@@ -95,6 +95,7 @@ impl Sphere {
             grav_const: 0.0,
             load,
             material: m,
+            necks: None,
             time_limit: time,
             stop: 1.0e-3,
             theta: THETA,
@@ -286,6 +287,55 @@ fn a_far_flight_follows_the_kepler_orbit_in_few_exterior_calls() {
     // Past the escape speed the flight leaves and the packet stays at its source.
     let (gone, _, _) = fly(up * (2.2 * gm / r).sqrt());
     assert!(gone.escaped && gone.distance == 0.0, "{gone:?}");
+}
+
+/// The necks of A-O (§10.4.6) on a sphere in the Hill field `W = U + ½ n²(3x² − z²)` with
+/// `r_H = 2.5 R`. A packet ejected toward the primary below the critical Jacobi energy
+/// `−W(L₁)` cannot leave (Proposition 10.4.6.3): it falls back and keeps its mass. Above
+/// it the packet transits the neck, is lost, and its mass is laid down nowhere.
+#[test]
+fn a_packet_leaves_through_a_neck_only_above_the_critical_energy() {
+    use astroid_evolution::scf::orbit::{Neck, Necks};
+    let (gm, r): (f64, f64) = (100.0, 1000.0);
+    let r_hill = 2.5 * r;
+    let n2 = gm / (3.0 * r_hill.powi(3));
+    let frame = |x: DVec3| DVec3::new(3.0 * x.x, 0.0, -x.z) * n2;
+    let sphere = Sphere::new(5, r);
+    let m = material(0.70, 0.96);
+    let g = sphere.gravity(|c, _| point_mass(gm, c).0 + frame(c));
+    let hess: Vec<_> = (0..sphere.topo.faces.len()).map(|f| mat_sym(point_mass(gm, sphere.face(f).0).1)).collect();
+    let load = Loading { omega: n2.sqrt(), tide: n2 };
+    let necks = Necks {
+        necks: [
+            Neck { point: DVec3::X * r_hill, axis: DVec3::X },
+            Neck { point: DVec3::X * -r_hill, axis: -DVec3::X },
+        ],
+        r_hill,
+    };
+    let mut field = sphere.field(&g, load, &m, 1.0e7);
+    field.hess_face = &hess;
+    field.necks = Some(&necks);
+    let exterior = |xs: &[DVec3]| Ok(xs.iter().map(|x| point_mass(gm, *x)).collect());
+    let source = sphere.vertex(DVec3::X);
+    let x0 = sphere.positions[source];
+    let w = |x: DVec3| gm / x.length() + 0.5 * n2 * (3.0 * x.x * x.x - x.z * x.z);
+    let v_crit = (2.0 * (w(x0) - w(DVec3::X * r_hill))).sqrt();
+    let launch = |f: f64| field.launch_with(source, x0.normalize() * (f * v_crit), Some(&exterior)).unwrap();
+
+    let bound = launch(0.9);
+    assert!(!bound.escaped && !bound.lost && bound.hops >= 1, "{bound:?}");
+    assert!(bound.max_hop > 0.2 * r, "the packet barely rose: {}", bound.max_hop);
+    let gone = launch(1.3);
+    assert!(gone.escaped && gone.lost, "{gone:?}");
+
+    // A lost packet is laid down nowhere; one that stays keeps all its mass.
+    let area = vec![1.0; sphere.positions.len()];
+    let mut j = vec![0.0; area.len()];
+    j[source] = 2.0;
+    let laid = moved_source(&area, &j, std::slice::from_ref(&gone));
+    assert!(laid.iter().all(|v| *v == 0.0));
+    let kept: f64 = moved_source(&area, &j, std::slice::from_ref(&bound)).iter().sum();
+    assert!((kept - 2.0).abs() < 1e-12);
 }
 
 /// Moving the sources and spreading them conserves mass exactly; arrivals at their own

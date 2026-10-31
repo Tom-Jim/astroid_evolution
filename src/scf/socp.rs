@@ -256,6 +256,20 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         }
     }
     let sp = na + nt;
+    // Nothing is free: the fixed deposition is the step, and the mass row books its rest in s_M.
+    if sp == 0 {
+        let d: Vec<f64> = known.iter().map(|k| k * r0).collect();
+        let booked: f64 = d.iter().zip(inp.mass_jac).map(|(d, j)| d * j).sum();
+        return Ok(SocpOutput {
+            d,
+            status: "Solved".into(),
+            iterations: 0,
+            slope_slack: 0.0,
+            mass_slack: inp.mass_residual - booked,
+            dropped_overhang: 0,
+            solve_seconds: 0.0,
+        });
+    }
     let sm = sp + 1;
     let nx = sm + 1;
 

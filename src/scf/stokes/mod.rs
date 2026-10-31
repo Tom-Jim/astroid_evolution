@@ -6,8 +6,10 @@
 //! * pressure: the scalar Poisson problem with the free-surface datum `p_Γ` imposed by
 //!   Nitsche's method (G3), whose matrix is factored once per geometry;
 //! * the pair is closed by the primal–dual iteration ([`pd`]), or by the
-//!   fixed-viscosity Picard map kept as a check ([`picard`]).
+//!   fixed-viscosity Picard map kept as a check ([`picard`]);
+//! * the certified bracket of the limit load of §2.17.3 ([`limit`]).
 
+pub mod limit;
 mod pd;
 mod picard;
 mod pressure;

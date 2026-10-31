@@ -199,8 +199,18 @@ impl Body {
         vertices: &[DVec3],
         faces: &[[u32; 3]],
     ) -> Result<(Arc<Topology>, Vec<DVec3>, DVec3), SimError> {
+        Self::rays_from(level, vertices, faces, volume_centroid(vertices, faces))
+    }
+
+    /// `rays_from_mesh` with the rays from `origin`. From a point inside the solid every ray
+    /// leaves it, so a body whose centroid lies outside (a crescent) is still represented.
+    pub fn rays_from(
+        level: usize,
+        vertices: &[DVec3],
+        faces: &[[u32; 3]],
+        origin: DVec3,
+    ) -> Result<(Arc<Topology>, Vec<DVec3>, DVec3), SimError> {
         TriMesh::try_new(vertices.to_vec(), faces.to_vec())?;
-        let origin = volume_centroid(vertices, faces);
         let (topo, dirs) = Topology::icosphere(level);
         // The outermost crossing of each ray, found inward from beyond the body in f64 on
         // the CPU: the same radii on every platform, which a grazing ray needs.
@@ -212,7 +222,7 @@ impl Body {
             .map(|(i, d)| match index.first_hit(origin + *d * far, *d * -far, 0.0, 1.0) {
                 Some((t, _)) if t < 1.0 => Ok(*d * (far * (1.0 - t))),
                 _ => Err(SimError::geometry(format!(
-                    "ray {i} from the volume centroid misses the mesh"
+                    "ray {i} from {origin:?} misses the mesh"
                 ))),
             })
             .collect::<Result<Vec<_>, _>>()?;

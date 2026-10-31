@@ -355,6 +355,84 @@ pub fn geometry(
     Ok((index, ops))
 }
 
+/// The loads of one geometry under `load`: `g_eff` and `T_tide` at the volume nodes, the
+/// boundary rule and the face centres, with the intact strength profile (§4.3a).
+pub struct LoadSet {
+    pub g_vol: Vec<DVec3>,
+    pub tide: Vec<[f64; 6]>,
+    pub g_bnd: Vec<DVec3>,
+    pub tide_bnd: Vec<[f64; 6]>,
+    pub g_face: Vec<DVec3>,
+    pub tide_face: Vec<[f64; 6]>,
+    pub tide_nn: Vec<f64>,
+    pub strength: Strengths,
+}
+
+impl LoadSet {
+    /// Needs the face fields of `fwd` on this geometry (`Forward::eval_faces`).
+    pub fn of(project: &Project, ops: &Operators, fwd: &Forward, load: Loading) -> Result<Self, SimError> {
+        let material = &project.material;
+        let vol = match ops.vol_field.get() {
+            Some(f) => f,
+            None => {
+                let f = fwd.eval_field(&ops.vol.pts, true)?;
+                ops.vol_field.get_or_init(|| f)
+            }
+        };
+        let bnd = match ops.bnd_field.get() {
+            Some(f) => f,
+            None => {
+                let f = fwd.eval_surface(&ops.bnd.pts)?;
+                ops.bnd_field.get_or_init(|| f)
+            }
+        };
+        let _span = super::timing::span("effective_loads");
+        let tide_of = |h: &[f64; 6]| deviator(hessian_w(*h, load)).map(|v| material.tide_coef * v);
+        let g_of = |pts: &[DVec3], g: &[DVec3]| -> Vec<DVec3> {
+            pts.iter().zip(g).map(|(x, g)| effective_gravity(*g, *x, load)).collect()
+        };
+        let tide_face: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(tide_of).collect();
+        Ok(Self {
+            g_vol: g_of(&ops.vol.pts, &vol.grad_u),
+            tide: vol.hess_u.iter().map(tide_of).collect(),
+            g_bnd: g_of(&ops.bnd.pts, &bnd.grad_u),
+            tide_bnd: bnd.hess_u.iter().map(tide_of).collect(),
+            g_face: g_of(&ops.faces.pts, &fwd.face.grad_u),
+            tide_nn: tide_face.iter().zip(&ops.faces.normals).map(|(t, n)| quad_form(*t, *n)).collect(),
+            tide_face,
+            strength: Strengths::profile(ops, material),
+        })
+    }
+
+    pub fn loads(&self, g_const: f64) -> Loads<'_> {
+        Loads {
+            g_eff: &self.g_vol,
+            tide: &self.tide,
+            g_bnd: &self.g_bnd,
+            tide_bnd: &self.tide_bnd,
+            tide_nn: &self.tide_nn,
+            g_const,
+            strength: &self.strength,
+            dilatancy: None,
+        }
+    }
+
+    /// The cohesion `c` at the volume nodes.
+    pub fn cohesion(&self) -> Vec<f64> {
+        self.strength.vol.iter().map(|l| l.c).collect()
+    }
+}
+
+/// The certified bracket of `L*` (§2.17.3) of the deep state `mech` under `load`, with the
+/// strength `c + μ₂ p̃` of Proposition 2.17.1.
+pub fn limit_bracket(project: &Project, mech: &Mechanics, fwd: &Forward, load: Loading) -> Result<super::stokes::limit::Bracket, SimError> {
+    let mut set = LoadSet::of(project, &mech.ops, fwd, load)?;
+    set.strength = mech.strength.clone();
+    let m = &project.material;
+    let data = super::stokes::limit::data(&mech.ops, &set.loads(project.g), &project.stokes, m)?;
+    super::stokes::limit::bracket(&mech.ops, &data, &set.cohesion(), m.spec.mu_2, m.spec.p_min, 1e-3)
+}
+
 pub fn evaluate(
     cache: &mut GeometryCache,
     project: &Project,
@@ -367,50 +445,16 @@ pub fn evaluate(
     let material = &project.material;
     let (index, ops) = geometry(cache, project, body, fwd)?;
     fwd.eval_faces(body)?;
-    // Interior fields at the volume nodes and surface fields at the boundary rule.
-    let vol = match ops.vol_field.get() {
-        Some(f) => f,
-        None => {
-            let f = fwd.eval_field(&ops.vol.pts, true)?;
-            ops.vol_field.get_or_init(|| f)
-        }
-    };
-    let bnd = match ops.bnd_field.get() {
-        Some(f) => f,
-        None => {
-            let f = fwd.eval_surface(&ops.bnd.pts)?;
-            ops.bnd_field.get_or_init(|| f)
-        }
-    };
-    let _loads = super::timing::span("effective_loads");
-    let tide_of = |h: &[f64; 6]| deviator(hessian_w(*h, load)).map(|v| material.tide_coef * v);
-    let g_of = |pts: &[DVec3], g: &[DVec3]| -> Vec<DVec3> {
-        pts.iter().zip(g).map(|(x, g)| effective_gravity(*g, *x, load)).collect()
-    };
-    let g_vol = g_of(&ops.vol.pts, &vol.grad_u);
-    let tide: Vec<[f64; 6]> = vol.hess_u.iter().map(tide_of).collect();
-    let g_bnd = g_of(&ops.bnd.pts, &bnd.grad_u);
-    let tide_bnd: Vec<[f64; 6]> = bnd.hess_u.iter().map(tide_of).collect();
-    let g_face = g_of(&ops.faces.pts, &fwd.face.grad_u);
-    let tide_face: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(tide_of).collect();
-    let tide_nn: Vec<f64> = tide_face
-        .iter()
-        .zip(&ops.faces.normals)
-        .map(|(t, n)| quad_form(*t, *n))
-        .collect();
-    drop(_loads);
-
+    let mut set = LoadSet::of(project, &ops, fwd, load)?;
     // Local strengths: the intact profile, then the markers of Chapter 11.
-    let intact = Strengths::profile(&ops, material);
-    let strength = match ev.field {
-        Some(f) => Strengths {
-            vol: f.locals(material, &ops.vol.pts, &intact.vol),
-            bnd: f.locals(material, &ops.bnd.pts, &intact.bnd),
-            face: f.locals(material, &ops.faces.pts, &intact.face),
-        },
-        None => intact,
-    };
-    let face_law = face_laws(material, body, &strength.face, ev);
+    if let Some(f) = ev.field {
+        set.strength = Strengths {
+            vol: f.locals(material, &ops.vol.pts, &set.strength.vol),
+            bnd: f.locals(material, &ops.bnd.pts, &set.strength.bnd),
+            face: f.locals(material, &ops.faces.pts, &set.strength.face),
+        };
+    }
+    let face_law = face_laws(material, body, &set.strength.face, ev);
     // A-Ξ: the dilatancy source on this geometry (§11.4).
     let source = match &project.dilatancy {
         Some(d) => {
@@ -433,14 +477,8 @@ pub fn evaluate(
     };
 
     let ld = Loads {
-        g_eff: &g_vol,
-        tide: &tide,
-        g_bnd: &g_bnd,
-        tide_bnd: &tide_bnd,
-        tide_nn: &tide_nn,
-        g_const: project.g,
-        strength: &strength,
         dilatancy: source.as_ref().map(|s| s as &dyn super::stokes::DilatancySource),
+        ..set.loads(project.g)
     };
     let sol = {
         let _span = super::timing::span("stokes");
@@ -463,12 +501,12 @@ pub fn evaluate(
     };
     let (rheo, rheo_stats) = {
         let _span = super::timing::span("rheology");
-        face_chain(project, &ops, &sol, &g_face, &tide_face, &sol.p_surface, &face_law)?
+        face_chain(project, &ops, &sol, &set.g_face, &set.tide_face, &sol.p_surface, &face_law)?
     };
     let surface_stress = rheo
         .iter()
         .zip(&sol.p_surface)
-        .zip(&tide_face)
+        .zip(&set.tide_face)
         .map(|((node, p), tide)| surface_cauchy(node, *p, *tide))
         .collect();
     Ok(Mechanics {
@@ -478,12 +516,12 @@ pub fn evaluate(
         index,
         sol,
         class,
-        g_face,
+        g_face: set.g_face,
         rheo,
         rheo_stats,
         surface_stress,
         face_law,
-        strength,
+        strength: set.strength,
     })
 }
 

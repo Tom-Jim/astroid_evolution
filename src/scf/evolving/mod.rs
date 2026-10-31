@@ -37,4 +37,7 @@ pub struct Evolving {
     /// A-ϖ, A-Ξ: the state markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markers: Option<Markers>,
+    /// A-O (§10.4.6): the semi-major axis and the mass ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orbit: Option<super::orbit::OrbitState>,
 }

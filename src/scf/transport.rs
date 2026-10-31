@@ -343,6 +343,8 @@ pub struct ModeC {
     /// `max_i [F_δ]_+` over active vertices.
     pub max_excess: f64,
     pub eroded_rate: f64,
+    /// Eroded rate of the packets lost through a neck (A-O, kg/s): `∫ J_dep = ∫ J_ero − lost`.
+    pub lost_rate: f64,
 }
 
 impl ModeC {
@@ -353,6 +355,7 @@ impl ModeC {
             j_dep: vec![0.0; nv],
             max_excess: 0.0,
             eroded_rate: 0.0,
+            lost_rate: 0.0,
         }
     }
 }
@@ -373,14 +376,7 @@ pub fn mode_c(
     prm: &ModeCParams,
     arrivals: Option<&[Arrival]>,
 ) -> ModeC {
-    let (j_ero, max_excess, eroded) = erosion(area, rho_s, movable, f_delta, prm);
-    let j_dep = deposit_from(spread, area, &j_ero, arrivals);
-    ModeC {
-        j_ero,
-        j_dep,
-        max_excess,
-        eroded_rate: eroded,
-    }
+    mode_c_over(spread, area, rho_s, movable, f_delta, prm, arrivals, 0.0)
 }
 
 /// Mode C fluxes averaged over a step of length `dt` (exact for the frozen erosion rate).
@@ -396,22 +392,19 @@ pub fn mode_c_over(
 ) -> ModeC {
     let (j_ero, max_excess, eroded) = erosion_over(area, rho_s, movable, f_delta, prm, dt);
     let j_dep = deposit_from(spread, area, &j_ero, arrivals);
+    let lost_rate = arrivals
+        .unwrap_or_default()
+        .iter()
+        .filter(|a| a.lost)
+        .map(|a| j_ero[a.source] * area[a.source])
+        .sum();
     ModeC {
         j_ero,
         j_dep,
         max_excess,
         eroded_rate: eroded,
+        lost_rate,
     }
-}
-
-pub fn erosion(
-    area: &[f64],
-    rho_s: &[f64],
-    movable: &[bool],
-    f_delta: &[f64],
-    prm: &ModeCParams,
-) -> (Vec<f64>, f64, f64) {
-    erosion_over(area, rho_s, movable, f_delta, prm, 0.0)
 }
 
 /// Erosion rate averaged over a step `dt` (`dt = 0`: the instantaneous rate).

@@ -17,6 +17,7 @@ use crate::common::math::DVec3;
 
 use super::body::Body;
 use super::mechanics::FaceLaw;
+use super::orbit::Necks;
 use super::forward::{Forward, Loading};
 use super::params::Project;
 use super::relax::slope_state;
@@ -57,6 +58,11 @@ pub struct SettleReport {
     pub trust_retries: usize,
     pub cone_unresolved: bool,
     pub mass_residual: f64,
+    /// A-O: eroded and routed mass lost through a neck (kg).
+    pub escaped_runout: f64,
+    pub escaped_relief: f64,
+    /// A-O: vertices whose loose layer detached under outward effective gravity.
+    pub n_detached: usize,
 }
 
 /// The settled body and what the viewer shows of it.
@@ -73,7 +79,9 @@ pub struct Settled {
 }
 
 /// Settle `body` under `load` on the frozen yield state `yielded`, `f_delta` (per vertex)
-/// of the creep step of length `tau` (= λΔt).
+/// of the creep step of length `tau` (= λΔt). With the `necks` of A-O, packets beyond a
+/// neck plane leave the body, and a loose layer pulled outward harder than its cohesion
+/// holds detaches (§10.4.6).
 #[allow(clippy::too_many_arguments)]
 pub fn settle(
     project: &Project,
@@ -86,6 +94,7 @@ pub fn settle(
     mass_target: f64,
     step: usize,
     laws: Option<&[FaceLaw]>,
+    necks: Option<&Necks>,
 ) -> Result<Settled, SimError> {
     let prm = &project.mode_c;
     let tol = project.relief.tol_slack;
@@ -99,6 +108,7 @@ pub fn settle(
     let mut first_mc: Option<ModeC> = None;
     let mut d_normal = vec![0.0; nv];
     let (mut weights, mut packets) = (Vec::new(), Vec::new());
+    let mut target = mass_target;
     let mut slope = slope_state(project, &body, &mut fwd, load, laws)?;
     (rep.n_supercritical_before, rep.max_slack_before) = supercritical(&slope.slack);
     for sweep in 0..project.relief.max_sweeps {
@@ -126,14 +136,22 @@ pub fn settle(
             grav_const: project.g,
             load,
             material: &project.material,
+            necks,
             time_limit: prm.runout_time,
             stop: prm.runout_stop,
             theta: runout::THETA,
         };
         // Mode C over τ: the exact exponential, so a layer whose e-folding time is far
         // below τ is stripped and laid down where its packets come to rest.
+        let detached = match necks {
+            Some(_) if sweep == 0 => detachment(project, &body, &slope.gravity, laws),
+            _ => vec![false; nv],
+        };
+        rep.n_detached = rep.n_detached.max(detached.iter().filter(|d| **d).count());
         let sources: Vec<usize> = (0..nv)
-            .filter(|&i| sweep == 0 && yielded[i] && body.rho_s[i] > 0.0 && f_delta[i] > 0.0)
+            .filter(|&i| {
+                sweep == 0 && body.rho_s[i] > 0.0 && ((yielded[i] && f_delta[i] > 0.0) || detached[i])
+            })
             .collect();
         let arrivals = if prm.runout && !sources.is_empty() {
             let _span = super::timing::span("runout");
@@ -145,12 +163,16 @@ pub fn settle(
         let mc = {
             let _span = super::timing::span("mode_c");
             if sweep == 0 {
+                // A detached layer leaves within the step: β → ∞ in the exact update.
+                let movable: Vec<bool> = (0..nv).map(|i| yielded[i] || detached[i]).collect();
+                let excess: Vec<f64> =
+                    (0..nv).map(|i| if detached[i] { f64::INFINITY } else { f_delta[i] }).collect();
                 mode_c_over(
                     &spread,
                     &area,
                     &body.rho_s,
-                    yielded,
-                    f_delta,
+                    &movable,
+                    &excess,
                     prm,
                     prm.runout.then_some(arrivals.as_slice()),
                     tau,
@@ -159,8 +181,12 @@ pub fn settle(
                 ModeC::zero(nv)
             }
         };
-        if sweep == 0 && mc.max_excess > 0.0 {
-            rep.tau_surface = prm.sigma_0 / (prm.k_e * mc.max_excess);
+        let excess = (0..nv)
+            .filter(|&i| sweep == 0 && yielded[i] && body.rho_s[i] > 0.0)
+            .map(|i| f_delta[i].max(0.0))
+            .fold(0.0_f64, f64::max);
+        if excess > 0.0 {
+            rep.tau_surface = prm.sigma_0 / (prm.k_e * excess);
         }
         let (_, promoted) = slope_promotion(&topo.faces, yielded, &slope.slack, &body.rho_s, tol);
         let n_promoted = promoted.iter().filter(|p| **p).count();
@@ -233,7 +259,7 @@ pub fn settle(
             jac: &jac,
             lower: &lower,
             upper: &upper,
-            mass_target,
+            mass_target: target - tau * mc.lost_rate,
             scale: 1.0,
             routing: (prm.runout && slope_vertex.iter().any(|v| *v)).then_some(Routing {
                 field: &field,
@@ -254,6 +280,9 @@ pub fn settle(
             }
             Err(err) => return Err(err),
         };
+        rep.escaped_runout += tau * mc.lost_rate;
+        rep.escaped_relief += rel.lost;
+        target -= tau * mc.lost_rate + rel.lost;
         let (debit, credit) = layer_ledger(&promoted, &rel, 1.0, &jac, &body.rho_s, &area, &spread);
         rep.layer_mass += debit.iter().sum::<f64>();
         rep.trust_retries += rel.retries;
@@ -306,6 +335,26 @@ pub fn settle(
         runout,
         paths,
     })
+}
+
+/// The vertices whose loose layer detaches (§10.4.6): `ρ_s g_n > c_Γ`, with `g_n` the
+/// area-weighted mean of `g_eff · n` over the incident faces and `c_Γ` their mean shallow
+/// cohesion.
+fn detachment(project: &Project, body: &Body, gravity: &[DVec3], laws: Option<&[FaceLaw]>) -> Vec<bool> {
+    let geo = body.face_geometry();
+    let c_s = project.material.spec.cohesion_surface;
+    (0..body.topo.n_vertices())
+        .map(|i| {
+            let (mut gn, mut c, mut w) = (0.0, 0.0, 0.0);
+            for &f in &body.topo.vertex_faces[i] {
+                let (_, n, a) = geo[f];
+                gn += a * gravity[f].dot(n);
+                c += a * laws.map_or(c_s, |l| l[f].shallow);
+                w += a;
+            }
+            w > 0.0 && body.rho_s[i] * gn / w > c / w
+        })
+        .collect()
 }
 
 /// Slope promotion (§2.8c, hypothesis A-C4): the vertices of a face whose repose slack

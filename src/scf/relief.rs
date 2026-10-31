@@ -66,6 +66,9 @@ pub struct Relieved {
     pub unresolved: bool,
     pub max_locked_step: f64,
     pub max_deposit_miss: f64,
+    /// Routed mass lost through a neck (A-O, kg); the mass target of the result is
+    /// `mass_target` less this.
+    pub lost: f64,
 }
 
 /// Solve, route, build and accept one increment, shrinking the trust radius on a rejected
@@ -111,6 +114,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
                 unresolved: true,
                 max_locked_step: 0.0,
                 max_deposit_miss: 0.0,
+                lost: 0.0,
             });
         }
         let mut reject = |why: String, trust: &mut f64, retries: &mut usize| {
@@ -154,6 +158,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
                 .collect(),
             None => Vec::new(),
         };
+        let mut lost = 0.0;
         let (out, kind_used, d_used, routed) = match (&r.routing, removed.iter().any(|m| *m > 0.0)) {
             (Some(rt), true) => {
                 let routed = {
@@ -171,9 +176,14 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
                         }
                     }
                 }
+                // Packets lost through a neck (A-O) are not laid down: the routed
+                // program holds the mass less theirs.
+                lost = routed.arrivals.iter().zip(&routed.masses).filter(|(a, _)| a.lost).map(|(_, m)| m).sum();
                 let second = SocpInput {
                     kind: &k2,
                     d_pred: &d2,
+                    mass_residual: inp.mass_residual - lost,
+                    mass: r.mass_target - lost,
                     ..inp
                 };
                 match solve(&second) {
@@ -217,19 +227,20 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
         let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs())) * r.scale;
         // Mass misses get one mobile-set correction (§2.14). That correction is not a
         // second cone solve; a residual that remains is recorded.
-        let (body, fwd, mass_residual) = match accept(&f, r.mass_target, g.eps_mass) {
+        let target = r.mass_target - lost;
+        let (body, fwd, mass_residual) = match accept(&f, target, g.eps_mass) {
             Ok(res) => (b, f, res),
             Err(AcceptError::Geometry(why)) => {
                 reject(why, &mut trust, &mut retries);
                 continue;
             }
             Err(AcceptError::Mass(res)) => {
-                let dm = f.moments.mass - r.mass_target;
+                let dm = f.moments.mass - target;
                 let mut chosen = (b, f, res);
                 if let Some(rr) = mass_correction(&chosen.0.positions, r.normals, r.kind, r.jac, dm, trust) {
                     if let Ok(cb) = build(rr, &chosen.0) {
                         if let Ok(cf) = Forward::bind(&cb, r.project.g) {
-                            match accept(&cf, r.mass_target, g.eps_mass) {
+                            match accept(&cf, target, g.eps_mass) {
                                 Ok(cr) | Err(AcceptError::Mass(cr)) => chosen = (cb, cf, cr),
                                 Err(AcceptError::Geometry(_)) => {}
                             }
@@ -252,6 +263,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
             unresolved: false,
             max_locked_step,
             max_deposit_miss,
+            lost,
         });
     }
 }

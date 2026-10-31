@@ -19,7 +19,7 @@ Material and orbital constants come from the literature where a value exists (so
 - **The densities are not uniform.** Each body matches its measured mass. Itokawa has a denser head than body, fitted to the mass and the 9.7 m centre-of-mass offset of Kanamaru et al. (2019), consistent with Lowry et al. (2014). Phobos has its fit to the measured C20. Ryugu and Deimos, whose interior profiles are not measured, carry an assumed central compaction profile (density 1.2 times higher at the centre than at the mean radius); the assumption and its reasons are in the project files. The table below was computed with uniform Ryugu and Deimos densities and has not been recomputed.
 - **In these runs slope relief, not creep, moved the surface.** The yield test is a stress-ratio test: a point yields when equilibrium needs more than 95 % of the local strength (mathstrict §2.8 B2). The Stokes solve resolves only the long wavelengths of the body and decides deep-seated and whole-body failure; it does not resolve the 1–5 m loose layer. In all three runs no surface vertex ever leaves the rigid core and Mode C never erodes: deep creep never started, and every change of shape comes from slope promotion, the subgrid closure of shallow failure: the loose-layer vertices of faces that fail the infinite-slope balance at depth h_s (the angle-of-repose proxy) are freed for the cone program and relieved (mathstrict §2.8c, hypothesis A-C4).
 - **Slide timing is partly numerical.** The relief is instantaneous on the geological scale. The onset of a slide (the step its slope first exceeds the proxy) is physical; its duration and the displacement per step are set by the trust radius (`geometry.trust0`) and by `step.dt_max`. On Phobos the largest displacement per step equals the trust radius.
-- **These results were computed at a coarser resolution than the projects now ship.** The runs above solved the Stokes problem on a harmonic surface of degree 4 with a velocity basis of degree 2 (64 unknowns) on 96 quadrature points (rotational residual 0.25–0.62). The bundled projects now use velocity degree 5, pressure degrees 7 (angular) and 5 (radial), and a 28 × 56 × 8 volume rule (12 544 points): one step past the rule at which the Ryugu yield fraction stops changing (rotational residual 0.38). At this resolution, with the uniform density of these runs, Ryugu at the 3.40 h start spin yields 44 % of its mass; with the present compaction profile, about 15 %. Deep creep is then active, and the creep step is limited by its own CFL bound to about a year (the surface erosion time, about an hour, no longer limits it under the time split). Phobos and Deimos do not yield at either resolution. The results in the table have not been recomputed at the new resolution.
+- **These results were computed at a coarser resolution than the projects now ship.** The runs above solved the Stokes problem on a harmonic surface of degree 4 with a velocity basis of degree 2 (64 unknowns) on 96 quadrature points (rotational residual 0.25–0.62). The bundled projects now use velocity degree 5, pressure degrees 7 (angular) and 5 (radial), and a 28 × 56 × 8 volume rule (12 544 points): one step past the rule at which the Ryugu yield fraction stops changing (rotational residual 0.38). At this resolution, with the uniform density of these runs, Ryugu at the 3.40 h start spin yields 44 % of its mass; with the present compaction profile, about 15 %. Deep creep is then active, and the creep step is limited by its own CFL bound to about a year (the surface erosion time, about an hour, no longer limits it under the time split). Phobos and Deimos do not yield at either resolution. Phobos now ships one degree higher (velocity degree 6, pressure degree 8, a 32 × 64 × 9 rule), where its failure orbit has converged: the orbit at which its certified limit load reaches 1 moves by 1.0 % from degree 5 to 6 and by 0.12 % from 6 to 7, and by 0.1 % from icosphere level 5 to 6. The results in the table have not been recomputed at the new resolution.
 
 ## Architecture
 
@@ -110,6 +110,46 @@ The page looks for `cache/<project>-<key>.aecache` before it computes a run, and
 
 The project sections `[spin_law]`, `[thermal]`, `[markers]`, `[damage]` and `[dilatancy]` switch on the evolving-state hypotheses of mathstrict Chapter 11. They are A-L (spin from the angular momentum), A-Θ (diurnal thermal fatigue and the radiative torque), A-ϖ (damage that weakens cohesion) and A-Ξ (dilatancy and compaction). Damage and dilatancy need `[markers]`; the radiative torque needs `[thermal]`. A project without these sections runs exactly as before.
 
+### A decaying satellite that loses mass
+
+With an `orbit:` spin schedule, the section
+
+```toml
+[orbit]
+primary_radius = 3.3895e6   # m; the run stops when the orbit reaches it
+limit_every = 10            # steps between certified limit-load brackets (0: none)
+```
+
+switches on hypothesis A-O (mathstrict §10.4.6).
+- The decay rate follows the satellite's mass.
+- Mass leaves through the two necks of its Hill region (L1 toward the primary, L2 away from it): runout packets that pass a neck plane, a loose layer pulled outward harder than its cohesion holds, and movable material carried beyond a neck.
+- Every step logs the semi-major axis, the mass lost by each route, the Hill radius and the lobe margin (positive when the body overflows).
+- Every `limit_every` steps the run brackets the limit load L*. A certified L* > 1 ends the run as a limit-load collapse.
+
+### Breakup, fragments and the debris ring
+
+`scf-cli breakup` follows a satellite past its failure (mathstrict Chapter 12). It needs a project with the `[orbit]` and `[breakup]` sections; `dist/.stage/assets/projects/phobos_breakup.toml` is Phobos with both.
+
+1. **Failure orbit.** It finds the orbit where the certified limit load first exceeds 1, or takes `--a`.
+2. **Cut.** It cuts the body into the rigid blocks of its collapse mechanism. Each block becomes a body with the parent's density, and the total mass is kept.
+3. **Fragments.** It follows the fragments about the primary (point mass and J₂) as rigid bodies under their mutual gravity: RTFP close up, the quadrupole expansion far apart. The integrator conserves momentum and angular momentum exactly.
+   - Fragments that touch while approaching merge.
+   - A fragment whose own limit load exceeds 1 breaks again; if its collapse is no set of rigid blocks, it disperses.
+   - Pieces below `debris_diameter`, impacts and escapes leave the dynamics.
+4. **Ring.** It spreads the debris as a viscous ring (the self-gravity-wake viscosity of Daisaka et al. 2001 and Salmon et al. 2010) between Mars and the Roche limit. Matter crossing the inner edge falls on Mars; matter crossing the Roche limit forms moonlets.
+
+```bash
+target/release/scf-cli breakup --project dist/.stage/assets/projects/phobos_breakup.toml --gm 4.282837e13 --a-max 6.95e6 --a-min 6.8e6 --out-dir output/phobos_breakup
+```
+
+It writes:
+- `summary.json`: the failure orbit, the cut, every event, and the final ledgers;
+- `frames.jsonl`: fragments, ledgers, momentum, angular momentum and energy over time;
+- `ring.csv`: the final surface density;
+- `fragment_<id>.obj`: the final fragments, in the frame of the primary.
+
+The viewers show one body; these outputs are for the command line.
+
 ## Command line
 
 ```bash
@@ -117,7 +157,13 @@ cargo build --release --features tier2 --bins
 target/release/scf-cli --help
 ```
 
-`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `export`, `history` (inversion). `run-sim --no-lag` evaluates the deep state on every step instead of reusing it while the surface has barely moved (for audits). To reproduce the three runs of the report:
+`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `failure-orbit`, `breakup`, `export`, `history` (inversion). `run-sim --no-lag` evaluates the deep state on every step instead of reusing it while the surface has barely moved (for audits). `failure-orbit` finds, for a frozen body, the orbit below which it can no longer stand: it scans the semi-major axis downward and bisects on the certified bracket of L* (mathstrict §2.17), for example
+
+```bash
+target/release/scf-cli failure-orbit --project dist/.stage/assets/projects/phobos.toml --gm 4.282837e13 --a-max 9.376e6 --a-min 6.0e6
+```
+
+with `--strength static` for the onset of yield at rest and `--davis` for the reduced strength of the non-associated bound. To reproduce the three runs of the report:
 
 ```bash
 cargo build --release --features tier2 --bin scf-cli
@@ -131,7 +177,7 @@ python3 dist/.stage/output/evaluate.py    # compare with measurements, write eva
 cargo test --features tier3
 ```
 
-146 tests: 134 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required. Run them one at a time (`-- --test-threads=1`) on a small machine: the Tier 2 runs each use the GPU and every core.
+165 tests: 153 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required. Run them one at a time (`-- --test-threads=1`) on a small machine: the Tier 2 runs each use the GPU and every core.
 
 ## Cargo features
 

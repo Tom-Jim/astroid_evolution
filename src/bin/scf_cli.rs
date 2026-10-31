@@ -110,6 +110,59 @@ enum Command {
         #[arg(long)]
         fields: Option<PathBuf>,
     },
+    /// The failure orbit of a frozen body about a primary (§2.17.3, Algorithm 2.17.4): the
+    /// semi-major axis below which the certified limit load L* exceeds 1. JSON report.
+    FailureOrbit {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
+        /// Gravitational parameter of the primary (m^3/s^2).
+        #[arg(long)]
+        gm: f64,
+        /// Range of the semi-major axis (m), scanned downward from `a_max`.
+        #[arg(long)]
+        a_max: f64,
+        #[arg(long)]
+        a_min: f64,
+        /// `dynamic` (strength c + μ₂ p̃, the end of the quasi-static route) or `static`
+        /// (c + μ_s p̃, the onset of whole-body yield at rest).
+        #[arg(long, default_value = "dynamic")]
+        strength: String,
+        /// Davis' reduced strength (c cos φ, sin φ), the other end of Conjecture A.2.
+        #[arg(long)]
+        davis: bool,
+        /// Relative step of the scan and relative width of the final interval.
+        #[arg(long, default_value_t = 0.02)]
+        scan: f64,
+        #[arg(long, default_value_t = 1e-3)]
+        tol: f64,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Breakup of a satellite and its aftermath (Chapter 12): at the orbit where its certified
+    /// limit load exceeds 1, cut it along the collapse mechanism, follow the fragments about
+    /// the primary (mergers, further breakups, debris), then spread the debris ring.
+    /// Writes summary.json, frames.jsonl, ring.csv and the final fragments as OBJ.
+    Breakup {
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
+        /// Gravitational parameter of the primary (m^3/s^2).
+        #[arg(long)]
+        gm: f64,
+        /// Orbit of the breakup (m); without it the failure orbit is searched from
+        /// `a_max` down to `a_min`.
+        #[arg(long)]
+        a: Option<f64>,
+        #[arg(long)]
+        a_max: Option<f64>,
+        #[arg(long)]
+        a_min: Option<f64>,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
     /// Export a snapshot as OBJ or per-vertex CSV.
     Export {
         #[arg(long)]
@@ -645,6 +698,67 @@ fn run(cli: Cli) -> Result<(), SimError> {
                     .map_err(|e| SimError::io(format!("{}: {e}", o.display())))?;
             }
         }
+        Command::FailureOrbit {
+            project,
+            snapshot,
+            gm,
+            a_max,
+            a_min,
+            strength,
+            davis,
+            scan,
+            tol,
+            out,
+        } => {
+            let p = Project::load(&project)?;
+            let state = initial_state(&p, snapshot.as_deref())?;
+            let mu = match strength.as_str() {
+                "dynamic" => p.material.spec.mu_2,
+                "static" => p.material.spec.mu_s,
+                other => {
+                    return Err(SimError::invalid_input(format!(
+                        "--strength must be dynamic or static, got {other}"
+                    )));
+                }
+            };
+            if !(gm > 0.0 && a_min > 0.0 && a_max > a_min && scan > 0.0 && scan < 1.0 && tol > 0.0) {
+                return Err(SimError::invalid_input(
+                    "failure-orbit needs gm > 0, 0 < a_min < a_max, 0 < scan < 1 and tol > 0",
+                ));
+            }
+            let opt = astroid_evolution::scf::orbit::FailureOptions {
+                gm,
+                a_max,
+                a_min,
+                scan,
+                tol,
+                mu,
+                davis,
+                gap: tol,
+            };
+            let res = astroid_evolution::scf::orbit::failure_orbit(&p, &state.body, &opt)?;
+            eprintln!(
+                "failure orbit ({strength}{}): stable down to {:?} m, failed from {:?} m, {} evaluations",
+                if davis { ", Davis" } else { "" },
+                res.stable,
+                res.failed,
+                res.scan.len()
+            );
+            let text = serde_json::to_string_pretty(&res)?;
+            match out {
+                Some(o) => std::fs::write(&o, text).map_err(|e| SimError::io(format!("{}: {e}", o.display())))?,
+                None => println!("{text}"),
+            }
+        }
+        Command::Breakup {
+            project,
+            snapshot,
+            gm,
+            a,
+            a_max,
+            a_min,
+            out_dir,
+        } => breakup(&project, snapshot.as_deref(), gm, a, a_max, a_min, &out_dir)?,
         Command::Export {
             snapshot,
             format,
@@ -842,4 +956,105 @@ fn pathdiff(target: &Path, base: &Path) -> String {
 
 fn main() -> ExitCode {
     SimError::exit(run(Cli::parse()))
+}
+
+/// `scf-cli breakup`: the failure orbit, the cut, the fragments and the ring (Chapter 12).
+fn breakup(project: &Path, snapshot: Option<&Path>, gm: f64, a: Option<f64>, a_max: Option<f64>, a_min: Option<f64>, out: &Path) -> Result<(), SimError> {
+    use astroid_evolution::common::math::{DMat3, DVec3};
+    use astroid_evolution::scf::breakup::split;
+    use astroid_evolution::scf::nbody::{Primary, System};
+    use astroid_evolution::scf::orbit::{FailureOptions, certify, failure_orbit};
+
+    let p = Project::load(project)?;
+    let (Some(prm), Some(orbit)) = (p.breakup.clone(), p.orbit.clone()) else {
+        return Err(SimError::model_not_closed("breakup needs the [breakup] and [orbit] sections"));
+    };
+    let body = initial_state(&p, snapshot)?.body;
+    let mu = p.material.spec.mu_2;
+    let a = match (a, a_max, a_min) {
+        (Some(a), ..) => a,
+        (None, Some(a_max), Some(a_min)) => {
+            let opt = FailureOptions { gm, a_max, a_min, scan: 0.02, tol: 2e-3, mu, davis: false, gap: 2e-3 };
+            let res = failure_orbit(&p, &body, &opt)?;
+            eprintln!("failure orbit: stable down to {:?} m, failed from {:?} m", res.stable, res.failed);
+            res.failed.ok_or_else(|| SimError::invalid_input("the body stands over the whole range of a"))?
+        }
+        _ => return Err(SimError::invalid_input("give --a, or --a-max and --a-min")),
+    };
+    let n2 = gm / a.powi(3);
+    let mut fwd = Forward::bind(&body, p.g)?;
+    let (bracket, ops) = certify(&p, &body, &mut fwd, Loading { omega: n2.sqrt(), tide: n2 })?;
+    eprintln!("at a = {a:.6e} m: certified L* in [{:.4}, {:.4}]", bracket.lo, bracket.hi);
+    if !(bracket.lo > 1.0) {
+        return Err(SimError::invalid_input(format!("at a = {a:.6e} m the body is not certified to fail")));
+    }
+    let primary = Primary { gm, radius: orbit.primary_radius, j2: prm.primary_j2 };
+    let mut system = System::new(&p, &prm, primary);
+    // Synchronous: the primary on the body's +x axis, the orbit prograde about +z.
+    let speed = (gm / a * (1.0 + 1.5 * prm.primary_j2 * (orbit.primary_radius / a).powi(2))).sqrt();
+    let (x, v, omega) = (DVec3::new(-a, 0.0, 0.0), DVec3::new(0.0, -speed, 0.0), DVec3::Z * (speed / a));
+    let cut = split(&p, &prm, &body, &fwd, &ops, &bracket.u)?;
+    let mut summary = serde_json::json!({ "a": a, "limit_load": [bracket.lo, bracket.hi] });
+    match cut {
+        Some(cut) => {
+            eprintln!("cut into {} pieces (misfit {:?}, mass error {:.2e})", cut.pieces.len(), cut.misfit, cut.mass_error);
+            summary["misfit"] = serde_json::json!(cut.misfit);
+            summary["mass_error"] = serde_json::json!(cut.mass_error);
+            system.add_pieces(cut.pieces, x, v, DMat3::IDENTITY, omega)?;
+        }
+        None => {
+            eprintln!("the mechanism is no set of rigid blocks: the body disperses into the ring");
+            system.ring.deposit(a, fwd.moments.mass);
+        }
+    }
+    std::fs::create_dir_all(out).map_err(|e| SimError::io(format!("{}: {e}", out.display())))?;
+    let mut lines = String::new();
+    let outcome = system.run(&mut |frame, events| {
+        eprintln!(
+            "t = {:.4e} s: {} fragments, ring {:.3e} kg, primary {:.3e} kg, moonlets {:.3e} kg, {} events",
+            frame.t,
+            frame.fragments.len(),
+            frame.ring,
+            frame.to_primary,
+            frame.to_moonlets,
+            events.len()
+        );
+        lines.push_str(&serde_json::to_string(frame)?);
+        lines.push('\n');
+        Ok(())
+    })?;
+    let write = |name: &str, text: String| {
+        let path = out.join(name);
+        std::fs::write(&path, text).map_err(|e| SimError::io(format!("{}: {e}", path.display())))
+    };
+    write("frames.jsonl", lines)?;
+    let ring = &outcome.ring;
+    write(
+        "ring.csv",
+        std::iter::once("r_m,sigma_kg_m2".to_string())
+            .chain(ring.r.iter().zip(&ring.sigma).map(|(r, s)| format!("{r:.6e},{s:.6e}")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )?;
+    for f in &outcome.fragments {
+        let mut placed = f.body.clone();
+        placed.positions = f.body.positions.iter().map(|p| f.x + f.rot * *p).collect();
+        write_obj(&out.join(format!("fragment_{}.obj", f.id)), &placed)?;
+    }
+    summary["events"] = serde_json::json!(outcome.events);
+    summary["final"] = serde_json::json!(outcome.frames.last());
+    summary["ring_mass"] = serde_json::json!(ring.mass());
+    summary["to_primary"] = serde_json::json!(ring.to_primary);
+    summary["to_moonlets"] = serde_json::json!(ring.to_moonlets);
+    summary["escaped"] = serde_json::json!(outcome.escaped);
+    write("summary.json", serde_json::to_string_pretty(&summary)?)?;
+    eprintln!(
+        "done: {} fragments, ring {:.4e} kg, on the primary {:.4e} kg, moonlets {:.4e} kg, escaped {:.4e} kg",
+        outcome.fragments.len(),
+        ring.mass(),
+        ring.to_primary,
+        ring.to_moonlets,
+        outcome.escaped
+    );
+    Ok(())
 }

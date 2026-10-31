@@ -36,6 +36,8 @@ Chapter 11 adds four named hypotheses, each with a switch whose off position rec
 
 The state variables of A-Ξ and A-ϖ are carried by Lagrangian markers and driven by a nonlocal plastic rate.
 
+Chapter 12 follows a satellite past its failure (**A-B**): it breaks into the rigid blocks of its collapse mechanism, the fragments move about the primary and merge or break again, and the debris spreads as a viscous ring. Section 10.4.6 adds **A-O**, for a synchronous satellite: the tidal decay of the orbit follows the satellite's mass, which leaves through the necks of its Hill region. Section 2.17 gives a certified bracket of the limit load, and from it the orbit at which a frozen body can no longer stand.
+
 Rigour here means only that formulae and acceptance conditions have a determinate meaning under the stated continuity, regularity, discretization, boundary, and constitutive assumptions. It does not mean an automatic error bound for an arbitrary material, mesh, or finite-precision computation. An example whose constitutive parameters or boundary data are missing is **model not closed** and must not be reported as passed.
 
 ## Problem
@@ -1448,7 +1450,7 @@ $$
 }
 $$
 
-Centrifugal and tidal terms are exact. Self-gravity near the surface uses the first-order expansion $\mathbf g_{\rm grav}(\mathbf x)\approx\mathbf g_{\rm grav}(\mathbf x_\Gamma)+H^+(\mathbf x_\Gamma)(\mathbf x-\mathbf x_\Gamma)$, with $\mathbf x_\Gamma=\pi(\mathbf x)$ the closest point of $\Gamma$ and $H^+$ the exterior one-sided Hessian of the containing face (Proposition 2.7.1(5)); its error is $O((h/\bar R)^2)|\mathbf g|$ for hop height $h$. It uses no distance to the origin, which may lie outside $\mathcal V$ under (G). For $h$ above a fixed fraction of $\bar R$ (e.g. $0.1$) the field is evaluated directly at $\mathbf x\notin\overline V$ by the exterior route of Section 3.11, together with its classical Hessian $H(\mathbf x_0)$. Until the packet has moved $|\mathbf x-\mathbf x_0|\le0.1\,h$ from that evaluation point it uses $\mathbf g_{\rm grav}(\mathbf x_0)+H(\mathbf x_0)(\mathbf x-\mathbf x_0)$, whose error $O((|\mathbf x-\mathbf x_0|/h)^2)|\mathbf g|$ is within the same budget as the near-surface expansion; beyond that the field is evaluated again. Landing is perfectly inelastic normally ($e_n=0$): the tangential velocity is kept and sliding resumes. A packet above $r_{\rm esc}=3\max_\Gamma|\mathbf x|$, or above $1.05\max_\Gamma|\mathbf x|$ while moving outward under outward effective gravity, is classified **escaped**. This is a heuristic classification, not an orbital criterion. The motivation, that a packet beyond the synchronous radius $(GM/\omega_n^2)^{1/3}$ does not return, holds only for a spherical body, equatorial motion, and near-circular orbits, and the thresholds are not that radius; a trajectory with inward velocity can cross the synchronous radius and fall back. Under A-C3 an escaped packet is returned to its launch point, so escape is a count, not a mass loss; an explicit sink is not used. A packet still moving at $T_{\rm run}$ stops and is **timed out**. Both counts are reported.
+Centrifugal and tidal terms are exact. Self-gravity near the surface uses the first-order expansion $\mathbf g_{\rm grav}(\mathbf x)\approx\mathbf g_{\rm grav}(\mathbf x_\Gamma)+H^+(\mathbf x_\Gamma)(\mathbf x-\mathbf x_\Gamma)$, with $\mathbf x_\Gamma=\pi(\mathbf x)$ the closest point of $\Gamma$ and $H^+$ the exterior one-sided Hessian of the containing face (Proposition 2.7.1(5)); its error is $O((h/\bar R)^2)|\mathbf g|$ for hop height $h$. It uses no distance to the origin, which may lie outside $\mathcal V$ under (G). For $h$ above a fixed fraction of $\bar R$ (e.g. $0.1$) the field is evaluated directly at $\mathbf x\notin\overline V$ by the exterior route of Section 3.11, together with its classical Hessian $H(\mathbf x_0)$. Until the packet has moved $|\mathbf x-\mathbf x_0|\le0.1\,h$ from that evaluation point it uses $\mathbf g_{\rm grav}(\mathbf x_0)+H(\mathbf x_0)(\mathbf x-\mathbf x_0)$, whose error $O((|\mathbf x-\mathbf x_0|/h)^2)|\mathbf g|$ is within the same budget as the near-surface expansion; beyond that the field is evaluated again. Landing is perfectly inelastic normally ($e_n=0$): the tangential velocity is kept and sliding resumes. A packet above $r_{\rm esc}=3\max_\Gamma|\mathbf x|$, or above $1.05\max_\Gamma|\mathbf x|$ while moving outward under outward effective gravity, is classified **escaped**. This is a heuristic classification, not an orbital criterion. The motivation, that a packet beyond the synchronous radius $(GM/\omega_n^2)^{1/3}$ does not return, holds only for a spherical body, equatorial motion, and near-circular orbits, and the thresholds are not that radius; a trajectory with inward velocity can cross the synchronous radius and fall back. Under A-C3 an escaped packet is returned to its launch point, so escape is a count, not a mass loss; an explicit sink is not used. Under A-O (Section 10.4.6) the radius $1.05\max_\Gamma|\mathbf x|$ is not used. A packet in flight is escaped when it lies beyond a neck plane of its Hill region, or beyond $r_{\rm esc}$. Its mass is then lost: it is laid down nowhere, and the step's mass target falls by it. A packet still moving at $T_{\rm run}$ stops and is **timed out**. Both counts are reported.
 
 **Runout kernel.** With the isotropic spread $G_w(a,b)$ of width $w$, normalized over $a$,
 
@@ -1902,6 +1904,44 @@ $$
 with $\mathbf e_i$ the strain-rate samples of Section 10.4.2. This is a small SOCP (the static theorem of limit analysis) that can be reported each step. The fixed-viscosity (Kačanov) iteration decreases $J$ monotonically when $\eta(s)=\phi'(s)/s$ is nonincreasing. That holds on the Bingham branch. With rate dependence it fails at small rates, because $d\ln\eta/ds=\mu_d'\tilde p/(c+\mu_d\tilde p)-s/(s^2+\dot\gamma_\varepsilon^2)>0$ as $s\to0$. This is why the fixed-viscosity iteration is not the solver: the normative inner solver is the primal–dual iteration of Section 10.4.2, which needs no monotonicity of $\eta$. The convexity holds per frozen pressure only.
 
 **Remark 2.17.2 (The pressure coupling is not variational).** In (M2) the strength depends on the mean stress, while the flow is isochoric and co-axial with $\boldsymbol\tau_{\rm flow}$. That is a non-associated flow rule (zero dilatancy, positive friction), and such laws do not derive from a convex dissipation potential in the stress. The coupled $(\mathbf v,p)$ problem is therefore a fixed point, not a convex program, and its existence is PO-1. Appendix A.6 records a convex surrogate and a bracketing conjecture (Conjecture A.2, PO-21). Under A-Ξ the flow dilates, but at the rate $\Xi\dot\gamma$, with $\Xi\to0$ at the critical state while the friction stays positive. The rule therefore remains non-associated, and this remark still applies (Remark 11.6a).
+
+**Certified bracket of the limit load.** Take the discrete setting of Proposition 2.17.1: strain-rate samples $\mathbf E_i:\mathbb R^{n_u}\to\mathbb R^6$ at the volume nodes, normalized so that $|\mathbf E_i\mathbf u|=\dot\gamma_i(\mathbf u)$; weights $w_i$; strengths $\tau_i=c_i+\mu\tilde p_i$ with $c^w_i:=w_i\tau_i$; the rigid rows $\mathbf B$; and the load vector $\boldsymbol\ell$. With $N(\mathbf u)=\sum_ic^w_i|\mathbf E_i\mathbf u|$,
+
+$$
+L^*=\sup\{\boldsymbol\ell^{\!\top}\mathbf u:\ \mathbf B\mathbf u=0,\ N(\mathbf u)=1\}=\Big(\min\{N(\mathbf u):\ \boldsymbol\ell^{\!\top}\mathbf u=1,\ \mathbf B\mathbf u=0\}\Big)^{-1}.
+$$
+
+**Proposition 2.17.3 (Certified bracket).** For any weights $q_i>0$ with $\sum_iq_i\mathbf E_i^{\!\top}\mathbf E_i$ positive definite on $\ker\mathbf B$, let $\mathbf u_0$ solve $\sum_iq_i\mathbf E_i^{\!\top}\mathbf E_i\mathbf u_0=\boldsymbol\ell+\mathbf B^{\!\top}\boldsymbol\mu$, $\mathbf B\mathbf u_0=0$. Then $\boldsymbol\ell^{\!\top}\mathbf u_0>0$ unless $\boldsymbol\ell$ vanishes on $\ker\mathbf B$ (then $L^*=0$), and
+
+$$
+L_{\rm lo}:=\frac{\boldsymbol\ell^{\!\top}\mathbf u_0}{N(\mathbf u_0)}\ \le\ L^*\ \le\ L_{\rm hi}:=\max_i\frac{q_i\,|\mathbf E_i\mathbf u_0|}{c^w_i}.
+$$
+
+*Proof.* $\boldsymbol\ell^{\!\top}\mathbf u_0=\sum_iq_i|\mathbf E_i\mathbf u_0|^2\ge0$. The kinematic bound holds because $\mathbf u_0\in\ker\mathbf B$ is admissible. For the static bound, take $\mathbf v\in\ker\mathbf B$:
+$$
+\boldsymbol\ell^{\!\top}\mathbf v=\sum_iq_i(\mathbf E_i\mathbf u_0)^{\!\top}\mathbf E_i\mathbf v\le\sum_iq_i|\mathbf E_i\mathbf u_0||\mathbf E_i\mathbf v|\le\max_i\frac{q_i|\mathbf E_i\mathbf u_0|}{c^w_i}\sum_ic^w_i|\mathbf E_i\mathbf v|=L_{\rm hi}N(\mathbf v).
+$$
+The stresses $\boldsymbol\varsigma_i=q_i\mathbf E_i\mathbf u_0/w_i$ are equilibrated with $\boldsymbol\ell$ on $\ker\mathbf B$, and $L_{\rm hi}$ is their largest ratio to the strength. ∎
+
+The bracket holds for every choice of weights. It therefore does not depend on the convergence of the iteration that produces them. The weights $q_i=c^w_i/\sqrt{|\mathbf E_i\mathbf u|^2+\epsilon^2}$ are those of the stationarity condition of the smoothed problem $\min\sum_ic^w_i\sqrt{|\mathbf E_i\mathbf u|^2+\epsilon^2}$. At its minimizer, $L_{\rm hi}/L_{\rm lo}\le\big(1-\epsilon\sum_ic^w_i/N(\mathbf u)\big)^{-1}$. The iteration recomputes the weights from the last $\mathbf u_0$ with $\epsilon=\theta\,\overline{\dot\gamma}$, where $\overline{\dot\gamma}$ is the root-mean-square rate of $\mathbf u_0$ and $\theta$ halves on each pass from 1. Each pass is one weighted Gram matrix of the strain samples (the assembly of the metric of Section 10.4.2) and one dense solve of size $n_u$. The iteration keeps the largest $L_{\rm lo}$ and the smallest $L_{\rm hi}$ found [30].
+
+- *Decision.* $L_{\rm lo}>1$ certifies failure: there is no quasi-static state at this pressure. $L_{\rm hi}<1$ certifies existence. Otherwise the bracket is undecided at its present width.
+- *The frozen pressure.* $\tilde p_i=\max(p_{0,i},p_{\min})$, where $p_0$ is the pressure of Section 8.7 with $\boldsymbol\tau=\mathbf T_{\rm tide}$ and no flow stress, that is, the body at rest under its loads. Under the orbital form of Section 10.4.1 with $s:=n^2$, both $\boldsymbol\ell$ and $p_0$ are affine in $s$: the Hill terms are $s$ times fixed fields, $\mathbf T_{\rm tide}$ is affine in $H_W$, and the pressure problem is linear. Two evaluations therefore give them for every orbit.
+- *Two strengths.* $\tau^{(2)}=c+\mu_2\tilde p$ gives $L^*_2$, the threshold of Proposition 2.17.1 and the end of the quasi-static route. $\tau^{(s)}=c+\mu_s\tilde p$ gives $L^*_s\ge L^*_2$, the onset of whole-body yield at rest.
+
+**Algorithm 2.17.4 (Failure orbit of a frozen body).** A satellite of frozen shape and density, on a synchronous circular orbit about a primary $GM_p$:
+
+1. Build the operators of Chapter 8 once. Form $\boldsymbol\ell=\boldsymbol\ell_0+s\boldsymbol\ell_1$ and $p_0=p_{00}+s\,p_{01}$ from two evaluations.
+2. At an orbit $a$, set $s=GM_p/a^3$ and run the bracket until it is decided or its relative width is below $\varepsilon_L$.
+3. Scan $a_j=a_{\max}(1-\delta)^j$ downward to the first certified failure. Then bisect in $\log a$ between the smallest certified-stable and the largest certified-failed orbit, down to a relative width $\varepsilon_a$. An undecided orbit ends the bisection: the failure orbit is then known only to the interval between the two certified ends.
+4. Report:
+   - the certified interval;
+   - the bracket along the scan;
+   - the normalized shear rates $\dot\gamma_i(\mathbf u_0)/N(\mathbf u_0)$ of the mechanism at the failed orbit. Their rigid blocks are the fragments of a breakup.
+
+Monotonicity of $L^*$ in $a$ is not assumed. A crossing narrower than the scan step can be missed, and the step is reported. Repeating the algorithm with Davis' reduced strength $(c\cos\phi,\sin\phi)$, $\tan\phi=\mu$, gives the other end of the interval of Conjecture A.2.
+
+In a run under A-O (Section 10.4.6), the bracket with $\tau^{(2)}$ is evaluated on the deep state every $N_L$ steps. A certified $L_{\rm lo}>1$ ends the run as a limit-load collapse; the bracket at the rest pressure $p_0$ thus warns of a failure before the iteration of Section 10.4.2 meets it at its own pressure.
 
 ---
 
@@ -4677,7 +4717,7 @@ U_{\rm tide}=\tfrac12 n^2\big(2x_1^2-x_2^2-x_3^2\big),\qquad
 \nabla^2U_{\rm tide}=n^2\operatorname{diag}(2,-1,-1),
 $$
 
-which enters $\mathbf g_0$, $H_W$, and $\mathbf T_{\rm tide}$. It is traceless, so $\Delta W$ and Section 8.7 are unchanged. After realignment the body $x$ axis is the long principal axis, the synchronous orientation.
+which enters $\mathbf g_0$, $H_W$, and $\mathbf T_{\rm tide}$. It is traceless, so $\Delta W$ and Section 8.7 are unchanged. After realignment the body $x$ axis is the long principal axis, the synchronous orientation. Under A-O (Section 10.4.6) the rate of the law follows the satellite's mass, and $a$ becomes a state of the run.
 
 Each step freezes $\omega_n=\omega(t_n)$ (under the orbit form, also $n_n=\omega_n$). The spin enters only through
 
@@ -4759,7 +4799,13 @@ Properties of the iteration:
 
 - **Contrast.** The PCG count of a fixed-viscosity solve grows with $\eta_{\rm hi}/\eta_{\rm lo}$ (Section 8.4); the step condition here does not.
 - **Rate.** The ergodic gap decays as $O(1/k)$. For $\dot\gamma_\varepsilon>0$, $\phi_i'$ is Lipschitz, so $\phi_i^*$ is strongly convex (for Bingham with modulus $\ge\dot\gamma_\varepsilon/\tau_{y,i}$), and the accelerated step sizes of [14] give $O(1/k^2)$.
-- **Collapse.** If $L^*>1$ (Proposition 2.17.1) the primal is unbounded: the iterate grows linearly, $\|\mathbf u^k\|_{\mathbf P}\sim k$ (the minimizing sequence $t\mathbf v$ of the proof), while $|\boldsymbol\varsigma_i|$ is pinned at $\tau_{\max,i}$ somewhere and the equilibrium residual stalls. This dual-infeasibility certificate replaces convergence. Here $\tau_{\max,i}$ is the supremum of $\phi_i'$, $c+\mu_2\tilde p$ in the reference model. Since $L^*$ does not depend on $\dot\gamma_\varepsilon$, the continuation ladder cannot remove a collapse.
+- **Collapse.** If $L^*>1$ (Proposition 2.17.1) the primal is unbounded: the iterate grows linearly, $\|\mathbf u^k\|_{\mathbf P}\sim k$ (the minimizing sequence $t\mathbf v$ of the proof), while $|\boldsymbol\varsigma_i|$ is pinned at $\tau_{\max,i}$ somewhere and the equilibrium residual stalls. Here $\tau_{\max,i}$ is the supremum of $\phi_i'$, $c+\mu_2\tilde p$ in the reference model.
+
+  This pattern is only a suspicion. Near the limit load a quasi-static state exists but has large rates, so the iteration approaches it slowly while the iterate still grows. The suspicion is therefore decided by the certified bracket of Proposition 2.17.3 at the iteration's own frozen pressure and strength $\tau_{\max}$:
+  - $L_{\rm lo}>1$ certifies the collapse (Proposition 2.17.1);
+  - otherwise a state is not excluded, and the same level is continued from where it stopped. It is continued again while each continuation lowers the primal–dual gap by a fixed factor, up to a fixed number of continuations; then the iteration is reported as not converged.
+
+  Under A-Ξ the admissible set is affine and the bracket does not apply, so the suspicion stands as the verdict. Since $L^*$ does not depend on $\dot\gamma_\varepsilon$, the continuation ladder cannot remove a collapse.
 - **Exact Bingham limit.** With $\dot\gamma_\varepsilon=0$ the inner problem is the exact Bingham limit at frozen pressure, and yield is read off the prox (active projection means yielded; strictly inside means rigid). The reference model keeps $\dot\gamma_\varepsilon>0$ and the classification (B2)–(B3) on the converged stress; the limit is an admissible check of PO-12.
 
 **Pressure inside the iteration.** Every $N_p$ iterations the pressure is updated by the Nitsche problem (G3), whose matrix is factored once per geometry. In its right-hand side the volume term needs only stress samples,
@@ -4781,10 +4827,13 @@ for k = 0, 1, ..., k_max-1:
   (P) Every N_p iterations: Nitsche pressure problem (G3) with the stress of the current iterate;
       p~ = max([p]_+, p_min); update every phi_i.
   (S) Stop if criterion (a) of Section 2.15 holds.
-If k_max is reached with the collapse certificate, max_i |varsigma_i| / tau_max,i >= 1 - delta_c and
+If k_max is reached with the collapse suspicion, max_i |varsigma_i| / tau_max,i >= 1 - delta_c and
   ||u^(k_max)||_P >= g_c ||u^(k_max/2)||_P (fixed delta_c << 1, 1 < g_c < 2; linear growth gives 2):
-  terminate and report "limit-load collapse" (L* > 1, Proposition 2.17.1); no passing status, and the
-  ladder is not tried. Otherwise restart on the continuation ladder 10^c gd_eps, ..., 10 gd_eps,
+  bracket L* at the frozen p~ and tau_max (Proposition 2.17.3). If L_lo > 1: terminate and report
+  "limit-load collapse" (L* > 1, Proposition 2.17.1); no passing status, and the ladder is not tried.
+  Otherwise repeat the level warm from u^(k_max) and p~ while each repetition lowers the gap by a
+  fixed factor (at most a fixed number of times), then report "rheology not converged". Under A-Xi
+  the suspicion is reported as the collapse. Otherwise restart on the continuation ladder 10^c gd_eps, ..., 10 gd_eps,
   gd_eps (c >= 0 configured), warm-started from level to level, with the same test at every level.
   If the target level still fails: terminate, report "rheology not converged"; no passing status.
 Output: u^(n), p^(n), varsigma^(n), and the rigid multiplier
@@ -4864,6 +4913,8 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    g_eff = grad U + omega_n^2 x_perp + g_ext,
    H_W = Hess U + omega_n^2 diag(1,1,0) + Hess U_tide   (g_ext, U_tide only under the orbit form),
    T_tide = C_T rho_p nu_0 d_p^2 dev H_W.
+   Under A-O (Section 10.4.6): omega_n = n(a_n) from the orbit state, and the necks L_k, e_k of
+   the Hill region by Newton's iteration; they are frozen for the step.
 2. Stokes-pressure primal-dual iteration (Section 10.4.2) -> (u^(n), p^(n), varsigma^(n), lambda^(n)).
    If criterion (a) or (b) of Section 2.15 fails, retry by continuation; if that fails, terminate and report.
 3. Yield classification (Section 2.8, B2-B3): on X_Y synthesize v, D, p~; compute tau_flow, tau_y, F_delta;
@@ -4871,6 +4922,8 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    least-squares rigid fit (a_c, theta_c); v_sl = v - a_c - theta_c x x.
    Update Phi_p and eps_p_bar (B6). Report the movable area fraction, the tensile fraction,
    Ek^{-1}, and eps_Euler.
+   Under A-O, every N_L steps: the certified bracket of L* with tau^(2) (Proposition 2.17.3);
+   L_lo > 1 ends the run as a limit-load collapse.
 4. Friction chain (Section 10.3): surface velocity and strain rate at vertices and face centres
    (Section 10.2), gd (Section 10.2.3), then mu_d, mu_proj, phi, and the repose slack s_f of every face.
 4+. Lag of the deep state. Steps 1-4 may instead reuse the deep state of the last step n0 that
@@ -4888,6 +4941,8 @@ For n = 0, 1, 2, ... until t_n >= T_end:
      surface unchanged and the slow state of Chapter 11 is at rest (Proposition 11.14), stage
      equilibrium (2.15(c)) -> emit the stage's terminal state, set t_{n+1} to the stage end,
      X^(n+1) = X^(n), go to step 1.
+   Under A-O, Delta t_omega uses n-dot(a_n, M_n), and the time in which the orbit reaches the
+   primary at the mass M_n bounds the step as well.
    If A^(n) is empty: Delta t_n = min(Delta t_omega, Delta t_core, Delta t_max, t_next - t_n),
      d_pred = 0; run 6b, then go to step 8 (no creep of the surface).
 6b. Core prediction (Section 9.10.3, Level 0; skipped in the frozen-density variant A-rho):
@@ -4897,7 +4952,8 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    and repeat 6b (cost O(K)). -> theta^pred, rho_cand (recomputed whenever lambda or Delta t_n changes).
 7. Creep increments: d_pred,i = Delta t_n v_sl,i . N_i on A^(n), the classes L / A (every other vertex
    locked); solve the SOCP of Section 10.4.3 with rho_cand, with the repose rows of the loose faces of
-   A^(n), for d_*^(n).
+   A^(n), for d_*^(n). Under A-O the lobe cap bounds the movable vertices that would pass a neck
+   plane, and the mass target falls by the mass M_cap carried beyond it.
 8. Geometric update and frame realignment:
    8a. X_i <- X_i + lambda d_*,i N_i (Section 8.0, G4), with d_* = 0 on the locked set.
        Rebuild the polyhedron. Outer acceptance: positive volume, no self-intersection, a closed,
@@ -4941,6 +4997,8 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
        J_ero > 0 in the rotating frame (A-C3, Section 2.8b) to X; J_ero and J_dep = G_w * (moved
        source) as step averages over tau_n (the exact exponential); Delta h*_C = tau_n (J_dep - J_ero)
        / rho_K. Later sweeps: no erosion (material laid on yielding ground leaves with the next step).
+       Under A-O the loose layer of a vertex with rho_s g_n > c_Gamma detaches (beta -> infinity);
+       packets beyond a neck plane are lost, and the mass target of the sweep falls by their mass.
    S3. Slope promotion (Section 2.8c): pi_i = 1 on vertices of faces with s_f > tau_s, chi_Y,i = 0,
        rho_s,i > 0. Stop if no vertex is promoted and nothing erodes (settled).
    S4. Classes: A = {pi = 1} with d_pred = Delta h*_C; D = other vertices with Delta h*_C != 0;
@@ -4948,7 +5006,7 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
        vertices; relief routing (A-C3): r_i = [d_pred,i - d_i]_+ on the movable vertices of the
        faces of S_slope, m_rel_i = (D M)_i r_i, run out to X(a_i), spread by K,
        delta_j = (K m_rel)_j A_j / (D M)_j; d_pred <- d_pred + delta; solve again for
-       d_*. Outer acceptance as in 8a; when no increment is admissible down to Delta_min, stop and
+       d_* (under A-O with the mass target less the routed mass lost through a neck). Outer acceptance as in 8a; when no increment is admissible down to Delta_min, stop and
        keep the last shape.
    S5. X_i <- X_i + d_*,i N_i; rho_s,i <- rho_s,i A_i / A_i^new + tau_n (J_dep - J_ero)_i + the relief
        ledger of Section 2.8c (debit (D M)_i [d'_pred,i - d_*,i]_+, credited along the routed
@@ -4957,8 +5015,9 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
        lower the largest slack (the rest is unrelievable), or after the configured number of sweeps.
    Report the sweeps, the eroded and relieved masses, the slack before and after, tau_C / tau_n,
    and whether settling converged, stalled, or was limited by the geometry.
-9. t_{n+1} = t_n + lambda Delta t_n. Record X^(n+1), rho_s, theta^(n+1), the diagnostics,
-   and the error budget of Section 9.8. Return to step 1.
+9. t_{n+1} = t_n + lambda Delta t_n. Under A-O: a_{n+1}^{13/2} = a_n^{13/2} - kappa M_n tau_n,
+   M_{n+1} = M_n - M_esc,n; the run stops when a reaches the primary. Record X^(n+1), rho_s,
+   theta^(n+1), the diagnostics, and the error budget of Section 9.8. Return to step 1.
 ```
 
 **Stage equilibrium and micro-creep.** 2.15(c) is a strict fixed point. With an empty movable set, $d_*=0$ exactly, independent of $\Delta t_n$ and $\lambda$. The regularized creep inside the core, $|\mathbf v|\sim\dot\gamma_YR$, is only a diagnostic, $\max_{\mathcal U_{\rm core}}|\mathbf v_{\rm sl}|$. It enters neither the geometry, nor the step, nor the flux, nor any state. There is no "velocity floor" test, and creep causes no geometric or historical drift. As $\dot\gamma_\varepsilon\to0$ the core creep vanishes, and the movable set tends to the yielded region and sliding blocks of the unregularized model (PO-12).
@@ -5011,6 +5070,107 @@ The slope multipliers act on $\mathbf u$ as nodal normal tractions, giving a slo
 **Gravity feedback.** Section 2.13 freezes $\mathbf g$ and ignores $D\mathbf g\cdot d$. The first variation $\delta\mathbf g(\mathbf x)=G\oint_\Gamma\rho_K\delta_n(\mathbf y)(\mathbf y-\mathbf x)|\mathbf y-\mathbf x|^{-3}dS$ is linear in $d$. For $\rho_b$ it is the vertex derivative of the closed-form field of Section 3.9, available on the face tree of Section 3.10. Linearizing $\mathbf g\times\widehat{\mathbf n}$ and $|\mathbf g|$ in both factors keeps the slope rows conic, which turns the frozen-$\mathbf g$ step into a Gauss–Newton step at one face-tree evaluation per linearization, in the split route and in the fused program alike. It matters when a slide moves enough mass to change its own gravity.
 
 ---
+
+### 10.4.6 Orbital decay with mass loss (hypothesis A-O)
+
+Under the orbital form of Section 10.4.1 the semi-major axis follows a closed law with a fixed rate. The tidal decay rate is proportional to the satellite's mass, and a satellite that fills its Hill region loses mass. A-O couples the two [29].
+
+**Hypothesis A-O.**
+
+1. *Constant-$Q$ tide in the primary.* $\dot a=-3\,(k_2/Q)_p\,(m/M_p)\,(R_p/a)^5\,n\,a$, with $(k_2/Q)_p$ and $R_p$ constant and the satellite inside the primary's synchronous orbit. In terms of the configured initial rate, $\dot a=\dot a_0\,(m/m_0)\,(a_0/a)^{11/2}$.
+2. *Circular synchronous orbit in the Hill approximation* of Section 10.4.1: $\omega=n$, the second-degree tide only, and the primary's oblateness neglected.
+3. *Loss through the necks only.* Mass leaves by packets in flight that pass a neck plane of the Hill region, and by movable material carried beyond one (the lobe cap below). Lost mass does not return within the run.
+4. *Prompt departure.* Material that leaves does so on the orbital time scale $1/n$, short compared with $\tau_n$ (as in A-T1). The necks are evaluated at the start of the step and frozen in it.
+5. *Recoil neglected.* The momentum carried away is not fed back into the orbit; Remark 10.4.6.4 bounds its effect.
+
+A-O keeps the spin synchronous and therefore excludes A-L.
+
+**State and law.** The orbital state is $(a_n,M_n,M_{{\rm esc},n})$, with the ledger $M_n+M_{{\rm esc},n}=M_0$ exact. By item 1,
+
+$$
+\frac{d}{dt}a^{13/2}=-\kappa\,m(t),\qquad \kappa:=-\tfrac{13}{2}\,\frac{a_0^{11/2}\dot a_0}{m_0}>0 .
+$$
+
+The mass is constant within a step, because it is lost in the settling of step S at the step's end (A-T1). The update is therefore exact:
+
+$$
+\boxed{\ a_{n+1}^{13/2}=a_n^{13/2}-\kappa\,M_n\,\tau_n,\qquad n_n=\sqrt{GM_p/a_n^3},\qquad \omega_n=n_n,\qquad M_{n+1}=M_n-M_{{\rm esc},n}.\ }
+$$
+
+**Step bounds.**
+
+- The table bound of Section 10.4.1 becomes $\Delta t_\omega=\varepsilon_\omega\max\{n_n,\omega_{\rm ref}\}/|\dot n_n|$, with $\dot n=-\tfrac32(n/a)\dot a$ and $\dot a_n=-\tfrac{2}{13}\kappa M_na_n^{-11/2}$.
+- The time $(a_n^{13/2}-R_p^{13/2})/(\kappa M_n)$ in which the orbit reaches the primary at the mass $M_n$ also bounds the step. The run stops when $a$ reaches $R_p$.
+- A loss of the whole mass, or a step past the primary, is outside the model.
+
+**Proposition 10.4.6.1 (Reduction).** Without mass loss the update reproduces, at every step boundary, the closed law $a^{13/2}(t)=a_0^{13/2}+\tfrac{13}{2}a_0^{11/2}\dot a_0t$ of Section 10.4.1. With mass loss, $a(t)$ is that law evaluated at the mass-weighted time $\int_0^t m/m_0\,dt'$, exactly for a piecewise-constant $m$. A lighter satellite therefore decays more slowly.
+
+*Proof.* The update telescopes: $a_n^{13/2}=a_0^{13/2}-\kappa\sum_{j<n}M_j\tau_j$. With $M_j=m_0$ this equals $a_0^{13/2}+\tfrac{13}{2}a_0^{11/2}\dot a_0t_n$. In general the sum is $\kappa m_0\int_0^{t_n}m/m_0\,dt'$. ∎
+
+**The Hill potential.** In the frame of Section 10.4.1 with $\omega=n$, the centrifugal and tidal terms combine to
+
+$$
+W=U+\tfrac12n^2\big(3x_1^2-x_3^2\big),
+$$
+
+with the primary on the $+x_1$ axis.
+
+**Definition 10.4.6.2 (Necks and the Jacobi energy).**
+
+- *Saddles.* $L_k$ ($k=1$ toward the primary, $k=2$ away from it) are the critical points of $W$ on either side of the centroid $\mathbf x_c$, with $r_H=(GM_n/3n^2)^{1/3}$ as their point-mass distance. Along the axis $\mathbf x_c\pm t\mathbf e_1$, $\pm\partial_1W$ is negative inside a neck (self-gravity dominates) and positive beyond it (the tide dominates), whether the neck lies outside the body or, once it overflows, inside it. Beyond the neck the tide dominates all the way out, while density structure can add sign changes inside a body near its Roche limit. A scan of $t\in(0,2r_H]$ therefore brackets the outermost sign change, and bisection narrows it. If there is none, $\pm\partial_1W>0$ on the whole half-axis: the tide dominates the self-gravity even at the centroid, which happens once $3n^2$ exceeds $4\pi G\rho_K/3$ there (an underdense centre reaches this first). The neck is then at the centroid, and that half of the body stands by its strength alone. Newton's iteration $\mathbf x\leftarrow\mathbf x-H_W^{-1}\nabla W$, with $H_W=\nabla^2U+n^2\operatorname{diag}(3,0,-1)$ and the RTFP field at the iterate (the finite-part value inside $V$), then moves to the saddle itself, to a step of $10^{-6}r_H$. An asymmetric body puts the saddle off the axis. If the iteration does not reach a saddle within $r_H/4$ of the axial point, the axial point is used. A point-mass saddle has the eigenvalues $(9,-3,-4)n^2$ of $H_W$: $W$ is a minimum along one direction and a maximum in the other two. A critical point without exactly one positive eigenvalue is not a neck, and the step fails.
+- *Neck plane.* $\Pi_k$ is the plane through $L_k$ normal to $\mathbf e_k$, the eigenvector of $H_W(L_k)$ with the positive eigenvalue, oriented away from the body. Its outer half-space is $\Pi_k^+$.
+- *Jacobi energy.* A packet in flight has $E_J:=\tfrac12|\mathbf v|^2-W(\mathbf x)$. It is conserved in flight (the Coriolis force does no work, and $W$ is steady within the step) and decreases while sliding and at an inelastic landing.
+- *Critical energy.* $E_{\rm crit}:=\min_k\{-W(L_k)\}$.
+
+**Proposition 10.4.6.3 (Hill stability).** A packet that starts on the inner side of every neck plane with $E_J<E_{\rm crit}$ stays in the component of $\{W\ge-E_J\}$ that contains the body. It never reaches a neck plane.
+
+*Proof.* $E_J$ never increases, so the packet stays in $\{W\ge-E_J\}$. Along $\mathbf e_k$, $W$ is a minimum at $L_k$; across it, $W$ is a maximum. For $E_J<E_{\rm crit}$ the set $\{W\ge-E_J\}$ therefore misses a neighbourhood of each $L_k$, and the component containing the body is separated from the outer region at both necks. The critical lobe touches $\Pi_k$ only at $L_k$. ∎
+
+**Escape and the mass sink.** Under A-O a packet in flight is **escaped** when it lies in some $\Pi_k^+$ outside $\overline V$, or beyond the far radius $r_{\rm esc}$ of Section 2.8b.
+
+- With $E_J\ge E_{\rm crit}$ this is a transit through the neck. Conley's analysis of the linearized neck region shows that such orbits leave the satellite's region [28]. A possible later recapture is excluded by item 3.
+- With $E_J<E_{\rm crit}$ the packet was launched beyond the neck, in the outer region, and cannot return (Proposition 10.4.6.3, read from the outer side).
+
+The mass of an escaped packet leaves the body. It is either eroded mass, $J_{\rm ero}A\tau_n$ (Section 2.8), or routed relief mass, $m_i$ (Section 2.8b).
+
+- *Runout.* The runout kernel becomes sub-stochastic, and the exact balance of Section 2.8 becomes $\int_\Gamma(\bar J_{\rm dep}-\bar J_{\rm ero})\,dS=-M^C_{{\rm esc},n}/\tau_n$.
+- *Relief.* The routed program of Section 10.4.3 holds the mass target less the routed mass lost.
+
+**Detachment of the loose layer.** On a vertex where the outward pull exceeds the shallow cohesion,
+
+$$
+\rho_s\,g_n>c_\Gamma,\qquad g_n:=\frac{\sum_{f\ni i}A_f\,\mathbf g_{{\rm eff},f}\cdot\mathbf n_f}{\sum_{f\ni i}A_f},
+$$
+
+with $c_\Gamma$ the area-weighted mean of the face values of Section 11.6 ($c_s$ without A-ϖ and A-Θ), the layer detaches within the step: the exact erosion update of Section 2.8 is applied with $\beta_i\to\infty$. The layer is launched at rest in the frame and runs out like an eroded packet. A loose layer can stand only where the effective gravity presses it on, so the rule can act only near or beyond a neck, where the Hill terms turn $g_n$ outward.
+
+**Lobe cap.** Movable material ($\tilde\chi=1$) carried into some $\Pi_k^+$ is in the outer region at rest and leaves. The geometric program of step 7 bounds the increment there:
+
+- $d_i\le d^{\rm cap}_i$, where $\mathbf X_i+d^{\rm cap}_i\mathbf N_i\in\Pi_k$ for the first plane ahead along $\mathbf N_i$ (the bound is not set below the clearance row);
+- the lost mass is $M^{\rm cap}_n=\sum_i(D\mathcal M)_i\,(d_{{\rm pred},i}-d^{\rm cap}_i)_+$.
+
+Material of the rigid core beyond a neck is held by its strength. Whether it can be held is decided by $L^*$ (Proposition 2.17.3).
+
+**Mass row.** $M_{{\rm esc},n}=M^C_{{\rm esc},n}+M^{\rm relief}_{{\rm esc},n}+M^{\rm cap}_n$, and the mass rows of steps 7 and S take the targets that fall by these masses as they occur.
+
+**Remark 10.4.6.4 (Recoil).** Mass leaves the neck at relative speeds $v_{\rm rel}=O(n\,r_H)$. A loss $\Delta M$ changes the orbital speed by at most $\Delta M\,v_{\rm rel}/M$, so
+
+$$
+\frac{|\Delta a|}{a}\le2\,\frac{M_{\rm esc}}{M}\,\frac{v_{\rm rel}}{na}=O\!\Big(\frac{M_{\rm esc}}{M}\,\frac{r_H}{a}\Big).
+$$
+
+For a satellite with $r_H/a\sim10^{-3}$ this is negligible against the tidal decay. The bound $2(M_{\rm esc}/M)(r_H/a)$ is reported each step.
+
+**Reports.** Each step reports:
+
+- $a_n$, $n_n$ and $M_n$;
+- the mass lost by runout, by relief and by the cap, and the total;
+- $r_H$, and the vertices whose layer detached;
+- the lobe margin $\mu_L:=\max_{\mathbf x\in\Gamma}\max_k(\mathbf x-L_k)\cdot\mathbf e_k/r_H$, which is positive when the body overflows;
+- the recoil bound;
+- every $N_L$ steps, the bracket of $L^*$ (Proposition 2.17.3).
+
+**Reduction.** With A-O off, the model is the orbital form of Section 10.4.1 exactly. With A-O on and no face beyond a neck plane, no packet in a $\Pi_k^+$ and no detaching vertex, the only change is the exact law, which then coincides with the closed form (Proposition 10.4.6.1).
 
 ## 10.5 Computational realization: dependency graph, GPU and ray-tracing residency, and ECS organization
 
@@ -5688,7 +5848,198 @@ Each step, for the hypotheses that are on:
 
 ---
 
-# 12. Conclusion
+# 12. Breakup, fragments, and the debris ring
+
+Proposition 2.17.3 and Section 10.4.6 end the quasi-static route at a certified $L^*>1$. This chapter follows the body past that point:
+
+- it breaks along its collapse mechanism (Sections 12.1–12.2);
+- the fragments move as rigid bodies about the primary and about one another on the orbital time scale (Section 12.3);
+- they merge when they meet and break again when their own limit load is exceeded (Section 12.4);
+- pieces below a strength scale join a ring that spreads viscously between the primary and the Roche limit (Section 12.5).
+
+The quasi-static loop is not used in this phase. The minutes in which blocks separate along their bands are replaced by Hypothesis A-B.
+
+**Hypothesis A-B (breakup and its aftermath).**
+
+1. *Rigid blocks.* A body whose certified $L^*$ exceeds 1 (strength $c+\mu_2\tilde p$ at the rest pressure, Proposition 2.17.3) breaks into the blocks of the piecewise-rigid fit of its collapse mechanism (Section 12.1). The material of a shear band goes to the block whose motion fits it best.
+2. *Quasi-static onset.* The blocks start with the parent's rigid motion: its orbit and its spin. The mechanism gives only the direction in which they separate; the tide and the self-gravity then drive them.
+3. *Rigid fragments.* Between breakups a fragment is a rigid body of frozen shape and density.
+4. *Sticky contact.* Fragments that touch while approaching merge perfectly inelastically.
+5. *Dispersal.* A fragment whose certified collapse is not piecewise rigid (one block) is a granular flow, and it disperses into the ring. So does a fragment smaller than the debris diameter $D_{\rm debris}$.
+6. *Passive ring.* The ring is axisymmetric and does not act on the fragments. Matter that spreads past the Roche limit, or falls on the primary, leaves it; moonlets that form from it are a ledger only, with no migration and no reaccretion.
+
+A-B does not return to the quasi-static loop: a fragment that stands is followed as a rigid body to the end of the dynamic phase.
+
+## 12.1 The cut: a piecewise-rigid fit of the mechanism
+
+The kinematic bound of Proposition 2.17.3 comes with a velocity field $\mathbf u_0\in\ker\mathbf B$: the collapse mechanism. In limit analysis a mechanism is made of rigid blocks separated by velocity discontinuities. The Galerkin field smooths the discontinuities into bands, but it keeps the blocks.
+
+**Definition 12.1 (Piecewise-rigid fit).** Let $\mathbf v_i$ be the mechanism velocity at the volume nodes $\mathbf x_i$ with masses $m_i=w_i\rho_K(\mathbf x_i)$. For a labelling $\beta:i\mapsto\{1,\dots,K\}$, block $b$ has the weighted least-squares rigid motion $\mathbf v_b(\mathbf x)=\mathbf a_b+\boldsymbol\theta_b\times(\mathbf x-\mathbf c_b)$, where $\mathbf c_b$ is its centre of mass. The misfit is
+
+$$
+\mathcal E_K=\frac{\sum_im_i|\mathbf v_i-\mathbf v_{\beta(i)}(\mathbf x_i)|^2}{\sum_im_i|\mathbf v_i-\bar{\mathbf v}|^2}.
+$$
+
+The fit alternates two steps until the labels no longer change:
+
+- assign each node to the motion that fits it best;
+- refit each block.
+
+After each assignment every block is reduced to its largest connected component on the graph of the ten nearest neighbours of each node, and the other components join the block they touch most. A block below a fraction $f_{\min}$ of the mass is not admitted.
+
+Block $K+1$ is seeded with the nodes nearest to the worst-fitted node. It is kept if $\mathcal E_{K+1}\le(1-\gamma)\mathcal E_K$, so each further block must lower the misfit by the fraction $\gamma$; at most $K_{\max}$ blocks are formed.
+
+**Proposition 12.1.** If $\mathbf v$ is exactly piecewise rigid on $K$ connected blocks with distinct motions, then the labelling by blocks has $\mathcal E_K=0$, and it is a fixed point of the alternation.
+
+*Proof.* Each block's own motion fits its nodes exactly, so every node is assigned to its own block, and the refit reproduces the motions. ∎
+
+## 12.2 The pieces
+
+Each block becomes a body that satisfies hypothesis (G).
+
+**Voxel labels.** On a grid of spacing $h_v$ over the parent, each voxel centre inside $V$ takes the label of the nearest volume node. Each label is then reduced to its largest face-connected set of voxels; smaller islands join the label they touch most, or leave the body if they touch none.
+
+**Surface.** Marching tetrahedra on the indicator of a label extract its surface. Each cube of voxel centres is cut into the six tetrahedra along its main diagonal, and each tetrahedron is cut at the midpoints of its edges whose ends differ. Neighbouring cubes cut their common faces alike, and the indicator is never $\tfrac12$ at a vertex. The surface is therefore a closed, oriented 2-manifold.
+
+**Body.** The surface is re-triangulated on the icosphere by the outermost crossing of each ray from its volume centroid (the general route of Section 8.0 accepts any closed polyhedron; the rays fill concavities that face away from the centroid). The level is chosen so that the edge length stays the parent's. Each Cauchy kernel goes to the piece whose label holds its centre.
+
+**Mass.** The bulk density of a piece is set so that its mass equals the parent density integrated over its voxels, with the block masses scaled to the parent's total. The relative error of the pieces' total mass is reported. Each piece is then moved to its principal frame (Section 8.0, G8).
+
+## 12.3 Dynamics of the fragments
+
+**State.** Each fragment $k$ carries:
+
+- its centre of mass $\mathbf x_k$ and velocity $\mathbf v_k$ in a frame centred on the primary;
+- the rotation $\mathbf R_k$ from its principal frame;
+- its spin angular momentum $\mathbf L_k$ about its centre of mass;
+- its mass $m_k$ and principal moments $\mathbf I_k$.
+
+Its angular velocity is $\boldsymbol\omega_k=\mathbf R_k\mathbf I_k^{-1}\mathbf R_k^{\!\top}\mathbf L_k$.
+
+**The primary.** It is a point mass $GM_p$ with zonal harmonic $J_2$ about $\mathbf e_z$:
+
+$$
+\Phi_p=-\frac{GM_p}{r}\Big[1-J_2\Big(\frac{R_p}{r}\Big)^2P_2\Big(\frac zr\Big)\Big].
+$$
+
+Its coupling to a fragment's own quadrupole adds the potential $-GM_p\,Q_k(\mathbf x_k)$, with
+
+$$
+Q(\mathbf r)=\frac{\operatorname{tr}\mathbf I-3\hat{\mathbf r}^{\!\top}\mathbf I\hat{\mathbf r}}{2r^3},
+$$
+
+and the gravity-gradient torque $3GM_p\,\boldsymbol\rho\times\mathbf I\boldsymbol\rho/\rho^5$, with $\boldsymbol\rho=-\mathbf x_k$ the vector from the fragment to the primary. Here $\mathbf I$ is the fragment's inertia tensor in space.
+
+**Pairs far apart.** A pair farther apart than three times the sum of the bounding radii interacts through MacCullagh's expansion [29]:
+
+$$
+V_{jk}=-\frac{Gm_jm_k}{r}-Gm_kQ_j(\mathbf r)-Gm_jQ_k(\mathbf r),\qquad\mathbf r=\mathbf x_k-\mathbf x_j .
+$$
+
+It acts by the forces $\mp\nabla_{\mathbf r}V_{jk}$ and by the gravity-gradient torques of each body in the other's monopole. Its relative error is $O((R/r)^2)$.
+
+**Pairs close together.** A closer pair interacts through the RTFP field $\mathbf g_h$ of the heavier body, evaluated at the volume nodes $\mathbf y_i$ of the lighter. The force $m_i\mathbf g_h(\mathbf y_i)$ acts at each node, and its reaction acts on the heavier body at the same point:
+
+$$
+\mathbf F=\sum_im_i\mathbf g_h(\mathbf y_i),\qquad
+\boldsymbol\tau_{\rm light}=\sum_i(\mathbf y_i-\mathbf x_{\rm light})\times m_i\mathbf g_h(\mathbf y_i),\qquad
+\boldsymbol\tau_{\rm heavy}=-\sum_i(\mathbf y_i-\mathbf x_{\rm heavy})\times m_i\mathbf g_h(\mathbf y_i).
+$$
+
+**Proposition 12.2 (Conservation by the pair forces).** Both pair forms conserve momentum and angular momentum exactly: the forces are opposite, and $\boldsymbol\tau_j+\boldsymbol\tau_k+\mathbf r\times\mathbf F_k=\mathbf 0$. With $J_2=0$ the coupling to the primary conserves the total angular momentum about it; with $J_2\ne0$ it conserves the component along $\mathbf e_z$.
+
+*Proof.*
+- *Close pairs.* Summing the torques gives $\sum_i(\mathbf x_{\rm heavy}-\mathbf x_{\rm light})\times\mathbf F_i=-(\mathbf x_{\rm light}-\mathbf x_{\rm heavy})\times\mathbf F$, which cancels the orbital torque of the pair.
+- *Far pairs.* $V_{jk}$ is invariant under a common rotation of $\mathbf r$ and both inertia tensors. Its generator gives exactly the sum of the gravity-gradient torques and the orbital torque.
+- *The primary.* The same invariance holds for $-GM_pQ_k(\mathbf x_k)$ and the point mass. $\Phi_p$ is invariant under rotations about $\mathbf e_z$. ∎
+
+**Integrator.** The step is kick–drift–kick:
+
+1. A half kick $\mathbf v\mathrel{+}=\tfrac{\tau}{2}\mathbf F/m$, $\mathbf L\mathrel{+}=\tfrac{\tau}{2}\boldsymbol\tau$.
+2. A drift $\mathbf x\mathrel{+}=\tau\mathbf v$ together with the free rigid body over $\tau$.
+3. A half kick with the new forces.
+
+The free rigid body is split into its principal-axis flows, $x(\tfrac\tau2)\,y(\tfrac\tau2)\,z(\tau)\,y(\tfrac\tau2)\,x(\tfrac\tau2)$. Each flow is an exact rotation about one body axis, by the angle $\pi_a\tau/I_a$ with $\boldsymbol\pi=\mathbf R^{\!\top}\mathbf L$ [31].
+
+**Proposition 12.3.** The step is symplectic and second order. It conserves the total angular momentum to rounding whenever the forces conserve it (Proposition 12.2).
+
+*Proof.* The kicks change the total by $\tfrac\tau2\big(\sum\mathbf x\times\mathbf F+\sum\boldsymbol\tau\big)=\mathbf 0$. The drift keeps $\mathbf x\times\mathbf v$, because $\mathbf x$ moves along $\mathbf v$, and it keeps every $\mathbf L_k$. Each split flow is the exact flow of a Hamiltonian, and the symmetric composition is second order. ∎
+
+**Step size.** The step is the smallest of:
+- an orbital period divided by a fixed number of substeps;
+- one fiftieth of the mutual free-fall time $\sqrt{r^3/G(m_j+m_k)}$ of every close pair;
+- one fiftieth of every spin period.
+
+## 12.4 Mergers and further breakups
+
+**Contact.** Two fragments touch when a vertex of one lies inside the other. They merge if they touch while approaching, $(\mathbf v_k-\mathbf v_j)\cdot(\mathbf x_k-\mathbf x_j)<0$. Pieces of one cut are born touching along their cut; they merge only after they have once come apart.
+
+**Merger.**
+- *Geometry.* The merged body is the union of the two solids, voxelized and extracted as in Section 12.2, with both sets of kernels.
+- *Density and mass.* Its bulk density is the mass-weighted mean of the two, adjusted so that its mass is $m_j+m_k$.
+- *Motion.* Its centre of mass and velocity are the parts' mass-weighted means. Its spin angular momentum is
+$$
+\mathbf L=\mathbf L_j+\mathbf L_k+m_j(\mathbf x_j-\mathbf x)\times(\mathbf v_j-\mathbf v)+m_k(\mathbf x_k-\mathbf x)\times(\mathbf v_k-\mathbf v).
+$$
+  Mass, momentum and angular momentum are therefore conserved exactly; the kinetic energy that the merger dissipates is reported.
+
+**Cascade.** At fixed intervals each fragment is checked as follows.
+
+- *Impact.* It hits the primary when its periapsis lies below $R_p$.
+- *Escape.* It leaves the primary when its orbital energy is non-negative.
+- *Debris.* It joins the ring at its semi-major axis when its volume-equivalent diameter is below $D_{\rm debris}$. The scale is set by the strength: a body of size $D$ in the tide $n^2$ carries stresses of order $\tfrac38\rho n^2D^2$, which cohesion $c$ holds only below $D_c=\sqrt{8c/(3\rho n^2)}$. Friction alone does not stop the cascade. The tidal load and the frictional strength, through the lithostatic pressure, both scale with $D^2$, so $L^*$ of similar shapes does not depend on size, and a piece of a body that failed by friction fails again until cohesion takes over near $D_c$. The number of pieces then grows as $(D/D_c)^3$. A $D_{\rm debris}$ above $D_c$ stops resolving the cascade at that size: pieces smaller than it are taken to disintegrate and join the ring unresolved.
+- *Limit load.* Every other fragment is bracketed, but only when its tide $n^2=GM_p/|\mathbf x|^3$ has grown by more than 5 % since its last check. The load is that of a synchronous body with its long axis toward the primary, the orientation in which the tide stretches it most.
+  - If $L_{\rm lo}>1$, it is cut (Section 12.1). If the cut finds a single block, it disperses into the ring (A-B item 5).
+  - The pieces start with the parent's rigid motion: at the arm $\mathbf d$ of a piece, $\mathbf v+\boldsymbol\omega\times\mathbf d$, with the parent's angular velocity $\boldsymbol\omega$.
+
+## 12.5 The debris ring
+
+The ring is the surface density $\Sigma(R,t)$ of an axisymmetric disk of particles of radius $r_p$ and density $\rho_p$ about the primary. It occupies the annulus from $R_p$ to the fluid Roche limit $R_R=2.456\,R_p(\rho_{\rm primary}/\rho_p)^{1/3}$. Viscous spreading obeys [33]
+
+$$
+\frac{\partial\Sigma}{\partial t}=\frac3R\frac{\partial}{\partial R}\Big[\sqrt R\,\frac{\partial}{\partial R}\big(\nu\Sigma\sqrt R\big)\Big].
+$$
+
+**Viscosity.** The viscosity of a dense ring with self-gravity wakes is [32][33]
+
+$$
+\nu=\nu_{\rm trans}+\nu_{\rm coll}+\nu_{\rm grav},\qquad
+\nu_{\rm coll}=r_p^2\Omega\tau,\qquad
+\nu_{\rm trans}+\nu_{\rm grav}=\begin{cases}\dfrac{\sigma_r^2}{2\Omega}\dfrac{0.46\,\tau}{1+\tau^2},&Q>2,\\[2mm] 26\,r_h^{*5}\,\dfrac{G^2\Sigma^2}{\Omega^3},&Q<2,\end{cases}
+$$
+
+with:
+- the optical depth $\tau=3\Sigma/(4r_p\rho_p)$;
+- the Hill parameter $r_h^*=(2m_p/3M_p)^{1/3}R/(2r_p)$;
+- the velocity dispersion $\sigma_r=\sqrt{Gm_p/r_p}$ for $r_h^*>\tfrac12$ and $2r_p\Omega$ below;
+- the Toomre parameter $Q=\Omega\sigma_r/(3.36\,G\Sigma)$.
+
+**Discretization.** Cells of width $\Delta R$ hold the masses $m_i=2\pi R_i\Delta R\,\Sigma_i$. The inward mass flux at a face is
+
+$$
+\dot M=6\pi\sqrt R\,\frac{\partial}{\partial R}\big(\nu\Sigma\sqrt R\big),
+$$
+
+differenced across the face, with an empty cell beyond each edge. A cell gains the flux through its outer face and loses that through its inner face. The flux through the inner edge falls on the primary, and the flux through the Roche limit leaves to form moonlets [34].
+
+Deposits follow the same rule: one inside $R_p$ goes to the primary, one beyond $R_R$ to the moonlets, and any other joins its cell.
+
+**Step.** The diffusivity of $\nu\Sigma$ is at most $3\nu(1+\partial\ln\nu/\partial\ln\Sigma)\le9\nu$ in the wake regime. The explicit step $0.2\,\Delta R^2/(9\nu_{\max})$ therefore keeps the update stable.
+
+**Proposition 12.4 (Ledger).** The update conserves exactly the ring's mass plus the masses fallen on the primary and gone to the moonlets.
+
+*Proof.* Each interior face flux leaves one cell and enters its neighbour, and the edge fluxes are booked to the two sinks. The sum telescopes. ∎
+
+**Reports.**
+- *Cut.* The misfit of each accepted number of blocks, and the pieces' mass error.
+- *Fragments.* At recorded times: their masses, diameters, orbital elements and spins.
+- *Events.* Cuts, mergers (with the dissipated energy), dispersals, impacts, escapes and debris.
+- *Ledgers.* The ring, the primary and the moonlets.
+- *Conservation.* The total momentum, angular momentum and energy. The energy uses the quadrupole form also for close pairs, so it is a diagnostic there.
+
+---
+
+# 13. Conclusion
 
 The paper gives a closed loop whose core is the Mode B quasi-static viscoplastic Stokes equilibrium, with Mode C erosion and deposition as an auxiliary process. It couples:
 
@@ -5711,6 +6062,8 @@ The paper gives a closed loop whose core is the Mode B quasi-static viscoplastic
 - *A-L* evolves the spin from the angular momentum and the settled inertia, with principal-axis rotation kept by adiabaticity and dissipation.
 
 The state laws are integrated exactly over each step and preserve their admissible ranges.
+
+**Breakup (Chapter 12).** Past a certified limit load, the body breaks into the rigid blocks of its collapse mechanism. The fragments move about the primary under forces that conserve momentum and angular momentum exactly. They merge when they meet and break again when their own limit load is exceeded, and pieces below the strength scale spread as a viscous ring between the primary and the Roche limit.
 
 **Discretization and geometry.**
 
@@ -5882,6 +6235,11 @@ So $\mathbf u_B=\mathbf u_0$ iff $\mathbf E\mathbf u_0=\mathbf 0$, and Track B i
 | PO-25 | The state markers of Section 11.1: an error bound for the reconstruction under transport, and the effect of insertion, deletion, and merging. Proved: Lemma 11.2 (admissible values, affine exactness, invariance at rest) and the stage fixed point | partially closed; marker counts, insertions, deletions, merges, and Shepard fallbacks are reported each step |
 | PO-26 | Hypothesis A-Θ: the errors of the quasi-steady diurnal state, the neglected seasonal storage, lateral conduction, and mutual radiation, and of one effective effusivity with the shielding factor; the fatigue law and its constants are constitutive inputs. Proved: Proposition 11.10 (exact half-space flux map, monotonicity, uniqueness, positivity, mean balance, discrete existence and uniqueness) and Proposition 11.11 (exact, bounded sources and the ledger) | partially closed; the indicators of Section 11.10 are reported each step |
 | PO-27 | Hypothesis A-L: a quantitative adiabatic bound for principal-axis rotation under slowly changing inertia, the damping of the wobble excited by settling within a step, and the constancy of $\kappa_Y$ under law L2. Proved: Proposition 11.12 (energy minimum at fixed $\mathbf L$, true polar wander, reduction to the exogenous table, frame residual) | partially closed; $\varepsilon_{\rm ad}$, $\omega_w$, $\hat g$, $\vartheta_L$, $\Delta E$, and $|\boldsymbol\theta_c|/\omega$ are reported each step |
+| PO-28 | Hypothesis A-O. Proved: Proposition 10.4.6.1 (exact update and reduction), Proposition 10.4.6.3 (Hill stability), the exact mass ledger. Open: recapture after a transit; the prompt-departure assumption and the frozen necks within a step; the error of the lobe cap; the neglected recoil, bounded by Remark 10.4.6.4 | partially closed; $a_n$, $M_n$, the lost masses by route, $r_H$, the lobe margin, and the recoil bound are reported each step |
+| PO-29 | The failure orbit (Algorithm 2.17.4). Proved: the bracket of Proposition 2.17.3 for any weights. Open: monotonicity of $L^*$ in $a$; the meaning of the frozen pressure $p_0$ at failure, which reduces to PO-21 | partially closed; the certified interval and the bracket along the scan are reported |
+| PO-30 | Hypothesis A-B, the cut. Proved: Proposition 12.1 (an exactly piecewise-rigid mechanism is a fixed point of the fit with zero misfit), the closed manifold of the extracted surface, the mass of the pieces. Open: the physical validity of rigid blocks for a granular mechanism smoothed by the Galerkin basis; the dependence of the cut on the gain, the voxel spacing, and the outermost-crossing re-triangulation | partially closed; the misfits and the mass error are reported |
+| PO-31 | The fragments' dynamics. Proved: Propositions 12.2 and 12.3 (exact conservation of momentum and angular momentum, second order). Open: the error of the quadrupole expansion at the switching distance; sticky contact in place of frictional contact; the synchronous, tide-aligned load of the cascade as the worst case | partially closed; momentum, angular momentum, energy, and the energy dissipated in mergers are reported |
+| PO-32 | The debris ring. Proved: Proposition 12.4 (the ledger). Open: positivity of the explicit nonlinear update at the stated step; the range of validity of the wake viscosity; moonlet formation and migration, and the ring's action on fragments, which are not modelled | partially closed; the ring, primary, and moonlet masses are reported |
 
 ## A.6 Conjectures
 
@@ -5952,3 +6310,17 @@ In limit analysis, a non-associated Mohr–Coulomb material has its limit load b
 [26] Heyman, J., Delannay, R., Tabuteau, H., & Valance, A. (2017). Compressibility regularizes the μ(I)-rheology for dense granular flows. *Journal of Fluid Mechanics*, 830, 553–568. https://doi.org/10.1017/jfm.2017.612
 
 [27] Goulart, P. J., & Chen, Y. (2024). Clarabel: An interior-point solver for conic programs with quadratic objectives. *arXiv:2405.12762*.
+
+[28] Conley, C. C. (1968). Low energy transit orbits in the restricted three-body problems. *SIAM Journal on Applied Mathematics*, 16(4), 732–746.
+
+[29] Murray, C. D., & Dermott, S. F. (1999). *Solar System Dynamics*. Cambridge University Press.
+
+[30] Andersen, K. D., Christiansen, E., Conn, A. R., & Overton, M. L. (2000). An efficient primal–dual interior-point method for minimizing a sum of Euclidean norms. *SIAM Journal on Scientific Computing*, 22(1), 243–262.
+
+[31] Dullweber, A., Leimkuhler, B., & McLachlan, R. (1997). Symplectic splitting methods for rigid body molecular dynamics. *The Journal of Chemical Physics*, 107(15), 5840–5851.
+
+[32] Daisaka, H., Tanaka, H., & Ida, S. (2001). Viscosity in a dense planetary ring with self-gravitating particles. *Icarus*, 154(2), 296–312.
+
+[33] Salmon, J., Charnoz, S., Crida, A., & Brahic, A. (2010). Long-term and large-scale viscous evolution of dense planetary rings. *Icarus*, 209(2), 771–785.
+
+[34] Hesselbrock, A. J., & Minton, D. A. (2017). An ongoing satellite–ring cycle of Mars and the origins of Phobos and Deimos. *Nature Geoscience*, 10(4), 266–269.
