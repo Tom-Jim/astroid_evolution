@@ -13,6 +13,7 @@ use crate::rheo::{Material, MaterialSpec, SolverSpec};
 
 use super::cores::CoreParams;
 use super::breakup::BreakupParams;
+use super::cycle::CycleParams;
 use super::orbit::OrbitParams;
 use super::evolving::{DamageParams, DilatancyParams, MarkerParams, SpinLawParams, ThermalParams};
 use crate::common::error::SimError;
@@ -262,6 +263,9 @@ struct ProjectFile {
     /// Chapter 12: breakup, fragments and the debris ring.
     #[serde(default)]
     breakup: Option<BreakupParams>,
+    /// A-Λ (§10.4.7): eccentricity, forced libration and the tidal cycle.
+    #[serde(default)]
+    cycle: Option<CycleParams>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -298,6 +302,8 @@ pub struct Project {
     pub orbit: Option<OrbitParams>,
     /// Chapter 12: how a failed satellite breaks, its fragments move, and its debris spreads.
     pub breakup: Option<BreakupParams>,
+    /// A-Λ (§10.4.7): the tidal cycle of an eccentric synchronous satellite.
+    pub cycle: Option<CycleParams>,
     pub base_dir: PathBuf,
 }
 
@@ -359,6 +365,15 @@ impl Project {
             b.validate()?;
             if f.orbit.is_none() {
                 return Err(SimError::model_not_closed("[breakup] needs the [orbit] section (A-O) for the primary"));
+            }
+        }
+        if let Some(c) = &f.cycle {
+            c.validate()?;
+            if f.orbit.is_none() {
+                return Err(SimError::model_not_closed("[cycle] (A-Λ) needs the [orbit] section (A-O)"));
+            }
+            if c.fatigue.is_some() && f.damage.is_none() {
+                return Err(SimError::model_not_closed("cycle.fatigue damages the bonds: it needs [damage] (A-ϖ)"));
             }
         }
         if let Some(o) = &f.orbit {
@@ -533,6 +548,7 @@ impl Project {
             dilatancy: f.dilatancy,
             orbit: f.orbit,
             breakup: f.breakup,
+            cycle: f.cycle,
             base_dir,
         })
     }

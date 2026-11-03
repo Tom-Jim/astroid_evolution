@@ -502,3 +502,84 @@ fn cauchy_meshes_evolve_past_relax() {
         "none of Ryugu, Phobos, Deimos entered a geometry step"
     );
 }
+
+const PHOBOS_CYCLE: &str = "\n[cycle]\neccentricity = 0.0151\nprimary_spin = 7.0882e-5\nrigidity = 1.69e8\nq_satellite = 100.0\nphases = 16\npsi_max = 0.2\ncycles_max = 30\ntol = 1.0e-3\ntol_cycle = 1.0e-3\n";
+
+/// A-Λ (§10.4.7) in the A-O run of Phobos: the cycle is evaluated every step, the
+/// eccentricity decays as a power of the semi-major axis, the libration is Phobos', the
+/// indicators allow the quasi-static elastic cycle, and the brackets of the cycle are ordered.
+#[test]
+fn phobos_librates_and_its_eccentricity_decays_with_the_orbit() {
+    let text = include_str!("../dist/.stage/assets/projects/phobos.toml")
+        .replacen("level = 5", "level = 4", 1)
+        .replacen("l_velocity = 6", "l_velocity = 5", 1)
+        .replacen("l_pressure = 8", "l_pressure = 7", 1)
+        .replacen("cohesion = 25.0", "cohesion = 1.0e5", 1)
+        .replacen("cohesion_depth = 100.0", "cohesion_depth = 1.0", 1)
+        + "\n[orbit]\nprimary_radius = 3.3895e6\nlimit_every = 2\n"
+        + PHOBOS_CYCLE;
+    let p = Project::parse(&text, projects()).expect("phobos project");
+    let (gm, a0, adot0): (f64, f64, f64) = (4.282837e13, 6.6e6, -8.19e-9);
+    let schedule = SpinSchedule::parse(&format!("orbit:{gm:e},{a0:e},{adot0:e},1.2e14")).unwrap();
+    let (state, fwd) = evolve::start(&p, initial_body(&p).unwrap()).unwrap();
+    let res = match evolve::run(&p, &schedule, state, fwd, &opts(3, true), &mut |_, _, _| Ok(())) {
+        Ok(r) => r,
+        Err(e) => panic!("phobos A-Λ run: {e}"),
+    };
+    let mut last_e = 0.0151;
+    for r in &res.records {
+        let (o, c) = (&r.orbit, &r.cycle);
+        eprintln!(
+            "step {} a={:.6e} e={:.5e} chi={:.4} lib={:.3e} psi={:.3e} inertia={:.2e} 1/mu~={:.2e} cycles={} ratchet={:.2e} alt={:.2e} peak={:.4} sd=[{:.4}, {:.4}] L*=[{:.4}, {:.4}] dt={:.3e} bound={}",
+            r.step, o.a, c.e, c.chi, c.libration, c.psi, c.inertia, c.self_gravity, c.cycles, c.ratchet_fraction,
+            c.alternating_fraction, c.peak_lo, c.shakedown_lo, c.shakedown_hi, o.limit_lo, o.limit_hi, r.dt, r.dt_bound
+        );
+        assert!(c.active, "step {}: the cycle was not evaluated", r.step);
+        // e at the start of the step: the configured one first, then smaller every step.
+        let first = r.step == res.records[0].step;
+        assert!(c.e > 0.0 && if first { c.e == 0.0151 } else { c.e < last_e }, "step {}: e {} after {last_e}", r.step, c.e);
+        last_e = c.e;
+        assert!((0.2..0.7).contains(&c.chi), "step {}: χ = {}", r.step, c.chi);
+        assert!(c.libration > 0.0 && c.psi > c.libration, "step {}: libration {} swing {}", r.step, c.libration, c.psi);
+        assert!(c.inertia < 0.1 && c.self_gravity < 1e-2 && c.lag == 0.01, "step {}: indicators", r.step);
+        if c.shakedown_hi > 0.0 {
+            assert!(c.peak_lo <= c.shakedown_lo * (1.0 + 1e-9) && c.shakedown_lo <= c.shakedown_hi, "step {}: {c:?}", r.step);
+            assert!(c.shakedown_hi < 1.0, "step {}: a strong Phobos must shake down", r.step);
+        }
+    }
+    let o = res.state.evolving.orbit.expect("the orbit state");
+    assert!(o.a < a0 && o.e < 0.0151);
+}
+
+/// Algorithm 2.17.4 under A-Λ on the sample body: an eccentric orbit fails it at a larger
+/// semi-major axis than the circular one, and the shakedown orbit lies outside the ratchet
+/// orbit, which lies outside the peak collapse.
+#[test]
+fn the_tidal_cycle_moves_the_failure_orbit_outward() {
+    use astroid_evolution::scf::orbit::{FailureOptions, failure_orbit};
+    let base = sample_text(3) + "\n[orbit]\nprimary_radius = 3.3895e6\nlimit_every = 0\n";
+    let cyc = base.clone() + &PHOBOS_CYCLE.replacen("eccentricity = 0.0151", "eccentricity = 0.1", 1);
+    let gm = 4.282837e13;
+    let opt = |a_ref| FailureOptions { gm, a_max: 3.0e7, a_min: 3.0e6, scan: 0.03, tol: 2e-3, mu: 0.0, davis: false, gap: 2e-3, a_ref };
+    let run = |text: &str, a_ref| {
+        let p = Project::parse(text, projects()).expect("sample");
+        let (state, _) = evolve::start(&p, initial_body(&p).unwrap()).unwrap();
+        let o = FailureOptions { mu: p.material.spec.mu_2, ..opt(a_ref) };
+        failure_orbit(&p, &state.body, &o).unwrap()
+    };
+    let circular = run(&base, None);
+    let eccentric = run(&cyc, Some((3.0e7, -1.0e-9)));
+    eprintln!("circular: stable {:?} failed {:?}", circular.stable, circular.failed);
+    eprintln!("eccentric: shakedown {:?} ratchet {:?} failed {:?}", eccentric.stable, eccentric.ratchet, eccentric.failed);
+    for s in &eccentric.cycle_scan {
+        eprintln!("  a={:.4e} e={:.4e} peak={:.4} sd=[{:.4}, {:.4}]", s[0], s[1], s[2], s[3], s[4]);
+        assert!(s[2] <= s[3] * (1.0 + 1e-9) && s[3] <= s[4], "unordered at a = {}", s[0]);
+    }
+    let (fc, fe) = (circular.failed.expect("a circular failure"), eccentric.failed.expect("an eccentric failure"));
+    assert!(circular.stable.is_some() && fc < 3.0e7, "the scan must start on a standing body");
+    assert!(fe >= fc * (1.0 - 2e-3), "the cycle moved the failure inward: {fe} < {fc}");
+    if let (Some(s), Some(r)) = (eccentric.stable, eccentric.ratchet) {
+        assert!(s >= r && r >= fe, "shakedown {s}, ratchet {r}, failure {fe} out of order");
+    }
+    assert!(!eccentric.mechanism.is_empty());
+}

@@ -137,6 +137,12 @@ enum Command {
         scan: f64,
         #[arg(long, default_value_t = 1e-3)]
         tol: f64,
+        /// Under [cycle] (A-Λ): the semi-major axis (m) at which its eccentricity holds, and
+        /// the tidal rate ȧ (m/s) there.
+        #[arg(long)]
+        a_ref: Option<f64>,
+        #[arg(long)]
+        adot_ref: Option<f64>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -160,6 +166,11 @@ enum Command {
         a_max: Option<f64>,
         #[arg(long)]
         a_min: Option<f64>,
+        /// Under [cycle] (A-Λ): as for failure-orbit.
+        #[arg(long)]
+        a_ref: Option<f64>,
+        #[arg(long)]
+        adot_ref: Option<f64>,
         #[arg(long)]
         out_dir: PathBuf,
     },
@@ -708,6 +719,8 @@ fn run(cli: Cli) -> Result<(), SimError> {
             davis,
             scan,
             tol,
+            a_ref,
+            adot_ref,
             out,
         } => {
             let p = Project::load(&project)?;
@@ -735,6 +748,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 mu,
                 davis,
                 gap: tol,
+                a_ref: a_ref.zip(adot_ref),
             };
             let res = astroid_evolution::scf::orbit::failure_orbit(&p, &state.body, &opt)?;
             eprintln!(
@@ -744,6 +758,9 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 res.failed,
                 res.scan.len()
             );
+            if p.cycle.is_some() {
+                eprintln!("tidal cycle (A-Λ): shakedown down to {:?} m, ratchet from {:?} m", res.stable, res.ratchet);
+            }
             let text = serde_json::to_string_pretty(&res)?;
             match out {
                 Some(o) => std::fs::write(&o, text).map_err(|e| SimError::io(format!("{}: {e}", o.display())))?,
@@ -757,8 +774,10 @@ fn run(cli: Cli) -> Result<(), SimError> {
             a,
             a_max,
             a_min,
+            a_ref,
+            adot_ref,
             out_dir,
-        } => breakup(&project, snapshot.as_deref(), gm, a, a_max, a_min, &out_dir)?,
+        } => breakup(&project, snapshot.as_deref(), gm, a, a_max, a_min, a_ref.zip(adot_ref), &out_dir)?,
         Command::Export {
             snapshot,
             format,
@@ -959,7 +978,17 @@ fn main() -> ExitCode {
 }
 
 /// `scf-cli breakup`: the failure orbit, the cut, the fragments and the ring (Chapter 12).
-fn breakup(project: &Path, snapshot: Option<&Path>, gm: f64, a: Option<f64>, a_max: Option<f64>, a_min: Option<f64>, out: &Path) -> Result<(), SimError> {
+#[allow(clippy::too_many_arguments)]
+fn breakup(
+    project: &Path,
+    snapshot: Option<&Path>,
+    gm: f64,
+    a: Option<f64>,
+    a_max: Option<f64>,
+    a_min: Option<f64>,
+    a_ref: Option<(f64, f64)>,
+    out: &Path,
+) -> Result<(), SimError> {
     use astroid_evolution::common::math::{DMat3, DVec3};
     use astroid_evolution::scf::breakup::split;
     use astroid_evolution::scf::nbody::{Primary, System};
@@ -974,7 +1003,7 @@ fn breakup(project: &Path, snapshot: Option<&Path>, gm: f64, a: Option<f64>, a_m
     let a = match (a, a_max, a_min) {
         (Some(a), ..) => a,
         (None, Some(a_max), Some(a_min)) => {
-            let opt = FailureOptions { gm, a_max, a_min, scan: 0.02, tol: 2e-3, mu, davis: false, gap: 2e-3 };
+            let opt = FailureOptions { gm, a_max, a_min, scan: 0.02, tol: 2e-3, mu, davis: false, gap: 2e-3, a_ref };
             let res = failure_orbit(&p, &body, &opt)?;
             eprintln!("failure orbit: stable down to {:?} m, failed from {:?} m", res.stable, res.failed);
             res.failed.ok_or_else(|| SimError::invalid_input("the body stands over the whole range of a"))?

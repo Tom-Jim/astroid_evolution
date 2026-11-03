@@ -126,6 +126,36 @@ switches on hypothesis A-O (mathstrict §10.4.6).
 - Every step logs the semi-major axis, the mass lost by each route, the Hill radius and the lobe margin (positive when the body overflows).
 - Every `limit_every` steps the run brackets the limit load L*. A certified L* > 1 ends the run as a limit-load collapse.
 
+### Eccentricity, libration and the tidal cycle
+
+With `[orbit]`, the section `[cycle]` switches on hypothesis A-Λ (mathstrict §10.4.7). A real satellite's orbit is eccentric, so the tide changes strength and direction once per orbit and the spin librates. A body that is only rigid–viscoplastic cannot feel that cycle, so A-Λ adds an elastic one.
+
+```toml
+[cycle]
+eccentricity = 0.0151     # at the orbit where the run starts
+primary_spin = 7.0882e-5  # rad/s, for the signs of the primary's tidal lags
+rigidity = 1.69e8         # Pa, shear modulus of the elastic cycle and of the satellite's tide
+q_satellite = 100.0
+phases = 16               # samples of the cycle
+psi_max = 0.2             # rad; a larger libration ends the run (the lock may fail)
+cycles_max = 30
+tol = 1.0e-3
+tol_cycle = 1.0e-3
+# [cycle.fatigue] intercept = 0.9455, slope = 0.0278, limit = 0.7   (needs [damage])
+```
+
+- **Eccentricity.** Both tides damp it at constant Q, as a power of the semi-major axis (25/8 from Mars' tide for Phobos, plus Phobos' own). Phobos' e falls about sixfold by its failure orbit.
+- **Libration.** The forced libration comes from the body's own inertia. For Phobos it gives 1.1°, against the measured 1.14°. Resonance at 3(B−A)/C = 1 ends the run.
+- **Elastic cycle.** Two incompressible elastic solves per step, at the unit-viscosity stiffness the solver already holds. The stress does not depend on the modulus.
+- **Brackets.** Every `limit_every` steps the run brackets the peak limit load and the shakedown limit (Koiter and Melan). A certified peak above 1 ends the run.
+- **Ratchet.** Where shakedown fails, the steady elastic–perfectly plastic cycle gives a ratchet velocity, whose strain per cycle scales as load over modulus. That velocity moves the whole body. The alternating plastic shear feeds the damage of A-ϖ.
+- **Fatigue.** With `[cycle.fatigue]`, cycles that stay elastic break bonds by the rock S–N line, with its 0.7 endurance limit.
+- **Settling and escape.** Settling tests repose at the steepest phase. Packets fly in the field of their launch phase, and the Hill necks move with the phase.
+
+`failure-orbit` and `breakup` then need `--a-ref` and `--adot-ref`, the orbit where the eccentricity holds and the tidal rate there. They report the shakedown orbit, the ratchet orbit and the peak collapse.
+
+A-Θ can include a satellite's primary: `[thermal.primary]` with `temperature` and `albedo` adds the primary's eclipses and its heat and reflected light (mathstrict §11.6).
+
 ### Breakup, fragments and the debris ring
 
 `scf-cli breakup` follows a satellite past its failure (mathstrict Chapter 12). It needs a project with the `[orbit]` and `[breakup]` sections; `dist/.stage/assets/projects/phobos_breakup.toml` is Phobos with both.
@@ -157,7 +187,7 @@ cargo build --release --features tier2 --bins
 target/release/scf-cli --help
 ```
 
-`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `failure-orbit`, `breakup`, `export`, `history` (inversion). `run-sim --no-lag` evaluates the deep state on every step instead of reusing it while the surface has barely moved (for audits). `failure-orbit` finds, for a frozen body, the orbit below which it can no longer stand: it scans the semi-major axis downward and bisects on the certified bracket of L* (mathstrict §2.17), for example
+`scf-cli` subcommands: `validate`, `spin`, `relax`, `realign`, `run-sim`, `inspect`, `failure-orbit`, `breakup`, `export`, `history` (inversion). `run-sim --no-lag` evaluates the deep state on every step instead of reusing it while the surface has barely moved (for audits). `failure-orbit` finds, for a frozen body, the orbit below which it can no longer stand: it scans the semi-major axis downward and bisects on the certified bracket of L* (mathstrict §2.17; under `[cycle]`, on the peak and shakedown brackets of §10.4.7), for example
 
 ```bash
 target/release/scf-cli failure-orbit --project dist/.stage/assets/projects/phobos.toml --gm 4.282837e13 --a-max 9.376e6 --a-min 6.0e6
@@ -177,7 +207,7 @@ python3 dist/.stage/output/evaluate.py    # compare with measurements, write eva
 cargo test --features tier3
 ```
 
-165 tests: 153 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required. Run them one at a time (`-- --test-threads=1`) on a small machine: the Tier 2 runs each use the GPU and every core.
+178 tests: 166 with `--features tier2` (unit, GPU double-single, RTFP, rheology, spherical harmonics, regolith runout, slope promotion, Tier 2 SCF) and 12 more for the Tier 3 view and bridge. A working GPU is required. Run them one at a time (`-- --test-threads=1`) on a small machine: the Tier 2 runs each use the GPU and every core.
 
 ## Cargo features
 

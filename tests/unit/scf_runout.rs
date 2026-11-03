@@ -96,6 +96,7 @@ impl Sphere {
             load,
             material: m,
             necks: None,
+            cycle: None,
             time_limit: time,
             stop: 1.0e-3,
             theta: THETA,
@@ -311,6 +312,7 @@ fn a_packet_leaves_through_a_neck_only_above_the_critical_energy() {
             Neck { point: DVec3::X * -r_hill, axis: -DVec3::X },
         ],
         r_hill,
+        centre: DVec3::ZERO,
     };
     let mut field = sphere.field(&g, load, &m, 1.0e7);
     field.hess_face = &hess;

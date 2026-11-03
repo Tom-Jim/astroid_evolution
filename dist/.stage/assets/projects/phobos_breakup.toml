@@ -162,3 +162,26 @@ output_every = 3600.0
 ring_cells = 200
 ring_particle_radius = 1.0
 ring_time = 3.15576e15
+
+[cycle]
+# A-Λ (mathstrict §10.4.7). e = 0.0151 at the present orbit, a = 9.376e6 m (Burmeister et al.
+# 2018, who measure the forced libration 1.14 +/- 0.03 deg that the model's inertia predicts).
+eccentricity = 0.0151
+# Mars' sidereal rotation, 24.6229 h (NASA Mars fact sheet): every lag of Phobos' e-terms is
+# reversed, so C_e = 25/8 (Ćuk et al. 2025).
+primary_spin = 7.0882e-5
+# Rubble-pile Phobos: k2 = 1.1e-4 and Q = 100 (Goldreich & Sari 2009, as used by Ćuk et al.
+# 2025). k2 = 1.5 / (1 + 19 mu / (2 rho g R)) with rho g R = 1.18e5 Pa gives mu = 1.69e8 Pa,
+# the modulus of the elastic cycle and of the satellite's own tide.
+rigidity = 1.69e8
+q_satellite = 100.0
+# 16 phases per orbit; the linear libration holds while it and the swing of Mars stay below
+# 0.2 rad. The steady cycle: at most 30 cycles, returns to 1e-3 of the strength.
+phases = 16
+psi_max = 0.2
+cycles_max = 30
+tol = 1.0e-3
+tol_cycle = 1.0e-3
+# No [cycle.fatigue]: it damages the bonds through A-ϖ, whose strain scale has no published
+# value for Phobos. The rock S-N line would be intercept 0.9455, slope 0.0278, limit 0.7
+# (Cerfontaine & Collin 2018).

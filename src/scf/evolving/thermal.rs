@@ -21,6 +21,8 @@ use crate::scf::surface::SurfaceIndex;
 const SIGMA_SB: f64 = 5.670_374_419e-8;
 const C_LIGHT: f64 = 299_792_458.0;
 const AU: f64 = 1.495_978_707e11;
+/// Nominal solar radius (m, IAU 2015 Resolution B3).
+const R_SUN: f64 = 6.957e8;
 /// Hemisphere directions of the occlusion indicator.
 const SKY_SAMPLES: usize = 16;
 
@@ -60,6 +62,40 @@ pub struct ThermalParams {
     pub n_vis: usize,
     /// Face temperatures are reused while `|Δω| / ω` stays below this (0 recomputes).
     pub omega_tolerance: f64,
+    /// A satellite's primary (§11.6): its effective temperature (K) and Bond albedo. Its
+    /// radius and distance come from the orbit of A-O.
+    #[serde(default)]
+    pub primary: Option<PrimaryLight>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrimaryLight {
+    pub temperature: f64,
+    pub albedo: f64,
+}
+
+/// The fraction of the Sun's disk (angular radius `a_s`) left visible by the primary's
+/// (angular radius `a_p`) at the angular separation `theta`: two disks in the tangent plane.
+pub fn eclipse_visible(a_s: f64, a_p: f64, theta: f64) -> f64 {
+    let overlap = if theta >= a_s + a_p {
+        0.0
+    } else if theta <= (a_p - a_s).abs() {
+        std::f64::consts::PI * a_s.min(a_p).powi(2)
+    } else {
+        let lens = |r: f64, q: f64| r * r * ((theta * theta + r * r - q * q) / (2.0 * theta * r)).clamp(-1.0, 1.0).acos();
+        let k = (-theta + a_s + a_p) * (theta + a_s - a_p) * (theta - a_s + a_p) * (theta + a_s + a_p);
+        lens(a_s, a_p) + lens(a_p, a_s) - 0.5 * k.max(0.0).sqrt()
+    };
+    1.0 - overlap / (std::f64::consts::PI * a_s * a_s)
+}
+
+/// The irradiance per unit `[n·e_x]_+` from the primary's heat and reflected sunlight
+/// (§11.6), at solar flux `flux` with the Sun along `sun`; `(R_p/a)` is `ratio`.
+pub fn primary_irradiance(p: &PrimaryLight, ratio: f64, flux: f64, sun: DVec3) -> f64 {
+    let alpha = (-sun.x).clamp(-1.0, 1.0).acos();
+    let phase = (alpha.sin() + (std::f64::consts::PI - alpha) * alpha.cos()) / std::f64::consts::PI;
+    ratio * ratio * (SIGMA_SB * p.temperature.powi(4) + 2.0 / 3.0 * p.albedo * flux * phase)
 }
 
 impl ThermalParams {
@@ -94,6 +130,10 @@ impl ThermalParams {
         };
         unit("eccentricity", self.eccentricity)?;
         unit("albedo", self.albedo)?;
+        if let Some(p) = &self.primary {
+            pos("primary.temperature", p.temperature)?;
+            unit("primary.albedo", p.albedo)?;
+        }
         if !(self.emissivity <= 1.0) {
             return Err(SimError::model_not_closed("thermal.emissivity must not exceed 1"));
         }
@@ -151,6 +191,8 @@ impl ThermalReport {
 
 struct OrbitSample {
     flux: f64,
+    /// Heliocentric distance (AU).
+    r_au: f64,
     /// `cos δ`, `sin δ` of the subsolar latitude.
     cos_d: f64,
     sin_d: f64,
@@ -176,6 +218,7 @@ fn orbit_samples(p: &ThermalParams) -> Vec<OrbitSample> {
             let sin_d = -(eps.sin() * (f - lam).cos());
             OrbitSample {
                 flux: p.solar_flux / (r_au * r_au),
+                r_au,
                 cos_d: (1.0 - sin_d * sin_d).max(0.0).sqrt(),
                 sin_d,
             }
@@ -302,6 +345,8 @@ pub struct Thermal<'a> {
     orbit: Vec<OrbitSample>,
     q1: Vec<f64>,
     cache: Option<Cache>,
+    /// `(R_p, a)` of a satellite's primary on the `+x` axis.
+    primary: Option<(f64, f64)>,
 }
 
 /// One evaluation on the current shape.
@@ -318,6 +363,20 @@ impl<'a> Thermal<'a> {
             orbit: orbit_samples(p),
             q1: circulant_row(p.n_phase, p.effusivity),
             cache: None,
+            primary: None,
+        }
+    }
+
+    /// The primary's radius and distance for the next evaluation (§11.6). A change of
+    /// distance re-solves every face, as a change of `ω` does.
+    pub fn set_primary(&mut self, radius: f64, distance: f64) {
+        if self.p.primary.is_some() {
+            if self.primary.is_some_and(|(_, a)| a != distance) {
+                if let Some(c) = self.cache.as_mut() {
+                    c.omega = 0.0;
+                }
+            }
+            self.primary = Some((radius, distance));
         }
     }
 
@@ -475,7 +534,14 @@ impl<'a> Thermal<'a> {
                         let sun = self.sun(j, m);
                         let lit_frac = (0..p.n_vis).filter(|v| lit(&cache, f, *v, j, m)).count() as f64
                             / p.n_vis as f64;
-                        s[m] = (1.0 - p.albedo) * self.orbit[j].flux * n.dot(sun).max(0.0) * lit_frac;
+                        let flux = self.orbit[j].flux;
+                        s[m] = (1.0 - p.albedo) * flux * n.dot(sun).max(0.0) * lit_frac;
+                        if let (Some(light), Some((r_p, a))) = (&p.primary, self.primary) {
+                            let a_s = R_SUN / (self.orbit[j].r_au * AU);
+                            let seen = eclipse_visible(a_s, (r_p / a).min(1.0).asin(), sun.x.clamp(-1.0, 1.0).acos());
+                            s[m] = s[m] * seen
+                                + (1.0 - p.albedo) * primary_irradiance(light, r_p / a, flux, sun) * n.x.max(0.0);
+                        }
                     }
                     let warm = &cache.temps[f * dirs + j * np..f * dirs + (j + 1) * np];
                     if warm.iter().all(|v| *v > 0.0) {

@@ -72,6 +72,8 @@ pub struct Mechanics {
     /// Cauchy stress `σ = −p I + T_tide + 2η D` at the face centres (Pa,
     /// `(xx, yy, zz, xy, xz, yz)`).
     pub surface_stress: Vec<[f64; 6]>,
+    /// A-Λ: velocity coefficients of the ratchet `v_r` (§10.4.7), unmasked; empty for none.
+    pub ratchet: Vec<f64>,
 }
 
 /// `n · T · n` of a `(xx, yy, zz, xy, xz, yz)` tensor.
@@ -433,6 +435,26 @@ pub fn limit_bracket(project: &Project, mech: &Mechanics, fwd: &Forward, load: L
     super::stokes::limit::bracket(&mech.ops, &data, &set.cohesion(), m.spec.mu_2, m.spec.p_min, 1e-3)
 }
 
+/// The mean bracket of `L*` (as [`limit_bracket`]) and the brackets of the tidal cycle `el`
+/// about it (Proposition 10.4.7.5), sampled at `phases`.
+pub fn limit_cycle(
+    project: &Project,
+    mech: &Mechanics,
+    fwd: &Forward,
+    load: Loading,
+    el: &super::stokes::elastic::ElasticCycle,
+    phases: usize,
+) -> Result<(super::stokes::limit::Bracket, super::stokes::elastic::CycleBracket), SimError> {
+    let mut set = LoadSet::of(project, &mech.ops, fwd, load)?;
+    set.strength = mech.strength.clone();
+    let m = &project.material;
+    let data = super::stokes::limit::data(&mech.ops, &set.loads(project.g), &project.stokes, m)?;
+    let cohesion = set.cohesion();
+    let b = super::stokes::limit::bracket(&mech.ops, &data, &cohesion, m.spec.mu_2, m.spec.p_min, 1e-3)?;
+    let c = super::stokes::elastic::cycle_bracket(&mech.ops, &b, &data.load, el, 1.0, &cohesion, m.spec.mu_2, &data.p0, m.spec.p_min, phases);
+    Ok((b, c))
+}
+
 pub fn evaluate(
     cache: &mut GeometryCache,
     project: &Project,
@@ -522,6 +544,7 @@ pub fn evaluate(
         surface_stress,
         face_law,
         strength: set.strength,
+        ratchet: Vec::new(),
     })
 }
 

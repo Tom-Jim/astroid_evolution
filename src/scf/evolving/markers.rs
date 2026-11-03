@@ -296,6 +296,8 @@ pub struct Driving<'a> {
     /// `γ̇_{p,q}^⋆` at the volume nodes.
     pub rate: Vec<f64>,
     inertial: Vec<f64>,
+    /// The fatigue rate `r_F` of A-Λ at the volume nodes (§10.4.7); zero without it.
+    pub fatigue: Vec<f64>,
     rec: Reconstruction<'a>,
 }
 
@@ -317,8 +319,23 @@ impl<'a> Driving<'a> {
         Self {
             rate,
             inertial: inertial.to_vec(),
+            fatigue: vec![0.0; pts.len()],
             rec: Reconstruction::on_points(pts.to_vec(), index, h),
         }
+    }
+
+    /// The same driving with the fatigue rates `fatigue` at the nodes.
+    pub fn with_fatigue(mut self, fatigue: Vec<f64>) -> Self {
+        self.fatigue = fatigue;
+        self
+    }
+
+    /// `r_F` at `x`.
+    pub fn fatigue_at(&self, x: &[DVec3]) -> Vec<f64> {
+        if self.fatigue.iter().all(|r| *r == 0.0) {
+            return vec![0.0; x.len()];
+        }
+        self.rec.shepard_at(x, &[&self.fatigue]).pop().expect("r_F")
     }
 
     /// `γ̇_p^⋆` and `I_c` at `x`.

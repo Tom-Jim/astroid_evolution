@@ -17,6 +17,7 @@ use crate::common::math::DVec3;
 
 use super::body::Body;
 use super::mechanics::FaceLaw;
+use super::cycle::Cycle;
 use super::orbit::Necks;
 use super::forward::{Forward, Loading};
 use super::params::Project;
@@ -81,7 +82,8 @@ pub struct Settled {
 /// Settle `body` under `load` on the frozen yield state `yielded`, `f_delta` (per vertex)
 /// of the creep step of length `tau` (= λΔt). With the `necks` of A-O, packets beyond a
 /// neck plane leave the body, and a loose layer pulled outward harder than its cohesion
-/// holds detaches (§10.4.6).
+/// holds detaches (§10.4.6). With the `cycle` of A-Λ and its phases, repose is tested at
+/// the steepest phase and packets fly in the field of their launch phase (§10.4.7).
 #[allow(clippy::too_many_arguments)]
 pub fn settle(
     project: &Project,
@@ -95,6 +97,7 @@ pub fn settle(
     step: usize,
     laws: Option<&[FaceLaw]>,
     necks: Option<&Necks>,
+    cycle: Option<(&Cycle, usize)>,
 ) -> Result<Settled, SimError> {
     let prm = &project.mode_c;
     let tol = project.relief.tol_slack;
@@ -109,7 +112,7 @@ pub fn settle(
     let mut d_normal = vec![0.0; nv];
     let (mut weights, mut packets) = (Vec::new(), Vec::new());
     let mut target = mass_target;
-    let mut slope = slope_state(project, &body, &mut fwd, load, laws)?;
+    let mut slope = slope_state(project, &body, &mut fwd, load, laws, cycle)?;
     (rep.n_supercritical_before, rep.max_slack_before) = supercritical(&slope.slack);
     for sweep in 0..project.relief.max_sweeps {
         let topo = body.topo.clone();
@@ -130,13 +133,14 @@ pub fn settle(
             topo: &topo,
             index: &index,
             positions: &positions,
-            g_face: &slope.gravity,
+            g_face: &slope.mean,
             hess_face: &hess_face,
             rho_face: &rho_face,
             grav_const: project.g,
             load,
             material: &project.material,
             necks,
+            cycle: cycle.map(|c| c.0),
             time_limit: prm.runout_time,
             stop: prm.runout_stop,
             theta: runout::THETA,
@@ -311,7 +315,7 @@ pub fn settle(
         fwd = rel.fwd;
         first_mc.get_or_insert(mc);
         let (n_before, slack_before) = supercritical(&slope.slack);
-        slope = slope_state(project, &body, &mut fwd, load, laws)?;
+        slope = slope_state(project, &body, &mut fwd, load, laws, cycle)?;
         let (n_after, slack_after) = supercritical(&slope.slack);
         // A sweep that removes under 5 % of the supercritical faces without lowering the
         // largest slack has met what the relief cannot reduce.

@@ -30,7 +30,8 @@ use super::relief::{Relief, clearance, relieve};
 use super::runout::RunoutReport;
 use super::settle::{SettleReport, settle};
 use super::socp::{Kind, mass_jacobian};
-use super::orbit::{Necks, OrbitLaw, OrbitReport};
+use super::cycle::{self, CycleOut, CycleReport};
+use super::orbit::{Necks, OrbitLaw, OrbitReport, OrbitState};
 use super::spin::SpinSchedule;
 use super::stokes::Guess;
 use super::transport::{advect, surface_flow, transport};
@@ -137,6 +138,9 @@ pub struct StepRecord {
     /// A-O (§10.4.6); inactive without the orbit section.
     #[serde(skip_serializing_if = "OrbitReport::inactive")]
     pub orbit: OrbitReport,
+    /// A-Λ (§10.4.7); inactive without the cycle section.
+    #[serde(skip_serializing_if = "CycleReport::inactive")]
+    pub cycle: CycleReport,
     /// The state markers, A-ϖ and A-Ξ (§11.1–11.5); inactive without them.
     #[serde(skip_serializing_if = "MaterialReport::inactive")]
     pub material: MaterialReport,
@@ -289,12 +293,15 @@ pub fn run(
             let o = *state
                 .evolving
                 .orbit
-                .get_or_insert_with(|| OrbitLaw::start(spin, state.t, fwd.moments.mass));
+                .get_or_insert_with(|| OrbitState {
+                    e: project.cycle.as_ref().map_or(0.0, |c| c.eccentricity),
+                    ..OrbitLaw::start(spin, state.t, fwd.moments.mass)
+                });
             Some(OrbitLaw::new(p, spin, o.m0)?)
         }
         None => None,
     };
-    let lag_allowed = opts.lag && law.is_none() && thermal.is_none() && project.markers.is_none();
+    let lag_allowed = opts.lag && law.is_none() && thermal.is_none() && project.markers.is_none() && project.cycle.is_none();
 
     while state.t < t_end - snap_tol {
         if orbit_law.zip(state.evolving.orbit).is_some_and(|(l, o)| l.ended(&o)) {
@@ -342,7 +349,7 @@ pub fn run(
         let kept = deep.take().filter(|_| lagged);
         let mut origin = kept.as_ref().map(|d| d.origin.clone());
         // What Chapter 11 contributes to the step; the default is the reference closure.
-        let (mech, fallbacks) = if let Some(d) = kept {
+        let (mut mech, fallbacks) = if let Some(d) = kept {
             (d.mech, 0)
         } else {
             let index = super::mechanics::geometry(&mut geometry_cache, project, &state.body, &fwd)?.0;
@@ -365,10 +372,29 @@ pub fn run(
             (mech, field.map_or(0, |f| f.fallbacks.into_inner()))
         };
         fresh_deep = false;
+        // A-Λ (§10.4.7): the tidal cycle on the deep state, and its ratchet.
+        let cyc: Option<CycleOut> = match (&project.cycle, orbit) {
+            (Some(p), Some((l, o))) if o.e > 0.0 => Some(cycle::evaluate(project, p, &mech, &fwd, l.mean_motion(o.a), o.e)?),
+            _ => None,
+        };
+        let ratchet_v: Vec<DVec3> = match &cyc {
+            Some(c) if c.ratchet.iter().any(|v| *v != 0.0) => {
+                mech.ratchet = c.ratchet.clone();
+                let v = contract_velocity_rays(&mech.surf, &mech.ops.lay, &state.body.positions, 1, Want::V, &c.ratchet).v;
+                v.chunks_exact(3).map(|w| DVec3::new(w[0], w[1], w[2])).collect()
+            }
+            _ => Vec::new(),
+        };
         // A-Θ on the frozen shape: fatigue rates and the radiative torque of law L2.
         let heat = thermal
             .as_mut()
-            .map(|th| th.evaluate(&state.body, &mech.index, omega, fwd.moments.centroid));
+            .map(|th| {
+                // §11.6: a satellite's primary eclipses the Sun and lights the faces toward it.
+                if let (Some(p), Some((_, o))) = (&project.orbit, orbit) {
+                    th.set_primary(p.primary_radius, o.a);
+                }
+                th.evaluate(&state.body, &mech.index, omega, fwd.moments.centroid)
+            });
         let t_rad = heat.as_ref().map_or(0.0, |h| h.report.torque);
         if let (Some(l), Some(s)) = (&law, state.evolving.spin.as_mut()) {
             l.calibrate(s, state.t, t_rad)?;
@@ -436,6 +462,12 @@ pub fn run(
             ..StepRecord::default()
         };
         rec.lagged = lagged;
+        if let Some(c) = &cyc {
+            rec.cycle = CycleReport {
+                ratchet_speed: ratchet_v.iter().map(|v| v.length()).fold(0.0, f64::max),
+                ..c.report
+            };
+        }
         if let (Some((l, o)), Some(nk)) = (orbit, &necks) {
             rec.orbit = OrbitReport {
                 active: true,
@@ -446,15 +478,28 @@ pub fn run(
                 lobe_margin: nk.margin(&state.body.positions),
                 ..OrbitReport::default()
             };
-            // §2.17.3: a certified L* > 1 ends the quasi-static route.
+            // §2.17.3: a certified L* > 1 ends the quasi-static route; under A-Λ the peak
+            // multiplier of the cycle does (Proposition 10.4.7.5).
             let every = project.orbit.as_ref().map_or(0, |p| p.limit_every);
             if every > 0 && !lagged && state.step % every == 0 {
-                let b = super::mechanics::limit_bracket(project, &mech, &fwd, load)?;
-                (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
-                if b.lo > 1.0 {
+                let (lo, what) = match (&cyc, &project.cycle) {
+                    (Some(c), Some(p)) => {
+                        let (b, cb) = super::mechanics::limit_cycle(project, &mech, &fwd, load, &c.elastic, p.phases)?;
+                        (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
+                        rec.cycle.peak_lo = cb.peak_lo;
+                        (rec.cycle.shakedown_lo, rec.cycle.shakedown_hi) = (cb.shakedown_lo, cb.shakedown_hi);
+                        (cb.peak_lo, "L_peak (Proposition 10.4.7.5)")
+                    }
+                    _ => {
+                        let b = super::mechanics::limit_bracket(project, &mech, &fwd, load)?;
+                        (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
+                        (b.lo, "L* (§2.17.3)")
+                    }
+                };
+                if lo > 1.0 {
                     return Err(SimError::limit_load_collapse(format!(
-                        "certified L* ≥ {:.4} > 1 at a = {:.6e} m (§2.17.3)",
-                        b.lo, o.a
+                        "certified {what} ≥ {lo:.4} > 1 at a = {:.6e} m",
+                        o.a
                     )));
                 }
             }
@@ -496,6 +541,7 @@ pub fn run(
                 state.step,
                 Some(&mech.face_law),
                 None,
+                None,
             )?;
             let quiet = settled.report.sweeps == 0;
             state.body = settled.body;
@@ -531,23 +577,34 @@ pub fn run(
 
         // Definition 11.3: the driving rate on the volume nodes of this geometry, shared by
         // Δt_ϖ, J_ν and the markers.
+        // A-Λ adds the alternating plastic shear of the cycle and the fatigue rate (§10.4.7).
+        let plastic: Vec<f64> = match &cyc {
+            Some(c) => mech.class.plastic_rate.iter().zip(&c.alternating).map(|(p, a)| p + a).collect(),
+            None => mech.class.plastic_rate.clone(),
+        };
         let driving = match (&state.evolving.markers, &project.markers) {
-            (Some(_), Some(mp)) => Some(Driving::new(
-                &mech.ops.vol.pts,
-                &mech.ops.vol.w,
-                &mech.class.plastic_rate,
-                &mech.class.inertial_vol,
-                mp.nonlocal_length(r_star, project.stokes.l_velocity),
-                mp.radius * r_mean,
-                &mech.index,
-            )),
+            (Some(_), Some(mp)) => {
+                let d = Driving::new(
+                    &mech.ops.vol.pts,
+                    &mech.ops.vol.w,
+                    &plastic,
+                    &mech.class.inertial_vol,
+                    mp.nonlocal_length(r_star, project.stokes.l_velocity),
+                    mp.radius * r_mean,
+                    &mech.index,
+                );
+                Some(match &cyc {
+                    Some(c) => d.with_fatigue(c.fatigue.clone()),
+                    None => d,
+                })
+            }
             _ => None,
         };
         // A-ϖ (§11.5): Δt_ϖ.
         let dt_damage = match (&project.damage, &state.evolving.markers, &project.markers, &driving) {
             (Some(d), Some(mk), Some(mp), Some(dr)) => {
                 let rec_d = Reconstruction::new(mk, &mech.index, mp.radius * r_mean);
-                material::dt_bound(d, mk, &rec_d, &dr.rate, &mech.ops.vol.pts)
+                material::dt_bound(d, mk, &rec_d, &dr.rate, &dr.fatigue, &mech.ops.vol.pts)
             }
             _ => f64::INFINITY,
         };
@@ -589,6 +646,25 @@ pub fn run(
         };
         // A-O: the step that brings the orbit to the primary ends exactly there.
         let primary_bound = orbit.map_or(f64::INFINITY, |(l, o)| l.time_to_floor(&o) / st.lambda);
+        // A-Λ: e ∝ a^(C_e + β) over the step (Proposition 10.4.7.1), and the step in which e
+        // changes by the fraction ε_ω.
+        let e_exponent = match (&project.cycle, orbit) {
+            (Some(p), Some((l, o))) if o.e > 0.0 => {
+                let n = l.mean_motion(o.a);
+                cycle::eccentricity_exponent(project, p, &l, &fwd, n * n * o.a.powi(3), o.mass, n)
+            }
+            _ => 0.0,
+        };
+        let omega_bound = match orbit {
+            Some((l, o)) if e_exponent != 0.0 => omega_bound.min(st.eps_omega * o.a / (e_exponent.abs() * l.adot(o.a, o.mass).abs())),
+            _ => omega_bound,
+        };
+        // The ratchet moves every vertex: θ_CFL h / |v_r · N| (§10.4.7).
+        let dt_ratchet = if ratchet_v.is_empty() {
+            f64::INFINITY
+        } else {
+            cfl_dt(&state.body, &vec![true; nv], &cl.normal, &ratchet_v, st.theta_cfl)
+        };
         rec.dt_omega = omega_bound;
         // Single-valued core map: τ ‖dev ∇v_adv‖_F ≤ θ_ch at every moving core, with the
         // gradient at the current centres (§10.4.1); step 6b rechecks it at the midpoints.
@@ -642,6 +718,7 @@ pub fn run(
             // re-aligned (8b).
             let bounds = [
                 ("core", dt_core),
+                ("ratchet", dt_ratchet),
                 ("thermal", dt_theta),
                 ("dilatancy", dt_xi),
                 ("damage", dt_damage),
@@ -660,6 +737,9 @@ pub fn run(
             }
             let advance = st.lambda * dt;
             let mut body = state.body.clone();
+            if ratchet(&mut body, &ratchet_v, &cl.normal, advance) {
+                fwd = Forward::bind(&body, project.g)?;
+            }
             if core_rate > 0.0 || dil_ratio.is_some() {
                 body.kernels = kernels_pred;
                 fwd.set_density(body.density()?)?;
@@ -707,6 +787,7 @@ pub fn run(
             };
             let bounds = [
                 ("core", dt_core),
+                ("ratchet", dt_ratchet),
                 ("cfl", dt_cfl),
                 ("characteristic", dt_char),
                 ("thermal", dt_theta),
@@ -867,6 +948,9 @@ pub fn run(
                     th.advance(rec.advance, omega, &h.rate, &area_new, rho_bulk, dmg, &mut body.rho_s);
             }
             let mut new_fwd = rel.fwd;
+            if ratchet(&mut body, &ratchet_v, &cl.normal, rec.advance) {
+                new_fwd = Forward::bind(&body, project.g)?;
+            }
             // 8c: Levels 1 and 2 of the core transport (§9.10.4–5).
             if cores_on || dil_ratio.is_some() {
                 close_cores(
@@ -897,7 +981,7 @@ pub fn run(
                     .iter()
                     .map(|i| project.dilatancy.as_ref().map_or(0.0, |d| d.nu_c(*i)))
                     .collect();
-                (g, nu_c)
+                (g, nu_c, dr.fatigue_at(pts))
             };
             material::advance(
                 mk,
@@ -939,6 +1023,7 @@ pub fn run(
             state.step,
             Some(&mech.face_law),
             necks.as_ref(),
+            cyc.as_ref().zip(project.cycle.as_ref()).map(|(c, p)| (&c.cycle, p.phases)),
         )?;
         state.body = settled.body;
         fwd = settled.fwd;
@@ -982,7 +1067,7 @@ pub fn run(
         spin_step(&law, &mut state, t0, t_rad, omega, &creep_m, &fwd.moments, &mut rec)?;
         if let (Some(l), Some(o)) = (&orbit_law, state.evolving.orbit.as_mut()) {
             let r = &mut rec.orbit;
-            l.advance(o, rec.advance, r.escaped_runout + r.escaped_relief + r.escaped_cap)?;
+            l.advance(o, rec.advance, r.escaped_runout + r.escaped_relief + r.escaped_cap, e_exponent)?;
             r.escaped_total = o.escaped;
             r.recoil_bound = 2.0 * o.escaped / o.mass * r.r_hill / r.a;
             state.omega = l.mean_motion(o.a);
@@ -1067,22 +1152,39 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
     let cl = &mech.class;
     // Every point of X_Y in the rigid core: χ_Y = 0 everywhere and the result is zero,
     // so the velocity basis is not evaluated.
-    if cl.in_core.iter().all(|c| *c) {
+    if cl.in_core.iter().all(|c| *c) && mech.ratchet.is_empty() {
         return vec![DVec3::ZERO; pts.len()];
     }
     let v = contract_velocity_rays(&mech.surf, &mech.ops.lay, pts, 1, Want::V, &mech.sol.u).v;
+    let r = (!mech.ratchet.is_empty()).then(|| contract_velocity_rays(&mech.surf, &mech.ops.lay, pts, 1, Want::V, &mech.ratchet).v);
     pts.iter()
         .enumerate()
         .map(|(k, x)| {
+            // A-Λ: the ratchet is real everywhere, so it is not masked (§10.4.7).
+            let vr = r.as_ref().map_or(DVec3::ZERO, |r| DVec3::new(r[3 * k], r[3 * k + 1], r[3 * k + 2]));
             if !cl.movable_near(*x) {
-                return DVec3::ZERO;
+                return vr;
             }
             // The total velocity, with the dilatational field of A-Ξ (§11.4).
             DVec3::new(v[3 * k], v[3 * k + 1], v[3 * k + 2]) + mech.sol.v_eps(*x)
                 - cl.core_a
                 - cl.core_theta.cross(*x)
+                + vr
         })
         .collect()
+}
+
+/// A-Λ: every vertex of `body` moves by `τ (v_r·N) N`, with `v_r` and `N` at its
+/// start-of-step position (§10.4.7): the tangential part only relabels the surface, as for
+/// the creep predictor. Whether anything moved.
+fn ratchet(body: &mut Body, v: &[DVec3], normal: &[DVec3], tau: f64) -> bool {
+    if v.is_empty() {
+        return false;
+    }
+    for ((x, vi), n) in body.positions.iter_mut().zip(v).zip(normal) {
+        *x += *n * (vi.dot(*n) * tau);
+    }
+    true
 }
 
 /// Levels 1–2 of §9.10: mass closure of the predicted cores on the new body,

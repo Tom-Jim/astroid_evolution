@@ -366,3 +366,135 @@ fn chart_strain_rebuilds_the_cartesian_tensor() {
         }
     }
 }
+
+/// Proposition 10.4.7.4 against Kelvin's incompressible sphere: under the body force
+/// `ρ∇V`, `V = ½ xᵀGx` with `G` symmetric and traceless, the traction-free solution is
+/// `u = α[(5/42) r² G x − (2/21) x V] + β G x` with `α = −21ρ/19`, `β = 4ρR²/19` (unit
+/// modulus), and the pressure `q = −(2/19) ρ V`. Without physical libration both components
+/// of the cycle are such loads (the tide's strength and, through `f − M`, its direction), and
+/// the discrete cycle reproduces both.
+#[test]
+fn the_elastic_cycle_of_a_sphere_is_kelvins() {
+    use astroid_evolution::scf::cycle::{Cycle, Libration};
+    use astroid_evolution::scf::stokes::elastic::elastic_cycle;
+    let (r0, rho) = (1000.0, 2000.0);
+    let prm = params();
+    let m = material();
+    let ops = sphere_ops(r0, rho, &prm);
+    let cyc = Cycle::new(1.0e-3, 0.01, Libration { chi: 0.0, gamma_s: 0.0, gamma_c: 0.0 });
+    assert!(cyc.euler == [0.0, 0.0]);
+    let el = elastic_cycle(&ops, &cyc, &m, &Strengths::profile(&ops, &m), 6.6743e-11).unwrap();
+    // The polyhedral sphere has the volume of a sphere of radius R.
+    let vol: f64 = ops.vol.w.iter().sum();
+    let r = (3.0 * vol / (4.0 * PI)).cbrt();
+    let (alpha, beta) = (-21.0 * rho / 19.0, 4.0 * rho * r * r / 19.0);
+    let s2 = std::f64::consts::SQRT_2;
+    for k in 0..2 {
+        let gm = cyc.h[k].to_cols_array_2d();
+        let (mut err_s, mut max_s, mut err_p, mut max_p) = (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        for (i, x) in ops.vol.pts.iter().enumerate() {
+            let gx = cyc.h[k] * *x;
+            let (v, r2) = (0.5 * x.dot(gx), x.length_squared());
+            let grad = |a: usize, b: usize| -> f64 {
+                let d = f64::from(u8::from(a == b));
+                alpha * (5.0 / 42.0 * (2.0 * gx[a] * x[b] + r2 * gm[b][a]) - 2.0 / 21.0 * (d * v + x[a] * gx[b])) + beta * gm[b][a]
+            };
+            let tau = |a: usize, b: usize| grad(a, b) + grad(b, a);
+            let want = [tau(0, 0), tau(1, 1), tau(2, 2), s2 * tau(0, 1), s2 * tau(0, 2), s2 * tau(1, 2)].map(|t| t / s2);
+            let got = el.sigma[k][i];
+            err_s = err_s.max((0..6).map(|c| (got[c] - want[c]).abs()).fold(0.0, f64::max));
+            max_s = max_s.max(want.iter().map(|w| w.abs()).fold(0.0, f64::max));
+            err_p = err_p.max((el.dp[k][i] + 2.0 / 19.0 * rho * v).abs());
+            max_p = max_p.max((2.0 / 19.0 * rho * v).abs());
+        }
+        eprintln!("Kelvin sphere, component {k}: stress error {:.2e}, pressure error {:.2e}", err_s / max_s, err_p / max_p);
+        // The level-4 icosphere is not the sphere: about 1e-4 in the stress and 5e-3 in the
+        // pressure, whose boundary datum sits on the facets.
+        assert!(err_s < 1e-3 * max_s, "component {k}: stress {err_s:e} of {max_s:e}");
+        assert!(err_p < 1e-2 * max_p, "component {k}: pressure {err_p:e} of {max_p:e}");
+    }
+}
+
+/// Proposition 10.4.7.5 on the Hill sphere: without a cycle the brackets are the mean one;
+/// with one, the peak bound lies below the shakedown bound, the shakedown bracket holds,
+/// and the bounds grow with the cycle.
+#[test]
+fn the_cycle_brackets_are_ordered_and_reduce_to_the_mean() {
+    use astroid_evolution::scf::cycle::{Cycle, Libration};
+    use astroid_evolution::scf::stokes::elastic::{cycle_bracket, elastic_cycle};
+    use astroid_evolution::scf::stokes::limit::{bracket, data};
+    let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
+    let k = 4.0 * PI / 3.0 * g * rho;
+    let prm = params();
+    let m = material();
+    let ops = sphere_ops(r0, rho, &prm);
+    let h = Hill::new(&ops, &m, k, 0.3 * k);
+    let d = data(&ops, &h.loads(g), &prm, &m).unwrap();
+    let cohesion: Vec<f64> = h.strength.vol.iter().map(|l| l.c).collect();
+    let (mu, p_min) = (m.spec.mu_2, m.spec.p_min);
+    let b = bracket(&ops, &d, &cohesion, mu, p_min, 1e-4).unwrap();
+    let cyc = Cycle::new((0.3 * k).sqrt(), 1.0, Libration::new(1.0, 0.3, 100.0));
+    let el = elastic_cycle(&ops, &cyc, &m, &h.strength, g).unwrap();
+    let at = |scale: f64| cycle_bracket(&ops, &b, &d.load, &el, scale, &cohesion, mu, &d.p0, p_min, 32);
+    let none = at(0.0);
+    assert!((none.peak_lo - b.lo).abs() <= 1e-12 * b.lo && (none.shakedown_lo - b.lo).abs() <= 1e-12 * b.lo);
+    assert!((none.shakedown_hi - b.hi).abs() <= 1e-9 * b.hi, "{} vs {}", none.shakedown_hi, b.hi);
+    let mut last = none;
+    for scale in [0.01, 0.03, 0.1] {
+        let c = at(scale);
+        assert!(c.peak_lo <= c.shakedown_lo * (1.0 + 1e-12), "{c:?}");
+        assert!(c.shakedown_lo <= c.shakedown_hi, "the shakedown bracket fails: {c:?}");
+        assert!(c.shakedown_lo > last.shakedown_lo && c.shakedown_hi > last.shakedown_hi, "{c:?} after {last:?}");
+        last = c;
+    }
+}
+
+/// Algorithm 10.4.7.6 on the Hill sphere: a cycle inside the strength is elastic; one beyond
+/// it is plastic, and its plastic strains scale exactly as load over modulus (Proposition
+/// 10.4.7.7(4)).
+#[test]
+fn the_steady_cycle_scales_as_load_over_modulus() {
+    use astroid_evolution::scf::cycle::{Cycle, Libration};
+    use astroid_evolution::scf::stokes::elastic::{CycleOptions, elastic_cycle, steady_cycle};
+    use astroid_evolution::scf::stokes::limit::{bracket, data};
+    let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
+    let k = 4.0 * PI / 3.0 * g * rho;
+    let prm = params();
+    let m = material();
+    let ops = sphere_ops(r0, rho, &prm);
+    let h = Hill::new(&ops, &m, k, 0.3 * k);
+    let d = data(&ops, &h.loads(g), &prm, &m).unwrap();
+    let cohesion: Vec<f64> = h.strength.vol.iter().map(|l| l.c).collect();
+    let (mu, p_min) = (m.spec.mu_2, m.spec.p_min);
+    // The mean: an equilibrated static field at 90 % of the strength where it is largest.
+    let b = bracket(&ops, &d, &cohesion, mu, p_min, 1e-4).unwrap();
+    let creep: Vec<[f64; 6]> = b.stress.iter().map(|s| s.map(|v| 0.9 * v / b.hi)).collect();
+    let trigger = vec![true; ops.vol.pts.len()];
+    let run = |cycle_scale: f64, mu_e: f64, stress: f64| {
+        let cyc = Cycle::new((cycle_scale * k).sqrt(), 1.0, Libration::new(1.0, 0.3, 100.0));
+        let mut el = elastic_cycle(&ops, &cyc, &m, &h.strength, g).unwrap();
+        el.sigma.iter_mut().flatten().for_each(|s| *s = s.map(|v| v * stress));
+        el.dp.iter_mut().flatten().for_each(|p| *p *= stress);
+        let mean: Vec<[f64; 6]> = creep.iter().map(|s| s.map(|v| v * stress)).collect();
+        let p: Vec<f64> = d.p0.iter().map(|p| p * stress).collect();
+        let c: Vec<f64> = cohesion.iter().map(|c| c * stress).collect();
+        let opt = CycleOptions { rigidity: mu_e, phases: 16, cycles_max: 40, tol: 1e-6, tol_cycle: 1e-6 };
+        steady_cycle(&ops, &el, &mean, &p, &c, mu, p_min, &trigger, &opt).unwrap()
+    };
+    let small = run(1e-4, 1e8, 1.0);
+    assert_eq!(small.cycles, 0, "a cycle far inside the strength is elastic");
+    assert!(small.ratchet.iter().all(|v| *v == 0.0) && small.utilization.iter().all(|u| *u < 1.0));
+    let base = run(0.3, 1e8, 1.0);
+    assert!(base.cycles > 0 && base.range.iter().any(|r| *r > 0.0), "a strong cycle must be plastic");
+    let stiff = run(0.3, 2e8, 1.0);
+    let loaded = run(0.3, 1e8, 3.0);
+    let rel = |a: &[f64], b: &[f64], f: f64| {
+        let scale = a.iter().map(|v| v.abs()).fold(0.0, f64::max).max(1e-300);
+        a.iter().zip(b).map(|(x, y)| (x * f - y).abs()).fold(0.0, f64::max) / scale
+    };
+    assert!(rel(&base.range, &stiff.range, 0.5) < 1e-9, "range ∝ 1/μ_e");
+    assert!(rel(&base.range, &loaded.range, 3.0) < 1e-9, "range ∝ load");
+    assert!(rel(&base.ratchet, &stiff.ratchet, 0.5) < 1e-9 || base.ratchet.iter().all(|v| *v == 0.0));
+    assert!(rel(&base.ratchet, &loaded.ratchet, 3.0) < 1e-9 || base.ratchet.iter().all(|v| *v == 0.0));
+    assert_eq!((base.cycles, stiff.cycles, loaded.cycles), (base.cycles, base.cycles, base.cycles));
+}

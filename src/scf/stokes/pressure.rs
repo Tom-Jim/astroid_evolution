@@ -283,6 +283,35 @@ impl Pressure {
     }
 }
 
+/// The pressure of a uniform viscosity `eta` at the volume nodes for the coefficients `u`
+/// under the body force of `ld` (Proposition 10.4.7.4): the Nitsche solve of `update` with
+/// `f = ρ g + η Δv` and `p_Γ = n·T·n + 2η n·D·n`. A uniform `T` has no divergence.
+pub(super) fn uniform(ops: &Operators, ld: &Loads, eta: f64, u: &DVector<f64>) -> Vec<f64> {
+    let (np, nb) = (ops.vol.pts.len(), ops.bnd.pts.len());
+    let [_, lap, _] = strains(&ops.rows, u);
+    let mut wf = DVector::zeros(3 * np);
+    for p in 0..np {
+        let f = ld.g_eff[p] * ops.vol.rho[p] + DVec3::from_slice(&lap.as_slice()[3 * p..3 * p + 3]) * eta;
+        for a in 0..3 {
+            wf[3 * p + a] = ops.vol.w[p] * f[a];
+        }
+    }
+    let mut rhs = linalg::tr_mul(&ops.q_vol.grad, &wf);
+    let [d, lap, _] = strains(&ops.bnd_rows, u);
+    let (mut wq, mut wdn) = (DVector::zeros(nb), DVector::zeros(nb));
+    for b in 0..nb {
+        let n = ops.bnd.normals[b];
+        let d6 = &d.as_slice()[6 * b..6 * b + 6];
+        let f = ld.g_bnd[b] * ops.bnd_rho[b] + DVec3::from_slice(&lap.as_slice()[3 * b..3 * b + 3]) * eta;
+        let p_gamma = super::super::mechanics::quad_form(ld.tide_bnd[b], n) + 2.0 * eta * d_apply(d6, n).dot(n);
+        wq[b] = ops.bnd.w[b] * (ops.gamma_over_h * p_gamma - f.dot(n));
+        wdn[b] = ops.bnd.w[b] * p_gamma;
+    }
+    rhs += ops.q_bnd.val.tr_mul(&wq) - ops.q_bnd_dn.tr_mul(&wdn);
+    let coeff = ops.nitsche.solve(&rhs);
+    linalg::mul(&ops.q_vol.val, &coeff).as_slice().to_vec()
+}
+
 /// `∇·T_tide = −(8π/3) G C_T ρ_p ν₀ d_p² ∇ρ_K` per unit `∇ρ_K` (§8.7).
 fn tide_divergence(ld: &Loads, m: &Material) -> f64 {
     -(8.0 * PI / 3.0) * ld.g_const * m.tide_coef

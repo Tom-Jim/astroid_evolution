@@ -30,6 +30,8 @@ mod scf_classify;
 #[cfg(feature = "tier2")]
 mod scf_cores;
 #[cfg(feature = "tier2")]
+mod scf_cycle;
+#[cfg(feature = "tier2")]
 mod scf_evolve;
 #[cfg(feature = "tier2")]
 mod scf_frame;

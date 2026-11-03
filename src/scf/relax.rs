@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::common::math::DVec3;
 
 use super::body::{Body, Topology};
+use super::cycle::Cycle;
 use super::forward::{Forward, Loading, deviator, effective_gravity, hessian_w};
 use super::mechanics::{FaceLaw, face_node, quad_form};
 use super::params::Project;
@@ -241,33 +242,49 @@ pub struct RelaxReport {
 pub struct SlopeState {
     pub sin_phi: Vec<f64>,
     pub slack: Vec<f64>,
+    /// The face gravity of the repose test: of the steepest phase under A-Λ.
     pub gravity: Vec<DVec3>,
+    /// The mean face gravity, in which packets slide and fly.
+    pub mean: Vec<DVec3>,
 }
 
 /// Face gravity of the current shape and the friction chain at rest (`v = 0`, `D = 0`).
+/// Under A-Λ each face takes the steepest of the sampled phases of its gravity
+/// (Proposition 10.4.7.8).
 pub fn slope_state(
     project: &Project,
     body: &Body,
     fwd: &mut Forward,
     load: Loading,
     laws: Option<&[FaceLaw]>,
+    cycle: Option<(&Cycle, usize)>,
 ) -> Result<SlopeState, SimError> {
     fwd.eval_faces(body)?;
     let faces = body.face_geometry();
     let m = &project.material;
+    let phases = cycle.map_or(1, |c| c.1);
     let nodes: Vec<_> = (0..faces.len())
         .map(|f| {
             let (x, n, _) = faces[f];
-            let g = effective_gravity(fwd.face.grad_u[f], x, load);
+            let mean = effective_gravity(fwd.face.grad_u[f], x, load);
             let tide = deviator(hessian_w(fwd.face.hess_u[f], load)).map(|v| m.tide_coef * v);
             let p = project.stokes.p_ext + quad_form(tide, n);
-            (g, face_node(m, x, n, DVec3::ZERO, &[0.0; 6], g, tide, p, laws.map_or_else(|| FaceLaw::intact(m), |l| l[f]), 0.0))
+            let law = laws.map_or_else(|| FaceLaw::intact(m), |l| l[f]);
+            let (g, node) = (0..phases)
+                .map(|j| {
+                    let g = mean + cycle.map_or(DVec3::ZERO, |(c, k)| c.delta_g(x, Cycle::phase(j, k)));
+                    (g, face_node(m, x, n, DVec3::ZERO, &[0.0; 6], g, tide, p, law, 0.0))
+                })
+                .max_by(|a, b| a.1.slack.total_cmp(&b.1.slack))
+                .expect("a phase");
+            (g, node, mean)
         })
         .collect();
     Ok(SlopeState {
         sin_phi: nodes.iter().map(|n| n.1.sin_phi).collect(),
         slack: nodes.iter().map(|n| n.1.slack).collect(),
         gravity: nodes.iter().map(|n| n.0).collect(),
+        mean: nodes.iter().map(|n| n.2).collect(),
     })
 }
 
@@ -355,7 +372,7 @@ pub fn relax(
     let mut fwd = Forward::bind(&current, project.g)?;
     let mass_target = fwd.moments.mass;
     let mut sweeps = Vec::new();
-    let mut state = slope_state(project, &current, &mut fwd, load, None)?;
+    let mut state = slope_state(project, &current, &mut fwd, load, None, None)?;
     let measure = |st: &SlopeState| -> (f64, usize, usize) {
         let mut max_slack = 0.0_f64;
         let mut count = 0;
@@ -521,7 +538,7 @@ pub fn relax(
             };
             // §2.8c: a sweep that raises the largest loose-face slack is rejected like a
             // geometric failure; once the box is exhausted the relaxation stops where it is.
-            let cand_state = slope_state(project, &cand, &mut cand_fwd, load, None)?;
+            let cand_state = slope_state(project, &cand, &mut cand_fwd, load, None, None)?;
             let (cand_slack, _, _) = measure(&cand_state);
             if cand_slack > max_slack {
                 if trust * g.trust_shrink < g.trust_min * r_mean {

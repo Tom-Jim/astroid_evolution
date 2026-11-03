@@ -60,6 +60,9 @@ pub struct RunoutField<'a> {
     /// A-O (§10.4.6): the necks of the Hill region. A packet beyond a neck plane has left
     /// and its mass is lost; without them escape is the heuristic count of §2.8b.
     pub necks: Option<&'a super::orbit::Necks>,
+    /// A-Λ (§10.4.7): the tidal cycle; a packet flies in the field of its launch phase,
+    /// spread over the packets by a low-discrepancy sequence, and the necks follow it.
+    pub cycle: Option<&'a super::cycle::Cycle>,
     /// `T_run` (s) and `ε_stop`.
     pub time_limit: f64,
     pub stop: f64,
@@ -302,6 +305,8 @@ struct Packet {
     kick: Option<(DVec3, f64)>,
     end: Option<End>,
     trail: Trail,
+    /// Orbital phase at launch (A-Λ).
+    phase: f64,
 }
 
 impl Packet {
@@ -335,6 +340,8 @@ impl Packet {
             kick: None,
             end: None,
             trail: Trail::new(x),
+            // The golden-ratio sequence spreads the launch phases uniformly.
+            phase: 2.0 * std::f64::consts::PI * ((source as f64 + 1.0) * 0.618_033_988_749_894_9).fract(),
         }
     }
 
@@ -357,7 +364,6 @@ impl Packet {
     ) -> Vec<DVec3> {
         let m = field.material;
         let s = &m.spec;
-        let omega = DVec3::new(0.0, 0.0, field.load.omega);
         let r_max = scale.r_max;
         while self.end.is_none() {
             if self.substeps >= MAX_SUBSTEPS || self.t >= field.time_limit {
@@ -365,10 +371,12 @@ impl Packet {
                 break;
             }
             let edge = faces.edge[self.face].max(1e-9);
+            let (spin, dg, phase) = self.cyclic(field, self.x);
+            let omega = DVec3::new(0.0, 0.0, spin);
             if !self.airborne {
                 self.substeps += 1;
                 let n = faces.normal[self.face];
-                let g = field.g_face[self.face];
+                let g = field.g_face[self.face] + dg;
                 let g_t = g - n * g.dot(n);
                 let speed = self.v.length();
                 let normal =
@@ -439,7 +447,7 @@ impl Packet {
                     near
                 };
                 self.substeps += 1;
-                let g = g_self + frame_terms(x, field.load);
+                let g = g_self + frame_terms(x, field.load) + dg;
                 // Velocity Verlet: the last kick takes the mean of the gravity at both ends.
                 if let Some((g0, tau0)) = self.kick.take() {
                     self.v += (g - g0) * (0.5 * tau0);
@@ -459,7 +467,7 @@ impl Packet {
                     .min(field.time_limit - self.t);
                 // Exact Coriolis turn about e_z, then gravity at the start point, then the
                 // trapezoidal drift `v τ + g τ²/2`; the next substep completes the kick.
-                let angle = -2.0 * field.load.omega * tau;
+                let angle = -2.0 * spin * tau;
                 let (c, sn) = (angle.cos(), angle.sin());
                 let v_old = self.v;
                 let v = self.v;
@@ -482,7 +490,12 @@ impl Packet {
                 } else {
                     self.kick = Some((g, tau));
                     self.x += drift;
-                    if self.x.length() > ESCAPE * r_max || field.necks.is_some_and(|n| n.beyond(self.x)) {
+                    let beyond = match (field.necks, field.cycle) {
+                        (Some(n), Some(c)) => c.necks_at(n, phase).beyond(self.x),
+                        (Some(n), None) => n.beyond(self.x),
+                        _ => false,
+                    };
+                    if self.x.length() > ESCAPE * r_max || beyond {
                         self.end = Some(End::Escaped);
                         break;
                     }
@@ -492,6 +505,18 @@ impl Packet {
             self.trail.push([x.x, x.y, x.z, f64::from(u8::from(self.airborne))]);
         }
         Vec::new()
+    }
+
+    /// The spin rate, the cyclic body force at `x` and the orbital phase at the packet's
+    /// time (A-Λ); `(n, 0, 0)` without the cycle.
+    fn cyclic(&self, field: &RunoutField, x: DVec3) -> (f64, DVec3, f64) {
+        match field.cycle {
+            Some(c) => {
+                let m = self.phase + c.n * self.t;
+                (c.spin(m), c.delta_g(x, m), m)
+            }
+            None => (field.load.omega, DVec3::ZERO, 0.0),
+        }
     }
 
     /// The received exterior value nearest to `x`, if it lies within `reach`.

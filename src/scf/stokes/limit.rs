@@ -44,6 +44,8 @@ pub fn data(ops: &Operators, ld: &Loads, prm: &StokesParams, m: &Material) -> Re
 
 /// A certified bracket `lo ≤ L* ≤ hi`, and the mechanism of its kinematic bound: velocity
 /// coefficients `u` with `N(u) = 1` and their shear rates `γ̇_i(u)` at the volume nodes.
+/// `stress` is the static field of the upper bound, `σ̂_i = q_i E_i u_q / w_i` (equivalent
+/// norm `|σ̂_i|`), which equilibrates the load.
 #[derive(Clone, Debug)]
 pub struct Bracket {
     pub lo: f64,
@@ -51,6 +53,7 @@ pub struct Bracket {
     pub iterations: usize,
     pub rates: Vec<f64>,
     pub u: Vec<f64>,
+    pub stress: Vec<[f64; 6]>,
 }
 
 /// Reweighting passes allowed; each is one weighted Gram matrix and one dense solve.
@@ -82,6 +85,7 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
     let (mut lo, mut hi) = (0.0_f64, f64::INFINITY);
     let mut rates = vec![0.0; np];
     let mut mech = vec![0.0; ops.lay.n_u];
+    let mut stress = vec![[0.0; 6]; np];
     let mut theta = 1.0;
     for pass in 1..=MAX_PASSES {
         // Σ q_i E_iᵀE_i with E_i = √2 D_i, so that |E_i u| = γ̇_i(u).
@@ -92,7 +96,7 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
         let c = load.dot(&u);
         if !(c > 0.0) {
             // ℓ vanishes on the admissible velocities: no load, L* = 0.
-            return Ok(Bracket { lo: 0.0, hi: 0.0, iterations: pass, rates, u: mech });
+            return Ok(Bracket { lo: 0.0, hi: 0.0, iterations: pass, rates, u: mech, stress });
         }
         let d = linalg::mul(&ops.rows.d, &u);
         let shear: Vec<f64> = (0..np)
@@ -108,9 +112,13 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
             rates = shear.iter().map(|g| g / norm).collect();
             mech = u.iter().map(|c| c / norm).collect();
         }
-        hi = hi.min(stat);
+        if stat < hi {
+            hi = stat;
+            let s2 = std::f64::consts::SQRT_2;
+            stress = (0..np).map(|i| std::array::from_fn(|c| q[i] / ops.vol.w[i] * s2 * d[6 * i + c])).collect();
+        }
         if lo > 1.0 || hi < 1.0 || hi - lo <= gap * hi {
-            return Ok(Bracket { lo, hi, iterations: pass, rates, u: mech });
+            return Ok(Bracket { lo, hi, iterations: pass, rates, u: mech, stress });
         }
         // Smoothed-stationarity weights with a shrinking smoothing ε = θ · rms γ̇.
         let rms = (shear.iter().map(|g| g * g).sum::<f64>() / np as f64).sqrt();
@@ -120,5 +128,5 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
             q[i] = cw[i] / (shear[i] * shear[i] + eps * eps).sqrt();
         }
     }
-    Ok(Bracket { lo, hi, iterations: MAX_PASSES, rates, u: mech })
+    Ok(Bracket { lo, hi, iterations: MAX_PASSES, rates, u: mech, stress })
 }

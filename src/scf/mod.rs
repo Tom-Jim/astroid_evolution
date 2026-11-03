@@ -10,6 +10,7 @@ pub mod body;
 pub mod breakup;
 pub mod classify;
 pub mod cores;
+pub mod cycle;
 pub mod domain;
 pub mod evolve;
 pub mod evolving;

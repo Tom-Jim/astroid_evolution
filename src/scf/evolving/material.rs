@@ -153,11 +153,12 @@ impl MaterialField for StateField<'_> {
     }
 }
 
-/// `Δt_ϖ` (§11.5): `θ_ϖ` over the largest `|(1 − Rϖ) γ̇_p^⋆ / γ_ϖ − h_ϖ Rϖ|` on the volume
-/// nodes `pts` (driving rate `rate` there), `∞` when it vanishes. Without healing only the
-/// driven nodes contribute.
-pub fn dt_bound(d: &DamageParams, markers: &Markers, rec: &Reconstruction, rate: &[f64], pts: &[DVec3]) -> f64 {
-    let at: Vec<usize> = (0..pts.len()).filter(|q| rate[*q] > 0.0 || d.healing > 0.0).collect();
+/// `Δt_ϖ` (§11.5): `θ_ϖ` over the largest `|(1 − Rϖ) a − h_ϖ Rϖ|`, `a = γ̇_p^⋆ / γ_ϖ + r_F`,
+/// on the volume nodes `pts` (driving rate `rate` and fatigue rate `fatigue` there), `∞`
+/// when it vanishes. Without healing only the driven nodes contribute.
+pub fn dt_bound(d: &DamageParams, markers: &Markers, rec: &Reconstruction, rate: &[f64], fatigue: &[f64], pts: &[DVec3]) -> f64 {
+    let a = |q: usize| rate[q] / d.strain + fatigue[q];
+    let at: Vec<usize> = (0..pts.len()).filter(|q| a(*q) > 0.0 || d.healing > 0.0).collect();
     if at.is_empty() {
         return f64::INFINITY;
     }
@@ -166,19 +167,19 @@ pub fn dt_bound(d: &DamageParams, markers: &Markers, rec: &Reconstruction, rate:
     let worst = fit[0]
         .iter()
         .zip(&at)
-        .map(|(f, q)| ((1.0 - f.value) * rate[*q] / d.strain - d.healing * f.value).abs())
+        .map(|(f, q)| ((1.0 - f.value) * a(*q) - d.healing * f.value).abs())
         .fold(0.0, f64::max);
     if worst > 0.0 { d.theta_step / worst } else { f64::INFINITY }
 }
 
 /// One step of the marker state (Definition 11.1, items 2–3): RK2 transport along
 /// `v_adv` and the exact state update at the midpoints with the frozen rates.
-/// `rate(pts)` gives `γ̇_p^⋆` and `ν_c(I_c)` at points.
+/// `rate(pts)` gives `γ̇_p^⋆`, `ν_c(I_c)` and the fatigue rate `r_F` of A-Λ at points.
 pub fn advance(
     markers: &mut Markers,
     tau: f64,
     v_adv: &dyn Fn(&[DVec3]) -> Vec<DVec3>,
-    rate: &dyn Fn(&[DVec3]) -> (Vec<f64>, Vec<f64>),
+    rate: &dyn Fn(&[DVec3]) -> (Vec<f64>, Vec<f64>, Vec<f64>),
     damage: Option<&DamageParams>,
     dilatancy: Option<&DilatancyParams>,
 ) {
@@ -189,11 +190,11 @@ pub fn advance(
     let v0 = v_adv(&y);
     let mid: Vec<DVec3> = y.iter().zip(&v0).map(|(p, v)| *p + *v * (0.5 * tau)).collect();
     let v1 = v_adv(&mid);
-    let (gp, nu_c) = rate(&mid);
+    let (gp, nu_c, rf) = rate(&mid);
     for j in 0..y.len() {
         markers.pos[j] = (y[j] + v1[j] * tau).to_array();
         if let Some(d) = damage {
-            markers.damage[j] = exact_damage(markers.damage[j], gp[j] / d.strain, d.healing, tau);
+            markers.damage[j] = exact_damage(markers.damage[j], gp[j] / d.strain + rf[j], d.healing, tau);
         }
         if let Some(d) = dilatancy {
             markers.nu[j] = d.exact_nu(markers.nu[j], nu_c[j], tau * gp[j]);

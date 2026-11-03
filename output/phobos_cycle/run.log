@@ -1,0 +1,5 @@
+start: t=0.00000e0 mass=1.060260e16 kg  frame departure centroid=5.9e-6 offdiag=3.5e-6
+n=0     t=0.00000e0 adv=1.000e12 w=2.2795e-4 settle            bound=dt_max         picard=50  yield=0.000 mobile=0     sup=58   slack=1.45e-1 dM=1.3e-7 trust=0.0e0/0 frame=no
+n=1     t=1.00000e12 adv=1.000e12 w=2.2799e-4 settle            bound=dt_max         picard=20  yield=0.000 mobile=0     sup=53   slack=1.43e-1 dM=5.1e-8 trust=0.0e0/0 frame=no
+stopped: t=2.000000e12 steps=2 -> output/phobos_cycle/run
+target/release/scf-cli run-sim --project   --max-steps 2 --out-dir   52.73s user 4.39s system 212% cpu 26.894 total

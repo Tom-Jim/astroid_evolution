@@ -9,6 +9,7 @@
 //!   fixed-viscosity Picard map kept as a check ([`picard`]);
 //! * the certified bracket of the limit load of §2.17.3 ([`limit`]).
 
+pub mod elastic;
 pub mod limit;
 mod pd;
 mod picard;

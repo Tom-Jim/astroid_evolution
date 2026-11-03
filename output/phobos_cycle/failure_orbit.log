@@ -1,0 +1,3 @@
+failure orbit (dynamic): stable down to None m, failed from Some(6892424.426249449) m, 9 evaluations
+tidal cycle (A-Λ): shakedown down to None m, ratchet from Some(6870701.6) m
+target/release/scf-cli failure-orbit --project  --gm 4.282837e13 --a-max 7.3e  1545.21s user 18.02s system 607% cpu 4:17.26 total

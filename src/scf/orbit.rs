@@ -16,6 +16,9 @@ use super::forward::{Forward, Loading};
 use super::mechanics::{GeometryCache, LoadSet, geometry};
 use super::params::Project;
 use super::spin::SpinSchedule;
+use super::cycle::{Cycle, CycleParams, Libration, chi_of, eccentricity_coefficient, love_number};
+use super::stokes::Operators;
+use super::stokes::elastic::{CycleBracket, ElasticCycle, cycle_bracket, elastic_cycle};
 use super::stokes::limit::{self, Bracket, LimitData};
 
 /// The `[orbit]` section of a project.
@@ -40,13 +43,15 @@ impl OrbitParams {
 }
 
 /// `(a_n, M_n)`, the mass `m₀` at which the configured rate `ȧ₀` holds, and the mass lost
-/// so far; `M_n + escaped = M₀` exactly.
+/// so far; `M_n + escaped = M₀` exactly. `e` is the eccentricity of A-Λ (zero without it).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct OrbitState {
     pub a: f64,
     pub mass: f64,
     pub m0: f64,
     pub escaped: f64,
+    #[serde(default)]
+    pub e: f64,
 }
 
 /// What A-O reports per step (inactive without it).
@@ -103,7 +108,7 @@ impl OrbitLaw {
 
     /// The state at time `t` of a satellite of mass `mass` that has lost nothing yet.
     pub fn start(spin: &SpinSchedule, t: f64, mass: f64) -> OrbitState {
-        OrbitState { a: spin.semi_major_axis(t), mass, m0: mass, escaped: 0.0 }
+        OrbitState { a: spin.semi_major_axis(t), mass, m0: mass, escaped: 0.0, e: 0.0 }
     }
 
     pub fn mean_motion(&self, a: f64) -> f64 {
@@ -129,13 +134,20 @@ impl OrbitLaw {
         self.floor
     }
 
+    /// `β_n` of Proposition 10.4.7.1 for a satellite of mass `mass` and radius `r_s` whose
+    /// own tide has `k2_over_q`, about a primary of mass `m_p`.
+    pub fn beta(&self, m_p: f64, k2_over_q: f64, r_s: f64, mass: f64) -> f64 {
+        68.25 * k2_over_q * m_p * r_s.powi(5) * self.gm.sqrt() / (self.kappa * mass * mass)
+    }
+
     /// The time in which the orbit of `s` reaches the primary at its present mass.
     pub fn time_to_floor(&self, s: &OrbitState) -> f64 {
         ((s.a.powf(6.5) - self.floor.powf(6.5)) / (self.kappa * s.mass)).max(0.0)
     }
 
-    /// The exact update over `tau` at the mass of the step, then the loss `lost`.
-    pub fn advance(&self, s: &mut OrbitState, tau: f64, lost: f64) -> Result<(), SimError> {
+    /// The exact update over `tau` at the mass of the step, then the loss `lost`. The
+    /// eccentricity follows `e ∝ a^exponent` (Proposition 10.4.7.1; zero without A-Λ).
+    pub fn advance(&self, s: &mut OrbitState, tau: f64, lost: f64, exponent: f64) -> Result<(), SimError> {
         let base = s.a.powf(6.5) - self.kappa * s.mass * tau;
         let a = if base > 0.0 { base.powf(1.0 / 6.5) } else { 0.0 };
         if !(a >= self.floor * (1.0 - 1e-12)) {
@@ -151,7 +163,9 @@ impl OrbitLaw {
             )));
         }
         // Within the end tolerance the orbit is at the primary.
-        s.a = if a <= self.floor * (1.0 + 1e-9) { self.floor } else { a };
+        let a = if a <= self.floor * (1.0 + 1e-9) { self.floor } else { a };
+        s.e *= (a / s.a).powf(exponent);
+        s.a = a;
         s.mass -= lost;
         s.escaped += lost;
         Ok(())
@@ -175,6 +189,8 @@ pub struct Neck {
 pub struct Necks {
     pub necks: [Neck; 2],
     pub r_hill: f64,
+    /// The centroid they were located about.
+    pub centre: DVec3,
 }
 
 /// Points of the axial scan for a neck, bisections of its bracket, Newton iterations
@@ -274,7 +290,7 @@ impl Necks {
             }
             Ok(Neck { point, axis })
         };
-        Ok(Self { necks: [neck(0)?, neck(1)?], r_hill })
+        Ok(Self { necks: [neck(0)?, neck(1)?], r_hill, centre: c })
     }
 
     /// Whether `x` lies in the outer half-space of a neck plane.
@@ -326,6 +342,11 @@ pub struct FailureOrbit {
     /// Shear rates of the collapse mechanism at the failed orbit, normalized to `N(u) = 1`,
     /// as `[x, y, z, γ̇]` per volume node.
     pub mechanism: Vec<[f64; 4]>,
+    /// Under A-Λ (§10.4.7) `stable` is certified shakedown and `failed` a certified peak
+    /// collapse; `ratchet` is the largest semi-major axis certified not to shake down, and
+    /// `cycle_scan` holds `(a, e, L_peak lower bound, L_sd lo, L_sd hi)` per orbit.
+    pub ratchet: Option<f64>,
+    pub cycle_scan: Vec<[f64; 5]>,
 }
 
 /// Options of [`failure_orbit`].
@@ -343,6 +364,9 @@ pub struct FailureOptions {
     pub davis: bool,
     /// Relative bracket gap below which an orbit counts as undecided.
     pub gap: f64,
+    /// Under A-Λ: the semi-major axis at which the configured eccentricity holds, and the
+    /// rate `ȧ` of the primary's tide there.
+    pub a_ref: Option<(f64, f64)>,
 }
 
 /// The failure orbit of `body` frozen (Algorithm 2.17.4).
@@ -366,6 +390,11 @@ pub fn failure_orbit(project: &Project, body: &Body, opt: &FailureOptions) -> Re
         mu *= cos;
     }
     let p_min = project.material.spec.p_min;
+    if let Some(prm) = &project.cycle {
+        let a_ref = opt.a_ref.ok_or_else(|| SimError::invalid_input("A-Λ: the failure orbit needs the orbit at which the eccentricity holds and its rate"))?;
+        let ctx = CycleScan::new(project, prm, &ops, &fwd, opt.gm, a_ref)?;
+        return cycle_failure_orbit(&ops, &ctx, (&d0, &d1, s_hi), &cohesion, mu, p_min, opt);
+    }
     let mut scan = Vec::new();
     let mut eval = |a: f64| -> Result<Bracket, SimError> {
         let s = opt.gm / a.powi(3);
@@ -405,5 +434,124 @@ pub fn failure_orbit(project: &Project, body: &Body, opt: &FailureOptions) -> Re
     let mechanism = mech
         .map(|r| ops.vol.pts.iter().zip(r).map(|(x, g)| [x.x, x.y, x.z, g]).collect())
         .unwrap_or_default();
-    Ok(FailureOrbit { stable, failed, scan, mechanism })
+    Ok(FailureOrbit { stable, failed, scan, mechanism, ratchet: None, cycle_scan: Vec::new() })
+}
+
+/// The frozen body's tidal cycle of unit `n² e` and the law `e(a)` (Proposition 10.4.7.1).
+struct CycleScan {
+    unit: ElasticCycle,
+    phases: usize,
+    gm: f64,
+    a_ref: f64,
+    e_ref: f64,
+    exponent: f64,
+}
+
+impl CycleScan {
+    fn new(project: &Project, prm: &CycleParams, ops: &Operators, fwd: &Forward, gm: f64, (a_ref, adot_ref): (f64, f64)) -> Result<Self, SimError> {
+        let chi = chi_of(fwd.moments.inertia);
+        let unit = Cycle::new(1.0, 1.0, Libration::new(1.0, chi, prm.q_satellite));
+        let strength = super::stokes::Strengths::profile(ops, &project.material);
+        let unit = elastic_cycle(ops, &unit, &project.material, &strength, project.g)?;
+        let mo = &fwd.moments;
+        let r_s = (3.0 * mo.volume / (4.0 * std::f64::consts::PI)).cbrt();
+        let rho = mo.mass / mo.volume;
+        let k2 = love_number(prm.rigidity, rho, project.g * mo.mass / (r_s * r_s), r_s);
+        let n_ref = (gm / a_ref.powi(3)).sqrt();
+        // κ m = −(13/2) a^{11/2} ȧ at the reference orbit (A-O, item 1).
+        let kappa_m = -6.5 * a_ref.powf(5.5) * adot_ref;
+        if !(kappa_m > 0.0) {
+            return Err(SimError::invalid_input("A-Λ: the reference rate ȧ must be negative (a decaying orbit)"));
+        }
+        let beta = 68.25 * k2 / prm.q_satellite * (gm / project.g) * r_s.powi(5) * gm.sqrt() / (kappa_m * mo.mass);
+        let exponent = eccentricity_coefficient(prm.primary_spin, n_ref) + beta;
+        Ok(Self { unit, phases: prm.phases, gm, a_ref, e_ref: prm.eccentricity, exponent })
+    }
+}
+
+
+impl CycleScan {
+    /// `e(a)` and the scale `n² e` of the unit cycle.
+    fn at(&self, a: f64) -> (f64, f64) {
+        let e = self.e_ref * (a / self.a_ref).powf(self.exponent);
+        (e, self.gm / a.powi(3) * e)
+    }
+}
+
+/// Algorithm 2.17.4 under A-Λ: the scan down to the first certified peak collapse, then
+/// bisections of the shakedown and peak boundaries (Proposition 10.4.7.5).
+#[allow(clippy::too_many_arguments)]
+fn cycle_failure_orbit(
+    ops: &Operators,
+    ctx: &CycleScan,
+    (d0, d1, s_hi): (&LimitData, &LimitData, f64),
+    cohesion: &[f64],
+    mu: f64,
+    p_min: f64,
+    opt: &FailureOptions,
+) -> Result<FailureOrbit, SimError> {
+    let (mut scan, mut cycle_scan) = (Vec::new(), Vec::new());
+    let mut eval = |a: f64| -> Result<(Bracket, CycleBracket), SimError> {
+        let s = opt.gm / a.powi(3);
+        let data = LimitData::lerp(d0, d1, s / s_hi);
+        let b = limit::bracket(ops, &data, cohesion, mu, p_min, opt.gap)?;
+        let (e, scale) = ctx.at(a);
+        let c = cycle_bracket(ops, &b, &data.load, &ctx.unit, scale, cohesion, mu, &data.p0, p_min, ctx.phases);
+        scan.push((a, b.lo, b.hi));
+        cycle_scan.push([a, e, c.peak_lo, c.shakedown_lo, c.shakedown_hi]);
+        Ok((b, c))
+    };
+    let (mut stable, mut ratchet, mut failed, mut mech) = (None, None, None, None);
+    let (mut last_sound, mut last_up) = (None, None);
+    let mut a = opt.a_max;
+    while a >= opt.a_min {
+        let (b, c) = eval(a)?;
+        if c.shakedown_hi < 1.0 {
+            stable = Some(a);
+        }
+        if c.shakedown_lo > 1.0 && ratchet.is_none() {
+            ratchet = Some(a);
+            last_sound = stable;
+        }
+        if c.peak_lo > 1.0 {
+            failed = Some(a);
+            mech = Some(b.rates);
+            break;
+        }
+        last_up = Some(a);
+        a *= 1.0 - opt.scan;
+    }
+    // The shakedown boundary between the last certified shakedown and the first ratchet.
+    if let (Some(mut hi), Some(mut lo)) = (last_sound, ratchet) {
+        while (hi - lo) > opt.tol * hi {
+            let mid = (hi * lo).sqrt();
+            let (_, c) = eval(mid)?;
+            if c.shakedown_hi < 1.0 {
+                hi = mid;
+            } else if c.shakedown_lo > 1.0 {
+                lo = mid;
+            } else {
+                break;
+            }
+        }
+        (stable, ratchet) = (Some(hi), Some(lo));
+    }
+    // The peak boundary: the largest orbit certified to collapse at its worst phase.
+    if let (Some(mut hi), Some(mut lo)) = (last_up, failed) {
+        while (hi - lo) > opt.tol * hi {
+            let mid = (hi * lo).sqrt();
+            let (b, c) = eval(mid)?;
+            if c.peak_lo > 1.0 {
+                lo = mid;
+                mech = Some(b.rates);
+            } else {
+                hi = mid;
+            }
+        }
+        failed = Some(lo);
+    }
+    let mechanism = mech
+        .map(|r| ops.vol.pts.iter().zip(r).map(|(x, g)| [x.x, x.y, x.z, g]).collect())
+        .unwrap_or_default();
+    Ok(FailureOrbit { stable, failed, scan, mechanism, ratchet, cycle_scan })
 }

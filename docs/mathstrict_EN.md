@@ -36,7 +36,7 @@ Chapter 11 adds four named hypotheses, each with a switch whose off position rec
 
 The state variables of A-Ξ and A-ϖ are carried by Lagrangian markers and driven by a nonlocal plastic rate.
 
-Chapter 12 follows a satellite past its failure (**A-B**): it breaks into the rigid blocks of its collapse mechanism, the fragments move about the primary and merge or break again, and the debris spreads as a viscous ring. Section 10.4.6 adds **A-O**, for a synchronous satellite: the tidal decay of the orbit follows the satellite's mass, which leaves through the necks of its Hill region. Section 2.17 gives a certified bracket of the limit load, and from it the orbit at which a frozen body can no longer stand.
+Chapter 12 follows a satellite past its failure (**A-B**): it breaks into the rigid blocks of its collapse mechanism, the fragments move about the primary and merge or break again, and the debris spreads as a viscous ring. Section 10.4.6 adds **A-O**, for a synchronous satellite: the tidal decay of the orbit follows the satellite's mass, which leaves through the necks of its Hill region. Section 10.4.7 adds **A-Λ**: the eccentricity, the forced libration, and the elastic cycle they impose, with its shakedown limit, ratchet, and fatigue. Section 2.17 gives a certified bracket of the limit load, and from it the orbit at which a frozen body can no longer stand.
 
 Rigour here means only that formulae and acceptance conditions have a determinate meaning under the stated continuity, regularity, discretization, boundary, and constitutive assumptions. It does not mean an automatic error bound for an arbitrary material, mesh, or finite-precision computation. An example whose constitutive parameters or boundary data are missing is **model not closed** and must not be reported as passed.
 
@@ -1941,7 +1941,7 @@ The bracket holds for every choice of weights. It therefore does not depend on t
 
 Monotonicity of $L^*$ in $a$ is not assumed. A crossing narrower than the scan step can be missed, and the step is reported. Repeating the algorithm with Davis' reduced strength $(c\cos\phi,\sin\phi)$, $\tan\phi=\mu$, gives the other end of the interval of Conjecture A.2.
 
-In a run under A-O (Section 10.4.6), the bracket with $\tau^{(2)}$ is evaluated on the deep state every $N_L$ steps. A certified $L_{\rm lo}>1$ ends the run as a limit-load collapse; the bracket at the rest pressure $p_0$ thus warns of a failure before the iteration of Section 10.4.2 meets it at its own pressure.
+In a run under A-O (Section 10.4.6), the bracket with $\tau^{(2)}$ is evaluated on the deep state every $N_L$ steps. A certified $L_{\rm lo}>1$ ends the run as a limit-load collapse; the bracket at the rest pressure $p_0$ thus warns of a failure before the iteration of Section 10.4.2 meets it at its own pressure. Under A-Λ the tidal cycle replaces $L^*$ by the peak multiplier $L_{\rm peak}$ and adds the shakedown multiplier $L_{\rm sd}\ge L_{\rm peak}$ (Proposition 10.4.7.5). The scan of Algorithm 2.17.4 then returns two orbits: where shakedown first fails, and where the peak load first collapses the body. Between them lies the ratchet band.
 
 ---
 
@@ -4924,6 +4924,10 @@ For n = 0, 1, 2, ... until t_n >= T_end:
    Ek^{-1}, and eps_Euler.
    Under A-O, every N_L steps: the certified bracket of L* with tau^(2) (Proposition 2.17.3);
    L_lo > 1 ends the run as a limit-load collapse.
+   Under A-Lambda (Section 10.4.7): the libration Gamma of the current inertia; the two elastic
+   solves of the cycle at uniform viscosity mu_e; the steady cycle (Algorithm 10.4.7.6) on the
+   creep stress -> ratchet velocity v_r, alternating range, fatigue rate r_F. Every N_L steps the
+   bound of L_peak and the bracket of L_sd replace that of L*; a certified L_peak > 1 ends the run.
 4. Friction chain (Section 10.3): surface velocity and strain rate at vertices and face centres
    (Section 10.2), gd (Section 10.2.3), then mu_d, mu_proj, phi, and the repose slack s_f of every face.
 4+. Lag of the deep state. Steps 1-4 may instead reuse the deep state of the last step n0 that
@@ -4999,6 +5003,8 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
        / rho_K. Later sweeps: no erosion (material laid on yielding ground leaves with the next step).
        Under A-O the loose layer of a vertex with rho_s g_n > c_Gamma detaches (beta -> infinity);
        packets beyond a neck plane are lost, and the mass target of the sweep falls by their mass.
+       Under A-Lambda the repose test takes the steepest phase of g_f + delta g, packets fly in the
+       field of their launch phase, and the necks follow the phase.
    S3. Slope promotion (Section 2.8c): pi_i = 1 on vertices of faces with s_f > tau_s, chi_Y,i = 0,
        rho_s,i > 0. Stop if no vertex is promoted and nothing erodes (settled).
    S4. Classes: A = {pi = 1} with d_pred = Delta h*_C; D = other vertices with Delta h*_C != 0;
@@ -5016,7 +5022,8 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
    Report the sweeps, the eroded and relieved masses, the slack before and after, tau_C / tau_n,
    and whether settling converged, stalled, or was limited by the geometry.
 9. t_{n+1} = t_n + lambda Delta t_n. Under A-O: a_{n+1}^{13/2} = a_n^{13/2} - kappa M_n tau_n,
-   M_{n+1} = M_n - M_esc,n; the run stops when a reaches the primary. Record X^(n+1), rho_s,
+   M_{n+1} = M_n - M_esc,n; the run stops when a reaches the primary. Under A-Lambda:
+   e_{n+1} = e_n (a_{n+1}/a_n)^(C_e + beta_n) (Proposition 10.4.7.1). Record X^(n+1), rho_s,
    theta^(n+1), the diagnostics, and the error budget of Section 9.8. Return to step 1.
 ```
 
@@ -5078,7 +5085,7 @@ Under the orbital form of Section 10.4.1 the semi-major axis follows a closed la
 **Hypothesis A-O.**
 
 1. *Constant-$Q$ tide in the primary.* $\dot a=-3\,(k_2/Q)_p\,(m/M_p)\,(R_p/a)^5\,n\,a$, with $(k_2/Q)_p$ and $R_p$ constant and the satellite inside the primary's synchronous orbit. In terms of the configured initial rate, $\dot a=\dot a_0\,(m/m_0)\,(a_0/a)^{11/2}$.
-2. *Circular synchronous orbit in the Hill approximation* of Section 10.4.1: $\omega=n$, the second-degree tide only, and the primary's oblateness neglected.
+2. *Circular synchronous orbit in the Hill approximation* of Section 10.4.1: $\omega=n$, the second-degree tide only, and the primary's oblateness neglected. A-Λ (Section 10.4.7) adds the eccentricity and the libration at first order.
 3. *Loss through the necks only.* Mass leaves by packets in flight that pass a neck plane of the Hill region, and by movable material carried beyond one (the lobe cap below). Lost mass does not return within the run.
 4. *Prompt departure.* Material that leaves does so on the orbital time scale $1/n$, short compared with $\tau_n$ (as in A-T1). The necks are evaluated at the start of the step and frozen in it.
 5. *Recoil neglected.* The momentum carried away is not fed back into the orbit; Remark 10.4.6.4 bounds its effect.
@@ -5171,6 +5178,190 @@ For a satellite with $r_H/a\sim10^{-3}$ this is negligible against the tidal dec
 - every $N_L$ steps, the bracket of $L^*$ (Proposition 2.17.3).
 
 **Reduction.** With A-O off, the model is the orbital form of Section 10.4.1 exactly. With A-O on and no face beyond a neck plane, no packet in a $\Pi_k^+$ and no detaching vertex, the only change is the exact law, which then coincides with the closed form (Proposition 10.4.6.1).
+
+### 10.4.7 Eccentric orbit, forced libration, and the tidal cycle (hypothesis A-Λ)
+
+Under the orbital form of Section 10.4.1 and A-O the load is constant in the body frame: the orbit is circular and the lock is exact. A satellite on an eccentric orbit sees the tide change in strength and in direction once per orbit, and its spin librates about the synchronous rate. A rigid–viscoplastic body has no stress amplitude below yield, so it cannot feel that cycle: there is no fatigue and no ratchet, at any resolution. A-Λ adds the cycle at first order in the eccentricity $e$, with the elastic response that carries it.
+
+**Hypothesis A-Λ.**
+
+1. *First order in $e$.* Every cyclic quantity is kept to first order in $e$, and the mean load is that of Section 10.4.1 at the semi-major axis $a$ (its correction $(1-e^2)^{-3/2}$ is second order).
+2. *Constant-$Q$ tides in both bodies.* The primary's tide drives $a$ as in A-O and $e$ with the frequency signs of each tidal component [35]. The satellite's own tide damps $e$; its effect on $a$ is second order in $e$ and is dropped with the primary's. The orbit lies in the primary's equator, and the spin axis of the satellite is normal to it.
+3. *Forced libration in longitude.* The spin rate is $n+\dot\gamma$, and $\gamma$ obeys the linear libration equation, damped by the satellite's $Q_s$. Latitude libration is neglected.
+4. *Quasi-static elastic cycle.* The cyclic part of the load is carried by a homogeneous, isotropic, incompressible linear elastic response of shear modulus $\mu_e$, superposed on the creep state of the step. The gravity of the elastic deformation, inertia, and the anelastic lag are neglected; their indicators are reported.
+5. *Elastic–perfectly plastic cycle.* The yield surface of the cycle is the Drucker–Prager surface of Proposition 2.17.1, with strength $c+\mu_2\tilde p$ and the pressure $\bar p+\delta p(M)$ of the step's creep state plus the elastic cycle. Flow is associated in the deviatoric space.
+6. *Separation of rates.* The orbital period is short compared with $\tau_n$. The cycle reaches its steady state within a step, and its effects are rates averaged over a cycle.
+7. *Fatigue.* Bonds fail under a cycle that stays elastic according to an S–N law with an endurance limit, and damage adds over cycles (Miner).
+
+**Orbit.** The orbital state of A-O gains $e$. With $\Omega_p$ the primary's spin and $S_1=\operatorname{sgn}(\Omega_p-n)$, $S_2=\operatorname{sgn}(2\Omega_p-n)$, $S_3=\operatorname{sgn}(2\Omega_p-3n)$ the signs of the lags of the three second-degree terms that carry $e$,
+
+$$
+\frac{\dot e}{e}=C_e\,\frac{\dot a_p}{a}-\frac{21}{2}\Big(\frac{k_2}{Q}\Big)_s\frac{M_p}{m}\Big(\frac{R_s}{a}\Big)^5n,
+\qquad
+C_e=\frac{-\tfrac34S_1-\tfrac3{16}S_2+\tfrac{147}{16}S_3-\tfrac98}{3S_1},
+$$
+
+with $\dot a_p$ the rate of A-O, $R_s$ the satellite's volume-equivalent radius, and $k_{2,s}=\tfrac32/(1+\tilde\mu)$, $\tilde\mu=19\mu_e/(2\bar\rho\bar gR_s)$ for the same $\mu_e$ as item 4 [36].
+
+**Proposition 10.4.7.1 (Eccentricity at constant $Q$).**
+
+1. $C_e=\tfrac{19}{8}$ when $\Omega_p>\tfrac32n$ (the classical case), and $C_e=\tfrac{25}{8}$ when $\Omega_p<\tfrac12n$ (a satellite inside the synchronous orbit with every lag reversed; Phobos, with the coefficient of [40]).
+2. Over a step at constant mass $M_n$ the two rates have the same dependence $a^{-13/2}$, so
+$$
+\boxed{\ e_{n+1}=e_n\Big(\frac{a_{n+1}}{a_n}\Big)^{C_e+\beta_n},\qquad
+\beta_n=\frac{273}{4}\Big(\frac{k_2}{Q}\Big)_s\frac{M_pR_s^5\sqrt{GM_p}}{\kappa M_n^2},\ }
+$$
+exactly, with $a_{n+1}$ from A-O. Without the satellite's tide ($\beta=0$) and with a constant $C_e$, $e=e_0(a/a_0)^{C_e}$ for all time.
+
+*Proof.* (1) In Kaula's expansion [35] the degree-2 terms of first order in $e$ are $(m,p,q)=(2,0,0),(2,0,\pm1),(0,1,\pm1)$, with inclination weights $\tfrac34$ and $\tfrac14$, Hansen factors $1$, $e/2$, $7e/2$ and $3e/2$, and lags of sign $\operatorname{sgn}(m\Omega_p-(2-2p+q)n)$. Lagrange's equations give $\dot a/a\propto\sum(2-2p+q)\,\epsilon$ and $\dot e\propto\tfrac1{2e}\sum[(2-2p+q)\sqrt{1-e^2}-(2-2p)]\,\epsilon$ over these terms. At first order the sums are $\tfrac32S_1$ and $e\big(-\tfrac34S_1-\tfrac3{16}S_2+\tfrac{147}{16}S_3-\tfrac98\big)/2$, which gives $C_e$; the two signed cases follow. (2) Both $\dot a_p/a=-\tfrac2{13}\kappa M_na^{-13/2}$ and the satellite term are proportional to $a^{-13/2}$, so $d\ln e/d\ln a=C_e+\beta_n$ is constant over the step. ∎
+
+The step bound $\Delta t_\omega$ of A-O gains $\varepsilon_\omega\,a/(|C_e+\beta_n|\,|\dot a_n|)$, the time in which $e$ changes by the fraction $\varepsilon_\omega$.
+
+**Forced libration.** In the body frame of Section 10.4.1, with the primary on the $+x$ axis, let $A\le B$ be the principal moments about $x$ and $y$, $C$ the moment about $z$, and $\chi:=3(B-A)/C$. The true anomaly is $f=M+2e\sin M$, and the direction of the primary in the body frame makes the angle $\psi=f-M-\gamma$ with the $x$ axis.
+
+**Proposition 10.4.7.2 (Libration).** The linear libration equation
+
+$$
+\ddot\gamma+\frac{\sqrt\chi\,n}{Q_s}\dot\gamma+\chi n^2\big(\gamma-2e\sin M\big)=0
+$$
+
+has the periodic solution $\gamma=\gamma_s\sin M+\gamma_c\cos M$ with
+
+$$
+\gamma_s+i\gamma_c=\Gamma:=\frac{2e\chi}{\chi-1+i\sqrt\chi/Q_s}.
+$$
+
+Without damping $\gamma=-2e\chi\sin M/(1-\chi)$, and $\psi=2e\sin M/(1-\chi)$. The amplitude diverges at $\chi=1$, where the free libration is in resonance with the orbit. A-Λ requires $|\Gamma|$ and the amplitude of $\psi$ to stay below a configured $\psi_{\max}\ll1$; otherwise the linearization, and possibly the lock, fails, and the model is not closed.
+
+*Proof.* The tidal torque about $z$ is $\tfrac32(GM_p/r^3)(B-A)\sin2\psi$. Linearized about $\psi=0$ with $r=a$ at this order, $C\ddot\gamma=-3n^2(B-A)(\gamma-2e\sin M)$. The damping term is the satellite's dissipation at the libration frequency $\sqrt\chi\,n$, at quality factor $Q_s$. Inserting $\gamma=\operatorname{Im}(\Gamma e^{iM})$ gives $(\chi-1+i\sqrt\chi/Q_s)\Gamma=2e\chi$. ∎
+
+For a homogeneous ellipsoid $\chi=3(a_1^2-a_2^2)/(a_1^2+a_2^2)$, and resonance falls at $a_1/a_2=\sqrt2$, an elongation a satellite near its Roche limit can approach. For Phobos the undamped amplitude $2e\chi/(1-\chi)$ with the ellipsoid of its axes ($\chi\approx0.39$) and $e=0.0151$ is $1.1^\circ$, against the measured $1.14^\circ\pm0.03^\circ$ [37].
+
+**The cyclic load.** Write $D_2=\operatorname{diag}(2,-1,-1)$, $P=\operatorname{diag}(1,1,0)$ and $S=\mathbf e_x\mathbf e_y^{\!\top}+\mathbf e_y\mathbf e_x^{\!\top}$. To first order the tidal Hessian is $n^2(a/r)^3(3\hat{\mathbf r}\hat{\mathbf r}^{\!\top}-\mathbf I)=n^2[(1+3e\cos M)D_2+3\psi S]$, the centrifugal Hessian is $(n+\dot\gamma)^2P$, and the Euler force per unit mass is $-\dot\Omega\,\mathbf e_z\times\mathbf x$ with $\dot\Omega=\ddot\gamma$. The cyclic body force per unit mass is therefore
+
+$$
+\boxed{\ \delta\mathbf g(\mathbf x,M)=\big(\mathbf H_c\cos M+\mathbf H_s\sin M\big)\mathbf x+\big(E_c\cos M+E_s\sin M\big)\,\mathbf e_z\times\mathbf x,\ }
+$$
+
+$$
+\mathbf H_c=n^2\big(3eD_2-3\gamma_cS+2\gamma_sP\big),\quad
+\mathbf H_s=n^2\big(3(2e-\gamma_s)S-2\gamma_cP\big),\quad
+E_c=n^2\gamma_c,\quad E_s=n^2\gamma_s ,
+$$
+
+and the backstress of Section 4.6 gains $C_T\rho_p\nu d^2\operatorname{dev}(\mathbf H_c\cos M+\mathbf H_s\sin M)$.
+
+**Proposition 10.4.7.3 (The cyclic load is self-equilibrated).** About the centre of mass, in the principal frame, $\int\rho_K\delta\mathbf g\,dV=\mathbf 0$ and the torque of $\rho_K\delta\mathbf g$ has no $x$ or $y$ component. Its $z$ component is $C\,\frac{\sqrt\chi n}{Q_s}\dot\gamma$, which vanishes without damping. The relative residual $\sqrt\chi/(Q_s|1-\chi|)$ is reported, and the solve below takes the load modulo the rigid modes.
+
+*Proof.* $\delta\mathbf g$ is linear in $\mathbf x$ and $\int\rho_K\mathbf x=\mathbf 0$. With the second moment $\mathbf J=\int\rho_K\mathbf x\mathbf x^{\!\top}$ diagonal, the torque of $\rho_K\mathbf H\mathbf x$ has components $\epsilon_{ijk}H_{kl}J_{jl}=\epsilon_{ijk}H_{kj}J_{jj}$, so only the $xy$ entry of $\mathbf H$ gives one, along $z$, equal to $H_{xy}(J_{xx}-J_{yy})=H_{xy}(B-A)$. The Euler term gives $-C\dot\Omega$. Hence the $z$ torque is $3n^2(B-A)\psi-C\ddot\gamma$, which by the libration equation equals the damping term. ∎
+
+**The elastic cycle.**
+
+**Proposition 10.4.7.4 (The cyclic stress is independent of the modulus).** Let $\mathbf w$ and $q$ solve the incompressible, traction-free elastic problem $\mu_e\Delta\mathbf w-\nabla q+\rho_K\mathbf f=\mathbf 0$, $\nabla\cdot\mathbf w=0$, with the rigid rows of (B1). Then $\mathbf w=\mathbf w_1/\mu_e$, where $(\mathbf w_1,q)$ solves the Stokes problem of unit viscosity under the same load, and the stress $-q\mathbf I+2\mu_e\boldsymbol\varepsilon(\mathbf w)$ does not depend on $\mu_e$. In the discretization of Section 8.4 it is the solution with the uniform viscosity $\mu_e$, and $q$ is the pressure of Section 8.7 with that viscosity.
+
+*Proof.* Substitute $\mathbf w=\mathbf w_1/\mu_e$: the equations and the boundary condition become those of unit viscosity with $q$ unchanged, and $2\mu_e\boldsymbol\varepsilon(\mathbf w)=2\boldsymbol\varepsilon(\mathbf w_1)$. ∎
+
+The two solutions for $\mathbf f=\mathbf H_c\mathbf x+E_c\mathbf e_z\times\mathbf x$ and $\mathbf H_s\mathbf x+E_s\mathbf e_z\times\mathbf x$ give the cyclic deviatoric stress $\boldsymbol\tau^E_c\cos M+\boldsymbol\tau^E_s\sin M$ and the pressure $\delta p_c\cos M+\delta p_s\sin M$. The modulus enters only the strains (the ratchet below), $k_{2,s}$, and three reported indicators:
+
+- inertia, $nR_s/\sqrt{\mu_e/\bar\rho}$;
+- the gravity of the deformation, $1/\tilde\mu$;
+- the lag, $1/Q_s$.
+
+A compressible body carries more deviatoric stress than the incompressible one (Section 2.8, (B2), item 2), so the cycle of item 4 is a lower estimate.
+
+**Peak and shakedown.** Use the notation of Proposition 2.17.3: $\mathbf E_i=\sqrt2\mathbf D_i$, $|\mathbf E_i\mathbf u|=\dot\gamma_i(\mathbf u)$, and a stress sample $\hat{\boldsymbol\sigma}_i$ whose Euclidean norm is the equivalent stress $\sqrt{\tfrac12\boldsymbol\tau:\boldsymbol\tau}$ (so $\hat{\boldsymbol\sigma}=\boldsymbol\tau/\sqrt2$ and the work is $\hat{\boldsymbol\sigma}_i\cdot\mathbf E_i\mathbf u$). Let $\hat{\boldsymbol\sigma}^E_i(M)=\hat{\boldsymbol\sigma}_{c,i}\cos M+\hat{\boldsymbol\sigma}_{s,i}\sin M$ be the elastic cycle, $\ell_c,\ell_s$ its load vectors, $|\delta p_i|=(\delta p_{c,i}^2+\delta p_{s,i}^2)^{1/2}$, and
+
+$$
+\tau_i^\pm:=c_i+\mu_2\max\big(p_{0,i}\pm|\delta p_i|,\ p_{\min}\big),\qquad
+N^\pm(\mathbf u):=\sum_iw_i\tau_i^\pm\dot\gamma_i(\mathbf u),
+$$
+
+the strengths of the frozen-pressure convention of Proposition 2.17.3 at the extremes of the cycle. $L_{\rm peak}$ is the largest over $M$ of the limit multiplier under $\ell(M)=\bar\ell+\ell_c\cos M+\ell_s\sin M$ at the strength $c+\mu_2(p_0+\delta p(M))$. $L_{\rm sd}$ is the reciprocal of the largest factor on all loads at which the elastic–plastic body shakes down, with the strengths frozen.
+
+**Proposition 10.4.7.5 (Brackets of the cycle).** For every admissible $\mathbf u$ ($\mathbf B_{\rm rb}\mathbf u=\mathbf 0$):
+
+1. *Peak.* $L_{\rm peak}\ge\big(\bar\ell^{\!\top}\mathbf u+|(\ell_c^{\!\top}\mathbf u,\ \ell_s^{\!\top}\mathbf u)|\big)/N^+(\mathbf u)$.
+2. *Shakedown, kinematic (Koiter [38]).* $L_{\rm sd}\ge\Big(\bar\ell^{\!\top}\mathbf u+\sum_iw_i\big|(\hat{\boldsymbol\sigma}_{c,i}\cdot\mathbf E_i\mathbf u,\ \hat{\boldsymbol\sigma}_{s,i}\cdot\mathbf E_i\mathbf u)\big|\Big)/N^+(\mathbf u)$.
+3. *Shakedown, static (Melan [39]).* If $\hat{\boldsymbol\sigma}^*$ equilibrates $\bar\ell$ (for instance the static field $\hat{\boldsymbol\sigma}^*_i=q_i\mathbf E_i\mathbf u_q/w_i$ of Proposition 2.17.3), then
+$$
+L_{\rm sd}\le\max_i\frac{\max_M|\hat{\boldsymbol\sigma}^*_i+\hat{\boldsymbol\sigma}^E_i(M)|}{\tau_i^-},
+$$
+and over $N_M$ equispaced phases $\max_M\le\max_j+\tfrac\pi{N_M}\big(|\hat{\boldsymbol\sigma}_{c,i}|+|\hat{\boldsymbol\sigma}_{s,i}|\big)$.
+4. *Order.* The bound of (2) is at least that of (1), and $L_{\rm sd}\ge L_{\rm peak}$.
+
+*Proof.* (1) At the phase $M^*$ that maximizes $\ell(M)^{\!\top}\mathbf u$, the kinematic bound of Proposition 2.17.3 holds with the strength at $M^*$, which is at most $\tau^+$. (2) Take the plastic cycle that, at each sample $i$, puts the whole increment $\mathbf E_i\mathbf u$ at the phase $M_i^*$ maximizing $\hat{\boldsymbol\sigma}^E_i(M)\cdot\mathbf E_i\mathbf u$. Its accumulation over a cycle is the compatible $\mathbf E\mathbf u$. The work of the elastic stresses is $\bar\ell^{\!\top}\mathbf u$ for the mean (the mean elastic stress equilibrates $\bar\ell$) plus $\sum_iw_i\max_M\hat{\boldsymbol\sigma}^E_i\cdot\mathbf E_i\mathbf u$, which is the expression in the bound. The dissipation is at most $N^+(\mathbf u)$. Koiter's theorem says a load factor above work over dissipation cannot shake down. (3) $\boldsymbol\rho:=\hat{\boldsymbol\sigma}^*-\hat{\boldsymbol\sigma}^{\bar E}$, the static field less the mean elastic stress, is time-independent and self-equilibrated. At the load factor $\lambda$ the stress $\lambda\hat{\boldsymbol\sigma}^E(M)+\lambda\boldsymbol\rho=\lambda(\hat{\boldsymbol\sigma}^*+\hat{\boldsymbol\sigma}^E(M)-\hat{\boldsymbol\sigma}^{\bar E}+\hat{\boldsymbol\sigma}^{\bar E})$ is $\lambda(\hat{\boldsymbol\sigma}^*+\hat{\boldsymbol\sigma}^E(M))$ with the cyclic part only. It is admissible for all $M$ when $\lambda$ times the stated maximum is at most 1, and Melan's theorem then gives shakedown. The sampled maximum errs by at most the Lipschitz constant $|\hat{\boldsymbol\sigma}_c|+|\hat{\boldsymbol\sigma}_s|$ times half the spacing $\pi/N_M$. (4) $\sum_iw_i|(a_i,b_i)|\ge|(\sum_iw_ia_i,\sum_iw_ib_i)|$, and $\sum_iw_i\hat{\boldsymbol\sigma}_{c,i}\cdot\mathbf E_i\mathbf u=\ell_c^{\!\top}\mathbf u$ because the elastic cycle equilibrates $\ell_c$; likewise for $s$. Shakedown requires admissibility at every phase. ∎
+
+Both theorems hold for the associated material with the strength $c+\mu_2\tilde p$ at frozen pressure, the same surrogate as Proposition 2.17.3. Shakedown of the non-associated granular law can be lower [16]. Between $L_{\rm sd}>1$ and $L_{\rm peak}<1$ the body never collapses at an instant, but it accumulates plastic strain cycle after cycle (ratchet) or alternates plastically. Only $L_{\rm peak}>1$ ends the quasi-static route (Chapter 12). The orbits at which $L_{\rm sd}$ and $L_{\rm peak}$ cross 1 bound the ratchet band of Algorithm 2.17.4.
+
+**The steady cycle and the ratchet.** With the plastic strain $\hat{\boldsymbol\varepsilon}_i$ of the cycle in the same convention, its residual stress is $\hat{\boldsymbol\sigma}^R_i(\hat{\boldsymbol\varepsilon})=\mu_e(\mathbf E_i\mathbf u_{\hat\varepsilon}-\hat{\boldsymbol\varepsilon}_i)$, where $\mathbf u_{\hat\varepsilon}$ solves the elastic system with the load $\sum_iw_i\mu_e\mathbf E_i^{\!\top}\hat{\boldsymbol\varepsilon}_i$. The mean stress is that of the step's creep state, $\hat{\boldsymbol\sigma}^{\rm cr}_i=\eta_i\mathbf E_i\mathbf u$.
+
+**Algorithm 10.4.7.6 (Steady cycle).**
+
+```text
+input:  sigma_cr, p_bar; the elastic cycle (sigma_c, sigma_s, dp_c, dp_s); phases M_j = 2 pi j / N_M
+eps <- 0
+for cycle = 1 .. K_max:
+    eps_start <- eps;  range <- 0
+    for j = 1 .. N_M:
+        tau_ij <- c_i + mu_2 max(p_bar_i + dp_c,i cos M_j + dp_s,i sin M_j, p_min)
+        repeat                                    # initial-stress iteration at fixed phase
+            s_i <- sigma_cr,i + sigma_E,i(M_j) + sigma_R,i(eps)
+            d_i <- [|s_i| - tau_ij]_+ / mu_e * s_i / |s_i|        # radial return
+            eps <- eps + d;  range_i <- range_i + |d_i|
+        until max_i [|s_i| - tau_ij]_+ <= tol tau_ij
+    if |sigma_R(eps) - sigma_R(eps_start)| <= tol_cycle max_i tau_ij: steady; stop
+ratchet per cycle:      d_eps <- eps - eps_start,   d_u <- u_{d_eps}
+alternating plasticity: range (per sample)
+```
+
+**Proposition 10.4.7.7 (The cycle).**
+
+1. If the trial stress $\hat{\boldsymbol\sigma}^{\rm cr}_i+\hat{\boldsymbol\sigma}^E_i(M_j)$ is admissible at every sample and phase, the algorithm returns $\hat{\boldsymbol\varepsilon}\equiv0$: no ratchet and no alternating plasticity.
+2. At each phase the radial return is the closest-point projection onto the frozen yield surface in the energy norm $\mu_e^{-1}|\cdot|^2$, i.e. the backward Euler step of the elastic–perfectly plastic law [44]. The phase loop is therefore the incremental history sampled at $N_M$ phases.
+3. For an elastic–perfectly plastic body under a periodic load the residual stress converges to a periodic state [41]. The plastic strain then grows by the same $\Delta\hat{\boldsymbol\varepsilon}$ each cycle (ratchet) or returns to its start (alternating plasticity, $\Delta\hat{\boldsymbol\varepsilon}=0$, range $>0$).
+4. The ratchet strain per cycle scales as load over $\mu_e$: with every load and $c$ multiplied by $s$, $\Delta\hat{\boldsymbol\varepsilon}$ is multiplied by $s$. With $\mu_e$ multiplied by $s$, $\Delta\hat{\boldsymbol\varepsilon}$ is divided by $s$.
+
+*Proof.* (1) $\hat{\boldsymbol\varepsilon}=0$ gives $\hat{\boldsymbol\sigma}^R=0$ and no excess. (2) For a ball of radius $\tau$ the closest point of $\mathbf s$ is $\tau\mathbf s/|\mathbf s|$, and the plastic increment that removes the excess at elastic stiffness $\mu_e$ is $(|\mathbf s|-\tau)\mathbf s/(\mu_e|\mathbf s|)$. (3) This is Frederick and Armstrong's convergence of the internal stresses [41]. (4) The return and the residual map are positively homogeneous of degree one in (stress, strength) and of degree $-1$ in $\mu_e$. ∎
+
+The ratchet enters the slow operator as the velocity $\mathbf v_r=\frac{n}{2\pi}\Delta\mathbf u$, a whole-body field with zero momentum and angular momentum. The deformation it describes is real everywhere, so it is not masked by $\chi_Y$:
+
+- the cores and markers are carried along $\mathbf v_{\rm adv}+\mathbf v_r$;
+- the surface vertices move by $\tau_n(\mathbf v_r\cdot\mathbf N_i)\mathbf N_i$ before settling (the tangential part only relabels the surface, as for the creep predictor);
+- the step is bounded by $\Delta t_r=\theta_{\rm CFL}h_{\Gamma,\min}/\max_i|\mathbf v_r(\mathbf X_i)\cdot\mathbf N_i|$.
+
+The alternating plastic shear adds $\frac{n}{2\pi}\Delta\gamma_{{\rm alt},i}$ (range per cycle) to the plastic driving rate of A-ϖ (Section 11.2).
+
+**High-cycle fatigue.** Where the steady cycle is elastic, the utilization of the cycle is $s_i:=\max_j|\hat{\boldsymbol\sigma}_i(M_j)|/\tau_{ij}$. With the S–N line $s=b_0-b_1\log_{10}N_f$ and the endurance limit $s_e$ [42],
+
+$$
+\boxed{\ r_{F,i}=\frac{n}{2\pi}\,10^{-(b_0-s_i)/b_1}\ \ (s_i>s_e),\qquad r_{F,i}=0\ \ (s_i\le s_e),\qquad
+\dot\varpi=(1-\varpi)\Big(\frac{\dot\gamma_p^\star}{\gamma_\varpi}+r_F\Big)-h_\varpi\varpi .\ }
+$$
+
+Proposition 11.9 applies with $a=\dot\gamma_p^\star/\gamma_\varpi+r_F$, and $\Delta t_\varpi$ uses the same $a$. The shallow cohesion $c_\Gamma$ of Section 11.6 contains $\mathcal R\varpi$ and inherits the damage. The S–N line is that of rock in compression, transferred to the bonds of the matrix; this transfer is a hypothesis.
+
+**The loose layer.** The settling of step S and Section 10.3 test repose against the face gravity of every phase, $\mathbf g_f+\delta\mathbf g(\mathbf x_f,M_j)$, and keep the steepest.
+
+**Proposition 10.4.7.8 (Envelope).** A rate-independent loose layer that slips only when its slope exceeds repose, under a cycle slow compared with its own runout, comes to rest in the state where its slope is below repose at every phase. Thereafter it does not slip again. So the quasi-static settling against the steepest phase is the cycle-averaged behaviour of A-C4, and a ratchet of the layer needs hysteresis or noise that A-C4 does not contain.
+
+*Proof.* Slip at a phase only reduces the excess of the slope over repose at that phase, and with the same static and dynamic friction it stops at repose. Once the slope is below repose at every phase, the condition of item 2 of A-C4 never holds again. ∎
+
+**Escape on an eccentric orbit.** $W$ now depends on $M$, so $E_J$ is not conserved and Proposition 10.4.6.3 does not apply. A packet launched at phase $M_0$ flies in the mean field plus $\delta\mathbf g(\mathbf x,M_0+nt)$, with the Coriolis rate $n+\dot\gamma$. It is escaped when it passes a neck plane of the instantaneous Hill region. The point-mass Hill radius scales with $r$ and the primary lies along $\psi$, so the necks are
+
+$$
+L_k(M)=\mathbf x_c+(1-e\cos M)\,\mathbf R_z(\psi(M))\,(L_k-\mathbf x_c),\qquad \mathbf e_k(M)=\mathbf R_z(\psi(M))\,\mathbf e_k .
+$$
+
+Launch phases are spread uniformly over the packets (a low-discrepancy sequence in the source index), so the losses average the cycle.
+
+**Reduction.** With $e=0$, $\Gamma=0$, every cyclic term vanishes, and the model is A-O exactly. With A-Λ off it is A-O.
+
+**Reports.** Each step reports:
+
+- $e$, $\chi$, $|\Gamma|$, and the amplitude of $\psi$;
+- the torque residual of Proposition 10.4.7.3, and the three indicators of item 4;
+- every $N_L$ steps, the bound of $L_{\rm peak}$ and the bracket of $L_{\rm sd}$;
+- the cycles to the steady state, the volume fractions that ratchet and that alternate, the largest ratchet speed, and the largest fatigue rate.
 
 ## 10.5 Computational realization: dependency graph, GPU and ray-tracing residency, and ECS organization
 
@@ -5602,7 +5793,7 @@ Diurnal thermal cycling breaks exposed rock on small bodies faster than micromet
 
 1. *Scale separation.* The diurnal skin depth $\delta_1:=\sqrt{2\kappa_{\rm th}/\omega}$ is small compared with every face and with $\ell_h$. Each face is a one-dimensional half-space with constant thermal effusivity $\Upsilon=\sqrt{k_{\rm th}(\rho c)_{\rm th}}$ and diffusivity $\kappa_{\rm th}=\Upsilon^2/(\rho c)_{\rm th}^2$. Lateral conduction is neglected.
 2. *Quasi-steady diurnal state.* At each orbital sample the surface temperature is the time-periodic diurnal solution ($P_{\rm rot}\ll P_{\rm orb}$), with zero mean conductive flux; seasonal heat storage is neglected. $P_{\rm rot}/P_{\rm orb}$ and the seasonal skin depth are reported.
-3. *Radiation.* Absorption with Bond albedo $A_B$, gray emission with emissivity $\epsilon_{\rm th}$, and direct insolation with geometric self-shadowing. Mutual radiative exchange (self-heating) and multiple scattering are neglected. The occluded fraction of each face's sky hemisphere is reported as the indicator of that error.
+3. *Radiation.* Absorption with Bond albedo $A_B$, gray emission with emissivity $\epsilon_{\rm th}$, and direct insolation with geometric self-shadowing; for a satellite, also the eclipse by its primary and the primary's light and heat (below). Mutual radiative exchange (self-heating) and multiple scattering are neglected. The occluded fraction of each face's sky hemisphere is reported as the indicator of that error.
 4. *Fatigue.* Rock in the skin fails after $N_f(\Delta T)=N_\Theta(\Delta T_\Theta/\Delta T)^{m_\Theta}$ cycles of diurnal temperature range $\Delta T$ (Basquin), since the thermal stress amplitude in exposed rock scales with $\Delta T$ [21]. Damage adds linearly over cycles (Miner), at $\omega/2\pi$ cycles per unit time.
 5. *Shielding.* A loose cover of thickness $h_{\rm reg}:=\rho_s/\rho_{\rm bulk}$ damps the diurnal wave as $e^{-z/\delta_1^{\rm reg}}$, with $\delta_1^{\rm reg}$ from the cover's own properties. The fatigue rate of the rock beneath is multiplied by
 $$
@@ -5619,6 +5810,31 @@ S_{fj}(\varphi_\odot)=(1-A_B)\,F_{\odot,j}\,[\mathbf n_f\cdot\hat{\mathbf s}_j]_
 $$
 
 with $\mathsf V_f\in[0,1]$ the unshadowed fraction, from first-hit queries toward $\hat{\mathbf s}_j$ from $N_{\rm vis}$ points of the face offset along $\mathbf n_f$.
+
+**A satellite's primary.** Under the orbital form of Section 10.4.1 the primary, of radius $R_p$, lies on the body $+x$ axis at the distance $a$, and the satellite's solar day is its orbital period. The hour angle $\varphi_\odot=0$ puts the Sun behind the primary. Two terms enter.
+
+*Eclipse.* The Sun's disk, of angular radius $\alpha_\odot=R_\odot/r_{\odot,j}$, is partly hidden by the primary's, of angular radius $\alpha_p=\arcsin(R_p/a)$, at the angular separation $\vartheta=\arccos(\hat{\mathbf s}_j\cdot\mathbf e_x)$. The visible fraction is
+
+$$
+\mathsf E(\vartheta)=1-\frac{\mathcal A(\alpha_\odot,\alpha_p,\vartheta)}{\pi\alpha_\odot^2},
+$$
+
+with $\mathcal A$ the overlap area of two disks of these radii at this separation, taken in the tangent plane of the Sun's direction. The error is $O(\alpha_\odot\alpha_p)$ relative to the penumbra width. $\mathsf E$ multiplies the direct insolation of every face, since $R_s\ll a$. There is no eclipse while the subsolar latitude exceeds $\alpha_p+\alpha_\odot$.
+
+*Light and heat of the primary.* The primary is a sphere of uniform effective temperature $T_p$ and Bond albedo $A_p$ (for Mars both are tabulated in [43]). A face of normal $\mathbf n_f$ whose horizon does not cut that sphere receives its thermal emission exactly as
+
+$$
+\sigma_{\rm SB}T_p^4\Big(\frac{R_p}{a}\Big)^2[\mathbf n_f\cdot\mathbf e_x]_+
+$$
+
+(the view factor of a sphere). It also receives the sunlight reflected by a Lambert sphere,
+
+$$
+\tfrac23A_pF_{\odot,j}\Big(\frac{R_p}{a}\Big)^2\Phi(\alpha)\,[\mathbf n_f\cdot\mathbf e_x]_+,\qquad
+\Phi(\alpha)=\frac{\sin\alpha+(\pi-\alpha)\cos\alpha}{\pi},\qquad \cos\alpha=-\hat{\mathbf s}_j\cdot\mathbf e_x,
+$$
+
+in the point-source form, with relative error $O((R_p/a)^2)$ for the reflected part. Both are absorbed with the face's $(1-A_B)$ and add to $S_{fj}$. Self-shadowing of the primary's light and the faces whose horizon cuts the primary are neglected, and the fraction of such faces is reported. The pole of a synchronous satellite is the primary's, so the schedule of item 7 is the primary's heliocentric orbit and obliquity.
 
 **The periodic surface problem.** Find a $2\pi$-periodic $T(\varphi_\odot)$ with
 
@@ -6063,6 +6279,8 @@ The paper gives a closed loop whose core is the Mode B quasi-static viscoplastic
 
 The state laws are integrated exactly over each step and preserve their admissible ranges.
 
+**The tidal cycle (Section 10.4.7).** An eccentric orbit and the forced libration it drives load a synchronous satellite once per orbit. The cyclic stress comes from an incompressible elastic response whose stress does not depend on the modulus. It gives a peak limit load and a shakedown limit, bracketed by the theorems of Koiter and Melan. The steady cycle by phase stepping gives a ratchet velocity that scales as load over modulus. Where the cycle stays elastic, an S–N law with an endurance limit damages the bonds. At constant $Q$ both tides damp the eccentricity, as a power of the semi-major axis, so the cycle weakens as the orbit decays.
+
 **Breakup (Chapter 12).** Past a certified limit load, the body breaks into the rigid blocks of its collapse mechanism. The fragments move about the primary under forces that conserve momentum and angular momentum exactly. They merge when they meet and break again when their own limit load is exceeded, and pieces below the strength scale spread as a viscous ring between the primary and the Roche limit.
 
 **Discretization and geometry.**
@@ -6240,6 +6458,7 @@ So $\mathbf u_B=\mathbf u_0$ iff $\mathbf E\mathbf u_0=\mathbf 0$, and Track B i
 | PO-30 | Hypothesis A-B, the cut. Proved: Proposition 12.1 (an exactly piecewise-rigid mechanism is a fixed point of the fit with zero misfit), the closed manifold of the extracted surface, the mass of the pieces. Open: the physical validity of rigid blocks for a granular mechanism smoothed by the Galerkin basis; the dependence of the cut on the gain, the voxel spacing, and the outermost-crossing re-triangulation | partially closed; the misfits and the mass error are reported |
 | PO-31 | The fragments' dynamics. Proved: Propositions 12.2 and 12.3 (exact conservation of momentum and angular momentum, second order). Open: the error of the quadrupole expansion at the switching distance; sticky contact in place of frictional contact; the synchronous, tide-aligned load of the cascade as the worst case | partially closed; momentum, angular momentum, energy, and the energy dissipated in mergers are reported |
 | PO-32 | The debris ring. Proved: Proposition 12.4 (the ledger). Open: positivity of the explicit nonlinear update at the stated step; the range of validity of the wake viscosity; moonlet formation and migration, and the ring's action on fragments, which are not modelled | partially closed; the ring, primary, and moonlet masses are reported |
+| PO-33 | Hypothesis A-Λ. Proved: Propositions 10.4.7.1 (eccentricity at constant $Q$, exact per step), 10.4.7.2 (libration), 10.4.7.3 (self-equilibrium of the cyclic load), 10.4.7.4 (modulus independence of the cyclic stress), 10.4.7.5 (peak and shakedown brackets for the associated surrogate at frozen strength), 10.4.7.7 (1, 2, 4) and 10.4.7.8. Open: convergence of the sampled phase loop to the continuous cycle as $N_M\to\infty$; shakedown of the non-associated law; the error of the incompressible elastic cycle; the transfer of the rock S–N line to the bonds of a rubble pile | partially closed; $|\Gamma|$, $\psi$, the torque residual, the three indicators, the brackets, and the cycle counts are reported |
 
 ## A.6 Conjectures
 
@@ -6324,3 +6543,23 @@ In limit analysis, a non-associated Mohr–Coulomb material has its limit load b
 [33] Salmon, J., Charnoz, S., Crida, A., & Brahic, A. (2010). Long-term and large-scale viscous evolution of dense planetary rings. *Icarus*, 209(2), 771–785.
 
 [34] Hesselbrock, A. J., & Minton, D. A. (2017). An ongoing satellite–ring cycle of Mars and the origins of Phobos and Deimos. *Nature Geoscience*, 10(4), 266–269.
+
+[35] Kaula, W. M. (1964). Tidal dissipation by solid friction and the resulting orbital evolution. *Reviews of Geophysics*, 2(4), 661–685.
+
+[36] Goldreich, P., & Sari, R. (2009). Tidal evolution of rubble piles. *The Astrophysical Journal*, 691(1), 54–60.
+
+[37] Burmeister, S., Willner, K., Schmidt, V., & Oberst, J. (2018). Determination of Phobos' rotational parameters by an inertial frame bundle block adjustment. *Journal of Geodesy*. https://doi.org/10.1007/s00190-018-1112-8
+
+[38] Koiter, W. T. (1960). General theorems for elastic–plastic solids. In I. N. Sneddon & R. Hill (Eds.), *Progress in Solid Mechanics*, Vol. 1 (pp. 165–221). North-Holland.
+
+[39] Melan, E. (1938). Zur Plastizität des räumlichen Kontinuums. *Ingenieur-Archiv*, 9, 116–126.
+
+[40] Ćuk, M., Anand, K. P., & Minton, D. A. (2025). Two possible orbital histories of Phobos. arXiv:2503.12691.
+
+[41] Frederick, C. O., & Armstrong, P. J. (1966). Convergent internal stresses and steady cyclic states of stress. *Journal of Strain Analysis*, 1(2), 154–159.
+
+[42] Cerfontaine, B., & Collin, F. (2018). Cyclic and fatigue behaviour of rock materials: review, interpretation and research perspectives. *Rock Mechanics and Rock Engineering*, 51(2), 391–414.
+
+[43] Williams, D. R. Mars fact sheet. NASA Goddard Space Flight Center, National Space Science Data Center.
+
+[44] Simo, J. C., & Hughes, T. J. R. (1998). *Computational Inelasticity*. Springer.

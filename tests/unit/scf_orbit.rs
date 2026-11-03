@@ -25,7 +25,7 @@ fn without_loss_the_update_is_the_closed_orbit_law() {
     let mut t = 0.0;
     for k in 0..40 {
         let tau = 1.0e12 * (1.0 + (k % 7) as f64);
-        law.advance(&mut s, tau, 0.0).unwrap();
+        law.advance(&mut s, tau, 0.0, 0.0).unwrap();
         t += tau;
         let want = spin.semi_major_axis(t);
         assert!((s.a - want).abs() <= 1e-12 * want, "t = {t:e}: {} vs {want}", s.a);
@@ -48,10 +48,10 @@ fn losses_slow_the_decay_by_the_mass_of_each_step() {
     for k in 0..10 {
         let (tau, lost) = (2.0e13, 0.01 * s.mass * (k as f64 + 1.0));
         want -= kappa * s.mass * tau;
-        law.advance(&mut s, tau, lost).unwrap();
+        law.advance(&mut s, tau, lost, 0.0).unwrap();
         assert!((s.a.powf(6.5) - want).abs() <= 1e-12 * want, "step {k}");
         assert!((s.mass + s.escaped - m0).abs() <= 1e-6, "ledger {} + {}", s.mass, s.escaped);
-        law.advance(&mut light, tau, 0.0).unwrap();
+        law.advance(&mut light, tau, 0.0, 0.0).unwrap();
         assert!(s.a >= light.a, "the losing satellite decayed faster");
     }
     assert!(law.adot(s.a, s.mass).abs() < law.adot(s.a, m0).abs());
@@ -68,15 +68,15 @@ fn extreme_losses_keep_the_orbit_above_the_primary() {
     let law = OrbitLaw::new(&prm, &spin, m0).unwrap();
     let mut s = OrbitLaw::start(&spin, 0.0, m0);
     let n_dot = law.ndot(s.a, s.mass);
-    law.advance(&mut s, 1.0e13, 0.999 * m0).unwrap();
+    law.advance(&mut s, 1.0e13, 0.999 * m0, 0.0).unwrap();
     // A thousandfold lighter satellite: a thousandfold slower decay.
     let ratio = law.ndot(s.a, s.mass) / n_dot;
     assert!((ratio - 1e-3).abs() < 2e-5, "ṅ ratio {ratio}");
     let whole = s.mass;
-    assert!(law.advance(&mut s.clone(), 1.0, whole).is_err(), "the whole mass was lost");
-    assert!(law.advance(&mut s.clone(), 1.0, -1.0).is_err(), "a negative loss was taken");
+    assert!(law.advance(&mut s.clone(), 1.0, whole, 0.0).is_err(), "the whole mass was lost");
+    assert!(law.advance(&mut s.clone(), 1.0, -1.0, 0.0).is_err(), "a negative loss was taken");
     let too_long = law.time_to_floor(&s) * (1.0 + 1e-6);
-    assert!(law.advance(&mut s.clone(), too_long, 0.0).is_err(), "a step crossed the primary");
+    assert!(law.advance(&mut s.clone(), too_long, 0.0, 0.0).is_err(), "a step crossed the primary");
 
     let (eps, omega_ref) = (0.01, 2.2795e-4);
     let mut steps = 0;
@@ -86,7 +86,7 @@ fn extreme_losses_keep_the_orbit_above_the_primary() {
         let dt = dt_omega.min(law.time_to_floor(&s));
         let a = s.a;
         let half = 0.5 * s.mass;
-        law.advance(&mut s, dt, half).unwrap();
+        law.advance(&mut s, dt, half, 0.0).unwrap();
         assert!(s.a <= a && s.a >= prm.primary_radius, "a went from {a} to {}", s.a);
         // Δt_ω bounds the first-order change of n by ε; the exact change is at most a few
         // per cent above it.
