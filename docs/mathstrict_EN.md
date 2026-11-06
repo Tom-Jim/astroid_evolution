@@ -1801,7 +1801,11 @@ $$
 \varepsilon_\lambda:=\frac{\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F^{\rm abs}\|_2,\varepsilon_F\}}\le\varepsilon_{\rm mom},
 $$
 
-with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}||\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\|\mathbf D(\mathbf B_\alpha)\|_F)\,dV$. A load that cancels exactly (a uniform sphere, $\mathbf F=\mathbf 0$) would make a ratio to $\|\mathbf F\|$ meaningless. The first is the Galerkin momentum residual of the true system. With the solver of Section 10.3.2 it is evaluated as (with strain-rate evaluation $\mathbf e_i(\mathbf u):=\sqrt{2}\mathbf D(\mathbf v_h)(\mathbf x_i)$ and stress sample $\boldsymbol\varsigma_i:=\mathbf S^{\rm ray}(\mathbf x_i)/\sqrt{2}$ from the Galerkin projection bridge of Section 8.3) $\mathbf F-\sum_iw_i\mathbf e_i^{\!\top}\boldsymbol\varsigma_i-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$, which equals the displayed form at the converged point, where $\boldsymbol\varsigma_i=\eta_i\mathbf e_i$. The second measures incompatibility of the load with the rigid modes, from a misaligned frame or a missing discrete rigid mode (Appendix A.3). Either failure ends the step. The strong stationary residual and the traction deviation $\delta_{na}$ are resolution indicators that converge with $K$ and $h_{\rm vol}$. They are reported each step. Above a threshold the step is marked **insufficient resolution**, which does not change decision (b): a truncated stress field can satisfy (b) and still be resolution-limited.
+with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}||\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\|\mathbf D(\mathbf B_\alpha)\|_F)\,dV$. A load that cancels exactly would make a ratio to $\|\mathbf F\|$ meaningless. The residual is assembled from the projected velocity basis and the CellBVH stress samples as
+
+$$r_\alpha=F_\alpha-\sum_i w_i\,\mathbf S_i^{\rm ray}:\mathbf D(\mathbf B_\alpha)(\mathbf x_i)-(\mathbf B_{\rm rb}^{\top}\boldsymbol\lambda)_\alpha.$$
+
+The second indicator measures incompatibility of the load with the rigid modes, from a misaligned frame or a missing discrete rigid mode (Appendix A.3). Either failure ends the step. The strong stationary residual and the traction deviation $\delta_{na}$ are resolution indicators that converge with $K$ and $h_{\rm vol}$. They are reported each step. Above a threshold the step is marked **insufficient resolution**, which does not change decision (b): a truncated stress field can satisfy (b) and still be resolution-limited.
 
 **(c) Stage equilibrium (constant spin on a stage).** The geometry is in static equilibrium iff
 
@@ -4306,7 +4310,7 @@ alternating plasticity: range (per sample)
 **Proposition 10.3.7.7 (The cycle).**
 
 1. If the trial stress $\hat{\boldsymbol\sigma}^{\rm cr}_i+\hat{\boldsymbol\sigma}^E_i(M_j)$ is admissible at every sample and phase, the algorithm returns $\hat{\boldsymbol\varepsilon}\equiv0$: no ratchet and no alternating plasticity.
-2. At each phase the radial return is the closest-point projection onto the frozen yield surface in the energy norm $\mu_e^{-1}|\cdot|^2$, i.e. the backward Euler step of the elastic–perfectly plastic law [44]. The phase loop is therefore the incremental history sampled at $N_M$ phases.
+2. At each phase the radial return is the closest-point projection onto the frozen yield surface in the energy norm $\mu_e^{-1}|\cdot|^2$, i.e. the backward Euler step of the elastic–perfectly plastic law [43]. The phase loop is therefore the incremental history sampled at $N_M$ phases.
 3. For an elastic–perfectly plastic body under a periodic load the residual stress converges to a periodic state [41]. The plastic strain then grows by the same $\Delta\hat{\boldsymbol\varepsilon}$ each cycle (ratchet) or returns to its start (alternating plasticity, $\Delta\hat{\boldsymbol\varepsilon}=0$, range $>0$).
 4. The ratchet strain per cycle scales as load over $\mu_e$: with every load and $c$ multiplied by $s$, $\Delta\hat{\boldsymbol\varepsilon}$ is multiplied by $s$. With $\mu_e$ multiplied by $s$, $\Delta\hat{\boldsymbol\varepsilon}$ is divided by $s$.
 
@@ -5071,7 +5075,7 @@ Each block becomes a body that satisfies hypothesis (G).
 
 **Surface.** Marching tetrahedra on the indicator of a label extract its surface. Each cube of voxel centres is cut into the six tetrahedra along its main diagonal, and each tetrahedron is cut at the midpoints of its edges whose ends differ. Neighbouring cubes cut their common faces alike, and the indicator is never $\tfrac12$ at a vertex. The surface is therefore a closed, oriented 2-manifold.
 
-**Body.** The surface is re-triangulated on the icosphere by the outermost crossing of each ray from its volume centroid (the general route of Section 8.1 accepts any closed polyhedron; the rays fill concavities that face away from the centroid). The level is chosen so that the edge length stays the parent's. Each Cauchy kernel goes to the piece whose label holds its centre.
+**Body.** The extracted closed 2-manifold surface directly forms the piece's boundary without radial spherical projection, strictly preserving non-star-shaped geometry, concavities, and narrow necks. To eliminate sliver triangles produced by marching tetrahedra while preserving the manifold topology, the surface undergoes topology-preserving isotropic remeshing (alternating edge collapse, edge split, and surface-projected tangential relaxation) until the mean edge length matches the parent's. The resulting non-star-shaped polyhedron directly satisfies hypothesis (G) of Section 8.1: its internal gravity and multi-crossing chord intervals are resolved via its own SurfaceBVH and CellBVH (Section 3.15 and Section 8.3). Each Cauchy kernel goes to the piece whose label holds its centre.
 
 **Mass.** The bulk density of a piece is set so that its mass equals the parent density integrated over its voxels, with the block masses scaled to the parent's total. The relative error of the pieces' total mass is reported. Each piece is then moved to its principal frame (Section 8.1, G8).
 
@@ -5277,7 +5281,7 @@ Every step reports geometric, mass, hyperbolic residual, ray/runout, density-fit
 |---|---|---|
 | PO-1 | Local solvability and convergence of the hyperbolic ray relaxation (8.3-H), including the frozen-viscosity stationary limit and the outer constitutive refresh | frozen positive-coefficient system is defined; nonlinear outer convergence is not proved |
 | PO-9 | Consistency and stability, as $\Delta t_n\to0$, of the geometric update (an RTFP–Stokes–SOCP sequence explicit in the geometry); a bound on $E_{\rm proj}$ | not proved (depends on the CFL, the under-relaxation, and the trust region) |
-| PO-10 | Short-wave ill-posedness of $\mu(I)$ outside an intermediate range of the inertial number (small and large $I$ [8]) (the short-wave symbol analysis, with the pressure coupling $\mathbb K_p$), and its localization and mesh dependence under $\dot\gamma_\varepsilon$ and $p_{\min}$. Softening under A-Ξ and A-ϖ adds a further localization, treated by the nonlocal rate of Section 11.2 (PO-24). Compressibility is known to regularize parts of the ill-posed range of $\mu(I)$ [26]; whether A-Ξ does so here is open | not proved |
+| PO-10 | Short-wave ill-posedness of $\mu(I)$ outside an intermediate range of the inertial number (small and large $I$ [8]) (the short-wave symbol analysis, with the pressure coupling $\mathbb K_p$), and its localization and mesh dependence under $\dot\gamma_\varepsilon$ and $p_{\min}$. Softening under A-Ξ and A-ϖ adds a further localization, treated by the nonlocal rate of Section 11.2 (PO-24). Compressibility is known to regularize parts of the ill-posed range of $\mu(I)$ [8]; whether A-Ξ does so here is open | not proved |
 | PO-11 | Convergence of the hyperbolic ray relaxation and its non-star-shaped BVH discretization | judged by the hyperbolic residuals of Section 2.15(a); nonlinear outer convergence is not proved |
 | PO-12 | Convergence, as $\dot\gamma_\varepsilon\to0$, of the regularized yield surface and of the core and movable set to the yielded region and sliding blocks of the unregularized model; sufficiency of the step rule of Section 10.3.1; finite-step attainment of stage equilibrium at constant $\omega_j$ (under Chapter 11, only when the slow state is at rest, Proposition 11.14) | not proved (otherwise report "stage not equilibrated", criterion (c) of Section 2.15) |
 | PO-13 | The frame realignment. On the general route it is an exact rigid motion of vertices and cores, so $E_{\rm frame}=0$ (Section 8.1, G8). Spin evolution is not an obligation without A-L: $\omega(t)$ is exogenous, and principal-axis spin is hypothesis A-S. Under A-L it is PO-27 | closed on the general route |
@@ -5344,64 +5348,63 @@ In limit analysis, a non-associated Mohr–Coulomb material has its limit load b
 
 [13] Galdi, G. P. (2011). *An Introduction to the Mathematical Theory of the Navier–Stokes Equations: Steady-State Problems* (2nd ed.). Springer.
 
-[14] Chambolle, A., & Pock, T. (2011). A first-order primal-dual algorithm for convex problems with applications to imaging. *Journal of Mathematical Imaging and Vision*, 40(1), 120–145.
 
-[15] Radenkovic, D. (1961). Théorèmes limites pour un matériau de Coulomb à dilatation non standardisée. *Comptes Rendus de l'Académie des Sciences, Paris*, 252.
+[14] Radenkovic, D. (1961). Théorèmes limites pour un matériau de Coulomb à dilatation non standardisée. *Comptes Rendus de l'Académie des Sciences, Paris*, 252.
 
-[16] Davis, E. H. (1968). Theories of plasticity and the failure of soil masses. In I. K. Lee (Ed.), *Soil Mechanics: Selected Topics* (pp. 341–380). Butterworths.
+[15] Davis, E. H. (1968). Theories of plasticity and the failure of soil masses. In I. K. Lee (Ed.), *Soil Mechanics: Selected Topics* (pp. 341–380). Butterworths.
 
-[17] Nitsche, J. (1971). Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind. *Abhandlungen aus dem Mathematischen Seminar der Universität Hamburg*, 36, 9–15.
+[16] Nitsche, J. (1971). Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind. *Abhandlungen aus dem Mathematischen Seminar der Universität Hamburg*, 36, 9–15.
 
-[18] Pailha, M., & Pouliquen, O. (2009). A two-phase flow description of the initiation of underwater granular avalanches. *Journal of Fluid Mechanics*, 633, 115–135. https://doi.org/10.1017/S0022112009007460
+[17] Pailha, M., & Pouliquen, O. (2009). A two-phase flow description of the initiation of underwater granular avalanches. *Journal of Fluid Mechanics*, 633, 115–135. https://doi.org/10.1017/S0022112009007460
 
-[19] Roux, J.-N., & Radjai, F. (1998). Texture-dependent rigid-plastic behavior. In H. J. Herrmann, J.-P. Hovi, & S. Luding (Eds.), *Physics of Dry Granular Media* (NATO ASI Series E, Vol. 350, pp. 229–236). Kluwer.
+[18] Roux, J.-N., & Radjai, F. (1998). Texture-dependent rigid-plastic behavior. In H. J. Herrmann, J.-P. Hovi, & S. Luding (Eds.), *Physics of Dry Granular Media* (NATO ASI Series E, Vol. 350, pp. 229–236). Kluwer.
 
-[20] Pijaudier-Cabot, G., & Bažant, Z. P. (1987). Nonlocal damage theory. *Journal of Engineering Mechanics*, 113(10), 1512–1533. https://doi.org/10.1061/(ASCE)0733-9399(1987)113:10(1512)
+[19] Pijaudier-Cabot, G., & Bažant, Z. P. (1987). Nonlocal damage theory. *Journal of Engineering Mechanics*, 113(10), 1512–1533. https://doi.org/10.1061/(ASCE)0733-9399(1987)113:10(1512)
 
-[21] Delbo, M., Libourel, G., Wilkerson, J., Murdoch, N., Michel, P., Ramesh, K. T., Ganino, C., Verati, C., & Marchi, S. (2014). Thermal fatigue as the origin of regolith on small asteroids. *Nature*, 508(7495), 233–236. https://doi.org/10.1038/nature13153
+[20] Delbo, M., Libourel, G., Wilkerson, J., Murdoch, N., Michel, P., Ramesh, K. T., Ganino, C., Verati, C., & Marchi, S. (2014). Thermal fatigue as the origin of regolith on small asteroids. *Nature*, 508(7495), 233–236. https://doi.org/10.1038/nature13153
 
-[22] Rubincam, D. P. (2000). Radiative spin-up and spin-down of small asteroids. *Icarus*, 148(1), 2–11. https://doi.org/10.1006/icar.2000.6485
+[21] Rubincam, D. P. (2000). Radiative spin-up and spin-down of small asteroids. *Icarus*, 148(1), 2–11. https://doi.org/10.1006/icar.2000.6485
 
-[23] Statler, T. S. (2009). Extreme sensitivity of the YORP effect to small-scale topography. *Icarus*, 202(2), 502–513. https://doi.org/10.1016/j.icarus.2009.03.003
+[22] Statler, T. S. (2009). Extreme sensitivity of the YORP effect to small-scale topography. *Icarus*, 202(2), 502–513. https://doi.org/10.1016/j.icarus.2009.03.003
 
-[24] Burns, J. A., & Safronov, V. S. (1973). Asteroid nutation angles. *Monthly Notices of the Royal Astronomical Society*, 165(4), 403–411. https://doi.org/10.1093/mnras/165.4.403
+[23] Burns, J. A., & Safronov, V. S. (1973). Asteroid nutation angles. *Monthly Notices of the Royal Astronomical Society*, 165(4), 403–411. https://doi.org/10.1093/mnras/165.4.403
 
-[25] Okada, T., Fukuhara, T., Tanaka, S., et al. (2020). Highly porous nature of a primitive asteroid revealed by thermal imaging. *Nature*, 579(7800), 518–522. https://doi.org/10.1038/s41586-020-2102-6
+[24] Okada, T., Fukuhara, T., Tanaka, S., et al. (2020). Highly porous nature of a primitive asteroid revealed by thermal imaging. *Nature*, 579(7800), 518–522. https://doi.org/10.1038/s41586-020-2102-6
 
-[26] Heyman, J., Delannay, R., Tabuteau, H., & Valance, A. (2017). Compressibility regularizes the μ(I)-rheology for dense granular flows. *Journal of Fluid Mechanics*, 830, 553–568. https://doi.org/10.1017/jfm.2017.612
+[25] Heyman, J., Delannay, R., Tabuteau, H., & Valance, A. (2017). Compressibility regularizes the μ(I)-rheology for dense granular flows. *Journal of Fluid Mechanics*, 830, 553–568. https://doi.org/10.1017/jfm.2017.612
 
-[27] Goulart, P. J., & Chen, Y. (2024). Clarabel: An interior-point solver for conic programs with quadratic objectives. *arXiv:2405.12762*.
+[26] Goulart, P. J., & Chen, Y. (2024). Clarabel: An interior-point solver for conic programs with quadratic objectives. *arXiv:2405.12762*.
 
-[28] Conley, C. C. (1968). Low energy transit orbits in the restricted three-body problems. *SIAM Journal on Applied Mathematics*, 16(4), 732–746.
+[27] Conley, C. C. (1968). Low energy transit orbits in the restricted three-body problems. *SIAM Journal on Applied Mathematics*, 16(4), 732–746.
 
-[29] Murray, C. D., & Dermott, S. F. (1999). *Solar System Dynamics*. Cambridge University Press.
+[28] Murray, C. D., & Dermott, S. F. (1999). *Solar System Dynamics*. Cambridge University Press.
 
-[30] Andersen, K. D., Christiansen, E., Conn, A. R., & Overton, M. L. (2000). An efficient primal–dual interior-point method for minimizing a sum of Euclidean norms. *SIAM Journal on Scientific Computing*, 22(1), 243–262.
+[29] Andersen, K. D., Christiansen, E., Conn, A. R., & Overton, M. L. (2000). An efficient primal–dual interior-point method for minimizing a sum of Euclidean norms. *SIAM Journal on Scientific Computing*, 22(1), 243–262.
 
-[31] Dullweber, A., Leimkuhler, B., & McLachlan, R. (1997). Symplectic splitting methods for rigid body molecular dynamics. *The Journal of Chemical Physics*, 107(15), 5840–5851.
+[30] Dullweber, A., Leimkuhler, B., & McLachlan, R. (1997). Symplectic splitting methods for rigid body molecular dynamics. *The Journal of Chemical Physics*, 107(15), 5840–5851.
 
-[32] Daisaka, H., Tanaka, H., & Ida, S. (2001). Viscosity in a dense planetary ring with self-gravitating particles. *Icarus*, 154(2), 296–312.
+[31] Daisaka, H., Tanaka, H., & Ida, S. (2001). Viscosity in a dense planetary ring with self-gravitating particles. *Icarus*, 154(2), 296–312.
 
-[33] Salmon, J., Charnoz, S., Crida, A., & Brahic, A. (2010). Long-term and large-scale viscous evolution of dense planetary rings. *Icarus*, 209(2), 771–785.
+[32] Salmon, J., Charnoz, S., Crida, A., & Brahic, A. (2010). Long-term and large-scale viscous evolution of dense planetary rings. *Icarus*, 209(2), 771–785.
 
-[34] Hesselbrock, A. J., & Minton, D. A. (2017). An ongoing satellite–ring cycle of Mars and the origins of Phobos and Deimos. *Nature Geoscience*, 10(4), 266–269.
+[33] Hesselbrock, A. J., & Minton, D. A. (2017). An ongoing satellite–ring cycle of Mars and the origins of Phobos and Deimos. *Nature Geoscience*, 10(4), 266–269.
 
-[35] Kaula, W. M. (1964). Tidal dissipation by solid friction and the resulting orbital evolution. *Reviews of Geophysics*, 2(4), 661–685.
+[34] Kaula, W. M. (1964). Tidal dissipation by solid friction and the resulting orbital evolution. *Reviews of Geophysics*, 2(4), 661–685.
 
-[36] Goldreich, P., & Sari, R. (2009). Tidal evolution of rubble piles. *The Astrophysical Journal*, 691(1), 54–60.
+[35] Goldreich, P., & Sari, R. (2009). Tidal evolution of rubble piles. *The Astrophysical Journal*, 691(1), 54–60.
 
-[37] Burmeister, S., Willner, K., Schmidt, V., & Oberst, J. (2018). Determination of Phobos' rotational parameters by an inertial frame bundle block adjustment. *Journal of Geodesy*. https://doi.org/10.1007/s00190-018-1112-8
+[36] Burmeister, S., Willner, K., Schmidt, V., & Oberst, J. (2018). Determination of Phobos' rotational parameters by an inertial frame bundle block adjustment. *Journal of Geodesy*. https://doi.org/10.1007/s00190-018-1112-8
 
-[38] Koiter, W. T. (1960). General theorems for elastic–plastic solids. In I. N. Sneddon & R. Hill (Eds.), *Progress in Solid Mechanics*, Vol. 1 (pp. 165–221). North-Holland.
+[37] Koiter, W. T. (1960). General theorems for elastic–plastic solids. In I. N. Sneddon & R. Hill (Eds.), *Progress in Solid Mechanics*, Vol. 1 (pp. 165–221). North-Holland.
 
-[39] Melan, E. (1938). Zur Plastizität des räumlichen Kontinuums. *Ingenieur-Archiv*, 9, 116–126.
+[38] Melan, E. (1938). Zur Plastizität des räumlichen Kontinuums. *Ingenieur-Archiv*, 9, 116–126.
 
-[40] Ćuk, M., Anand, K. P., & Minton, D. A. (2025). Two possible orbital histories of Phobos. arXiv:2503.12691.
+[39] Ćuk, M., Anand, K. P., & Minton, D. A. (2025). Two possible orbital histories of Phobos. arXiv:2503.12691.
 
-[41] Frederick, C. O., & Armstrong, P. J. (1966). Convergent internal stresses and steady cyclic states of stress. *Journal of Strain Analysis*, 1(2), 154–159.
+[40] Frederick, C. O., & Armstrong, P. J. (1966). Convergent internal stresses and steady cyclic states of stress. *Journal of Strain Analysis*, 1(2), 154–159.
 
-[42] Cerfontaine, B., & Collin, F. (2018). Cyclic and fatigue behaviour of rock materials: review, interpretation and research perspectives. *Rock Mechanics and Rock Engineering*, 51(2), 391–414.
+[41] Cerfontaine, B., & Collin, F. (2018). Cyclic and fatigue behaviour of rock materials: review, interpretation and research perspectives. *Rock Mechanics and Rock Engineering*, 51(2), 391–414.
 
-[43] Williams, D. R. Mars fact sheet. NASA Goddard Space Flight Center, National Space Science Data Center.
+[42] Williams, D. R. Mars fact sheet. NASA Goddard Space Flight Center, National Space Science Data Center.
 
-[44] Simo, J. C., & Hughes, T. J. R. (1998). *Computational Inelasticity*. Springer.
+[43] Simo, J. C., & Hughes, T. J. R. (1998). *Computational Inelasticity*. Springer.
