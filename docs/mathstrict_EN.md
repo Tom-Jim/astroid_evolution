@@ -8,7 +8,7 @@ This paper gives a unified mathematical and computational framework for the gran
 - semi-Lagrangian transport on the surface;
 - the geometric projection of frictional constraints.
 
-Exterior classical derivatives, interior finite parts, and surface contact terms are kept distinct. Sufficient conditions are given under which the combined rheology reduces to the classical $\mu(I)$ law. Error and range of validity are stated for the finite radial Galerkin truncation, for GPU ray intersection, and for the sequential convex QP/SOCP.
+Exterior classical derivatives, interior finite parts, and surface contact terms are kept distinct. Sufficient conditions are given under which the combined rheology reduces to the classical $\mu(I)$ law. Error and range of validity are stated for the geometry-adapted volume discretization and hyperbolic ray relaxation, for GPU ray intersection, and for the sequential convex QP/SOCP.
 
 The reference model is the quasi-static viscoplastic body of Mode B, with the single stress field
 
@@ -44,8 +44,8 @@ Rigour here means only that formulae and acceptance conditions have a determinat
 Given a rotation rate, a mass, Cauchy-density parameters, granular state variables, and a frictional law, construct a rigorous, conservation-checkable, GPU-implementable closed loop such that:
 
 1. inside a complex free boundary, $U$, $\nabla U$, and $\nabla^2U$ have one verifiable integral representation;
-3. the core of the loop is the Mode B quasi-static Stokes equilibrium with a single stress and the yield classification into rigid core and movable set. Mode C (yield-driven erosion and deposition) is auxiliary, and slope promotion adds the repose proxy of Section 10.2. Increments and slope relief are corrected relative to the current shape by sequential convex subproblems on frozen fields. The spin is exogenous unless A-L holds (Section 11.7), and Mode A is an interface only;
-4. every reduction, regularization, and degeneration is stated with its hypotheses, error sources, and boundary of validity.
+2. the core of the loop is the Mode B quasi-static Stokes equilibrium with a single stress and the yield classification into rigid core and movable set. Mode C (yield-driven erosion and deposition) is auxiliary, and slope promotion adds the repose proxy of Section 10.2. Increments and slope relief are corrected relative to the current shape by sequential convex subproblems on frozen fields. The spin is exogenous unless A-L holds (Section 11.7), and Mode A is an interface only;
+3. every reduction, regularization, and degeneration is stated with its hypotheses, error sources, and boundary of validity.
 
 **Scope of the text.** The document is a mathematical specification: definitions, propositions with proofs, and algorithms in pseudocode. It contains no implementation status and no results of particular runs. Numerical values appear only as checks of formulas or as order-of-magnitude estimates from published body parameters.
 
@@ -91,7 +91,7 @@ w_k
 \right]^{-\alpha_k}.
 $$
 
-The identities allow signed weights. As a physical density one must check $\rho_K\ge0$ a.e. on $V$. This chapter needs nothing more. The standing assumption $\rho_K\ge\rho_{\min}>0$ is a hypothesis of the mechanics (Propositions 8.1.3 and 8.3, Lemma 8.12), not of the gravity identities.
+The identities allow signed weights. As a physical density one must check $\rho_K\ge0$ a.e. on $V$. This chapter needs nothing more. The standing assumption $\rho_K\ge\rho_{\min}>0$ is a hypothesis of the mechanics (Proposition 8.1.3, Section 8.3, and Lemma 8.12), not of the gravity identities.
 
 **Constant matrix term.** The model adds a constant matrix density $\rho_b\ge0$:
 
@@ -1268,7 +1268,7 @@ $$
 
 For a unit normal and $|g_i|>0$ it reads $\sin^2\theta_i\le\sin^2\phi_i$, where $\theta_i$ is the angle between $-g_i$ and the outward normal, i.e. the slope relative to the local effective horizontal [6]. At $|g_i|=0$ the normalized form is undefined. Use the un-normalized contact or yield constraint, or mark the node degenerate; never divide by $|g_i|^2$.
 
-**Mode B: quasi-static viscoplastic Stokes creep and yield classification (a single stress field).** The only stress is that :
+**Mode B: quasi-static viscoplastic Stokes creep and yield classification (a single stress field).** The only stress is:
 
 $$
 \boxed{\ \boldsymbol\sigma=-p\,\mathbf I+\boldsymbol\tau,\qquad
@@ -1277,7 +1277,7 @@ $$
 \eta=\frac{c(\mathbf x)+\mu_d\,\tilde p}{\sqrt{\dot\gamma^2+\dot\gamma_\varepsilon^2}},\ }
 $$
 
-with $\dot\gamma=\sqrt{2\mathbf D:\mathbf D}$ and the unique regularized pressure $\tilde p:=\max([p]_+,p_{\min})$. By the rule of Section 4.13, the stress magnitude, the yield strength, and the denominator of $I_c$ all use this $\tilde p$, with $I_c$ at $p_*=\tilde p+p_c$; $\mu_d=\mu_d(I_c;\nu_0,Z_0)$ is given in Sections 4.5 and 10.2. Under A-Ξ (Section 11.3), $\mu_d=\mu_d(I_c,\nu)$, and $\mathbf D$ is replaced by its deviator $\mathbf D'$ in $\boldsymbol\tau_{\rm flow}$ and $\dot\gamma$; without A-Ξ, $\mathbf D'=\mathbf D$. Under A-ϖ, $c=(1-\mathcal R\varpi)c_{\rm intact}$ (Section 11.5). The Papanastasiou alternative $\eta=(c+\mu_d\tilde p)(1-e^{-\dot\gamma/\dot\gamma_\varepsilon})/\dot\gamma$ replaces $\eta$ and its derivatives in Sections 4.17, 5.1, and 5.3 together; the two are never mixed. At every discrete state, with a configured bound $\dot\gamma\le\dot\gamma_{\max}$ and $\mu_s\le\mu_d\le\mu_2$,
+with $\dot\gamma=\sqrt{2\mathbf D:\mathbf D}$ and the unique regularized pressure $\tilde p:=\max([p]_+,p_{\min})$. By the rule of Section 4.13, the stress magnitude, the yield strength, and the denominator of $I_c$ all use this $\tilde p$, with $I_c$ at $p_*=\tilde p+p_c$; $\mu_d=\mu_d(I_c;\nu_0,Z_0)$ is given in Sections 4.5 and 10.2. Under A-Ξ (Section 11.3), $\mu_d=\mu_d(I_c,\nu)$, and $\mathbf D$ is replaced by its deviator $\mathbf D'$ in $\boldsymbol\tau_{\rm flow}$ and $\dot\gamma$; without A-Ξ, $\mathbf D'=\mathbf D$. Under A-ϖ, $c=(1-\mathcal R\varpi)c_{\rm intact}$ (Section 11.5). The Papanastasiou alternative $\eta=(c+\mu_d\tilde p)(1-e^{-\dot\gamma/\dot\gamma_\varepsilon})/\dot\gamma$ replaces $\eta$ and its derivatives in Sections 4.17, 8.3, and 10.3.2 together; the two are never mixed. At every discrete state, with a configured bound $\dot\gamma\le\dot\gamma_{\max}$ and $\mu_s\le\mu_d\le\mu_2$,
 
 $$
 0<\eta_{\rm lo}
@@ -1320,7 +1320,7 @@ With $\mu_d=\mu_s$, $F_\delta>0$ iff $\dot\gamma>\dot\gamma_Y$, where $\dot\gamm
 
 *Why (B2) cannot decide shallow failure.* Three properties of the model bias (B2) against failing a thin surface layer.
 
-1. *Resolution.* A velocity basis truncated at degree $h_{\rm vol}$ and a quadrature of $N_q$ volume points resolve stresses only on wavelengths of order $2\pi\bar R/$h_{\rm vol}$$ and on the scale of the point spacing. A failure surface at depth $h_s\ll\bar R/$h_{\rm vol}$$ under one mesh face is below that resolution. A resolved solve would fail such a layer when it is steep enough: on an infinite slope of inclination $\theta$ the shear-to-normal ratio on parallel planes is $\tan\theta$.
+1. *Resolution.* A velocity basis of support scale $h_{\rm vol}$ and a quadrature of $N_q$ volume points resolve stresses only on wavelengths of order $h_{\rm vol}$ and on the scale of the point spacing. A failure surface at depth $h_s\ll h_{\rm vol}$ under one mesh face is below that resolution. A resolved solve would fail such a layer when it is steep enough: on an infinite slope of inclination $\theta$ the shear-to-normal ratio on parallel planes is $\tan\theta$.
 2. *Stress state of the creep model.* For uniform density $\rho_K\nabla W$ is a gradient carried by the pressure. Deviatoric stress then comes only from the departure of $\Gamma$ from an equipotential and, for variable density, from the baroclinic source of Section 6.2. The incompressible creep state is the least-deviatoric state compatible with the geometry. Elastic–plastic analyses of a compressible body ([10] for Ryugu) carry more, so (B2) on the creep stress is biased toward no yield. A-Ξ (Section 11.3) does not remove this bias. Its volume change is driven by plastic shear in material that has already yielded, not by elastic compressibility.
 3. *Strength.* With published values for Ryugu, $\rho_K|\mathbf g|\approx0.18\ \mathrm{Pa\,m^{-1}}$ and an interior cohesion $c_b\approx4$ Pa [10]. A failure plane parallel to a $45^\circ$ slope with $\mu_y=0.70$ needs a normal depth of about $c_b/(\rho_K|\mathbf g|(\sin45^\circ-\mu_y\cos45^\circ))\approx100$ m. The absence of interior yield on such a body is therefore not by itself a defect of the model; causes 1 and 2 only decide that a shallow layer cannot fail in the truncated solve.
 
@@ -1801,7 +1801,7 @@ $$
 \varepsilon_\lambda:=\frac{\|\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda\|_2}{\max\{\|\mathbf F^{\rm abs}\|_2,\varepsilon_F\}}\le\varepsilon_{\rm mom},
 $$
 
-with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}||\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\|\mathbf D(\mathbf B_\alpha)\|_F)\,dV$. A load that cancels exactly (a uniform sphere, $\mathbf F=\mathbf 0$) would make a ratio to $\|\mathbf F\|$ meaningless. The first is the Galerkin momentum residual of the true system. With the solver of Section 10.3.2 it is evaluated as $\mathbf F-\sum_iw_i\mathbf e_i^{\!\top}\boldsymbol\varsigma_i-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$, which equals the displayed form at the converged point, where $\boldsymbol\varsigma_i=\eta_i\mathbf e_i$. The second measures incompatibility of the load with the rigid modes, from a misaligned frame or a missing discrete rigid mode (Appendix A.3). Either failure ends the step. The strong stationary residual and the traction deviation $\delta_{na}$ are resolution indicators that converge with $K$ and $h_{\rm vol}$. They are reported each step. Above a threshold the step is marked **insufficient resolution**, which does not change decision (b): a truncated stress field can satisfy (b) and still be resolution-limited.
+with the absolute load scale $F^{\rm abs}_\alpha=\int(\rho_K|\mathbf g_{\rm eff}||\mathbf B_\alpha|+\|\mathbf T_{\rm tide}\|_F\|\mathbf D(\mathbf B_\alpha)\|_F)\,dV$. A load that cancels exactly (a uniform sphere, $\mathbf F=\mathbf 0$) would make a ratio to $\|\mathbf F\|$ meaningless. The first is the Galerkin momentum residual of the true system. With the solver of Section 10.3.2 it is evaluated as (with strain-rate evaluation $\mathbf e_i(\mathbf u):=\sqrt{2}\mathbf D(\mathbf v_h)(\mathbf x_i)$ and stress sample $\boldsymbol\varsigma_i:=\mathbf S^{\rm ray}(\mathbf x_i)/\sqrt{2}$ from the Galerkin projection bridge of Section 8.3) $\mathbf F-\sum_iw_i\mathbf e_i^{\!\top}\boldsymbol\varsigma_i-\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda$, which equals the displayed form at the converged point, where $\boldsymbol\varsigma_i=\eta_i\mathbf e_i$. The second measures incompatibility of the load with the rigid modes, from a misaligned frame or a missing discrete rigid mode (Appendix A.3). Either failure ends the step. The strong stationary residual and the traction deviation $\delta_{na}$ are resolution indicators that converge with $K$ and $h_{\rm vol}$. They are reported each step. Above a threshold the step is marked **insufficient resolution**, which does not change decision (b): a truncated stress field can satisfy (b) and still be resolution-limited.
 
 **(c) Stage equilibrium (constant spin on a stage).** The geometry is in static equilibrium iff
 
@@ -3032,7 +3032,7 @@ $$
 
 with the segments of the RTFP ray from the field point $O$ (Section 3.6), and $r_1^-=0$ iff $O\in\mathcal V$. The rule is the angular rule times radial nodes per segment: Gauss–Jacobi with weight $r^2$ when $r_s^-=0$, Gauss–Legendre on $fr^2$ otherwise. All weights are positive. The endpoints jump or behave like a square root at silhouette directions, so a fixed angular rule converges slowly. Subdivide the cut angular cells, or tetrahedralize $\mathcal V$. Polynomial integrands (the $\eta$-free matrices of the even basis) are exact by the exact polynomial volume rule.
 
-**(G3) The pressure datum by Nitsche's method [17].** The elliptic Nitsche problem is retained as the static-pressure initializer $p_0$, as the stress-to-pressure affine operator used by limit-analysis bounds, and as an optional global correction every $N_p$ hyperbolic sweeps; it is not a second pressure solve in the reference loop. With $R_*$ the pressure functions do not vanish on $\Gamma$, so $p_\Gamma$ is imposed weakly. With $\mathbf f=\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau$ and one global length $h_N=R_{\rm ref}$ (a global geometric scale $R_{\rm ref}$$), seek $p_h\in\mathbb Q_h$ with $a_N(p_h,q)=\ell_N(q)$ for all $q\in\mathbb Q_h$:
+**(G3) The pressure datum by Nitsche's method [17].** The elliptic Nitsche problem is retained as the static-pressure initializer $p_0$, as the stress-to-pressure affine operator used by limit-analysis bounds, and as an optional global correction every $N_p$ hyperbolic sweeps; it is not a second pressure solve in the reference loop. With $R_*$ the pressure functions do not vanish on $\Gamma$, so $p_\Gamma$ is imposed weakly. With $\mathbf f=\rho_K\mathbf g_{\rm eff}+\nabla\cdot\boldsymbol\tau$ and one global length $h_N=R_{\rm ref}$ (a global geometric scale $R_{\rm ref}$), seek $p_h\in\mathbb Q_h$ with $a_N(p_h,q)=\ell_N(q)$ for all $q\in\mathbb Q_h$:
 
 $$
 \begin{aligned}
@@ -3101,7 +3101,7 @@ $$
 
 Adjacency joins successive probes on a normal, probes of equal $q$ on mesh-adjacent vertices, and each point to its $k$ nearest points of $\mathcal X_{\rm vol}$ along segments inside $\mathcal V$ (any-hit query). The core, tie rule, and $\chi_{Y,i}$ are those of (B3), and the radial mesh of (B3) is the star-shaped instance.
 
-*Evaluation by inheritance.* On a triangulation obtained by subdivision, every vertex of the finest level is the midpoint of an edge $(a,b)$ of the previous level. $\mathbf v$, $\mathbf D$, $\tilde p$, and $F_\delta$ are evaluated exactly on $\mathcal X_{\rm vol}$ and on the probes and vertices of the previous level. The point of layer $q$ of a midpoint vertex takes the mean of the layer-$q$ values of its parents when both have $F_\delta\le-\kappa_Y(1-\delta_Y)\tau_y$, $\kappa_Y=0.05$; otherwise it is evaluated exactly. An inherited point is unyielded and carries no yielded rate. $F_\delta$ of the exact field stays negative there whenever it varies by less than $\kappa_Y(1-\delta_Y)\tau_y$ over half an edge, which holds because the resolved field varies on lengths of order $2\pi R_*/$h_{\rm vol}$$, far above the edge length. Its velocity is the exact midpoint value for a rigid motion, the only motion an unyielded block has. The yield set, the core, and the slip velocity of every yielded or near-yield point are those of the exact evaluation. Without a subdivision hierarchy every point is evaluated exactly.
+*Evaluation by inheritance.* On a triangulation obtained by subdivision, every vertex of the finest level is the midpoint of an edge $(a,b)$ of the previous level. $\mathbf v$, $\mathbf D$, $\tilde p$, and $F_\delta$ are evaluated exactly on $\mathcal X_{\rm vol}$ and on the probes and vertices of the previous level. The point of layer $q$ of a midpoint vertex takes the mean of the layer-$q$ values of its parents when both have $F_\delta\le-\kappa_Y(1-\delta_Y)\tau_y$, $\kappa_Y=0.05$; otherwise it is evaluated exactly. An inherited point is unyielded and carries no yielded rate. $F_\delta$ of the exact field stays negative there whenever it varies by less than $\kappa_Y(1-\delta_Y)\tau_y$ over half an edge, which holds because the resolved field varies on lengths of order $h_{\rm vol}$, far above the edge length. Its velocity is the exact midpoint value for a rigid motion, the only motion an unyielded block has. The yield set, the core, and the slip velocity of every yielded or near-yield point are those of the exact evaluation. Without a subdivision hierarchy every point is evaluated exactly.
 
 **(G8) The frame realignment.** Step 8b is a rigid motion of the vertices, $\mathbf X_i\leftarrow\mathbf Q(\mathbf X_i-\mathbf x_{\rm cm})$, and of the cores. There is no resampling, $\rho_s$ stays on its vertices, and the mass is unchanged to rounding, so $E_{\rm frame}=0$. The general route has no radial resampling and therefore no associated error term.
 
@@ -3170,20 +3170,23 @@ $$
 
 The incoming characteristic components are determined from this traction relation; outgoing components are obtained from interior ray propagation. The boundary condition is imposed only on incoming modes, so the hyperbolic problem is not over-constrained.
 
-**Characteristic form.** Let $\mathbf U=(\mathbf v,\mathbf S,p)$. For a unit direction $\mathbf n$, define $A(\mathbf n)=\sum_j n_jA_j$ by the principal part of (8.3-H). The characteristic pairs satisfy
+**Characteristic form and full eigensystem.** Let $\mathbf U=(\mathbf v,\mathbf S,p)\in\mathbb R^{10}$ (three velocity components, six independent symmetric stress components, and one pressure). For a unit propagation direction $\mathbf n$ completed to an orthonormal triad $\{\mathbf n,\mathbf t_1,\mathbf t_2\}$, define the principal symbol $A(\mathbf n)=\sum_j n_jA_j$ of (8.3-H). Its characteristic pairs $A(\mathbf n)r_\alpha=\lambda_\alpha r_\alpha$ split into three families for frozen positive $\rho_\tau$, $T_s$, $\kappa$, and $\eta$:
 
-$$
-A(\mathbf n)r_\alpha=\lambda_\alpha r_\alpha.
-$$
+1. *Longitudinal (P-wave) family* ($\alpha=P,\pm$, multiplicity $1+1$):
+   $$
+   \lambda_{P,\pm}(x)=\pm c_{\rm hyp}(x),\qquad
+   c_{\rm hyp}(x):=\sqrt{\frac{2\eta(x)}{\rho_\tau(x)T_s}+\frac{1}{\rho_\tau(x)\kappa}},
+   $$
+   with characteristic amplitudes $w_{P,\pm}=\rho_\tau c_{\rm hyp}\,(\mathbf v\cdot\mathbf n)\mp(\mathbf n\cdot\mathbf S\mathbf n-p)$.
+2. *Transverse shear (S-wave) families* ($\alpha=(S,a,\pm)$ for $a\in\{1,2\}$, multiplicity $2+2$):
+   $$
+   \lambda_{S,a,\pm}(x)=\pm c_s(x),\qquad
+   c_s(x):=\sqrt{\frac{\eta(x)}{\rho_\tau(x)T_s}},
+   $$
+   polarized along $\mathbf t_a\perp\mathbf n$, with characteristic amplitudes $w_{S,a,\pm}=\rho_\tau c_s\,(\mathbf v\cdot\mathbf t_a)\mp(\mathbf n\cdot\mathbf S\mathbf t_a)$.
+3. *Stationary (non-propagating) relaxation modes* ($\lambda_0=0$, multiplicity $4$): the three in-plane stress components $\mathbf t_a\cdot\mathbf S\mathbf t_b$ ($1\le a\le b\le 2$) and the normal-stress/pressure invariant $\kappa^{-1}(\mathbf n\cdot\mathbf S\mathbf n)+(2\eta/T_s)p$, which do not propagate along $\mathbf n$ and relax in place at $x$.
 
-For frozen positive $\rho_\tau$, $T_s$, $\kappa$, and $\eta$, the pressure/shear wave speed is
-
-$$
- c_{\rm hyp}(x)=
-\sqrt{\frac{2\eta(x)}{\rho_\tau(x)T_s}+\frac{1}{\rho_\tau(x)\kappa}}.
-$$
-
-Choosing $\rho_\tau=\rho_K$ makes the Cauchy density a propagation metric while leaving the stationary equations unchanged. The characteristic path is integrated in Hamiltonian form
+At a boundary point with outward normal $\mathbf n$, the three incoming amplitudes $(w_{P,-},w_{S,1,-},w_{S,2,-})$ are uniquely determined from the three outgoing interior amplitudes $(w_{P,+},w_{S,1,+},w_{S,2,+})$ and the three components of the traction condition $(\mathbf S-p\mathbf I)\mathbf n=\mathbf t_{\rm ext}-\mathbf T_{\rm tide}\mathbf n$ (one normal component $\mathbf n\cdot\mathbf S\mathbf n-p$ and two shear components $\mathbf n\cdot\mathbf S\mathbf t_a$). Choosing $\rho_\tau=\rho_K$ makes the Cauchy density a propagation metric while leaving the stationary equations unchanged. The characteristic path is integrated in Hamiltonian form
 
 $$
 \frac{d x}{d\tau}=\nabla_k\omega_\alpha(x,k),
@@ -3297,11 +3300,11 @@ Both surface integrands are defined almost everywhere on $\Gamma$: Proposition 2
 The volume and ray discretizations are refinement parameters. Every run must report:
 
 1. the hyperbolic ray-sweep count, the number of pressure corrections, and the residuals (a), (b) of Section 2.15;
-3. $\varepsilon_\lambda$, $\operatorname{rank}\mathbf B_{\rm rb}$, and its smallest singular value;
-4. the hyperbolic momentum, constitutive, divergence, traction, and energy residuals of Sections 2.15 and 8.3; the dynamic benchmark also reports a numerical inf–sup indicator (PO-2);
-5. the tangential traction inconsistency $\delta_{na}$ (Section 10.1.1);
-6. the RTFP gravity error;
-7. the geometry of Section 8.1: the condition number of the $\eta$-free Gram matrix on $\mathcal V$, $C_N$ and $\gamma_N$, and the smallest clearance ratio $\min_i|d_i|/t_i^\pm$.
+2. $\varepsilon_\lambda$, $\operatorname{rank}\mathbf B_{\rm rb}$, and its smallest singular value;
+3. the hyperbolic momentum, constitutive, divergence, traction, and energy residuals of Sections 2.15 and 8.3; the dynamic benchmark also reports a numerical inf–sup indicator (PO-1);
+4. the tangential traction inconsistency $\delta_{na}$ (Section 10.1.1);
+5. the RTFP gravity error;
+6. the geometry of Section 8.1: the condition number of the $\eta$-free Gram matrix on $\mathcal V$, $C_N$ and $\gamma_N$, and the smallest clearance ratio $\min_i|d_i|/t_i^\pm$.
 
 A smallest normalized singular value of $\mathbf B_{\rm rb}$ below a configured threshold means the rigid constraint is numerically rank-deficient, and the step stops.
 
@@ -3712,7 +3715,7 @@ $$
 
 The tide is equivalently included in the total stress $\mathbf S+\mathbf T_{\rm tide}$. The source $g$ is zero in the reference incompressible model and is $\dot\varepsilon_v$ under A-$\Xi$. The viscosity $\eta^{(m)}$ is frozen during outer rheology pass $m$ and recomputed from $(\tilde p,\dot\gamma)$ after the pseudo-time solve.
 
-**Characteristic packets.** At every volume sample and for every local characteristic family $\alpha$, form $A(\mathbf n)$ from the principal part of (10.3.2-H), compute $(\lambda_\alpha,r_\alpha,\ell_\alpha)$, and backtrace the Hamiltonian characteristic
+**Characteristic packets.** At every volume sample and for every local characteristic family $\alpha$ of Section 8.3, form $A(\mathbf n)$ from the principal part of (10.3.2-H), compute $(\lambda_\alpha,r_\alpha,\ell_\alpha)$, and backtrace the Hamiltonian characteristic
 
 $$
 \frac{dx}{d\tau}=\nabla_k\omega_\alpha(x,k),
@@ -3722,13 +3725,15 @@ $$
 \omega_\alpha=\lambda_\alpha(x,\widehat k)\lVert k\rVert.
 $$
 
-With $\rho_\tau=\rho_K$, the Cauchy density enters the local wave speed
+With $\rho_\tau=\rho_K$, the Cauchy density enters both the longitudinal (P-wave) speed and the transverse shear (S-wave) speed,
 
 $$
- c_{\rm hyp}(x)=\sqrt{\frac{2\eta(x)}{\rho_K(x)T_s}+\frac{1}{\rho_K(x)\kappa}}.
+c_{\rm hyp}(x)=\sqrt{\frac{2\eta(x)}{\rho_K(x)T_s}+\frac{1}{\rho_K(x)\kappa}},
+\qquad
+c_s(x)=\sqrt{\frac{\eta(x)}{\rho_K(x)T_s}},
 $$
 
-The path is approximated by straight segments inside BVH cells; coefficients and eigenvectors are refreshed at every segment boundary. This is a non-star-shaped construction and does not use $r=R(\hat\omega)$.
+so the propagating families have $\lambda_{P,\pm}=\pm c_{\rm hyp}(x)$ (one pair) and $\lambda_{S,a,\pm}=\pm c_s(x)$ ($a=1,2$, two orthogonal shear pairs), while the four stationary modes with $\lambda_0=0$ relax in place at $x$. The path of each propagating mode is approximated by straight segments inside BVH cells; coefficients and eigenvectors are refreshed at every segment boundary. This is a non-star-shaped construction and does not use $r=R(\hat\omega)$.
 
 **RT hardware path query.** A SurfaceBVH stores the boundary triangles and a CellBVH stores volume-cell AABBs. For a backtraced characteristic, repeated ray queries return the ordered segment list
 
@@ -3751,7 +3756,7 @@ $$
 +\left(1-e^{-\Delta\tau/T_s}\right)2\eta^{(m)}\mathbf D^{\rm up}.
 $$
 
-At a boundary hit, outgoing characteristic amplitudes come from the interior and incoming amplitudes are solved from
+At a boundary hit, the three outgoing characteristic amplitudes $(w_{P,+},w_{S,1,+},w_{S,2,+})$ come from the interior ray and the three incoming amplitudes $(w_{P,-},w_{S,1,-},w_{S,2,-})$ are solved from the normal and tangential components of
 
 $$
 (-p\mathbf I+\mathbf S+\mathbf T_{\rm tide})\mathbf n=\mathbf t_{\rm ext}.
@@ -3765,7 +3770,30 @@ $$
 \nabla\cdot\mathbf v-g=-\kappa\partial_\tau p,
 $$
 
-and project out the six mass-weighted rigid modes with the Appendix A.3 system. The pseudo-time solve stops only when the momentum, constitutive, divergence, traction, and rigid-mode residuals all satisfy Section 2.15.
+(or the optional global Nitsche pressure projection of Section 8.1, G3), and project out the six mass-weighted rigid modes with the Appendix A.3 system. The pseudo-time solve stops only when the momentum, constitutive, divergence, traction, and rigid-mode residuals all satisfy Section 2.15.
+
+**Modal projection and sample operators (connection to Sections 2.15, 9.2, and 10.1).** Once the outer rheology pass converges to the sample state $\mathbf U=(\mathbf v^{\rm ray},\mathbf S^{\rm ray},p^{\rm ray})$, the modal coefficient vector $\mathbf u=(u_\alpha)$ (written $c_\alpha\equiv u_\alpha$ in Section 10.1) in the geometry-adapted basis $\mathbb V_h^\sigma=\operatorname{span}\{\mathbf B_\alpha\}$ is obtained by the constrained $L^2(\rho_K)$ Galerkin projection of Section 8.3:
+
+$$
+\boxed{
+\mathbf M_\Gamma\mathbf u+\mathbf B_{\rm rb}^{\!\top}\boldsymbol\lambda_{\rm proj}
+=\int_{\mathcal V}\rho_K\,\mathbf B^{\!\top}\!\big(\mathbf v^{\rm ray}-\mathbf v_\varepsilon\big)\,dV,
+\qquad
+\mathbf B_{\rm rb}\mathbf u=-\mathbf b_\varepsilon,
+\qquad
+\mathbf v_h(\mathbf x)=\mathbf v_\varepsilon(\mathbf x)+\sum_\alpha u_\alpha\mathbf B_\alpha(\mathbf x),
+}
+$$
+
+where $\mathbf v_\varepsilon=\mathbf 0$ and $\mathbf b_\varepsilon=\mathbf 0$ unless A-$\Xi$ is on (Section 11.4). The Cholesky factor of $\mathbf M_\Gamma$ and the $6\times 6$ Schur complement of $\mathbf B_{\rm rb}$ are built once per geometry. All downstream operations that require continuous spatial derivatives—the surface velocity trace and surface-invariant shear rate of Section 10.1, the 2-jet core advection $\nabla\mathbf v_{\rm adv}$ of Section 9.2, and the marker transport of Section 11.1—evaluate $\mathbf v_h$ and $\nabla\mathbf v_h$ analytically from $\mathbf u$. At the volume quadrature nodes $\mathbf x_i$ (weights $w_i$), define the normalized strain-rate evaluation operator and dual stress samples
+
+$$
+\mathbf e_i(\mathbf u):=\sqrt{2}\,\mathbf D'(\mathbf v_h)(\mathbf x_i),
+\qquad
+\boldsymbol\varsigma_i:=\frac{1}{\sqrt{2}}\,\mathbf S^{\rm ray}(\mathbf x_i),
+$$
+
+so that $|\mathbf e_i(\mathbf u)|=\dot\gamma_i(\mathbf v_h)$, $|\boldsymbol\varsigma_i|=\|\mathbf S^{\rm ray}(\mathbf x_i)\|_{\rm eq}$, and $\sum_i w_i\mathbf e_i^{\!\top}\boldsymbol\varsigma_i$ is the discrete internal virtual work used in the weak mechanical balance test of Section 2.15(b), the limit-load dual program of Proposition 2.17.1, the fused variant of Section 10.3.5, and Conjecture A.2.
 
 **Algorithm.**
 
@@ -3774,7 +3802,7 @@ Input: current non-star-shaped mesh, rho_K, omega_n, gravity, tide, v, S, p.
 Build or refit SurfaceBVH and CellBVH.
 For outer rheology pass m:
   evaluate p~, D(v), gamma_dot, mu_d, eta^(m), rho_tau=rho_K;
-  compute local characteristic data;
+  compute local characteristic speeds (c_hyp, c_s, 0) and eigenvectors;
   repeat ray sweeps until the hyperbolic residuals pass:
     for every cell sample and characteristic family:
       backtrace the characteristic over Delta_tau;
@@ -3782,20 +3810,24 @@ For outer rheology pass m:
       interpolate the upstream state;
       integrate source terms and exact stress relaxation;
       reconstruct (v,S,p);
-    impose incoming traction modes;
+    impose incoming P and S traction modes at boundary hits;
     apply pressure correction and rigid-mode projection;
     evaluate momentum, constitutive, divergence, traction, and energy residuals;
   update eta and repeat the outer pass.
-Output: converged v, S, p and the same yield/connectivity data used by B2--B4.
+Project converged v onto the geometry-adapted basis:
+  solve M_Gamma u + B_rb^T lambda = int rho_K B^T (v - v_eps) dV with B_rb u = -b_eps;
+  set v_h = v_eps + sum_alpha u_alpha B_alpha and form (e_i(u), varsigma_i).
+Output: converged (u, v_h, S, p), projection defect e_proj, and the yield/connectivity data used by B2--B4.
 ```
 
 The local CFL restriction is
 
 $$
-\Delta\tau\le C_{\rm CFL}\frac{h_{\min}}{\max_{x,\alpha}|\lambda_\alpha(x)|}.
+\Delta\tau\le C_{\rm CFL}\frac{h_{\min}}{\max_{x,\alpha}|\lambda_\alpha(x)|}
+=C_{\rm CFL}\frac{h_{\min}}{\max_{x}c_{\rm hyp}(x)},
 $$
 
-For frozen positive coefficients the energy identity of Section 8.3 is the stability check. As $h\to0$, $\Delta\tau\to0$, and the residual tolerances tend to zero, every stationary limit satisfies the original frozen-viscosity Stokes equations. The outer $\mu(I)$ and pressure/state update remains a fixed-point problem; non-monotone rate dependence does not receive an unconditional existence or uniqueness claim.
+since $c_{\rm hyp}(x)>c_s(x)>0$ everywhere. For frozen positive coefficients the energy identity of Section 8.3 is the stability check. As $h\to0$, $\Delta\tau\to0$, and the residual tolerances tend to zero, every stationary limit satisfies the original frozen-viscosity Stokes equations. The outer $\mu(I)$ and pressure/state update remains a fixed-point problem; non-monotone rate dependence does not receive an unconditional existence or uniqueness claim.
 
 The geometric correction following this solve is still the SOCP of Section 10.3.3. The hyperbolic ray solver replaces the former rheology solver only; it does not remove the mass, clearance, trust-region, or slope projection program.
 
@@ -3981,7 +4013,7 @@ S. Settling (fast operator, hypothesis A-T1), on V^(n+1) after 8b, with chi_Y an
 9. t_{n+1} = t_n + lambda Delta t_n. Under A-O: a_{n+1}^{13/2} = a_n^{13/2} - kappa M_n tau_n,
    M_{n+1} = M_n - M_esc,n; the run stops when a reaches the primary. Under A-Lambda:
    e_{n+1} = e_n (a_{n+1}/a_n)^(C_e + beta_n) (Proposition 10.3.7.1). Record X^(n+1), rho_s,
-   theta^(n+1), the diagnostics,. Return to step 1.
+   theta^(n+1), the diagnostics. Return to step 1.
 ```
 
 **Stage equilibrium and micro-creep.** 2.15(c) is a strict fixed point. With an empty movable set, $d_*=0$ exactly, independent of $\Delta t_n$ and $\lambda$. The regularized creep inside the core, $|\mathbf v|\sim\dot\gamma_YR$, is only a diagnostic, $\max_{\mathcal U_{\rm core}}|\mathbf v_{\rm sl}|$. It enters neither the geometry, nor the step, nor the flux, nor any state. There is no "velocity floor" test, and creep causes no geometric or historical drift. As $\dot\gamma_\varepsilon\to0$ the core creep vanishes, and the movable set tends to the yielded region and sliding blocks of the unregularized model (PO-12).
@@ -4348,7 +4380,7 @@ Stages in the last column read the same inputs and write disjoint data, so they 
 All per-point and per-node arrays stay in device memory for the run: mesh, acceleration structure, segment table, point sets, fields, modal coefficients, $\eta$ and $\tilde p$ at the nodes, $\chi_Y$, $\rho_s$, and the cores. Only *reductions* return to the host:
 
 - the hyperbolic momentum, constitutive, divergence, traction, energy, and ray residuals;
-- the $6\times6$ and $7\times7$ range-space Gram matrices;
+- the $6\times6$ rigid-mode Gram matrix;
 - the extrema for $\Delta t_n$;
 - the Gauss–Newton matrix;
 - $\mathcal M$, $\mathbf x_{\rm cm}$, and $\mathbf I$;
@@ -4364,7 +4396,7 @@ The components of step 3 need only one byte of $\chi$ per point. Each stage is o
 | hit distances, $b_k,d_k$, radial integrals | double, or double-float, after hit refinement (3.15.4) | endpoints enter every integral |
 | accumulation of $U,\nabla U,H$ (six components) | double, or compensated single, fixed reduction order | reproducibility; finite-part cancellations |
 | characteristic state reconstruction and source accumulation | single for ray-local work, double for residuals and reductions | pseudo-time iteration |
-| primal iterate, $\mathbf P$ factor, residuals of (a)(b), $\boldsymbol\lambda$ | double | acceptance decisions |
+| projected modal state $\mathbf u$, $\mathbf M_\Gamma$ factor, residuals of (a)(b), $\boldsymbol\lambda$ | double | acceptance decisions |
 | core parameters, $\mathbf F_k$, Gauss–Newton solve | double | $K$ is small |
 
 ### 10.4.4 Organization in an entity–component–system architecture
@@ -4395,7 +4427,7 @@ $$
 with $N_{\rm ray}$ hyperbolic ray sweeps of cost $C_{\rm ray}$ each (Section 10.4.6), $N_{\rm src}$ eroding nodes and relieved vertices, and $\bar N_\tau$ mean runout substeps, each a constant-time face lookup. Relief routing adds one warm-started second solve on geometry steps. Against a full rebuild, full retrace, and assembled $\mathbf K(\eta)$ per round, the dominant terms fall:
 
 - traversal goes from $O(N_xN_\Omega(\log F+\bar L))$ to the dirty fraction, which is zero in equilibrium and for density-only updates;
-- each velocity-operator application goes from an assembled $O(N_qN_u^2)$ to the $O(N_\Omega\bar L(m_{\max}+1)N_u+N_{\rm nodes}m_{\max})$ of Section 10.4.6, with no $N_{\rm nodes}\times N_u$ matrix.
+- each hyperbolic ray sweep costs $C_{\rm ray}=O(PR\log N_{\rm BVH}+PR\bar L+P)$ of Section 10.4.6, with no assembled global stiffness matrix.
 
 With the hypotheses of Chapter 11, $C_{\rm step}$ additionally gains the terms of Section 11.9: the marker transport and reconstruction, the nonlocal rate and $\chi_h$ at each pressure update, the thermal solve on dirty faces, and an $O(1)$ spin update. The unknowns and the characteristic CFL condition of the ray relaxation replace the former primal–dual step condition. These are planning estimates.
 
@@ -4891,7 +4923,7 @@ Then every quantity of the loop of Sections 10.3.4 and 11.9 equals, step by step
 
 *Proof.*
 
-- (a) $\Xi\equiv0$ gives $\dot\varepsilon_v\equiv0$, so $\mathbf b_\chi=\mathbf 0$ and, the normal equations being SPD, $\chi_h=0$. Hence $\mathbf v_\varepsilon=\mathbf 0$, $\mathbf e^\varepsilon=\mathbf 0$, and $\mathbf b_\varepsilon=\mathbf 0$, which leaves Section 8.3 and Section 10.3.2 unchanged. Also $\mu_d=\mu_{\rm cs}$ and $\mu_y=\mu_s$. $J_\nu\equiv1$ by Proposition 11.5(4), which leaves Level 0, $\rho_{\rm cand}$, and the Level 2 target unchanged. Level 1 is that of Section 9.2.4.
+- (a) $\Xi\equiv0$ gives $\dot\varepsilon_v\equiv0$, so $\mathbf b_\chi=\mathbf 0$ and, the normal equations being SPD, $\chi_h=0$. Hence $\mathbf v_\varepsilon=\mathbf 0$ and $\mathbf b_\varepsilon=\mathbf 0$, which leaves Section 8.3 and Section 10.3.2 unchanged. Also $\mu_d=\mu_{\rm cs}$ and $\mu_y=\mu_s$. $J_\nu\equiv1$ by Proposition 11.5(4), which leaves Level 0, $\rho_{\rm cand}$, and the Level 2 target unchanged. Level 1 is that of Section 9.2.4.
 - (b) Proposition 11.9 with $a=0$ and $\varpi=0$ keeps $\varpi\equiv0$, so $c=c_{\rm intact}$.
 - (c) $\varpi_\Gamma\equiv0$ and $J_\Theta=0$ (Proposition 11.11(4)), so $c_\Gamma=(1-\mathcal R\varpi)c_s$ and $\rho_s$ has no new source.
 - (d) By definition.
@@ -5268,7 +5300,7 @@ Every step reports geometric, mass, hyperbolic residual, ray/runout, density-fit
 | PO-30 | Hypothesis A-B, the cut. Proved: Proposition 12.1 (an exactly piecewise-rigid mechanism is a fixed point of the fit with zero misfit), the closed manifold of the extracted surface, the mass of the pieces. Open: the physical validity of rigid blocks for a granular mechanism smoothed by the Galerkin basis; the dependence of the cut on the gain, the voxel spacing, and the outermost-crossing re-triangulation | partially closed; the misfits and the mass error are reported |
 | PO-31 | The fragments' dynamics. Proved: Propositions 12.2 and 12.3 (exact conservation of momentum and angular momentum, second order). Open: the error of the quadrupole expansion at the switching distance; sticky contact in place of frictional contact; the synchronous, tide-aligned load of the cascade as the worst case | partially closed; momentum, angular momentum, energy, and the energy dissipated in mergers are reported |
 | PO-32 | The debris ring. Proved: Proposition 12.4 (the ledger). Open: positivity of the explicit nonlinear update at the stated step; the range of validity of the wake viscosity; moonlet formation and migration, and the ring's action on fragments, which are not modelled | partially closed; the ring, primary, and moonlet masses are reported |
-| PO-33 | Hypothesis A-Λ. Proved: Propositions 10.3.7.1 (eccentricity at constant $Q$, exact per step), 10.3.7.2 (libration), 10.3.7.3 (self-equilibrium of the cyclic load), 10.37.2 (modulus independence of the cyclic stress), 10.37.3 (peak and shakedown brackets for the associated surrogate at frozen strength), 10.3.7.7 (1, 2, 4) and 10.3.7.8. Open: convergence of the sampled phase loop to the continuous cycle as $N_M\to\infty$; shakedown of the non-associated law; the error of the incompressible elastic cycle; the transfer of the rock S–N line to the bonds of a rubble pile | partially closed; $|\Gamma|$, $\psi$, the torque residual, the three indicators, the brackets, and the cycle counts are reported |
+| PO-33 | Hypothesis A-Λ. Proved: Propositions 10.3.7.1 (eccentricity at constant $Q$, exact per step), 10.3.7.2 (libration), 10.3.7.3 (self-equilibrium of the cyclic load), 10.3.7.4 (modulus independence of the cyclic stress), 10.3.7.5 (peak and shakedown brackets for the associated surrogate at frozen strength), 10.3.7.7 (1, 2, 4) and 10.3.7.8. Open: convergence of the sampled phase loop to the continuous cycle as $N_M\to\infty$; shakedown of the non-associated law; the error of the incompressible elastic cycle; the transfer of the rock S–N line to the bonds of a rubble pile | partially closed; $|\Gamma|$, $\psi$, the torque residual, the three indicators, the brackets, and the cycle counts are reported |
 
 ## A.6 Conjectures
 
