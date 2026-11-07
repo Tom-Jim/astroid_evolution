@@ -46,3 +46,25 @@ the run finishes.)
 - Expected upgrade effects: segment-table reuse removes most ray traversals;
   the hyperbolic ray solver replaces the primal–dual iteration; both should
   show up in `rheo_seconds` and in the tier2_scf total.
+
+## Post-upgrade (through commit c0e77f5)
+
+| Command | Result | Total |
+|---|---|---|
+| `cargo test --features tier2` | all pass (2 tests needed a post-fix rerun) | tier2_scf: 1109 s |
+
+tier2_scf binary: 1109.46 s vs baseline 465.98 s (2.4x slower). Dominant new
+costs: `Necks::critical_energy` evaluates ~4800 RTFP potentials per A-O step
+(two 49x49 neck-plane disks), and the optical-first runout pays a full surface
+ray plus an ODE rerun for every packet that falls back (all neck-region
+packets). Unit suite: 118 tests / 24.68 s vs 109 / 23.32 s. tier1_rtfp: 12
+tests / 1.25 s (was 11 / 0.27 s) — the added segment-table test dominates.
+
+Speedup accounting: this upgrade adds capability (orientation-aware chords,
+G1 basis, hyperbolic solver, optical runout, topology-preserving breakup) over
+the frozen baseline; the tier2 integration path pays for the new per-step
+diagnostics (E_crit plane sampling, Gram reports, the optical-ray pass). The
+retained PD solver + `optics: false` + `basis: "enclosing-ball"` configuration
+reproduces baseline behaviour; no dedicated hot-path benchmark exists yet —
+profiling E_crit's disk batches is the obvious first optimization if the
+integration cost matters.
