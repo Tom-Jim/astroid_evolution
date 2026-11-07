@@ -287,7 +287,9 @@ impl RunoutField<'_> {
     /// face: the sliding equilibrium `|P_n g| = μ(I) N₀` at the static normal load
     /// `N₀ = −g·n`, with `v_e = 0` marking a face whose static Coulomb condition holds —
     /// a ray reaching it is arrested there. Where friction cannot balance the drive even
-    /// at `μ₂` the speed is capped by the energy scale of the face's drop.
+    /// at `μ₂` the speed is capped by the energy scale of the face's drop. A face whose
+    /// static load `N₀ ≤ 0` cannot hold a packet at all — `v_e = −1` marks it, and a ray
+    /// reaching it falls back to the packet ODE, which flies it.
     fn effective_speeds(&self, faces: &Faces) -> Vec<f64> {
         let m = self.material;
         let s = &m.spec;
@@ -297,7 +299,10 @@ impl RunoutField<'_> {
                 let g = self.g_face[f];
                 let gt = (g - n * g.dot(n)).length();
                 let n0 = -g.dot(n);
-                if n0 <= 0.0 || gt <= s.mu_s * n0 {
+                if n0 <= 0.0 {
+                    return -1.0;
+                }
+                if gt <= s.mu_s * n0 {
                     return 0.0;
                 }
                 let v_cap = (2.0 * g.length() * faces.edge[f]).sqrt().max(1e-9);
@@ -601,6 +606,10 @@ impl Packet {
             let edge = faces.edge[f].max(1e-9);
             let g = field.g_face[f];
             let ve = v_e[f];
+            if ve < 0.0 {
+                // Unholdable face (N₀ ≤ 0): the packet leaves the surface.
+                return false;
+            }
             let v_stop = field.stop * (g.length() * s.h_s).sqrt();
             if ve <= v_stop {
                 // The viscosity-arrival/static-friction condition: the equilibrium
@@ -647,6 +656,9 @@ impl Packet {
                 let e = n.cross(faces.normal[next_face]).try_normalize().unwrap_or(n.cross(dir).try_normalize().unwrap_or(DVec3::X));
                 let u = dir * n_opt(ve) + a_vec(self.x, ve);
                 let ve_next = v_e[next_face];
+                if ve_next < 0.0 {
+                    return false;
+                }
                 let pe = u.dot(e) + a_vec(next, ve).dot(e) - a_vec(next, ve_next).dot(e);
                 let n_next = n_opt(ve_next.max(1e-9));
                 if pe.abs() <= n_next && ve_next > v_stop {

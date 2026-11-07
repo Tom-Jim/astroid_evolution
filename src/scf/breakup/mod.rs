@@ -163,11 +163,17 @@ pub fn piece(
     // `rays_from` would impose a star-shaped shape on the piece. `inner`
     // remains the preferred interior point for metrics elsewhere.
     let _ = inner;
-    let mut verts = verts.clone();
-    let mut faces = faces.clone();
+    let mut rv = verts.clone();
+    let mut rf = faces.clone();
     let target_edge = (parent_area / (20.0 * 4f64.powi(parent_level as i32))).sqrt() * 1.1;
-    remesh(&mut verts, &mut faces, target_edge);
-    let (topo, positions, origin) = Body::from_mesh(&verts, faces)?;
+    remesh(&mut rv, &mut rf, target_edge);
+    let (topo, positions, origin) = Body::from_mesh(&rv, rf).or_else(|_| {
+        // The remesh could not keep the geometric embedding (§12.2's outer
+        // acceptance): the un-remeshed block surface is the topology-preserving
+        // fallback — voxel-faceted but still the block's own surface, never a
+        // radial re-projection.
+        Body::from_mesh(verts, faces.clone())
+    })?;
     let kernels = kernels
         .into_iter()
         .map(|kn| CauchyKernel::try_anisotropic(kn.center - origin, kn.weight, kn.metric, kn.alpha))
