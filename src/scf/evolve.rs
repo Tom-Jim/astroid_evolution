@@ -523,8 +523,15 @@ pub fn run(
             d.healing == 0.0
                 || state.evolving.markers.as_ref().is_none_or(|m| m.damage.iter().all(|v| *v == 0.0))
         });
+        // Proposition 11.14(2): the shortcut also needs `v_r ≡ 0` (no A-Λ
+        // ratchet velocity) and `r_F ≡ 0` (no bond fatigue growth).
+        let fatigue_rest = cyc
+            .as_ref()
+            .is_none_or(|c| c.fatigue.iter().all(|f| *f == 0.0));
         let stage_jump = spin.is_stages()
             && law.as_ref().is_none_or(SpinLaw::allows_stage_jump)
+            && mech.ratchet.is_empty()
+            && fatigue_rest
             && thermal_rest
             && material_rest;
         if n_mobile == 0 && stage_jump && all_core {
