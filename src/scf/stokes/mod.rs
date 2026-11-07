@@ -31,6 +31,7 @@ use super::basis::{
 };
 use super::domain::{SurfacePoints, VolumeSet};
 use super::evolving::dilatation::Dilatational;
+use super::gbasis::{self, GeoBasis, GramReport};
 use super::harmonics::SurfaceFit;
 use super::params::StokesParams;
 use super::surface::SurfaceIndex;
@@ -193,6 +194,14 @@ pub struct Operators {
     /// The primal–dual metric `G` (the stiffness at `η ≡ 1`) and its range-space
     /// factorization: fixed by the geometry, so a spin-only step reuses them.
     pd_metric: std::sync::OnceLock<(DMatrix<f64>, RangeSolve)>,
+    /// The (G1) geometry-adapted family: compact kernels on the volume nodes
+    /// and face quadrature points, the six rigid modes, and one flux mode per
+    /// sealed cavity. It is the Galerkin-projection target of §8.3 and the
+    /// trial family of `stokes.basis = "geometry-adapted"`.
+    pub geo: GeoBasis,
+    /// The Prop 8.1.3 report on `geo`: σ_min, rank, conditioning of `M_Γ`,
+    /// assembled on the (G2) volume quadrature after `gbasis::prune`.
+    pub geo_gram: GramReport,
 }
 
 impl Operators {
@@ -231,6 +240,7 @@ impl Operators {
         faces: SurfacePoints,
         prm: &StokesParams,
         prev: Option<Reuse>,
+        cavity_centres: &[DVec3],
     ) -> Result<Self, SimError> {
         let lay = VelLayout::new(prm.l_velocity);
         let play = PresLayout {
@@ -309,6 +319,29 @@ impl Operators {
         let a_n = &stiff - &flux - flux.transpose() + mass * gamma_over_h;
         let nitsche = Cholesky::new(a_n)
             .ok_or_else(|| SimError::solver("the Nitsche pressure matrix is not positive definite"))?;
+        let _span = super::timing::span("operators_geo_basis");
+        // (G1): the geometry-adapted family on this mesh. Kernel centres are
+        // thinned so the Prop 8.1.3 Gram check stays a bounded dense solve;
+        // `h_kernel` is the CellBVH support diameter `h_vol` of §11.2.
+        let geo = {
+            let centres = thin(&vol.pts, &bnd.pts, MAX_GEO_CENTRES);
+            let h = geo_support(&centres);
+            let basis = GeoBasis::build(&centres, &[], h, cavity_centres.to_vec());
+            gbasis::prune(
+                basis,
+                &vol.pts,
+                &vol.w,
+                Some(&vol.rho),
+                1e-8,
+                centres.len().max(8),
+            )
+        };
+        let (geo, geo_gram) = geo;
+        if geo_gram.rank < 6 {
+            return Err(SimError::solver(
+                "the (G1) basis lost the rigid modes on this geometry",
+            ));
+        }
         Ok(Self {
             surf: surf.clone(),
             lay,
@@ -333,8 +366,65 @@ impl Operators {
             vol_field: std::sync::OnceLock::new(),
             bnd_field: std::sync::OnceLock::new(),
             pd_metric: std::sync::OnceLock::new(),
+            geo,
+            geo_gram,
         })
     }
+
+    /// The Galerkin projection bridge of §8.3: the (G1) coefficients and the
+    /// reported `e_proj` of a sample field `v_ray` (point-major `3n`).
+    pub fn project_velocity(&self, v_ray: &[f64]) -> Result<(Vec<f64>, f64), SimError> {
+        gbasis::project(
+            &self.geo,
+            &self.vol.pts,
+            &self.vol.w,
+            Some(&self.vol.rho),
+            v_ray,
+        )
+        .map_err(SimError::solver)
+    }
+}
+
+/// The kernel support of the (G1) family: about 1.4 mean kernel-centre
+/// spacings, so every kernel overlaps its nearest neighbours and the Gram
+/// matrix stays the local overlap graph of §8.1.
+fn geo_support(centres: &[DVec3]) -> f64 {
+    if centres.len() < 2 {
+        return 1.0;
+    }
+    let (mut lo, mut hi) = (centres[0], centres[0]);
+    for p in centres {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let d = hi - lo;
+    let vol_box = (d.x * d.y * d.z).max(1e-30);
+    1.4 * (vol_box / centres.len() as f64).cbrt()
+}
+
+/// Cap on kernel centres of the (G1) family per geometry: enough for the
+/// approximation of §8.1 while keeping the Prop 8.1.3 Gram check a bounded
+/// dense solve on the reference path.
+const MAX_GEO_CENTRES: usize = 192;
+
+/// Thin `vol` and `bnd` to at most `cap` centres, striding each list evenly so
+/// the retained kernels still cover the whole body and its faces.
+fn thin(vol: &[DVec3], bnd: &[DVec3], cap: usize) -> Vec<DVec3> {
+    let total = vol.len() + bnd.len();
+    if total <= cap {
+        return vol.iter().chain(bnd.iter()).copied().collect();
+    }
+    let take_vol = cap * vol.len() / total;
+    let take_bnd = cap - take_vol;
+    let stride = |len: usize, take: usize| (len / take.max(1)).max(1);
+    let sv = stride(vol.len(), take_vol);
+    let sb = stride(bnd.len(), take_bnd);
+    vol.iter()
+        .step_by(sv)
+        .take(take_vol)
+        .chain(bnd.iter().step_by(sb).take(take_bnd))
+        .copied()
+        .collect()
 }
 
 /// Smallest singular value of the row-normalised `B_rb`; an error below `sigma_min`.

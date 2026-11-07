@@ -100,6 +100,12 @@ pub struct StokesParams {
     /// fixed-viscosity map kept as a check.
     #[serde(default = "default_solver")]
     pub solver: String,
+    /// Velocity trial space: `"geometry-adapted"` is the normative (G1) family
+    /// — compact kernels on the volume nodes and face quadrature points plus
+    /// one flux mode per sealed cavity — and `"enclosing-ball"` the spectral
+    /// poloidal–toroidal family kept as the reference path.
+    #[serde(default = "default_basis")]
+    pub basis: String,
     /// `ε_pd` of criterion (a): relative velocity change and relative primal–dual gap.
     #[serde(default = "default_pd_tol")]
     pub pd_tol: f64,
@@ -127,6 +133,10 @@ fn default_cut_depth() -> usize {
 
 fn default_solver() -> String {
     "primal-dual".into()
+}
+
+fn default_basis() -> String {
+    "enclosing-ball".into()
 }
 
 fn default_pd_tol() -> f64 {
@@ -469,6 +479,14 @@ impl Project {
         }
         if !s.p_ext.is_finite() {
             return Err(SimError::model_not_closed("stokes.p_ext must be finite"));
+        }
+        match s.basis.as_str() {
+            "enclosing-ball" | "geometry-adapted" => {}
+            _ => {
+                return Err(SimError::model_not_closed(
+                    "stokes.basis must be \"enclosing-ball\" or \"geometry-adapted\"",
+                ));
+            }
         }
         unit_interval("yielding.delta_y", f.yielding.delta_y)?;
         non_negative("mode_c.k_e", f.mode_c.k_e)?;

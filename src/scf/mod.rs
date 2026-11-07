@@ -17,6 +17,7 @@ pub mod evolve;
 pub mod evolving;
 pub mod forward;
 pub mod frame;
+pub mod gbasis;
 pub mod harmonics;
 pub mod history;
 pub mod io;

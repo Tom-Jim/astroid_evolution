@@ -75,6 +75,7 @@ pub fn params() -> StokesParams {
         continuation: 2,
         rigid_sigma_min: 1e-6,
         solver: "primal-dual".into(),
+        basis: "enclosing-ball".into(),
         pd_tol: 1e-8,
         pd_max: 400_000,
         pd_pressure_every: 10,
@@ -100,7 +101,8 @@ fn ops_on(positions: &[DVec3], rho: f64, prm: &StokesParams, r_ref: Option<f64>,
     let index = SurfaceIndex::build(&body.positions, &body.topo.faces);
     let faces = SurfacePoints::faces(&body.face_geometry());
     let surf = SurfaceFit::sphere(r_ref.unwrap_or_else(|| body.r_star()));
-    Operators::build(&surf, &body.density().unwrap(), &mesh, &index, faces, prm, prev).unwrap()
+    let cavities = body.mesh().unwrap().cavity_interior_points();
+    Operators::build(&surf, &body.density().unwrap(), &mesh, &index, faces, prm, prev, &cavities).unwrap()
 }
 
 /// Largest entry difference of two row blocks, relative to the largest entry of `b`.

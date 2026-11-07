@@ -344,6 +344,9 @@ pub fn geometry(
     let r_star = body.r_star();
     let reuse = reuse.filter(|r| r_star <= r.r_ref && r.r_ref <= (1.0 + 2.0 * SCALE_SLACK) * r_star);
     let surf = SurfaceFit::sphere(reuse.as_ref().map_or((1.0 + SCALE_SLACK) * r_star, |r| r.r_ref));
+    // §8.1 (G1): one flux mode per sealed cavity, centred at a cavity interior
+    // point of the body mesh.
+    let cavity_centres = body.mesh()?.cavity_interior_points();
     let ops = Arc::new(Operators::build(
         &surf,
         &body.density()?,
@@ -352,6 +355,7 @@ pub fn geometry(
         SurfacePoints::faces(&body.face_geometry()),
         &project.stokes,
         reuse,
+        &cavity_centres,
     )?);
     last.0 = Some((key, index.clone(), ops.clone()));
     Ok((index, ops))

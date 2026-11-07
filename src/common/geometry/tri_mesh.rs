@@ -137,6 +137,40 @@ impl TriMesh {
             .collect()
     }
 
+    /// An interior point `z_j` of every sealed cavity, for the flux modes of
+    /// Proposition 8.1.5. The vertex centroid is tried first, then nudged
+    /// vertices; a candidate counts when the shell's own ray test puts it
+    /// inside.
+    pub fn cavity_interior_points(&self) -> Vec<DVec3> {
+        let scale = bounding_scale(&self.vertices).max(1e-12);
+        self.cavities()
+            .iter()
+            .filter_map(|shell| {
+                let mut verts: Vec<DVec3> = Vec::new();
+                for &f in &shell.faces {
+                    for v in self.faces[f] {
+                        let p = self.vertices[v as usize];
+                        if !verts.contains(&p) {
+                            verts.push(p);
+                        }
+                    }
+                }
+                if verts.is_empty() {
+                    return None;
+                }
+                let centre = verts.iter().copied().sum::<DVec3>() / verts.len() as f64;
+                let mut candidates = vec![centre];
+                for &v in verts.iter().take(24) {
+                    candidates.push(v + (centre - v) * 0.1);
+                    candidates.push(v + (centre - v) * 0.5);
+                }
+                candidates
+                    .into_iter()
+                    .find(|&p| point_inside_shell(self, &shell.faces, p, scale))
+            })
+            .collect()
+    }
+
     pub fn unit_cube() -> Self {
         let vertices = vec![
             DVec3::new(-1.0, -1.0, -1.0),
