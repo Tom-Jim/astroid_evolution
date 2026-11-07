@@ -47,7 +47,7 @@ impl RtfpSolver {
         let mut job = Job::new();
         let origin = job.value(&[o.x as f32, o.y as f32, o.z as f32, 0.0]);
         let cores = job.input(&kerns);
-        let mut chord = self.chord_params(n as u32, false, false);
+        let mut chord = self.chord_params(n as u32, false, false, false, 0);
         chord.bulk = (self.density.bulk - c_rho) as f32;
         let params = job.value(&chord);
         let res = job.zeros::<f32>(n * STRIDE);
@@ -67,12 +67,15 @@ impl RtfpSolver {
         let r = job.read_all::<f32>(res, n * STRIDE);
         let raw = job.submit().map_err(SimError::gpu)?.get::<f32>(r);
         let mut m = [0.0f64; 10];
+        let mut anomalies = 0u32;
         for col in raw.chunks_exact(STRIDE) {
-            if col[20] != 0.0 {
+            let flags = col[20] as u32;
+            if flags & 1 != 0 {
                 return Err(SimError::geometry(
                     "a moment ray crosses the surface more than 64 times",
                 ));
             }
+            anomalies += flags >> 1;
             for (i, v) in m.iter_mut().enumerate() {
                 *v += f64::from(col[2 * i]) + f64::from(col[2 * i + 1]);
             }
@@ -102,6 +105,7 @@ impl RtfpSolver {
             volume: geometric.volume,
             mass,
             centroid,
+            anomalies,
             inertia: [
                 yy + zz + e[0],
                 xx + zz + e[1],

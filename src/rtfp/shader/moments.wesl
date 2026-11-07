@@ -111,6 +111,39 @@ fn core_moments(
     return sum;
 }
 
+// One occupied interval [lo, hi] of the ray: bulk and core moments.
+fn add_segment(
+    m0: ptr<function, ds>,
+    m1: ptr<function, ds>,
+    m2: ptr<function, ds>,
+    lo: f32,
+    hi: f32,
+    o: vec3<f32>,
+    u: vec3<f32>,
+    p: Chords,
+) {
+    var seg = p.bulk * powers(lo, hi);
+    for(var k = 0u; k < p.kernel_count; k = k + 1u) {
+        let src = kerns[k];
+        if src.w == 0.0 {
+            continue;
+        }
+        let q0 = o - src.c;
+        let su = sym_mul(src, u);
+        let s = dot(u, su);
+        let b = dot(su, q0) / s;
+        let q = q0 - b * u;
+        let d = sqrt((1.0 + dot(q, sym_mul(src, q))) / s);
+        if !(d > 0.0) || !isfinite_f(d) {
+            continue;
+        }
+        seg = seg + core_moments(lo, hi, b, d, s, src.w, src.alpha, p);
+    }
+    *m0 = ds_add(*m0, ds_f(seg.x));
+    *m1 = ds_add(*m1, ds_f(seg.y));
+    *m2 = ds_add(*m2, ds_f(seg.z));
+}
+
 @compute @workgroup_size(64)
 fn rtfp_moments(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -121,9 +154,10 @@ fn rtfp_moments(@builtin(global_invocation_id) gid: vec3<u32>) {
     let o = origin.xyz;
     let ray = rays[i];
     let dir = ray.d;
-    var hits: array<f32, 64>;
-    let n = collect_hits(o, dir, p, &hits);
+    var hits: array<vec2<f32>, 64>;
+    let n = collect_hits_o(o, dir, p, &hits);
     let base = i * MOMENT_STRIDE;
+    var dirty = 0u;
     if n > RT_MAX_HITS {
         for(var m = 0u; m < 20u; m = m + 1u) {
             out[base + m] = 0.0;
@@ -131,42 +165,62 @@ fn rtfp_moments(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[base + 20u] = 1.0;
         return;
     }
-    // Radial moments M_j = ∫ ρ R^{2+j} dR summed over the occupied segments.
+    // Radial moments M_j = ∫ ρ R^{2+j} dR summed over the occupied segments,
+    // which the orientation rule of MS §3.6 pairs; a ray whose signed crossings
+    // do not alternate is rebuilt by the parity rule and counted dirty.
     var m0 = ds_zero();
     var m1 = ds_zero();
     var m2 = ds_zero();
-    var open_r = select(-1.0, 0.0, (n & 1u) != 0u);
+    var inside = n > 0u && hits[0].y > 0.5;
+    var open_r = select(-1.0, 0.0, inside);
+    var anomalies = 0u;
     for(var h = 0u; h < n; h = h + 1u) {
-        let t = hits[h];
-        if open_r < 0.0 {
-            open_r = t;
-            continue;
-        }
-        let lo = open_r;
-        let hi = t;
-        open_r = -1.0;
-        var seg = p.bulk * powers(lo, hi);
-        // Along y = o + R dir the core is seen from x = o with u = −dir.
-        let u = -dir;
-        for(var k = 0u; k < p.kernel_count; k = k + 1u) {
-            let src = kerns[k];
-            if src.w == 0.0 {
-                continue;
+        let t = hits[h].x;
+        let s = hits[h].y;
+        if s > 0.5 {
+            if inside {
+                add_segment(&m0, &m1, &m2, open_r, t, o, -dir, p);
+                inside = false;
+                open_r = -1.0;
+            } else {
+                anomalies = anomalies + 1u;
             }
-            let q0 = o - src.c;
-            let su = sym_mul(src, u);
-            let s = dot(u, su);
-            let b = dot(su, q0) / s;
-            let q = q0 - b * u;
-            let d = sqrt((1.0 + dot(q, sym_mul(src, q))) / s);
-            if !(d > 0.0) || !isfinite_f(d) {
-                continue;
+        } else if s < -0.5 {
+            if !inside {
+                open_r = t;
+                inside = true;
+            } else {
+                anomalies = anomalies + 1u;
             }
-            seg = seg + core_moments(lo, hi, b, d, s, src.w, src.alpha, p);
         }
-        m0 = ds_add(m0, ds_f(seg.x));
-        m1 = ds_add(m1, ds_f(seg.y));
-        m2 = ds_add(m2, ds_f(seg.z));
+    }
+    if inside && n > 0u {
+        anomalies = anomalies + 1u;
+    }
+    if anomalies > 0u {
+        dirty = 1u;
+        m0 = ds_zero();
+        m1 = ds_zero();
+        m2 = ds_zero();
+        var raw: array<f32, 64>;
+        let m = collect_hits(o, dir, p, &raw);
+        if m > RT_MAX_HITS {
+            for(var mm = 0u; mm < 20u; mm = mm + 1u) {
+                out[base + mm] = 0.0;
+            }
+            out[base + 20u] = 1.0;
+            return;
+        }
+        var open_p = select(-1.0, 0.0, (m & 1u) != 0u);
+        for(var h = 0u; h < m; h = h + 1u) {
+            let t = raw[h];
+            if open_p >= 0.0 {
+                add_segment(&m0, &m1, &m2, open_p, t, o, -dir, p);
+                open_p = -1.0;
+            } else {
+                open_p = t;
+            }
+        }
     }
     // y = o + R dir: ∫ρ y = o M0 + dir M1, ∫ρ y yᵀ = o oᵀ M0 + (o dirᵀ + dir oᵀ) M1 + dir dirᵀ M2.
     let w = ds_f(ray.weight);
@@ -197,5 +251,7 @@ fn rtfp_moments(@builtin(global_invocation_id) gid: vec3<u32>) {
         out[base + 2u * m] = v[m].hi;
         out[base + 2u * m + 1u] = v[m].lo;
     }
-    out[base + 20u] = 0.0;
+    // Flag word: bit 0 is the overflow error (written earlier), the upper bits
+    // count dirty rays that fell back to the parity construction.
+    out[base + 20u] = f32(2u * dirty);
 }

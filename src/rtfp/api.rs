@@ -72,6 +72,9 @@ pub struct FieldBatch {
     pub theta: Vec<f64>,
     /// Spherical measure of the tangent cone: `4π` inside, `2π` on a face, `0` outside and at a vertex.
     pub solid_angle: Vec<f64>,
+    /// Rays whose orientation-rule chord construction saw a same-sign anomaly
+    /// and fell back to the parity rule (MS §3.6 step 4).
+    pub anomalies: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,4 +84,7 @@ pub struct VolumeIntegrals {
     pub centroid: DVec3,
     /// Inertia about the origin, `(xx, yy, zz, xy, xz, yz)`, with `I_ij = ∫ (r² δ_ij − x_i x_j) ρ dV`.
     pub inertia: Sym6,
+    /// Rays whose orientation-rule chord construction saw an anomaly and fell
+    /// back to the parity rule (MS §3.6 step 4).
+    pub anomalies: u32,
 }

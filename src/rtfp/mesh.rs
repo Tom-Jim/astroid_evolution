@@ -80,11 +80,14 @@ impl RayBatch {
     }
 }
 
-/// Crossing distances of a launch, ray by ray, nearest first.
+/// Crossing distances of a launch, ray by ray, nearest first. Each crossing also
+/// carries the orientation sign `s = sign(dir·n̂)` of the crossed face (MS §3.6):
+/// −1 entering the solid, +1 leaving it.
 pub struct Hits {
     scale: f64,
     offsets: Vec<u32>,
     t: Vec<f32>,
+    s: Vec<f32>,
 }
 
 impl Hits {
@@ -100,6 +103,18 @@ impl Hits {
     pub fn distances_into(&self, i: usize, out: &mut Vec<f64>) {
         let range = self.offsets[i] as usize..self.offsets[i + 1] as usize;
         out.extend(self.t[range].iter().map(|t| f64::from(*t) * self.scale));
+    }
+
+    /// `(distance, orientation sign)` pairs along ray `i` in world units,
+    /// appended to `out` (MS §3.6, the orientation rule).
+    pub fn crossings_into(&self, i: usize, out: &mut Vec<(f64, f32)>) {
+        let range = self.offsets[i] as usize..self.offsets[i + 1] as usize;
+        out.extend(
+            self.t[range.clone()]
+                .iter()
+                .zip(&self.s[range])
+                .map(|(t, s)| (f64::from(*t) * self.scale, *s)),
+        );
     }
 
     pub fn count(&self, i: usize) -> usize {
@@ -227,17 +242,19 @@ impl BodyMesh {
         let n = batch.packed.len();
         let mut offsets = Vec::with_capacity(n + 1);
         offsets.push(0u32);
-        let mut t = Vec::new();
+        let (mut t, mut s) = (Vec::new(), Vec::new());
         if n == 0 {
             return Ok(Hits {
                 scale: self.frame.scale,
                 offsets,
                 t,
+                s,
             });
         }
         let k = &kernels::TRACE;
         let mut counts_all = Vec::with_capacity(n);
         let mut slots_all = Vec::with_capacity(n * 2);
+        let mut signs_all = Vec::with_capacity(n * 2);
         for chunk in batch
             .packed
             .chunks(k.wg[0] as usize * crate::gpu::MAX_GROUPS as usize)
@@ -252,16 +269,19 @@ impl BodyMesh {
             });
             let counts = job.zeros::<u32>(chunk.len());
             let hits = job.zeros::<f32>(chunk.len() * MAX_HITS as usize);
+            let signs = job.zeros::<f32>(chunk.len() * MAX_HITS as usize);
             job.run(
                 k,
                 k.groups(chunk.len()),
-                &[rays, params, counts, hits, (&self.accel).into()],
+                &[rays, params, counts, hits, signs, (&self.accel).into()],
             );
             let rc = job.read_all::<u32>(counts, chunk.len());
             let rh = job.read_all::<f32>(hits, chunk.len() * MAX_HITS as usize);
+            let rs = job.read_all::<f32>(signs, chunk.len() * MAX_HITS as usize);
             let out = job.submit().map_err(SimError::gpu)?;
             counts_all.extend(out.get::<u32>(rc));
             slots_all.extend(out.get::<f32>(rh));
+            signs_all.extend(out.get::<f32>(rs));
         }
         for (i, &c) in counts_all.iter().enumerate() {
             if c > MAX_HITS {
@@ -272,12 +292,14 @@ impl BodyMesh {
             let keep = if first_only { c.min(1) } else { c } as usize;
             let base = i * MAX_HITS as usize;
             t.extend_from_slice(&slots_all[base..base + keep]);
+            s.extend_from_slice(&signs_all[base..base + keep]);
             offsets.push(t.len() as u32);
         }
         Ok(Hits {
             scale: self.frame.scale,
             offsets,
             t,
+            s,
         })
     }
 
@@ -295,14 +317,14 @@ impl BodyMesh {
             }
         }
         let hits = self.trace(&batch, false)?;
-        let mut dists = Vec::new();
+        let mut xs_ = Vec::new();
         Ok((0..xs.len())
             .map(|p| {
                 let votes = (0..3)
                     .filter(|&k| {
-                        dists.clear();
-                        hits.distances_into(3 * p + k, &mut dists);
-                        chords::starts_inside(&dists, self.frame.scale)
+                        xs_.clear();
+                        hits.crossings_into(3 * p + k, &mut xs_);
+                        chords::starts_inside_oriented(&xs_, self.frame.scale)
                     })
                     .count();
                 votes >= 2

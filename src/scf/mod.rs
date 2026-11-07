@@ -8,6 +8,7 @@ pub mod basis;
 mod basis_gpu;
 pub mod body;
 pub mod breakup;
+pub mod cell_bvh;
 pub mod classify;
 pub mod cores;
 pub mod cycle;

@@ -7,7 +7,7 @@ mod ctx {
 }
 use ctx::*;
 
-use astroid_evolution::common::geometry::tri_mesh::TriMesh;
+use astroid_evolution::common::geometry::tri_mesh::{ShellRole, TriMesh};
 use astroid_evolution::common::math::DVec3;
 
 #[test]
@@ -70,6 +70,16 @@ fn an_inward_cavity_inside_a_solid_is_accepted() {
     faces.extend(inner_faces);
     let mesh = TriMesh::try_new(vertices, faces).expect("cavity");
     assert!(mesh.signed_volume() > 0.0);
+    // (G): the outer shell is outward, the sealed cavity inward and hosted.
+    let shells = mesh.components();
+    assert_eq!(shells.len(), 2);
+    let outer = shells.iter().find(|s| s.role == ShellRole::Outer).unwrap();
+    let cavity = shells
+        .iter()
+        .find(|s| matches!(s.role, ShellRole::Cavity { .. }))
+        .unwrap();
+    assert!(outer.signed_volume > 0.0 && cavity.signed_volume < 0.0);
+    assert_eq!(mesh.cavities().len(), 1);
 }
 
 #[test]

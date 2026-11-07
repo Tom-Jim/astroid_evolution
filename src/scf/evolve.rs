@@ -1243,7 +1243,7 @@ fn closed_cores(
     let mut bulk = new.bulk;
     // Volume quadrature of V⁽ⁿ⁺¹⁾: the ray-segment rule of (G2).
     let s = &project.stokes;
-    let (pts, w, _, _) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
+    let (pts, w, ..) = volume_rule(fwd.body_mesh(), s.n_theta, s.n_phi, s.n_radial, s.cut_depth)?;
     let quad = Quadrature { pts, w };
     let mut target = cores::departure_density(&old.density()?, &quad, tau, &|p| advection(mech, p));
     match ratio {

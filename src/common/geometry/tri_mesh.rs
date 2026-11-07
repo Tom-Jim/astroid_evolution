@@ -10,6 +10,24 @@ pub struct TriMesh {
     pub faces: Vec<[u32; 3]>,
 }
 
+/// One connected boundary shell of a mesh under hypothesis (G).
+#[derive(Clone, Debug)]
+pub struct Shell {
+    /// Face indices of the shell.
+    pub faces: Vec<usize>,
+    /// Its signed volume: positive for an outer shell, negative for a cavity.
+    pub signed_volume: f64,
+    pub role: ShellRole,
+}
+
+/// What a shell bounds: the exterior of the solid, or a sealed cavity inside
+/// the outer shell `outer` (an index into `TriMesh::components`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellRole {
+    Outer,
+    Cavity { outer: usize },
+}
+
 impl TriMesh {
     pub fn try_new(vertices: Vec<DVec3>, faces: Vec<[u32; 3]>) -> Result<Self, SimError> {
         if vertices.len() < 4 || faces.len() < 4 {
@@ -74,6 +92,49 @@ impl TriMesh {
             v += a.dot(b.cross(c));
         }
         v / 6.0
+    }
+
+    /// The boundary shells of hypothesis (G): one or more outward-wound outer
+    /// components and the inward-wound cavity shells nested in them. On a mesh
+    /// accepted by `try_new` every cavity lies inside an outer shell.
+    pub fn components(&self) -> Vec<Shell> {
+        let components = face_components(self);
+        let scale = bounding_scale(&self.vertices).max(1e-12);
+        let mut shells: Vec<Shell> = components
+            .iter()
+            .map(|faces| Shell {
+                faces: faces.clone(),
+                signed_volume: component_volume(self, faces),
+                role: ShellRole::Outer,
+            })
+            .collect();
+        let positive: Vec<usize> = shells
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.signed_volume > 0.0)
+            .map(|(i, _)| i)
+            .collect();
+        for i in 0..shells.len() {
+            if shells[i].signed_volume > 0.0 {
+                continue;
+            }
+            let host = positive
+                .iter()
+                .find(|&o| shell_inside(self, &shells[i].faces, &shells[*o].faces, scale));
+            if let Some(&o) = host {
+                shells[i].role = ShellRole::Cavity { outer: o };
+            }
+        }
+        shells
+    }
+
+    /// The sealed cavities of the mesh: one harmonic flux mode of (G1) is
+    /// added per cavity shell.
+    pub fn cavities(&self) -> Vec<Shell> {
+        self.components()
+            .into_iter()
+            .filter(|s| matches!(s.role, ShellRole::Cavity { .. }))
+            .collect()
     }
 
     pub fn unit_cube() -> Self {

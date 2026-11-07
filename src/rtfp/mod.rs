@@ -7,6 +7,7 @@ pub(crate) mod lebedev_table;
 pub mod mesh;
 pub mod moments;
 pub mod reference;
+pub(crate) mod segments;
 pub mod solver;
 pub mod tree;
 pub mod volume;

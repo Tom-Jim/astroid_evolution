@@ -61,6 +61,7 @@ pub fn uniform_integrals(mesh: &TriMesh, density: f64) -> VolumeIntegrals {
         mass,
         centroid,
         inertia,
+        anomalies: 0,
     }
 }
 

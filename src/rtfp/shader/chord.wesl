@@ -58,6 +58,13 @@ struct Chords {
     merge_rel: f32,
     origin_abs: f32,
     launch: f32,
+    // Segment table 𝒯 of MS §3.15.1 (rtfp/shader/segments.wesl): when use_segs
+    // is set, field threads read intervals instead of tracing, at
+    // (seg_base + m)·ray_count + q.
+    use_segs: u32,
+    seg_base: u32,
+    pad0: f32,
+    pad1: f32,
 }
 
 struct Radial {
@@ -145,6 +152,67 @@ fn collect_hits(
         (*hits)[m] = t;
         last = t;
         m = m + 1u;
+    }
+    return m;
+}
+
+// The orientation rule of MS §3.6: every crossing carries s = sign(dir·n̂) of
+// the crossed face (rt_all_signed). Reports closer than the geometric merge
+// tolerance are one vertex/edge report group; a group's net sign decides
+// whether occupancy changes — a tangency sums to zero and is dropped.
+// `hits` receives (t, s) pairs, s ∈ {−1, +1}. Returns the count, or
+// RT_MAX_HITS + 1 on buffer overflow.
+fn collect_hits_o(
+    origin: vec3<f32>,
+    dir: vec3<f32>,
+    p: Chords,
+    hits: ptr<function, array<vec2<f32>, 64>>,
+) -> u32 {
+    var raw: array<vec2<f32>, 64>;
+    let n = rt_all_signed(origin, dir, p.launch, &raw);
+    if n > RT_MAX_HITS {
+        return RT_MAX_HITS + 1u;
+    }
+    for(var i = 1u; i < n; i = i + 1u) {
+        let v = raw[i];
+        var j = i;
+        while j > 0u && raw[j - 1u].x > v.x {
+            raw[j] = raw[j - 1u];
+            j = j - 1u;
+        }
+        raw[j] = v;
+    }
+    var m = 0u;
+    var last = -1.0e30;
+    var acc = 0.0;
+    for(var i = 0u; i < n; i = i + 1u) {
+        let t = raw[i].x;
+        if !(isfinite_f(t) && t > p.origin_abs) {
+            continue;
+        }
+        if m > 0u && t - last <= p.merge_abs + p.merge_rel * t {
+            acc = acc + raw[i].y;
+            continue;
+        }
+        if m > 0u {
+            // Close the previous group: keep only its net sign.
+            if abs(acc) < 0.5 {
+                m = m - 1u;
+            } else {
+                (*hits)[m - 1u].y = sign(acc);
+            }
+        }
+        (*hits)[m].x = t;
+        acc = raw[i].y;
+        last = t;
+        m = m + 1u;
+    }
+    if m > 0u {
+        if abs(acc) < 0.5 {
+            m = m - 1u;
+        } else {
+            (*hits)[m - 1u].y = sign(acc);
+        }
     }
     return m;
 }

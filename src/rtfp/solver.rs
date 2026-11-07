@@ -83,6 +83,12 @@ pub(crate) struct ChordParams {
     pub merge_rel: f32,
     pub origin_abs: f32,
     pub launch: f32,
+    /// Read intervals from the segment table 𝒯 instead of tracing (MS §3.15.1).
+    pub use_segs: u32,
+    /// First point index covered by `seg_counts`/`seg_pairs`.
+    pub seg_base: u32,
+    pub pad0: f32,
+    pub pad1: f32,
 }
 
 pub struct RtfpSolver {
@@ -95,11 +101,23 @@ pub struct RtfpSolver {
     /// Gauss–Legendre nodes `[x, w]` on [−1, 1].
     pub(crate) nodes: Res,
     pub(crate) node_count: u32,
+    /// Segment tables 𝒯 of the point sets seen so far (MS §3.15.1): a set is
+    /// traced on its first evaluation, and its table is built at the second
+    /// and reused from then on. Density updates (`set_density`) leave the
+    /// tables valid (Proposition 3.15.1).
+    segs: std::sync::Mutex<std::collections::HashMap<u64, SegState>>,
 }
 
 /// Double-single pair to f64.
 fn ds(hi: f32, lo: f32) -> f64 {
     f64::from(hi) + f64::from(lo)
+}
+
+/// A point set's row in the segment-table cache: `Seen` after the first
+/// evaluation, `Ready` once `rtfp_segments` has built its 𝒯.
+enum SegState {
+    Seen,
+    Ready(std::sync::Arc<crate::rtfp::segments::SegmentTable>),
 }
 
 impl RtfpSolver {
@@ -141,6 +159,7 @@ impl RtfpSolver {
             mesh,
             density,
             body,
+            segs: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -159,6 +178,20 @@ impl RtfpSolver {
     /// Replace the density on the same mesh; only the core table is re-uploaded.
     pub fn set_density(&mut self, density: CauchyDensity) {
         self.density = density;
+    }
+
+    /// Rows of the cached segment tables 𝒯, their dirty rays and their
+    /// overflow rays (MS §3.15.1, §3.6 step 4), for diagnostics.
+    pub fn seg_stats(&self) -> (usize, u64, u64) {
+        let map = self.segs.lock().unwrap();
+        map.values().fold((0, 0, 0), |(sets, d, o), s| match s {
+            SegState::Seen => (sets, d, o),
+            SegState::Ready(t) => (
+                sets + t.rows,
+                d + u64::from(t.dirty),
+                o + u64::from(t.overflow),
+            ),
+        })
     }
 
     /// The cores in the unit frame: `c_u = (c − centre)/scale`, `S_u = scale² S`.
@@ -183,7 +216,14 @@ impl RtfpSolver {
             .collect()
     }
 
-    pub(crate) fn chord_params(&self, item_count: u32, want_u: bool, want_h: bool) -> ChordParams {
+    pub(crate) fn chord_params(
+        &self,
+        item_count: u32,
+        want_u: bool,
+        want_h: bool,
+        use_segs: bool,
+        seg_base: u32,
+    ) -> ChordParams {
         ChordParams {
             kernel_count: self.density.kernels.len() as u32,
             node_count: self.node_count,
@@ -197,6 +237,10 @@ impl RtfpSolver {
             merge_rel: MERGE_REL as f32,
             origin_abs: ORIGIN_ABS as f32,
             launch: LAUNCH_OFFSET,
+            use_segs: u32::from(use_segs),
+            seg_base,
+            pad0: 0.0,
+            pad1: 0.0,
         }
     }
 
@@ -224,7 +268,12 @@ impl RtfpSolver {
             hessian: vec![[0.0; 6]; n],
             theta: vec![0.0; n],
             solid_angle: vec![0.0; n],
+            anomalies: 0,
         };
+        let table = self.seg_table(points)?;
+        if let Some(t) = &table {
+            batch.anomalies += t.dirty;
+        }
         let mut start = 0;
         while start < n {
             let end = (start + POINTS_PER_LAUNCH).min(n);
@@ -232,10 +281,37 @@ impl RtfpSolver {
             if xs.iter().any(|x| !x.is_finite()) {
                 return Err(SimError::geometry("evaluation point must be finite"));
             }
-            self.eval_group(&xs, role, want, &mut batch, start)?;
+            self.eval_group(&xs, role, want, &mut batch, start, table.as_deref())?;
             start = end;
         }
         Ok(batch)
+    }
+
+    /// The segment table of a point set (MS §3.15.1): `None` on its first
+    /// evaluation and whenever it cannot be cached, the table from the second
+    /// evaluation on. Density changes leave every table valid.
+    fn seg_table(
+        &self,
+        points: &PointSet,
+    ) -> Result<Option<std::sync::Arc<crate::rtfp::segments::SegmentTable>>, SimError> {
+        use crate::rtfp::segments::{SegmentTable, point_key};
+        if self.density.kernels.is_empty() || !SegmentTable::fits(points.len()) {
+            return Ok(None);
+        }
+        let key = point_key(points);
+        let mut map = self.segs.lock().unwrap();
+        match map.get(&key) {
+            Some(SegState::Ready(t)) => Ok(Some(t.clone())),
+            Some(SegState::Seen) => {
+                let t = std::sync::Arc::new(SegmentTable::build(self, points)?);
+                map.insert(key, SegState::Ready(t.clone()));
+                Ok(Some(t))
+            }
+            None => {
+                map.insert(key, SegState::Seen);
+                Ok(None)
+            }
+        }
     }
 
     fn eval_group(
@@ -245,6 +321,7 @@ impl RtfpSolver {
         want: FieldMask,
         out: &mut FieldBatch,
         offset: usize,
+        table: Option<&crate::rtfp::segments::SegmentTable>,
     ) -> Result<(), SimError> {
         let frame = self.body.frame;
         let n = xs.len();
@@ -299,7 +376,13 @@ impl RtfpSolver {
         } else {
             let k = &kernels::RTFP_FIELD;
             let cores = job.input(&self.unit_kernels());
-            let params = job.value(&self.chord_params(n as u32, want.potential, want.hessian));
+            let params = job.value(&self.chord_params(
+                n as u32,
+                want.potential,
+                want.hessian,
+                table.is_some(),
+                offset as u32,
+            ));
             let res = job.zeros::<f32>(n * FIELD_STRIDE);
             job.run(
                 k,
@@ -311,6 +394,8 @@ impl RtfpSolver {
                     (&self.nodes).into(),
                     params,
                     res,
+                    table.map_or((&self.nodes).into(), |t| (&t.counts).into()),
+                    table.map_or((&self.nodes).into(), |t| (&t.pairs).into()),
                     (&self.body.accel).into(),
                 ],
             );
@@ -330,12 +415,14 @@ impl RtfpSolver {
             }
             if let Some(ray) = &ray {
                 let col = &ray[p * FIELD_STRIDE..(p + 1) * FIELD_STRIDE];
-                if col[20] != 0.0 {
+                let flags = col[20] as u32;
+                if flags & 1 != 0 {
                     return Err(SimError::geometry(format!(
                         "a ray from point {} crosses the surface more than 64 times",
                         offset + p
                     )));
                 }
+                out.anomalies += flags >> 1;
                 for (m, vm) in v.iter_mut().enumerate() {
                     *vm += ds(col[2 * m], col[2 * m + 1]);
                 }

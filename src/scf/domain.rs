@@ -27,6 +27,9 @@ pub struct VolumeSet {
     /// Rays of the angular rule, and those inside refined cut cells.
     pub rays: usize,
     pub cut_rays: usize,
+    /// Rays whose orientation-rule construction saw an anomaly and fell back to
+    /// the parity rule (MS §3.6 step 4).
+    pub dirty_rays: usize,
 }
 
 /// One angular cell `[z0, z1] × [φ0, φ1]` of the product rule (`z = cos θ`).
@@ -53,21 +56,30 @@ fn signature(seg: &Segments) -> (usize, bool) {
     (seg.len(), seg.first().is_some_and(|s| s.0 == 0.0))
 }
 
-fn trace(mesh: &BodyMesh, dirs: &[DVec3]) -> Result<Vec<Segments>, SimError> {
+/// `(segments, dirty count)`: the occupied intervals come from the orientation
+/// rule of MS §3.6; a ray whose signed crossings do not alternate is dirty and
+/// is rebuilt by the parity rule, which stays correct while the mesh is
+/// watertight.
+fn trace(mesh: &BodyMesh, dirs: &[DVec3]) -> Result<(Vec<Segments>, usize), SimError> {
     let mut batch = mesh.new_batch();
     for d in dirs {
         batch.push(DVec3::ZERO, *d, None);
     }
     let hits = mesh.trace(&batch, false)?;
     let (mut t, mut out) = (Vec::new(), Vec::with_capacity(dirs.len()));
+    let mut dirty = 0;
     for i in 0..dirs.len() {
         t.clear();
-        hits.distances_into(i, &mut t);
+        hits.crossings_into(i, &mut t);
         let mut seg = Vec::new();
-        chords::intervals(&t, mesh.scale(), &mut seg);
+        if chords::intervals_oriented(&t, mesh.scale(), &mut seg) > 0 {
+            dirty += 1;
+            let dist: Vec<f64> = t.iter().map(|h| h.0).collect();
+            chords::intervals(&dist, mesh.scale(), &mut seg);
+        }
         out.push(seg);
     }
-    Ok(out)
+    Ok((out, dirty))
 }
 
 /// The 2 × 2 Gauss points of a cell, with their solid-angle weights.
@@ -91,7 +103,7 @@ fn angular_rays(
     n_theta: usize,
     n_phi: usize,
     max_depth: usize,
-) -> Result<(Vec<Ray>, usize, usize), SimError> {
+) -> Result<(Vec<Ray>, usize, usize, usize), SimError> {
     let (z, wz) = gauss_legendre(n_theta);
     let dphi = 2.0 * std::f64::consts::PI / n_phi as f64;
     let mut dirs = Vec::with_capacity(n_theta * n_phi);
@@ -100,7 +112,7 @@ fn angular_rays(
             dirs.push(direction(*zi, dphi * (j as f64 + 0.5)));
         }
     }
-    let base = trace(mesh, &dirs)?;
+    let (base, mut dirty) = trace(mesh, &dirs)?;
     let at = |i: usize, j: usize| i * n_phi + j;
     let mut out = Vec::with_capacity(base.len());
     let mut cells = Vec::new();
@@ -134,7 +146,8 @@ fn angular_rays(
     while !cells.is_empty() {
         let pts: Vec<[(DVec3, f64); 4]> = cells.iter().map(cell_points).collect();
         let dirs: Vec<DVec3> = pts.iter().flat_map(|p| p.iter().map(|x| x.0)).collect();
-        let segs = trace(mesh, &dirs)?;
+        let (segs, d) = trace(mesh, &dirs)?;
+        dirty += d;
         let mut next = Vec::new();
         for (k, c) in cells.iter().enumerate() {
             let four = &segs[4 * k..4 * k + 4];
@@ -159,20 +172,21 @@ fn angular_rays(
         }
         cells = next;
     }
-    Ok((out, rays, cut))
+    Ok((out, rays, cut, dirty))
 }
 
 /// The ray-segment rule of (G2): on each segment, `n_radial` Gauss–Jacobi nodes with
 /// weight `r²` when it starts at the origin, Gauss–Legendre on `f r²` otherwise. Returns
-/// points, weights, and the counts of angular rays and of rays in refined cut cells.
+/// points, weights, the counts of angular rays, of rays in refined cut cells, and of
+/// dirty rays (MS §3.6 step 4).
 pub fn volume_rule(
     mesh: &BodyMesh,
     n_theta: usize,
     n_phi: usize,
     n_radial: usize,
     max_depth: usize,
-) -> Result<(Vec<DVec3>, Vec<f64>, usize, usize), SimError> {
-    let (rays, n_rays, cut_rays) = angular_rays(mesh, n_theta, n_phi, max_depth)?;
+) -> Result<(Vec<DVec3>, Vec<f64>, usize, usize, usize), SimError> {
+    let (rays, n_rays, cut_rays, dirty) = angular_rays(mesh, n_theta, n_phi, max_depth)?;
     let (zeta, wj) = gauss_jacobi_zeta2(n_radial);
     let (xl, wl) = gauss_legendre(n_radial);
     let (mut pts, mut w) = (Vec::new(), Vec::new());
@@ -192,7 +206,7 @@ pub fn volume_rule(
             }
         }
     }
-    Ok((pts, w, n_rays, cut_rays))
+    Ok((pts, w, n_rays, cut_rays, dirty))
 }
 
 impl VolumeSet {
@@ -205,7 +219,8 @@ impl VolumeSet {
         n_radial: usize,
         max_depth: usize,
     ) -> Result<Self, SimError> {
-        let (pts, w, n_rays, cut_rays) = volume_rule(mesh, n_theta, n_phi, n_radial, max_depth)?;
+        let (pts, w, n_rays, cut_rays, dirty) =
+            volume_rule(mesh, n_theta, n_phi, n_radial, max_depth)?;
         let (depth, gdepth) = depth(index, &pts);
         Ok(Self {
             rho: pts.iter().map(|p| density.rho(*p)).collect(),
@@ -216,6 +231,7 @@ impl VolumeSet {
             gdepth,
             rays: n_rays,
             cut_rays,
+            dirty_rays: dirty,
         })
     }
 

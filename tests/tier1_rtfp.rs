@@ -358,3 +358,63 @@ fn speed_on_a_dense_mesh() {
     assert!(batch.gradient.iter().all(|g| g.is_finite()));
     assert!(seconds < 60.0, "dense evaluation took {seconds:.1} s");
 }
+
+#[test]
+fn segment_table_matches_direct_trace() {
+    // The segment table 𝒯 of MS §3.15.1: the first evaluation traces the rays,
+    // the second builds the table, and later evaluations reuse it. The reuse
+    // path must reproduce the traced field exactly.
+    let mesh = bumpy();
+    let density = cauchy(&[([0.1, 0.0, 0.0], 2.0, 1.5, 1.0)], 0.4);
+    let solver = solver(&mesh, density);
+    let points = [
+        DVec3::new(0.2, 0.3, 0.1),
+        DVec3::new(0.0, 0.0, 0.5),
+        DVec3::new(1.6, 0.0, 0.3),
+        DVec3::new(0.0, 0.0, 2.0),
+    ];
+    let set = PointSet::from_points(&points);
+    assert_eq!(solver.seg_stats().0, 0, "no table before any evaluation");
+    let first = solver.eval(&set, PointRole::Field, FieldMask::ALL).unwrap();
+    assert_eq!(solver.seg_stats().0, 0, "first evaluation only traces");
+    let second = solver.eval(&set, PointRole::Field, FieldMask::ALL).unwrap();
+    let (rows, dirty, overflow) = solver.seg_stats();
+    assert!(rows > 0, "second evaluation builds the segment table");
+    let third = solver.eval(&set, PointRole::Field, FieldMask::ALL).unwrap();
+    println!("segment table: {rows} rows, {dirty} dirty, {overflow} overflow");
+    for i in 0..points.len() {
+        for (a, b) in [
+            (first.potential[i], second.potential[i]),
+            (second.potential[i], third.potential[i]),
+        ] {
+            assert_eq!(a.to_bits(), b.to_bits(), "point {i}: table field differs");
+        }
+        for c in 0..3 {
+            assert_eq!(
+                first.gradient[i][c].to_bits(),
+                third.gradient[i][c].to_bits(),
+                "point {i}: table gradient differs"
+            );
+        }
+        for c in 0..6 {
+            assert_eq!(
+                second.hessian[i][c].to_bits(),
+                third.hessian[i][c].to_bits(),
+                "point {i}: table Hessian differs"
+            );
+        }
+        assert_eq!(first.theta[i], third.theta[i]);
+    }
+    // A density update leaves 𝒯 valid (Proposition 3.15.1): same table rows,
+    // no rebuild.
+    let mut solver = solver;
+    solver.set_density(cauchy(&[([0.0, -0.1, 0.0], 1.5, 2.0, 1.0)], 0.6));
+    let fourth = solver.eval(&set, PointRole::Field, FieldMask::ALL).unwrap();
+    assert_eq!(solver.seg_stats().0, rows);
+    assert_ne!(
+        third.potential[0].to_bits(),
+        fourth.potential[0].to_bits(),
+        "the new density must change the field"
+    );
+}
+

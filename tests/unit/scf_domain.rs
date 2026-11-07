@@ -43,7 +43,7 @@ fn ray_segments_integrate_a_torus_whose_origin_is_outside() {
     let exact = body.mesh().unwrap().signed_volume();
     let mesh = BodyMesh::build(&body.mesh().unwrap()).unwrap();
     let err = |depth: usize| {
-        let (_, w, _, cut) = volume_rule(&mesh, 16, 32, 3, depth).unwrap();
+        let (_, w, _, cut, _) = volume_rule(&mesh, 16, 32, 3, depth).unwrap();
         ((w.iter().sum::<f64>() - exact) / exact, cut)
     };
     let (coarse, _) = err(0);
