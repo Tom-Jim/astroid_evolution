@@ -138,3 +138,28 @@ fn the_orbit_law_is_refused_without_a_decaying_orbit() {
     let rising = SpinSchedule::parse("orbit:4.282837e13,2.3463e7,1.09e-12,1e15").unwrap();
     assert!(OrbitLaw::new(&prm, &rising, 1e16).is_err());
 }
+
+/// For a uniform sphere the exterior field is exactly the point-mass field, so the
+/// mountain-pass level sits at the saddle: `E_crit = −W(L) = −2.5·GM/r_H`, and the
+/// sampled value attains its saddle bound (Definition 10.3.6.2).
+#[test]
+fn the_critical_energy_of_a_sphere_is_the_saddle_level() {
+    let (topo, dirs) = Topology::icosphere(4);
+    let r = 1000.0;
+    let nv = dirs.len();
+    let body = Body::new(Arc::new(topo), dirs.iter().map(|d| *d * r).collect(), 2000.0, vec![], vec![0.0; nv]).unwrap();
+    let g = 6.6743e-11;
+    let fwd = Forward::bind(&body, g).unwrap();
+    let mass = fwd.moments.centroid.length().max(1.0) * 0.0 + fwd.moments.mass;
+    let r_hill = 2.5 * r;
+    let n2 = g * mass / (3.0 * r_hill.powi(3));
+    let necks = Necks::locate(&fwd, g, mass, Loading { omega: n2.sqrt(), tide: n2 }).unwrap();
+    let (e_crit, bound) = necks.critical_energy(&fwd, n2).unwrap();
+
+    // Point mass: W(L) = GM/r_H + 3n²r_H²/2 = 3GM/2r_H.
+    let analytic = -1.5 * g * mass / r_hill;
+    // The pass maximum sits at the saddle: the sampled level meets the bound to
+    // the disk spacing.
+    assert!((e_crit - bound).abs() < 0.02 * bound.abs(), "{e_crit} vs {bound}");
+    assert!((bound - analytic).abs() < 0.01 * analytic.abs(), "{bound} vs {analytic}");
+}

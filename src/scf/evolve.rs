@@ -469,6 +469,7 @@ pub fn run(
             };
         }
         if let (Some((l, o)), Some(nk)) = (orbit, &necks) {
+            let (e_crit, e_crit_saddle) = nk.critical_energy(&fwd, load.tide)?;
             rec.orbit = OrbitReport {
                 active: true,
                 a: o.a,
@@ -476,6 +477,8 @@ pub fn run(
                 mass: o.mass,
                 r_hill: nk.r_hill,
                 lobe_margin: nk.margin(&state.body.positions),
+                e_crit,
+                e_crit_saddle,
                 ..OrbitReport::default()
             };
             // §10.0.12.3: a certified L* > 1 ends the quasi-static route; under A-Λ the peak

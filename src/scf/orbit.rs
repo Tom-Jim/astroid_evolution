@@ -75,6 +75,10 @@ pub struct OrbitReport {
     /// Certified bracket of `L*` with the strength `c + μ₂ p̃` (zero when not evaluated).
     pub limit_lo: f64,
     pub limit_hi: f64,
+    /// Mountain-pass critical energy of Definition 10.3.6.2 and its saddle bound
+    /// `min_k{−W(L_k)}`, sampled on the neck planes each step.
+    pub e_crit: f64,
+    pub e_crit_saddle: f64,
 }
 
 impl OrbitReport {
@@ -306,6 +310,46 @@ impl Necks {
             .filter(|n| normal.dot(n.axis) > 0.0)
             .map(|n| (n.point - x).dot(n.axis) / normal.dot(n.axis))
             .min_by(f64::total_cmp)
+    }
+
+    /// The mountain-pass critical energy of Definition 10.3.6.2 and its saddle bound
+    /// `min_k{−W(L_k)}`, returned as `(E_crit, bound)`. On each neck plane Π_k the
+    /// connecting level is the maximum of `W = U + ½n²(3x² − z²)` over a sampling disk
+    /// of radius `1.5 r_H` about L_k; for a point mass it sits at the saddle itself, so
+    /// `E_crit = −max_k pass_k` attains the bound there. For an elongated body the pass
+    /// maximum can exceed `W(L_k)` away from `L_k`, and `E_crit` falls below the bound.
+    pub fn critical_energy(&self, fwd: &Forward, tide: f64) -> Result<(f64, f64), SimError> {
+        const M: usize = 24;
+        let n_g = (2 * M + 1) * (2 * M + 1);
+        let w = |x: DVec3, u: f64| u + 0.5 * tide * (3.0 * x.x * x.x - x.z * x.z);
+        let mut pts = Vec::with_capacity(2 * n_g + 2);
+        for n in &self.necks {
+            let t = if n.axis.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+            let u1 = n.axis.cross(t).normalize();
+            let u2 = n.axis.cross(u1);
+            for i in 0..=2 * M {
+                for j in 0..=2 * M {
+                    let s = (i as f64 / M as f64 - 1.0) * 1.5 * self.r_hill;
+                    let t2 = (j as f64 / M as f64 - 1.0) * 1.5 * self.r_hill;
+                    pts.push(n.point + u1 * s + u2 * t2);
+                }
+            }
+        }
+        pts.extend(self.necks.iter().map(|n| n.point));
+        let u = fwd.eval_potential(&pts)?;
+        let pass = |k: usize| {
+            (0..n_g)
+                .map(|i| w(pts[k * n_g + i], u[k * n_g + i]))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let e_crit = -pass(0).max(pass(1));
+        let bound = self
+            .necks
+            .iter()
+            .enumerate()
+            .map(|(k, n)| -w(n.point, u[2 * n_g + k]))
+            .fold(f64::INFINITY, f64::min);
+        Ok((e_crit, bound))
     }
 
     /// `max_{x ∈ pts} max_k (x − L_k)·e_k / r_H`.

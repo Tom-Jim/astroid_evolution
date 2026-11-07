@@ -195,6 +195,24 @@ impl Forward {
         })
     }
 
+    /// The potential `U` at points outside the body, for the effective potential
+    /// `W = U + ½n²(3x² − z²)` of Definition 10.3.6.2.
+    pub fn eval_potential(&self, points: &[DVec3]) -> Result<Vec<f64>, SimError> {
+        let batch = {
+            let _span = super::timing::span("rtfp_field");
+            self.solver.eval(
+                &PointSet::from_points(points),
+                PointRole::Field,
+                FieldMask {
+                    potential: true,
+                    gradient: false,
+                    hessian: false,
+                },
+            )?
+        };
+        Ok(batch.potential)
+    }
+
     /// Gravity and its Hessian at points outside the body: the exterior route of the
     /// runout flights (§10.0.2).
     pub fn eval_exterior(&self, points: &[DVec3]) -> Result<Vec<(DVec3, DMat3)>, SimError> {
