@@ -100,6 +100,7 @@ impl Sphere {
             time_limit: time,
             stop: 1.0e-3,
             theta: THETA,
+            optics: false,
         }
     }
 
@@ -441,4 +442,126 @@ fn routed_relief_returns_its_mass_toward_the_equator() {
     let from = mean_z(&|i| jac[i] * removed[i]);
     let to = mean_z(&|i| jac[i] * routing.delta[i]);
     assert!(to < from - 0.2, "removed at |z| {from:.3}, returned at {to:.3}");
+}
+
+impl Sphere {
+    /// `field` with the Eikonal/Randers optical path on (§10.0.2).
+    fn field_opt<'a>(&'a self, g: &'a [DVec3], load: Loading, m: &'a Material, time: f64) -> RunoutField<'a> {
+        let mut f = self.field(g, load, m, time);
+        f.optics = true;
+        f
+    }
+}
+
+/// §10.0.2: a paraboloid bowl `z = k r²` under uniform gravity has the slope
+/// `tan ψ = 2kr` decreasing toward the bottom, so a ray released on the rim slides
+/// inward and arrests at the static-friction ring `r_a = μ_s/(2k)`.
+struct Bowl {
+    topo: Arc<Topology>,
+    positions: Vec<DVec3>,
+    index: SurfaceIndex,
+}
+
+impl Bowl {
+    fn new(k: f64, r_rim: f64) -> Self {
+        let rings = 12usize;
+        let sectors = 32usize;
+        let mut positions = vec![DVec3::ZERO];
+        for i in 1..=rings {
+            let r = r_rim * i as f64 / rings as f64;
+            for j in 0..sectors {
+                let t = 2.0 * std::f64::consts::PI * j as f64 / sectors as f64;
+                positions.push(DVec3::new(r * t.cos(), r * t.sin(), k * r * r));
+            }
+        }
+        let mut faces = Vec::new();
+        let at = |i: usize, j: usize| (1 + (i - 1) * sectors + j % sectors) as u32;
+        for j in 0..sectors {
+            faces.push([0, at(1, j), at(1, j + 1)]);
+        }
+        for i in 1..rings {
+            for j in 0..sectors {
+                faces.push([at(i, j), at(i + 1, j), at(i, j + 1)]);
+                faces.push([at(i, j + 1), at(i + 1, j), at(i + 1, j + 1)]);
+            }
+        }
+        // Orient each face so its normal points up into the bowl.
+        for f in faces.iter_mut() {
+            let [a, b, c] = f.map(|v| positions[v as usize]);
+            if (b - a).cross(c - a).z < 0.0 {
+                f.swap(1, 2);
+            }
+        }
+        let index = SurfaceIndex::build(&positions, &faces);
+        Self {
+            topo: Arc::new(Topology::new(positions.len(), faces)),
+            positions,
+            index,
+        }
+    }
+}
+
+#[test]
+fn an_optical_ray_arrests_at_the_static_friction_ring() {
+    let k = 0.1;
+    let bowl = Bowl::new(k, 10.0);
+    let m = material(1.0, 1.2);
+    let g: Vec<DVec3> = (0..bowl.topo.faces.len()).map(|_| DVec3::new(0.0, 0.0, -1.0e-2)).collect();
+    let field = RunoutField {
+        topo: &bowl.topo,
+        index: &bowl.index,
+        positions: &bowl.positions,
+        g_face: &g,
+        hess_face: &[],
+        rho_face: &[],
+        grav_const: 0.0,
+        load: Loading { omega: 0.0, tide: 0.0 },
+        material: &m,
+        necks: None,
+        cycle: None,
+        time_limit: 1.0e6,
+        stop: 1.0e-3,
+        theta: THETA,
+        optics: true,
+    };
+    let src = bowl.positions.len() - 1;
+    let arrivals = field.trace(&[src]);
+    let a = &arrivals[0];
+    assert!(!a.timed_out && !a.escaped && !a.via_ode, "the optical ray completed: {a:?}");
+    let end: DVec3 = (0..3).map(|k| bowl.positions[a.ids[k]] * a.weights[k]).sum();
+    let r_end = (end.x.powi(2) + end.y.powi(2)).sqrt();
+    let r_a = m.spec.mu_s / (2.0 * k);
+    assert!((r_end - r_a).abs() < 0.35 * r_a, "arrest radius {r_end} vs {r_a}");
+    assert!(a.distance > 1.0, "distance {}", a.distance);
+    let rep = report(&[1.0], &arrivals);
+    assert_eq!((rep.optical, rep.ode_fallback), (1, 0));
+}
+
+/// A source inside the static zone (`|g_t| ≤ μ_s N`) never moves: the optical ray is
+/// arrested at its launch face, which the report counts as optical, not fallback.
+#[test]
+fn a_source_in_the_static_zone_stays_put() {
+    let sphere = Sphere::new(5, 10.0);
+    let m = material(1.0, 1.2);
+    let g = sphere.gravity(|_, _| DVec3::new(0.0, 0.0, -1.0e-2));
+    let field = sphere.field_opt(&g, Loading { omega: 0.0, tide: 0.0 }, &m, 1.0e4);
+    // Latitude 60° > atan(1/μ_s) = 45°: the static Coulomb condition holds at launch.
+    let src = sphere.vertex(DVec3::new(0.0, 0.5, 0.866_025_4));
+    let arrivals = field.trace(&[src]);
+    let a = &arrivals[0];
+    assert!(!a.via_ode && !a.timed_out && a.distance < 0.5, "{a:?}");
+}
+
+/// A packet launched outward leaves the surface; the optical ray is surface-bound, so
+/// the packet ODE takes over and `via_ode` reports the fallback.
+#[test]
+fn a_hopping_packet_falls_back_to_the_ode() {
+    let sphere = Sphere::new(5, 10.0);
+    let m = material(1.0, 1.2);
+    let g = sphere.gravity(|_, n| n * -1.0e-3);
+    let field = sphere.field_opt(&g, Loading { omega: 0.0, tide: 0.0 }, &m, 1.0e2);
+    let pole = sphere.vertex(DVec3::Z);
+    let arrival = field.launch(pole, DVec3::new(0.0, 0.0, 0.5));
+    assert!(arrival.via_ode, "{arrival:?}");
+    assert!(arrival.hops >= 1);
 }

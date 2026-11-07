@@ -68,6 +68,10 @@ pub struct RunoutField<'a> {
     pub stop: f64,
     /// Substep fraction `θ_r` (`THETA` in production).
     pub theta: f64,
+    /// §10.0.2 Eikonal/Randers: packets run the optical ray on the frozen
+    /// surface first; where its hypotheses break (lift-off, `|A|_g ≥ n`, a
+    /// reversal) the packet restarts on the full ODE and is counted.
+    pub optics: bool,
 }
 
 /// Where one packet came to rest, and how.
@@ -86,6 +90,9 @@ pub struct Arrival {
     /// Escaped through a neck (A-O): the mass leaves the body and is not deposited.
     pub lost: bool,
     pub timed_out: bool,
+    /// Ran on the packet ODE after the Eikonal/Randers hypotheses broke
+    /// (lift-off, a non-convex magnetic regime, or a reversal), §10.0.2.
+    pub via_ode: bool,
     /// `PATH_SAMPLES` points along the path (m); `w = 1` while airborne.
     pub path: Vec<[f64; 4]>,
 }
@@ -102,6 +109,10 @@ pub struct RunoutReport {
     pub max_hop: f64,
     pub escaped: usize,
     pub timed_out: usize,
+    /// Packets that ran the Eikonal/Randers ray to a stop, and those that fell
+    /// back to the packet ODE (§10.0.2).
+    pub optical: usize,
+    pub ode_fallback: usize,
 }
 
 struct Faces {
@@ -212,9 +223,23 @@ impl RunoutField<'_> {
         let faces = self.faces();
         let scale = Scale::of(self.positions);
         let far = exterior.is_some();
+        let v_e = if self.optics { self.effective_speeds(&faces) } else { Vec::new() };
         let mut waiting: Vec<Vec<DVec3>> = packets
             .par_iter_mut()
-            .map(|p| p.run(self, &faces, scale, far))
+            .map(|p| {
+                // §10.0.2: the Eikonal/Randers ray first; where its hypotheses
+                // break the packet restarts on the authoritative ODE.
+                if !v_e.is_empty() {
+                    let mut opt = p.clone();
+                    if opt.run_optical(self, &faces, scale, &v_e) {
+                        std::mem::swap(p, &mut opt);
+                        return Vec::new();
+                    }
+                    *p = Packet::new(self, p.source, p.v0);
+                    p.via_ode = true;
+                }
+                p.run(self, &faces, scale, far)
+            })
             .collect();
         if let Some(exterior) = exterior {
             // Each round sends every waiting flight's prefetch row in one batch.
@@ -256,6 +281,42 @@ impl RunoutField<'_> {
     fn expansion(&self, faces: &Faces, f: usize, foot: DVec3, x: DVec3) -> (DVec3, f64) {
         let g = faces.grav[f] + faces.hess[f] * (x - faces.centre[f]);
         (g, (x - foot).length())
+    }
+
+    /// The prescribed effective speed `v_e` of the optical reduction (§10.0.2) on each
+    /// face: the sliding equilibrium `|P_n g| = μ(I) N₀` at the static normal load
+    /// `N₀ = −g·n`, with `v_e = 0` marking a face whose static Coulomb condition holds —
+    /// a ray reaching it is arrested there. Where friction cannot balance the drive even
+    /// at `μ₂` the speed is capped by the energy scale of the face's drop.
+    fn effective_speeds(&self, faces: &Faces) -> Vec<f64> {
+        let m = self.material;
+        let s = &m.spec;
+        (0..faces.normal.len())
+            .map(|f| {
+                let n = faces.normal[f];
+                let g = self.g_face[f];
+                let gt = (g - n * g.dot(n)).length();
+                let n0 = -g.dot(n);
+                if n0 <= 0.0 || gt <= s.mu_s * n0 {
+                    return 0.0;
+                }
+                let v_cap = (2.0 * g.length() * faces.edge[f]).sqrt().max(1e-9);
+                if friction(m, v_cap, n0) * n0 <= gt {
+                    return v_cap;
+                }
+                // μ(I) is monotone in |v|: bisect for the equilibrium speed.
+                let (mut lo, mut hi) = (0.0, v_cap);
+                for _ in 0..40 {
+                    let mid = 0.5 * (lo + hi);
+                    if friction(m, mid, n0) * n0 < gt {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                0.5 * (lo + hi)
+            })
+            .collect()
     }
 }
 
@@ -303,6 +364,10 @@ struct Packet {
     /// `(g_n, τ_n)` of the last flight substep, whose velocity still lacks the end-point
     /// half of its kick (velocity Verlet).
     kick: Option<(DVec3, f64)>,
+    /// Launch velocity, so a failed optical ray can restart on the packet ODE.
+    v0: DVec3,
+    /// `true` once the Eikonal/Randers ray broke and the ODE took over.
+    via_ode: bool,
     end: Option<End>,
     trail: Trail,
     /// Orbital phase at launch (A-Λ).
@@ -338,6 +403,8 @@ impl Packet {
             substeps: 0,
             anchors: Vec::new(),
             kick: None,
+            v0,
+            via_ode: false,
             end: None,
             trail: Trail::new(x),
             // The golden-ratio sequence spreads the launch phases uniformly.
@@ -507,6 +574,119 @@ impl Packet {
         Vec::new()
     }
 
+    /// The Eikonal/Randers characteristic ray of §10.0.2 on the frozen surface, at the
+    /// prescribed speed `v_e` per face. Inside a facet the momentum `p = n t̂ + A` with
+    /// the calibrated potential `A = (Ω/v_e²)(e_z × x)` bends the direction at the
+    /// Coriolis rate `−2Ω_z/v_e` per unit length — an exact circular arc, so the
+    /// structure-preserving step is a rotation. At a facet edge the tangential momentum
+    /// `p·e` is conserved (Snell's law for the Randers medium); total reflection reflects
+    /// the ray. Returns `false` where the reduction's hypotheses break — lift-off
+    /// (`N ≤ 0`), `|A|_g ≥ n` (the magnetic regime leaves strong convexity), or a
+    /// reversal — and the caller reruns the packet ODE.
+    fn run_optical(&mut self, field: &RunoutField, faces: &Faces, _scale: Scale, v_e: &[f64]) -> bool {
+        let m = field.material;
+        let s = &m.spec;
+        if self.airborne {
+            // The ray is surface-bound; a launched hop is the ODE's.
+            return false;
+        }
+        while self.end.is_none() {
+            if self.substeps >= MAX_SUBSTEPS {
+                self.end = Some(End::TimedOut);
+                break;
+            }
+            self.substeps += 1;
+            let f = self.face;
+            let n = faces.normal[f];
+            let edge = faces.edge[f].max(1e-9);
+            let g = field.g_face[f];
+            let ve = v_e[f];
+            let v_stop = field.stop * (g.length() * s.h_s).sqrt();
+            if ve <= v_stop {
+                // The viscosity-arrival/static-friction condition: the equilibrium
+                // speed of this face is at or below the stopping speed.
+                self.end = Some(End::Arrested);
+                break;
+            }
+            // Normal reaction of the reduced model at the prescribed speed, with the
+            // same curvature and Coriolis terms as the sliding law.
+            let (spin, dg, _) = self.cyclic(field, self.x);
+            let omega = DVec3::new(0.0, 0.0, spin);
+            let normal = -g.dot(n) + 2.0 * omega.cross(self.v).dot(n) - self.kappa * ve * ve;
+            if normal <= 0.0 {
+                return false;
+            }
+            // Strong convexity |A|_g < n for A = (Ω/v_e²)(e_z × x): the tangential
+            // Coriolis drift Ω·|P_T(e_z×x)| must stay under the ray speed.
+            let drift = spin * (DVec3::Z.cross(self.x) - n * DVec3::Z.cross(self.x).dot(n)).length();
+            if !(drift < ve) {
+                return false;
+            }
+            let g_t = g - n * g.dot(n) + dg;
+            // Seed the ray downhill at the source; later facets keep the direction.
+            if self.v.length_squared() < 1e-24 {
+                let Some(dir) = g_t.try_normalize() else {
+                    return false;
+                };
+                self.v = dir * ve;
+            }
+            let mut dir = self.v / ve;
+            let dl = field.theta * edge;
+            // The magnetic bend: rotate about the facet normal by the exact arc angle
+            // `−2Ω_z/v_e` per unit length.
+            let bend = -2.0 * spin * n.z * dl / ve;
+            dir = (dir * bend.cos() + n.cross(dir) * bend.sin()).try_normalize().unwrap_or(dir);
+            // March and re-locate on the triangulation (the BVH query after the
+            // segment, which also finds the next facet, cavity mouth, or silhouette).
+            let (next_face, next) = field.ground(self.x + dir * dl);
+            if next_face != f {
+                // Snell at the facet edge: `p·e = (n t̂ + A)·e` conserved.
+                let n_opt = |ve_: f64| 1.0 / ve_;
+                let a_vec = |x: DVec3, ve_: f64| DVec3::Z.cross(x) * (spin / (ve_ * ve_));
+                // Shared edge direction: the line common to the two facet planes.
+                let e = n.cross(faces.normal[next_face]).try_normalize().unwrap_or(n.cross(dir).try_normalize().unwrap_or(DVec3::X));
+                let u = dir * n_opt(ve) + a_vec(self.x, ve);
+                let ve_next = v_e[next_face];
+                let pe = u.dot(e) + a_vec(next, ve).dot(e) - a_vec(next, ve_next).dot(e);
+                let n_next = n_opt(ve_next.max(1e-9));
+                if pe.abs() <= n_next && ve_next > v_stop {
+                    let e_perp = faces.normal[next_face].cross(e);
+                    let w = (n_next * n_next - pe * pe).sqrt();
+                    let sign = if u.dot(e_perp) >= 0.0 { 1.0 } else { -1.0 };
+                    let u_next = e * pe + e_perp * (w * sign);
+                    dir = u_next.try_normalize().unwrap_or(dir);
+                } else {
+                    // Total internal reflection or a stopping facet: mirror the
+                    // direction on the edge; a stopping facet is caught next loop.
+                    let e_perp = n.cross(e);
+                    let u_refl = e * u.dot(e) - e_perp * u.dot(e_perp);
+                    if ve_next <= v_stop {
+                        self.end = Some(End::Arrested);
+                        break;
+                    }
+                    dir = u_refl.try_normalize().unwrap_or(dir);
+                }
+            }
+            // Curvature of the smooth surface for the next lift-off test.
+            let step = next - self.x;
+            let len = step.length();
+            let (s0, s1) = (
+                field.smooth_normal(faces, f, self.x),
+                field.smooth_normal(faces, next_face, next),
+            );
+            self.kappa = if len > 1e-12 { (s1 - s0).dot(step) / (len * len) } else { 0.0 };
+            self.distance += len;
+            self.x = next;
+            self.foot = next;
+            self.face = next_face;
+            self.v = dir * v_e[next_face];
+            self.t += dl / ve.max(1e-9);
+            let x = self.x;
+            self.trail.push([x.x, x.y, x.z, 0.0]);
+        }
+        true
+    }
+
     /// The spin rate, the cyclic body force at `x` and the orbital phase at the packet's
     /// time (A-Λ); `(n, 0, 0)` without the cycle.
     fn cyclic(&self, field: &RunoutField, x: DVec3) -> (f64, DVec3, f64) {
@@ -560,6 +740,7 @@ impl Packet {
             escaped,
             lost: escaped && field.necks.is_some(),
             timed_out: matches!(self.end, Some(End::TimedOut)),
+            via_ode: self.via_ode,
             path: self.trail.samples(),
         }
     }
@@ -701,6 +882,11 @@ pub fn report(weights: &[f64], arrivals: &[Arrival]) -> RunoutReport {
         r.max_hop = r.max_hop.max(a.max_hop);
         r.escaped += usize::from(a.escaped);
         r.timed_out += usize::from(a.timed_out);
+        if a.via_ode {
+            r.ode_fallback += 1;
+        } else {
+            r.optical += 1;
+        }
     }
     if total > 0.0 {
         r.mean_distance /= total;

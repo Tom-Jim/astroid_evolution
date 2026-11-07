@@ -144,6 +144,7 @@ pub fn settle(
             time_limit: prm.runout_time,
             stop: prm.runout_stop,
             theta: runout::THETA,
+            optics: true,
         };
         // Mode C over τ: the exact exponential, so a layer whose e-folding time is far
         // below τ is stripped and laid down where its packets come to rest.
