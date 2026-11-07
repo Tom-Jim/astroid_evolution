@@ -10,6 +10,7 @@
 //! * the certified bracket of the limit load of §10.0.12.3 ([`limit`]).
 
 pub mod elastic;
+pub mod hyperbolic;
 pub mod limit;
 mod pd;
 mod picard;
@@ -637,6 +638,9 @@ pub struct StokesSolution {
     pub gamma_eps: f64,
     /// A-Ξ: the converged dilatational field (the total velocity is `v_ε + Σ u B`).
     pub dilatancy: Option<DilatancyState>,
+    /// `e_proj` of the §8.3 Galerkin bridge: `‖v^ray − v_h‖/‖v^ray‖_{L²(ρ)}`.
+    /// `0` for solvers that produce `u` directly.
+    pub e_proj: f64,
 }
 
 impl StokesSolution {
@@ -829,6 +833,7 @@ pub fn solve(
     match prm.solver.as_str() {
         "picard" => solve_picard(ops, ld, prm, m, guess),
         "primal-dual" => solve_pd(ops, ld, prm, m, guess),
+        "hyperbolic" => hyperbolic::solve_hyperbolic(ops, ld, prm, m, guess),
         other => Err(SimError::solver(format!("unknown Stokes solver {other:?}"))),
     }
 }

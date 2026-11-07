@@ -203,5 +203,6 @@ pub(super) fn solve_picard(
         inverse_ekman: 0.0,
         gamma_eps: eps_used,
         dilatancy: None,
+        e_proj: 0.0,
     })
 }

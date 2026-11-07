@@ -20,7 +20,7 @@ pub struct CellBvh {
     /// Grid coordinates of each occupied cell, in dense order.
     pub coords: Vec<[i64; 3]>,
     /// Grid coordinates → dense cell index.
-    index: HashMap<[i64; 3], u32>,
+    pub index: HashMap<[i64; 3], u32>,
     /// Dense cell index → member node indices (CSR).
     offsets: Vec<u32>,
     members: Vec<u32>,

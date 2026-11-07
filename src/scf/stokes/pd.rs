@@ -351,6 +351,7 @@ pub(super) fn solve_pd(
                 inverse_ekman: 0.0,
                 gamma_eps: eps,
                 dilatancy: shift.state,
+                e_proj: 0.0,
             });
         }
         // Collapse (Proposition 10.0.12.1): ‖u‖_P growing while the stress is pinned at

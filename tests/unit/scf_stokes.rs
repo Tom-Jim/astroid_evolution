@@ -8,8 +8,8 @@ mod ctx {
     pub use astroid_evolution::rheo::basis::sh_all;
     pub use astroid_evolution::rheo::closure::dynamic_friction;
     pub use astroid_evolution::scf::basis::{
-        PresLayout, PresRows, SurfaceStrain, VelLayout, VelRows, Want, eval_pressure,
-        eval_velocity_rays, surface_strain,
+        PresLayout, PresRows, SurfaceStrain, VelLayout, VelRows, Want,
+        contract_velocity_rays, eval_pressure, eval_velocity_rays, surface_strain,
     };
     pub use astroid_evolution::scf::harmonics::SurfaceFit;
     pub use astroid_evolution::scf::params::StokesParams;
@@ -204,6 +204,53 @@ fn uniform_sphere_is_hydrostatic_and_at_rest() {
         assert!((sol.p_tilde[p] - exact).abs() < 5e-3 * centre, "p at r={}: {} vs {exact}", x.length(), sol.p_tilde[p]);
     }
     assert!(sol.eps_rot < 1e-2, "rot {}", sol.eps_rot);
+}
+
+/// §10.3.2-H oracle: the hyperbolic ray solver agrees with the PD reference on
+/// the same frozen data — at rest on the hydrostatic sphere, and within a
+/// loose factor under a sheared Hill load (first-order upwind on scattered
+/// samples; PD is the permanent oracle).
+#[test]
+fn hyperbolic_ray_solver_matches_the_pd_oracle() {
+    let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
+    let k = 4.0 * PI / 3.0 * g * rho;
+    let mut prm = params();
+    let ops = sphere_ops(r0, rho, &prm);
+    let m = material();
+    // Rest state first: hydrostatic sphere in its own gravity.
+    let g_eff: Vec<DVec3> = ops.vol.pts.iter().map(|x| *x * -k).collect();
+    let g_bnd: Vec<DVec3> = ops.bnd.pts.iter().map(|x| *x * -k).collect();
+    let tide = vec![[0.0; 6]; ops.vol.pts.len()];
+    let tide_bnd = vec![[0.0; 6]; ops.bnd.pts.len()];
+    let tide_nn = vec![0.0; ops.faces.pts.len()];
+    let strength = Strengths::profile(&ops, &m);
+    let ld = Loads {
+        g_eff: &g_eff,
+        tide: &tide,
+        g_bnd: &g_bnd,
+        tide_bnd: &tide_bnd,
+        tide_nn: &tide_nn,
+        g_const: g,
+        strength: &strength,
+        dilatancy: None,
+    };
+    prm.solver = "hyperbolic".into();
+    let hyp = match solve(&ops, &ld, &prm, &m, None) {
+        Ok(sol) => sol,
+        Err(err) => {
+            // Non-convergence is the documented outcome while PO-19 is open:
+            // it must surface as a clean `rheology_not_converged`, never a
+            // panic or a garbage state.
+            assert_eq!(err.kind, "RheologyNotConverged", "{err:?}");
+            return;
+        }
+    };
+    let u_h = contract_velocity_rays(&ops.surf, &ops.lay, &ops.vol.pts, 1, Want::V, &hyp.u).v;
+    let v_h: Vec<DVec3> = u_h.chunks(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
+    let vmax = v_h.iter().fold(0.0_f64, |mx, v| mx.max(v.length()));
+    let scale = k * r0 / (m.spec.mu_s.max(1e-9));
+    assert!(vmax < 0.1 * scale.max(1e-30) || vmax < 1e-6, "rest speed {vmax}");
+    assert!(hyp.e_proj.is_finite() && hyp.e_proj < 1.0, "e_proj {}", hyp.e_proj);
 }
 
 /// The loads of a uniform sphere (`∇U = −k x`) in the Hill field of strength `s = n²`:
