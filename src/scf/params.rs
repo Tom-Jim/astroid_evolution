@@ -73,7 +73,8 @@ pub struct DensitySpec {
 pub struct StokesParams {
     /// Degree of the harmonic surface `R_SH` shared by the Stokes basis and `rheo_friction`.
     pub l_surface: usize,
-    /// `L_max` of the velocity basis (§8.1.3).
+    /// Resolution of the (G1) kernel family: the kernel-centre budget grows as
+    /// `2·l_velocity²` over the volume nodes.
     pub l_velocity: usize,
     /// `L_p`, `K_p` of the pressure space (§8.1.3).
     pub l_pressure: usize,
@@ -85,9 +86,10 @@ pub struct StokesParams {
     pub n_radial: usize,
     /// External pressure `p_ext` of the free surface.
     pub p_ext: f64,
-    pub picard_max: usize,
-    /// (a) Relative change of the velocity and of the viscosity between Picard sweeps.
-    pub tol_picard: f64,
+    /// Outer relaxation sweeps of the characteristic solver (§10.3.2).
+    pub sweeps: usize,
+    /// (a) Relative change of the velocity and of the viscosity between relaxation sweeps.
+    pub tol_relax: f64,
     /// (b) Relative weak momentum residual and relative rigid-body multiplier.
     pub tol_momentum: f64,
     /// Under-relaxation `θ_η` of the viscosity, in `(0, 1]`.
@@ -96,25 +98,15 @@ pub struct StokesParams {
     pub continuation: usize,
     /// Largest accepted `η_hi / η_lo` is reported, not limited; this bounds the Cholesky condition.
     pub rigid_sigma_min: f64,
-    /// Velocity solver at frozen pressure: `"primal-dual"` (§10.3.2) or `"picard"`, the
-    /// fixed-viscosity map kept as a check.
-    #[serde(default = "default_solver")]
-    pub solver: String,
-    /// Velocity trial space: `"geometry-adapted"` is the normative (G1) family
-    /// — compact kernels on the volume nodes and face quadrature points plus
-    /// one flux mode per sealed cavity — and `"enclosing-ball"` the spectral
-    /// poloidal–toroidal family kept as the reference path.
-    #[serde(default = "default_basis")]
-    pub basis: String,
-    /// `ε_pd` of criterion (a): relative velocity change and relative primal–dual gap.
-    #[serde(default = "default_pd_tol")]
-    pub pd_tol: f64,
-    /// `k_max` of the primal–dual iteration.
-    #[serde(default = "default_pd_max")]
-    pub pd_max: usize,
-    /// `N_p`: primal–dual iterations between pressure updates.
-    #[serde(default = "default_pd_pressure_every")]
-    pub pd_pressure_every: usize,
+    /// `ε` of criterion (a): relative characteristic-state change per sweep.
+    #[serde(default = "default_relax_tol")]
+    pub relax_tol: f64,
+    /// `k_max` of the characteristic pseudo-time iteration.
+    #[serde(default = "default_max_sweeps")]
+    pub max_sweeps: usize,
+    /// `N_p`: relaxation iterations between pressure updates.
+    #[serde(default = "default_pressure_every")]
+    pub pressure_every: usize,
     /// Target number of points of the boundary rule of the Nitsche terms (G3).
     #[serde(default = "default_n_boundary")]
     pub n_boundary: usize,
@@ -131,23 +123,15 @@ fn default_cut_depth() -> usize {
     3
 }
 
-fn default_solver() -> String {
-    "primal-dual".into()
-}
-
-fn default_basis() -> String {
-    "enclosing-ball".into()
-}
-
-fn default_pd_tol() -> f64 {
+fn default_relax_tol() -> f64 {
     1e-3
 }
 
-fn default_pd_max() -> usize {
+fn default_max_sweeps() -> usize {
     20_000
 }
 
-fn default_pd_pressure_every() -> usize {
+fn default_pressure_every() -> usize {
     10
 }
 
@@ -464,12 +448,12 @@ impl Project {
                 "stokes quadrature is too coarse",
             ));
         }
-        if s.picard_max == 0 {
+        if s.sweeps == 0 {
             return Err(SimError::model_not_closed(
-                "stokes.picard_max must be positive",
+                "stokes.sweeps must be positive",
             ));
         }
-        positive("stokes.tol_picard", s.tol_picard)?;
+        positive("stokes.tol_relax", s.tol_relax)?;
         positive("stokes.tol_momentum", s.tol_momentum)?;
         positive("stokes.rigid_sigma_min", s.rigid_sigma_min)?;
         if !(s.theta_eta.is_finite() && s.theta_eta > 0.0 && s.theta_eta <= 1.0) {
@@ -479,14 +463,6 @@ impl Project {
         }
         if !s.p_ext.is_finite() {
             return Err(SimError::model_not_closed("stokes.p_ext must be finite"));
-        }
-        match s.basis.as_str() {
-            "enclosing-ball" | "geometry-adapted" => {}
-            _ => {
-                return Err(SimError::model_not_closed(
-                    "stokes.basis must be \"enclosing-ball\" or \"geometry-adapted\"",
-                ));
-            }
         }
         unit_interval("yielding.delta_y", f.yielding.delta_y)?;
         non_negative("mode_c.k_e", f.mode_c.k_e)?;

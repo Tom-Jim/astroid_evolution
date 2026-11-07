@@ -445,7 +445,7 @@ fn cauchy_meshes_evolve_past_relax() {
             max_rel = max_rel.max(d / a.abs().max(1e-30));
         }
         eprintln!(
-            "{name}: {:.2}s mass={:.4e} relax_sweeps={} slack {:.3e}->{:.3e} kind={} n_mobile={} yielded={:.3e} super={} max_slack={:.3e} dR={:.4e} m ({:.3e} rel) d*={:.4e} socp={} frame={} ({:.3e} deg) picard={} eps_mom={:.3e} eps_lam={:.3e}",
+            "{name}: {:.2}s mass={:.4e} relax_sweeps={} slack {:.3e}->{:.3e} kind={} n_mobile={} yielded={:.3e} super={} max_slack={:.3e} dR={:.4e} m ({:.3e} rel) d*={:.4e} socp={} frame={} ({:.3e} deg) sweeps={} eps_mom={:.3e} eps_lam={:.3e}",
             t0.elapsed().as_secs_f64(),
             rec.mass,
             rep.sweeps.len(),
@@ -462,7 +462,7 @@ fn cauchy_meshes_evolve_past_relax() {
             rec.socp_iterations,
             rec.frame_applied,
             rec.frame_angle_deg,
-            rec.picard_iterations,
+            rec.sweeps,
             rec.eps_momentum,
             rec.eps_lambda,
         );

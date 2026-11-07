@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::common::math::DVec3;
 
-use super::basis::{Want, contract_velocity_rays};
+use super::basis::Want;
 use super::body::Body;
 use super::cores::{self, CoreReport, Quadrature};
 use super::evolving::spin::principal;
@@ -70,8 +70,8 @@ pub struct StepRecord {
     pub dt_c: f64,
     pub dt_char: f64,
     pub dt_omega: f64,
-    pub picard_iterations: usize,
-    pub eps_picard: f64,
+    pub sweeps: usize,
+    pub eps_relax: f64,
     pub eps_momentum: f64,
     pub eps_lambda: f64,
     pub eps_rot: f64,
@@ -380,7 +380,7 @@ pub fn run(
         let ratchet_v: Vec<DVec3> = match &cyc {
             Some(c) if c.ratchet.iter().any(|v| *v != 0.0) => {
                 mech.ratchet = c.ratchet.clone();
-                let v = contract_velocity_rays(&mech.surf, &mech.ops.lay, &state.body.positions, 1, Want::V, &c.ratchet).v;
+                let v = mech.ops.contract_velocity(&state.body.positions, Want::V, &c.ratchet).v;
                 v.chunks_exact(3).map(|w| DVec3::new(w[0], w[1], w[2])).collect()
             }
             _ => Vec::new(),
@@ -427,8 +427,8 @@ pub fn run(
             dt_c: f64::INFINITY,
             dt_char: f64::INFINITY,
             dt_omega: f64::INFINITY,
-            picard_iterations: mech.sol.picard_iterations,
-            eps_picard: mech.sol.eps_picard,
+            sweeps: mech.sol.sweeps,
+            eps_relax: mech.sol.eps_relax,
             eps_momentum: mech.sol.eps_momentum,
             eps_lambda: mech.sol.eps_lambda,
             eps_rot: mech.sol.eps_rot,
@@ -1165,8 +1165,8 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
     if cl.in_core.iter().all(|c| *c) && mech.ratchet.is_empty() {
         return vec![DVec3::ZERO; pts.len()];
     }
-    let v = contract_velocity_rays(&mech.surf, &mech.ops.lay, pts, 1, Want::V, &mech.sol.u).v;
-    let r = (!mech.ratchet.is_empty()).then(|| contract_velocity_rays(&mech.surf, &mech.ops.lay, pts, 1, Want::V, &mech.ratchet).v);
+    let v = mech.ops.contract_velocity(pts, Want::V, &mech.sol.u).v;
+    let r = (!mech.ratchet.is_empty()).then(|| mech.ops.contract_velocity(pts, Want::V, &mech.ratchet).v);
     pts.iter()
         .enumerate()
         .map(|(k, x)| {

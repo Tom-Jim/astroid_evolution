@@ -18,6 +18,7 @@ pub mod evolving;
 pub mod forward;
 pub mod frame;
 pub mod gbasis;
+pub mod gbasis_gpu;
 pub mod harmonics;
 pub mod history;
 pub mod io;

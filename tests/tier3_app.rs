@@ -106,8 +106,8 @@ fn running() -> Evolution {
             max_displacement: 0.4,
             eps_momentum: 2.0e-3,
             eps_lambda: 1.0e-3,
-            eps_picard: 4.0e-2,
-            picard_iterations: 6,
+            eps_relax: 4.0e-2,
+            sweeps: 6,
             tensile_fraction: 0.01,
             inverse_ekman: 0.2,
             mass_residual: 1.0e-5,
@@ -168,7 +168,7 @@ fn the_status_names_the_run_and_reads_back_the_slider_keys() {
     assert_eq!(shown["phase"], "running");
     assert_eq!(shown["stats"]["step"], 3);
     assert_eq!(shown["stats"]["dt_bound"], "mode_c");
-    assert_eq!(shown["stats"]["picard_iterations"], 6);
+    assert_eq!(shown["stats"]["sweeps"], 6);
     assert!((shown["time_myr"].as_f64().unwrap() - 1.0).abs() < 1e-12);
     assert!((shown["period_h"].as_f64().unwrap() - 3.5).abs() < 1e-3);
     assert!(shown["orbit"].is_null());
@@ -332,7 +332,7 @@ fn ryugu_step_matches_the_quasi_static_audit() {
         ("dt", audit.dt),
         ("trust", audit.trust),
         ("slope_slack", audit.slope_slack),
-        ("eps_picard", audit.eps_picard),
+        ("eps_relax", audit.eps_relax),
         ("tensile_fraction", audit.tensile_fraction),
         ("inverse_ekman", audit.inverse_ekman),
     ] {
@@ -373,11 +373,11 @@ fn ryugu_step_matches_the_quasi_static_audit() {
         audit.n_deposit
     );
     eprintln!(
-        "tier3 census eps_mom={:.3e} eps_lam={:.3e} eps_pic={:.3e} picard={} tensile={:.3e} Ek^-1={:.3e} flux={:.3e}",
+        "tier3 census eps_mom={:.3e} eps_lam={:.3e} eps_pic={:.3e} sweeps={} tensile={:.3e} Ek^-1={:.3e} flux={:.3e}",
         audit.eps_momentum,
         audit.eps_lambda,
-        audit.eps_picard,
-        audit.picard_iterations,
+        audit.eps_relax,
+        audit.sweeps,
         audit.tensile_fraction,
         audit.inverse_ekman,
         audit.flux_gap

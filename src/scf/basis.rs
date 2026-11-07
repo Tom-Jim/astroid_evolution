@@ -19,6 +19,7 @@ use super::harmonics::SurfaceFit;
 /// Velocity unknown layout: for every `(l, m)` with `l >= 1` eight consecutive entries,
 /// poloidal `k = 0..K` then toroidal `k = 0..K`.
 #[derive(Clone, Copy, Debug)]
+#[cfg(feature = "tier2")]
 pub struct VelLayout {
     pub l_max: usize,
     pub n_u: usize,
@@ -112,6 +113,7 @@ pub struct VelRows<T: Entry = f64> {
 }
 
 /// Evaluate the velocity basis at `pts`. Each point is its own ray.
+#[cfg(feature = "tier2")]
 pub fn eval_velocity(surf: &SurfaceFit, lay: &VelLayout, pts: &[DVec3], want: Want) -> VelRows {
     eval_velocity_rays(surf, lay, pts, 1, want)
 }
@@ -121,6 +123,7 @@ pub fn eval_velocity(surf: &SurfaceFit, lay: &VelLayout, pts: &[DVec3], want: Wa
 /// Points are ray-major: sample `s` of ray `i` is `pts[i * n_per + s]`, and every
 /// sample of a ray is a positive multiple of the same direction. Order-3 kernels
 /// scale the degree-0 jets of `R` and `Y` along that ray.
+#[cfg(feature = "tier2")]
 pub fn eval_velocity_rays(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -132,6 +135,7 @@ pub fn eval_velocity_rays(
 }
 
 /// The same rows stored as `T`.
+#[cfg(feature = "tier2")]
 pub fn eval_velocity_rays_as<T: Entry>(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -184,6 +188,7 @@ pub struct ContractedVelocity {
     pub d: Vec<f64>,
 }
 
+#[cfg(feature = "tier2")]
 pub fn contract_velocity_rays(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -198,10 +203,12 @@ pub fn contract_velocity_rays(
 }
 
 /// Strain basis at face centres, resident on the device.
+#[cfg(feature = "tier2")]
 pub struct SurfaceStrain {
     inner: super::basis_gpu::GpuStrain,
 }
 
+#[cfg(feature = "tier2")]
 impl SurfaceStrain {
     /// `D(Bu)` at each stored point, six scaled components, point-major.
     pub fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
@@ -209,6 +216,7 @@ impl SurfaceStrain {
     }
 }
 
+#[cfg(feature = "tier2")]
 pub fn surface_strain(
     surf: &SurfaceFit,
     lay: &VelLayout,

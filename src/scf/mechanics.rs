@@ -12,7 +12,7 @@ use crate::rheo::closure::{ClosureInput, closure};
 use crate::rheo::model::local_frame;
 use crate::rheo::{ChainStats, NodeResult};
 
-use super::basis::{Want, contract_velocity_rays};
+use super::basis::Want;
 use super::body::Body;
 use super::classify::{Classification, classify};
 use super::domain::SurfacePoints;
@@ -253,7 +253,7 @@ fn face_chain(
 ) -> Result<(Vec<NodeResult>, ChainStats), SimError> {
     let start = wall_seconds();
     let f = &ops.faces;
-    let vd = contract_velocity_rays(&ops.surf, &ops.lay, &f.pts, 1, Want::VD, &sol.u);
+    let vd = ops.contract_velocity(&f.pts, Want::VD, &sol.u);
     let nodes: Vec<NodeResult> = (0..f.pts.len())
         .into_par_iter()
         .map(|k| {

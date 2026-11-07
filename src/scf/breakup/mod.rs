@@ -134,8 +134,7 @@ pub fn split(project: &Project, prm: &BreakupParams, body: &Body, fwd: &Forward,
         let motion = Rigid::fit(x, &v, &m, &idx).ok_or_else(|| SimError::solver("breakup: a block has no rigid motion"))?;
         let kernels: Vec<CauchyKernel> = body.kernels.iter().filter(|kn| labels[nodes.nearest(kn.center)] == b).cloned().collect();
         let solid = |l: u32| l == b as u32;
-        let inner = vox.deepest(solid).ok_or_else(|| SimError::geometry("breakup: an empty block"))?;
-        let piece = piece(project, &vox.surface(solid), inner, kernels, body.bulk, target[b] * scale, parent_level, parent_area)?;
+        let piece = piece(project, &vox.surface(solid), kernels, body.bulk, target[b] * scale, parent_level, parent_area)?;
         pieces.push(Piece { motion, ..piece });
     }
     let total: f64 = pieces.iter().map(|p| p.fwd.moments.mass).sum();
@@ -143,14 +142,12 @@ pub fn split(project: &Project, prm: &BreakupParams, body: &Body, fwd: &Forward,
 }
 
 /// A body of the closed surface `(verts, faces)` with `kernels` (all in one frame), its bulk
-/// density set so that its mass is `mass`, moved to its principal frame. It is re-triangulated
-/// by the rays from `inner`, a point deep inside it; the icosphere level keeps the parent's
-/// edge length (`parent_level` on `parent_area`).
+/// density set so that its mass is `mass`, moved to its principal frame; the edge length
+/// follows the parent's (`parent_level` on `parent_area`).
 #[allow(clippy::too_many_arguments)]
 pub fn piece(
     project: &Project,
     (verts, faces): &(Vec<DVec3>, Vec<[u32; 3]>),
-    inner: DVec3,
     kernels: Vec<CauchyKernel>,
     bulk: f64,
     mass: f64,
@@ -160,9 +157,7 @@ pub fn piece(
     // §12.2: keep the marching-cubes surface of the block and remesh it
     // isotropically to the parent's edge length — topology-preserving, so a
     // block's concavities and necks survive; the radial re-triangulation of
-    // `rays_from` would impose a star-shaped shape on the piece. `inner`
-    // remains the preferred interior point for metrics elsewhere.
-    let _ = inner;
+    // `rays_from` would impose a star-shaped shape on the piece.
     let mut rv = verts.clone();
     let mut rf = faces.clone();
     let target_edge = (parent_area / (20.0 * 4f64.powi(parent_level as i32))).sqrt() * 1.1;

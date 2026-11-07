@@ -209,7 +209,7 @@ pub fn steady_cycle(
     if !leaves {
         return Ok(SteadyCycle {
             cycles: 0,
-            ratchet: vec![0.0; ops.lay.n_u],
+            ratchet: vec![0.0; ops.n_u],
             ratcheting: vec![false; np],
             range: vec![0.0; np],
             utilization: utilization(&zero),

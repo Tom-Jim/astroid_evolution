@@ -397,8 +397,8 @@ impl History {
             audit: StepAudit {
                 eps_momentum: s.eps_momentum,
                 eps_lambda: s.eps_lambda,
-                eps_picard: s.eps_picard,
-                picard_iterations: s.picard_iterations,
+                eps_relax: s.eps_relax,
+                sweeps: s.sweeps,
                 tensile_fraction: s.tensile_fraction,
                 inverse_ekman: s.inverse_ekman,
                 mass_residual: s.mass_residual,

@@ -83,6 +83,106 @@ impl Mode {
             }
         }
     }
+
+    /// `ΔB(x)` — the viscous term of the momentum residual.
+    pub fn lap(&self, x: DVec3) -> DVec3 {
+        match *self {
+            Mode::Kernel { c, e, h } => {
+                let r = x - c;
+                let s = r.length();
+                if s >= h || s < 1e-30 {
+                    return DVec3::ZERO;
+                }
+                // B = k(r×e), k = W'/s ⇒ ΔB = (k'' + 2k'/s)(r×e) + 2k'(r̂×e).
+                let (_, dk, ddk) = kernel_k(s, h);
+                (r.cross(e)) * (ddk + 2.0 * dk / s) + (r / s).cross(e) * (2.0 * dk)
+            }
+            // Rigid modes and the harmonic flux mode are harmonic.
+            _ => DVec3::ZERO,
+        }
+    }
+
+    /// `∂_k D` of `B`, 18 entries ordered `6k + c` in the same scaled
+    /// six-vector convention as `strain`.
+    pub fn grad_strain(&self, x: DVec3) -> [f64; 18] {
+        const S2: f64 = std::f64::consts::SQRT_2;
+        let mut out = [0.0; 18];
+        match *self {
+            Mode::Kernel { c, e, h } => {
+                let r = x - c;
+                let s = r.length();
+                if s >= h || s < 1e-30 {
+                    return out;
+                }
+                let (_, dk, ddk) = kernel_k(s, h);
+                let rh = r / s;
+                let rx_e = r.cross(e);
+                let axes = [DVec3::X, DVec3::Y, DVec3::Z];
+                for (kk, &ek) in axes.iter().enumerate() {
+                    let ck = ek.cross(e);
+                    let mut t = nalgebra::Matrix3::<f64>::zeros();
+                    for (i, &ei) in axes.iter().enumerate() {
+                        let ci = ei.cross(e);
+                        let dki = if i == kk { 1.0 } else { 0.0 };
+                        let pk = dki - rh[kk] * rh[i];
+                        // t[i][j] = ∂_k∂_i B_j
+                        let row = rx_e * (ddk * rh[kk] * rh[i] + dk / s * pk)
+                            + ck * (dk * rh[i])
+                            + ci * (dk * rh[kk]);
+                        for j in 0..3 {
+                            t[(i, j)] = row[j];
+                        }
+                    }
+                    out[6 * kk] = t[(0, 0)];
+                    out[6 * kk + 1] = t[(1, 1)];
+                    out[6 * kk + 2] = t[(2, 2)];
+                    out[6 * kk + 3] = S2 * 0.5 * (t[(0, 1)] + t[(1, 0)]);
+                    out[6 * kk + 4] = S2 * 0.5 * (t[(0, 2)] + t[(2, 0)]);
+                    out[6 * kk + 5] = S2 * 0.5 * (t[(1, 2)] + t[(2, 1)]);
+                }
+            }
+            Mode::Flux { z } => {
+                let r = x - z;
+                let r2 = r.length_squared();
+                if r2 < 1e-30 {
+                    return out;
+                }
+                let ir5 = r2.powf(-2.5);
+                let ir7 = ir5 / r2;
+                let ri = [r.x, r.y, r.z];
+                for kk in 0..3 {
+                    let mut t = nalgebra::Matrix3::<f64>::zeros();
+                    for i in 0..3 {
+                        for j in 0..3 {
+                            let dki = if i == kk { 1.0 } else { 0.0 };
+                            let dkj = if j == kk { 1.0 } else { 0.0 };
+                            let dij = if i == j { 1.0 } else { 0.0 };
+                            t[(i, j)] = 3.0 * ri[kk] * dij * ir5
+                                + 3.0 * (dki * ri[j] + ri[i] * dkj) * ir5
+                                - 15.0 * ri[kk] * ri[i] * ri[j] * ir7;
+                        }
+                    }
+                    out[6 * kk] = t[(0, 0)];
+                    out[6 * kk + 1] = t[(1, 1)];
+                    out[6 * kk + 2] = t[(2, 2)];
+                    out[6 * kk + 3] = S2 * 0.5 * (t[(0, 1)] + t[(1, 0)]);
+                    out[6 * kk + 4] = S2 * 0.5 * (t[(0, 2)] + t[(2, 0)]);
+                    out[6 * kk + 5] = S2 * 0.5 * (t[(1, 2)] + t[(2, 1)]);
+                }
+            }
+            Mode::Rigid { .. } => {}
+        }
+        out
+    }
+}
+
+/// `(k, k', k'')` of `B = k(s)·(r × e)`, `k = W'(s)/s` for the Wendland
+/// profile: `k = −20q³/h²`, `k' = 60q²/h³`, `k'' = −120q/h⁴`, `q = 1 − s/h`.
+#[inline]
+fn kernel_k(s: f64, h: f64) -> (f64, f64, f64) {
+    let q = 1.0 - s / h;
+    let h2 = h * h;
+    (-20.0 * q * q * q / h2, 60.0 * q * q / (h2 * h), -120.0 * q / (h2 * h2))
 }
 
 /// The compact kernel `W(s) = (1 − s/h)⁴ (4s/h + 1)`, `s = |x − c|`: the
@@ -103,8 +203,7 @@ fn kernel_d2w(s: f64, h: f64) -> f64 {
         return 0.0;
     }
     let q = 1.0 - s / h;
-    (20.0 * q * q * q * (4.0 * s / h - 3.0) + 80.0 * s * q * q / h) / (h * h) / h
-        - 20.0 * q * q * q / (h * h)
+    20.0 * q * q * (4.0 * s / h - 1.0) / (h * h)
 }
 
 /// `∇×(W e) = ∇W × e = W'(s)/s · (x − c) × e`.
@@ -189,8 +288,10 @@ impl GeoBasis {
         self.modes.len()
     }
 
+
     /// The basis matrix `B` at `pts`: row `3p + a` of `v`, `6p + c` of `d`
     /// — the same layout `VelRows` uses for the spectral family.
+    #[cfg(feature = "tier2")]
     pub fn rows(&self, pts: &[DVec3]) -> (DMatrix<f64>, DMatrix<f64>) {
         let (n_p, n_b) = (pts.len(), self.modes.len());
         let mut v = DMatrix::<f64>::zeros(3 * n_p, n_b);
@@ -211,6 +312,7 @@ impl GeoBasis {
     }
 
     /// The velocity `Σ u_b B_b` at `pts`.
+    #[cfg(feature = "tier2")]
     pub fn contract(&self, pts: &[DVec3], u: &[f64]) -> Vec<f64> {
         assert_eq!(u.len(), self.modes.len());
         let mut out = vec![0.0; 3 * pts.len()];
@@ -251,7 +353,7 @@ impl GramReport {
 /// Kernel modes centred further apart than the sum of their supports do not
 /// overlap: their Gram entry is exactly zero. That is most pairs — skipping
 /// them is what makes the Prop 8.1.3 assembly tractable.
-fn disjoint(a: &Mode, b: &Mode) -> bool {
+pub(crate) fn disjoint(a: &Mode, b: &Mode) -> bool {
     if let (Mode::Kernel { c: ca, h: ha, .. }, Mode::Kernel { c: cb, h: hb, .. }) = (a, b) {
         ca.distance(*cb) >= ha + hb
     } else {
@@ -262,7 +364,7 @@ fn disjoint(a: &Mode, b: &Mode) -> bool {
 /// For every mode the quadrature points on which it does not vanish: the
 /// support points of a kernel, all points of a global mode. Pair sums then
 /// touch the union of two supports, not the whole quadrature.
-fn support_lists(basis: &GeoBasis, pts: &[DVec3]) -> Vec<Vec<u32>> {
+pub(crate) fn support_lists(basis: &GeoBasis, pts: &[DVec3]) -> Vec<Vec<u32>> {
     basis
         .modes
         .iter()
@@ -276,7 +378,7 @@ fn support_lists(basis: &GeoBasis, pts: &[DVec3]) -> Vec<Vec<u32>> {
 }
 
 /// The quadrature points of the union of two support lists.
-fn union_support(a: &[u32], b: &[u32], out: &mut Vec<u32>) {
+pub(crate) fn union_support(a: &[u32], b: &[u32], out: &mut Vec<u32>) {
     out.clear();
     out.extend_from_slice(a);
     out.extend_from_slice(b);
@@ -286,6 +388,7 @@ fn union_support(a: &[u32], b: &[u32], out: &mut Vec<u32>) {
 
 /// Assemble `M_Γ = ∫ ρ B·B dV` on quadrature `(pts, w, rho)` and check rank.
 /// `rho` uniform `None` means `ρ = 1`.
+#[cfg(feature = "tier2")]
 pub fn gram_check(
     basis: &GeoBasis,
     pts: &[DVec3],
@@ -388,7 +491,7 @@ pub fn prune(
 }
 
 /// The assembled `M_Γ` of `gram_check`, reused by `prune`.
-fn gram_matrix(basis: &GeoBasis, pts: &[DVec3], w: &[f64], rho: Option<&[f64]>) -> DMatrix<f64> {
+pub(crate) fn gram_matrix(basis: &GeoBasis, pts: &[DVec3], w: &[f64], rho: Option<&[f64]>) -> DMatrix<f64> {
     let (n_b, supp) = (basis.n(), support_lists(basis, pts));
     let mut m = DMatrix::<f64>::zeros(n_b, n_b);
     let mut union = Vec::new();
@@ -416,6 +519,7 @@ fn gram_matrix(basis: &GeoBasis, pts: &[DVec3], w: &[f64], rho: Option<&[f64]>) 
 /// The Galerkin projection of §8.3: `u = argmin ∫ρ|v^ray − Σu_αB_α|²`, solved
 /// by the normal equations on the (G2) quadrature. Returns `(u, e_proj)`,
 /// `e_proj = ‖v^ray − v_h‖_{L²(ρ)} / ‖v^ray‖_{L²(ρ)}`.
+#[cfg(feature = "tier2")]
 pub fn project(
     basis: &GeoBasis,
     pts: &[DVec3],

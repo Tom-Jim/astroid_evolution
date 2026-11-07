@@ -19,8 +19,8 @@ pub const TENSION_GLYPHS: usize = 3072;
 pub struct StepAudit {
     pub eps_momentum: f64,
     pub eps_lambda: f64,
-    pub eps_picard: f64,
-    pub picard_iterations: usize,
+    pub eps_relax: f64,
+    pub sweeps: usize,
     pub tensile_fraction: f64,
     pub inverse_ekman: f64,
     pub mass_residual: f64,
@@ -54,8 +54,8 @@ fn audit_of(record: &StepRecord) -> StepAudit {
     StepAudit {
         eps_momentum: record.eps_momentum,
         eps_lambda: record.eps_lambda,
-        eps_picard: record.eps_picard,
-        picard_iterations: record.picard_iterations,
+        eps_relax: record.eps_relax,
+        sweeps: record.sweeps,
         tensile_fraction: record.tensile_fraction,
         inverse_ekman: record.inverse_ekman,
         mass_residual: record.mass_residual,

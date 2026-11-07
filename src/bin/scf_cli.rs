@@ -243,7 +243,7 @@ fn initial_state(project: &Project, snapshot: Option<&Path>) -> Result<State, Si
 
 fn line(r: &StepRecord) -> String {
     format!(
-        "n={:<5} t={:.5e} adv={:.3e} w={:.4e} {:<17} bound={:<14} picard={:<3} yield={:.3} mobile={:<5} \
+        "n={:<5} t={:.5e} adv={:.3e} w={:.4e} {:<17} bound={:<14} sweeps={:<3} yield={:.3} mobile={:<5} \
          sup={:<4} slack={:.2e} dM={:.1e} trust={:.1e}/{} frame={}",
         r.step,
         r.t,
@@ -251,7 +251,7 @@ fn line(r: &StepRecord) -> String {
         r.omega,
         r.kind,
         r.dt_bound,
-        r.picard_iterations,
+        r.sweeps,
         r.yielded_fraction,
         r.n_mobile,
         r.n_supercritical_faces,
@@ -629,8 +629,8 @@ fn run(cli: Cli) -> Result<(), SimError> {
                 "nitsche_c": m.ops.c_nitsche,
                 "volume_points": m.ops.vol.pts.len(),
                 "cut_rays": m.ops.vol.cut_rays,
-                "picard": {
-                    "iterations": m.sol.picard_iterations, "eps_picard": m.sol.eps_picard,
+                "relaxation": {
+                    "iterations": m.sol.sweeps, "eps_relax": m.sol.eps_relax,
                     "eps_momentum": m.sol.eps_momentum, "eps_lambda": m.sol.eps_lambda,
                     "eps_rot": m.sol.eps_rot, "eta_lo": m.sol.eta_lo, "eta_hi": m.sol.eta_hi,
                     "tensile_fraction": m.sol.tensile_fraction, "gamma_eps": m.sol.gamma_eps,
@@ -844,7 +844,7 @@ fn write_timing(
                     "n_deposit": rec.n_deposit,
                     "n_locked": rec.n_locked,
                     "n_supercritical_faces": rec.n_supercritical_faces,
-                    "picard_iterations": rec.picard_iterations,
+                    "sweeps": rec.sweeps,
                     "socp_iterations": rec.socp_iterations,
                     "trust_retries": rec.trust_retries,
                     "rheo_seconds": rec.rheo_seconds,

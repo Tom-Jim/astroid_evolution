@@ -7,10 +7,7 @@ mod ctx {
     pub use astroid_evolution::rheo::Material;
     pub use astroid_evolution::rheo::basis::sh_all;
     pub use astroid_evolution::rheo::closure::dynamic_friction;
-    pub use astroid_evolution::scf::basis::{
-        PresLayout, PresRows, SurfaceStrain, VelLayout, VelRows, Want,
-        contract_velocity_rays, eval_pressure, eval_velocity_rays, surface_strain,
-    };
+    pub use astroid_evolution::scf::basis::Want;
     pub use astroid_evolution::scf::harmonics::SurfaceFit;
     pub use astroid_evolution::scf::params::StokesParams;
     pub use astroid_evolution::scf::quad::{gauss_jacobi_zeta2, sphere_grid};
@@ -68,17 +65,15 @@ pub fn params() -> StokesParams {
         n_phi: 20,
         n_radial: 5,
         p_ext: 0.0,
-        picard_max: 60,
-        tol_picard: 1e-8,
+        sweeps: 60,
+        tol_relax: 1e-8,
         tol_momentum: 1e-6,
         theta_eta: 1.0,
         continuation: 2,
         rigid_sigma_min: 1e-6,
-        solver: "primal-dual".into(),
-        basis: "enclosing-ball".into(),
-        pd_tol: 1e-8,
-        pd_max: 400_000,
-        pd_pressure_every: 10,
+        relax_tol: 1e-8,
+        max_sweeps: 400_000,
+        pressure_every: 10,
         n_boundary: 1024,
         cut_depth: 3,
     }
@@ -206,15 +201,15 @@ fn uniform_sphere_is_hydrostatic_and_at_rest() {
     assert!(sol.eps_rot < 1e-2, "rot {}", sol.eps_rot);
 }
 
-/// §10.3.2-H oracle: the hyperbolic ray solver agrees with the PD reference on
-/// the same frozen data — at rest on the hydrostatic sphere, and within a
-/// loose factor under a sheared Hill load (first-order upwind on scattered
-/// samples; PD is the permanent oracle).
+/// §10.3.2-H oracle: the characteristic relaxation agrees with the tier-2 PD
+/// reference on the same frozen data — at rest on the hydrostatic sphere, and
+/// within a loose factor under a sheared Hill load (first-order upwind on
+/// scattered samples).
 #[test]
 fn hyperbolic_ray_solver_matches_the_pd_oracle() {
     let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
     let k = 4.0 * PI / 3.0 * g * rho;
-    let mut prm = params();
+    let prm = params();
     let ops = sphere_ops(r0, rho, &prm);
     let m = material();
     // Rest state first: hydrostatic sphere in its own gravity.
@@ -234,7 +229,6 @@ fn hyperbolic_ray_solver_matches_the_pd_oracle() {
         strength: &strength,
         dilatancy: None,
     };
-    prm.solver = "hyperbolic".into();
     let hyp = match solve(&ops, &ld, &prm, &m, None) {
         Ok(sol) => sol,
         Err(err) => {
@@ -245,12 +239,26 @@ fn hyperbolic_ray_solver_matches_the_pd_oracle() {
             return;
         }
     };
-    let u_h = contract_velocity_rays(&ops.surf, &ops.lay, &ops.vol.pts, 1, Want::V, &hyp.u).v;
+    let u_h = ops.contract_velocity(&ops.vol.pts, Want::V, &hyp.u).v;
     let v_h: Vec<DVec3> = u_h.chunks(3).map(|c| DVec3::new(c[0], c[1], c[2])).collect();
     let vmax = v_h.iter().fold(0.0_f64, |mx, v| mx.max(v.length()));
     let scale = k * r0 / (m.spec.mu_s.max(1e-9));
     assert!(vmax < 0.1 * scale.max(1e-30) || vmax < 1e-6, "rest speed {vmax}");
     assert!(hyp.e_proj.is_finite() && hyp.e_proj < 1.0, "e_proj {}", hyp.e_proj);
+    // The tier-2 PD oracle: where it converges the two velocities must agree
+    // to a loose factor (the ray path is first-order upwind).
+    if let Ok(pd) = solve_pd(&ops, &ld, &prm, &m, None) {
+        let u_p = ops.contract_velocity(&ops.vol.pts, Want::V, &pd.u).v;
+        let (mut num, mut den) = (0.0, 0.0);
+        for p in 0..ops.vol.pts.len() {
+            for a in 0..3 {
+                num += (u_h[3 * p + a] - u_p[3 * p + a]).powi(2);
+                den += u_p[3 * p + a].powi(2);
+            }
+        }
+        let rel = (num / den.max(1e-300)).sqrt();
+        assert!(rel < 0.5, "hyperbolic vs PD relative velocity gap {rel}");
+    }
 }
 
 /// The loads of a uniform sphere (`∇U = −k x`) in the Hill field of strength `s = n²`:
@@ -308,7 +316,7 @@ fn the_limit_load_bracket_is_certified_and_agrees_with_the_collapse_test() {
     let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
     let k = 4.0 * PI / 3.0 * g * rho;
     let mut prm = params();
-    prm.pd_max = 40_000;
+    prm.max_sweeps = 40_000;
     let m = material();
     let ops = sphere_ops(r0, rho, &prm);
     let at = |s: f64| {
@@ -546,4 +554,68 @@ fn the_steady_cycle_scales_as_load_over_modulus() {
     assert!(rel(&base.ratchet, &stiff.ratchet, 0.5) < 1e-9 || base.ratchet.iter().all(|v| *v == 0.0));
     assert!(rel(&base.ratchet, &loaded.ratchet, 3.0) < 1e-9 || base.ratchet.iter().all(|v| *v == 0.0));
     assert_eq!((base.cycles, stiff.cycles, loaded.cycles), (base.cycles, base.cycles, base.cycles));
+}
+
+/// (G1) rows: the GPU evaluation of `gbasis.wesl` agrees pointwise with the
+/// CPU reference `Mode::{value, strain, lap, grad_strain}` — the same four row
+/// blocks in the same layout, at f32 tolerance.
+#[test]
+fn the_g1_gpu_rows_match_the_cpu_reference() {
+    use astroid_evolution::scf::gbasis::{GeoBasis, Mode};
+    use astroid_evolution::scf::gbasis_gpu;
+    let centres = vec![
+        DVec3::new(0.2, -0.3, 0.1),
+        DVec3::new(-0.5, 0.2, 0.4),
+        DVec3::new(0.1, 0.4, -0.6),
+    ];
+    let geo = GeoBasis::build(&centres, &[], 0.9, vec![DVec3::new(0.0, 0.0, 0.0)]);
+    let pts: Vec<DVec3> = (0..23)
+        .map(|i| {
+            let t = i as f64 * 0.37 - 4.0;
+            DVec3::new(t.cos(), t.sin(), t.cos() * t.sin())
+        })
+        .collect();
+    let rows = gbasis_gpu::rows(&geo, &pts, Want::ALL).expect("G1 GPU rows");
+    let nm = geo.n();
+    for (b, m) in geo.modes.iter().enumerate() {
+        for (p, &x) in pts.iter().enumerate() {
+            let v = m.value(x);
+            let d = m.strain(x);
+            let lap = m.lap(x);
+            let gd = m.grad_strain(x);
+            for a in 0..3 {
+                let got = f64::from(rows.v[(3 * p + a, b)]);
+                assert!(
+                    (got - v[a]).abs() < 1e-5 * v[a].abs().max(1e-2) + 1e-9,
+                    "v mode {b} pt {p} axis {a}: {got} vs {}",
+                    v[a]
+                );
+            }
+            for c in 0..6 {
+                let got = f64::from(rows.d[(6 * p + c, b)]);
+                assert!(
+                    (got - d[c]).abs() < 1e-5 * d[c].abs().max(1e-2) + 1e-9,
+                    "d mode {b} pt {p} comp {c}: {got} vs {}",
+                    d[c]
+                );
+            }
+            for a in 0..3 {
+                let got = f64::from(rows.lap[(3 * p + a, b)]);
+                assert!(
+                    (got - lap[a]).abs() < 1e-4 * lap[a].abs().max(1e-1) + 1e-8,
+                    "lap mode {b} pt {p} axis {a}: {got} vs {}",
+                    lap[a]
+                );
+            }
+            for c in 0..18 {
+                let got = f64::from(rows.gd[(18 * p + c, b)]);
+                assert!(
+                    (got - gd[c]).abs() < 1e-4 * gd[c].abs().max(1e-1) + 1e-8,
+                    "gd mode {b} pt {p} comp {c}: {got} vs {}",
+                    gd[c]
+                );
+            }
+        }
+    }
+    let _ = nm;
 }

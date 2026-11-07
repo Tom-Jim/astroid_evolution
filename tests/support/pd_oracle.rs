@@ -131,14 +131,14 @@ fn strain_adjoint(ops: &Operators, sig: &DVector<f64>) -> DVector<f64> {
 /// The strain samples are `e_i = √2 D(x_i)` (six scaled components, `|e_i| = γ̇`), so
 /// `G = Σ w_i e_iᵀ e_i` is the stiffness at `η ≡ 1`. The dual `ς_i` is the flow stress over
 /// `√2`. The pressure is updated every `N_p` iterations and the iteration continues warm.
-pub(super) fn solve_pd(
+pub fn solve_pd(
     ops: &Operators,
     ld: &Loads,
     prm: &StokesParams,
     m: &Material,
     guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
-    let n_u = ops.lay.n_u;
+    let n_u = ops.n_u;
     let np = ops.vol.pts.len();
     let p_min = m.spec.p_min;
     let f_load = assemble_f(ops, ld);
@@ -225,8 +225,8 @@ pub(super) fn solve_pd(
         let mut last = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
         // ‖u‖_P halfway through the level, for the collapse certificate.
         let mut u_half = 0.0;
-        for k in 0..prm.pd_max {
-            if k == prm.pd_max / 2 {
+        for k in 0..prm.max_sweeps {
+            if k == prm.max_sweeps / 2 {
                 u_half = p_norm(&u);
             }
             total += 1;
@@ -261,7 +261,7 @@ pub(super) fn solve_pd(
             ubar = &un * 2.0 - &u;
             u = un;
             // (P) and (S) every N_p iterations.
-            if (k + 1) % prm.pd_pressure_every.max(1) == 0 {
+            if (k + 1) % prm.pressure_every.max(1) == 0 {
                 fields = strain_fields_with(ops, &u, shift.active());
                 let e = strain(&u) + &shift.e;
                 // Relative Fenchel–Young gap at the frozen pressure,
@@ -294,7 +294,7 @@ pub(super) fn solve_pd(
                 p_prev.clone_from(&pr.p_vals);
                 last = (du, r_gap, dp);
                 let du_floor = p_norm(&u) <= 1e-300;
-                if (du <= prm.pd_tol || du_floor) && r_gap <= prm.pd_tol && dp <= prm.tol_picard {
+                if (du <= prm.relax_tol || du_floor) && r_gap <= prm.relax_tol && dp <= prm.tol_relax {
                     converged = true;
                     break;
                 }
@@ -340,8 +340,8 @@ pub(super) fn solve_pd(
                 eta: eta_final,
                 p_tilde: pr.ptil,
                 p_surface,
-                picard_iterations: total,
-                eps_picard: last.0.max(last.1),
+                sweeps: total,
+                eps_relax: last.0.max(last.1),
                 eps_momentum,
                 eps_lambda,
                 eps_rot,
@@ -376,7 +376,7 @@ pub(super) fn solve_pd(
             let suspect = format!(
                 "the velocity grew {growth:.2}× over the second half of {} primal–dual iterations with \
                  the stress at {saturation:.4} of τ_max (equilibrium residual {:.3e})",
-                prm.pd_max, last.1
+                prm.max_sweeps, last.1
             );
             // Under A-Ξ the admissible set is affine (Proposition 11.8) and the bracket does
             // not apply: the suspicion stands as the verdict.
@@ -421,7 +421,7 @@ pub(super) fn solve_pd(
             return Err(SimError::rheology_not_converged(format!(
                 "primal–dual iteration: velocity change {:.3e}, gap {:.3e}, pressure change \
                  {:.3e} after {total} iterations (tolerances {:.1e}, {:.1e})",
-                last.0, last.1, last.2, prm.pd_tol, prm.tol_picard
+                last.0, last.1, last.2, prm.relax_tol, prm.tol_relax
             )));
         }
     }

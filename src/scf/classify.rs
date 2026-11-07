@@ -15,7 +15,7 @@ use crate::common::math::DVec3;
 use crate::rheo::Material;
 use crate::rtfp::mesh::BodyMesh;
 
-use super::basis::{Want, contract_pressure, contract_velocity_rays};
+use super::basis::{Want, contract_pressure};
 use super::body::Body;
 use super::domain::{VolumeSet, depth};
 use super::quad::gauss_jacobi_zeta2;
@@ -370,7 +370,7 @@ impl Context<'_> {
         let (ops, sol) = (self.ops, self.sol);
         let field = {
             let _span = super::timing::span("classify_contract");
-            contract_velocity_rays(&ops.surf, &ops.lay, &xs, 1, Want::VD, &sol.u)
+            ops.contract_velocity(&xs, Want::VD, &sol.u)
         };
         let pvals = {
             let _span = super::timing::span("classify_pressure");

@@ -342,8 +342,7 @@ impl<'a> System<'a> {
         let level = big.body.topo.icosphere.unwrap_or(self.project.body.level);
         // The larger part's edge length, allowing one level more than its own (the union's
         // area is up to four times as large at the next level).
-        let inner = vox.deepest(|lab| lab == 0).ok_or_else(|| SimError::geometry("merger: an empty union"))?;
-        let p = piece(self.project, &vox.surface(|lab| lab == 0), inner, kernels, bulk, mass, level + 1, area * 4.0)?;
+        let p = piece(self.project, &vox.surface(|lab| lab == 0), kernels, bulk, mass, level + 1, area * 4.0)?;
         let (com, rot) = (p.com, p.rot);
         let id = self.next_id;
         self.next_id += 1;

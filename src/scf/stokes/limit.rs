@@ -36,7 +36,7 @@ impl LimitData {
 pub fn data(ops: &Operators, ld: &Loads, prm: &StokesParams, m: &Material) -> Result<LimitData, SimError> {
     let np = ops.vol.pts.len();
     let mut pr = Pressure::new(ops, m.spec.p_min);
-    let zero = DVector::zeros(ops.lay.n_u);
+    let zero = DVector::zeros(ops.n_u);
     let rest = Fields { shear: vec![0.0; np], d: DVector::zeros(6 * np) };
     pr.update(ops, ld, prm, m, m.spec.gamma_eps, &zero, &rest, None)?;
     Ok(LimitData { load: assemble_f(ops, ld), p0: pr.p_vals })
@@ -84,7 +84,7 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
     let mut q = cw.clone();
     let (mut lo, mut hi) = (0.0_f64, f64::INFINITY);
     let mut rates = vec![0.0; np];
-    let mut mech = vec![0.0; ops.lay.n_u];
+    let mut mech = vec![0.0; ops.n_u];
     let mut stress = vec![[0.0; 6]; np];
     let mut theta = 1.0;
     for pass in 1..=MAX_PASSES {

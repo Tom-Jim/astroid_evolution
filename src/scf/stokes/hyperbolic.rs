@@ -9,13 +9,15 @@
 //! velocity basis (`e_proj` reported) so downstream consumers keep their
 //! existing coefficient contract.
 //!
-//! PD remains the reference oracle: `solver = "hyperbolic"` is the
-//! experimental path the acceptance tests compare against `solve_pd`.
+//! This is the sole rheology solver of the production loop. A sweep that
+//! cannot meet criterion (a) inside `max_sweeps` reports a bounded
+//! `RheologyNotConverged` — the PO-19 boundedness stance of §10.3.2 — never
+//! propagated NaNs. The primal–dual iteration survives only as a `tier2`
+//! test oracle.
 
-use nalgebra::{Cholesky, DMatrix, DVector};
+use nalgebra::{DMatrix, DVector};
 
 use crate::common::error::SimError;
-use crate::common::linalg;
 use crate::common::math::DVec3;
 use crate::rheo::Material;
 use crate::scf::cell_bvh::CellBvh;
@@ -410,6 +412,12 @@ fn relax(
     let (w, rho, vol) = (&ops.vol.w, &ops.vol.rho, ops.vol.pts.len());
     let mut prev = ray.u.clone();
     let mut sweeps = 0;
+    // Δτ adaptation: a sweep that grows the state change instead of shrinking
+    // it is rolled back and retried at half the step; a few rollbacks are the
+    // cheap version of the §10.3.2 pseudo-time line search.
+    let mut dt_fac = 1.0;
+    let mut prev_eps = f64::INFINITY;
+    let mut rollbacks = 0;
     for s in 0..max_sweeps {
         for axis in 0..3 {
             let cmax = eta
@@ -417,7 +425,7 @@ fn relax(
                 .zip(rho.iter())
                 .map(|(&e, &r)| speeds(e, r, t_s, kappa).p)
                 .fold(0.0, f64::max);
-            let dt = 0.4 * ray.bvh.side / cmax.max(1e-300);
+            let dt = 0.4 * ray.bvh.side / cmax.max(1e-300) * dt_fac;
             sweep_axis(ray, axis, dt, eta, rho, t_s, kappa, ld.tide, ld.g_eff);
         }
         // Traction BC on the boundary-adjacent samples (§10.3.2 boundary hit).
@@ -435,11 +443,26 @@ fn relax(
         sweeps = s + 1;
         let eps = rel_change(&prev, &ray.u, w, rho);
         if !eps.is_finite() || !ray.u.iter().all(|v| v.is_finite()) {
+            if rollbacks < 8 {
+                ray.u.copy_from_slice(&prev);
+                dt_fac *= 0.5;
+                prev_eps = f64::INFINITY;
+                rollbacks += 1;
+                continue;
+            }
             return 0; // diverged: report, never propagate a NaN state
         }
         if eps < tol {
             break;
         }
+        if eps > 1.5 * prev_eps && rollbacks < 8 {
+            ray.u.copy_from_slice(&prev);
+            dt_fac *= 0.5;
+            prev_eps = f64::INFINITY;
+            rollbacks += 1;
+            continue;
+        }
+        prev_eps = eps;
         prev.copy_from_slice(&ray.u);
     }
     sweeps
@@ -495,13 +518,12 @@ pub fn solve_hyperbolic(
         .collect();
     for _outer in 0..(prm.continuation + 1).max(2) {
         let ok = relax(
-            ops, ld, prm.p_ext, &eta, t_s, kappa, prm.tol_picard, prm.pd_max.min(2000),
-            prm.pd_pressure_every.max(2), &bnd_pts, &mut ray,
+            ops, ld, prm.p_ext, &eta, t_s, kappa, prm.tol_relax, prm.max_sweeps.min(2000),
+            prm.pressure_every.max(2), &bnd_pts, &mut ray,
         );
         if ok == 0 {
             return Err(SimError::rheology_not_converged(
-                "the hyperbolic ray sweeps did not converge (PO-19); \
-                 solver = \"primal-dual\" remains the reference oracle",
+                "the characteristic relaxation did not converge within the sweep budget (PO-19)",
             ));
         }
         // Recompute η from (p̃, γ̇) of the ray state. `p̃` takes the ray
@@ -518,23 +540,18 @@ pub fn solve_hyperbolic(
         let done = new_eta
             .iter()
             .zip(eta.iter())
-            .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_picard);
+            .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_relax);
         eta = new_eta;
         if done {
             break;
         }
     }
     // Galerkin projection of the converged ray velocity onto the retained
-    // basis (`basis = "geometry-adapted"` targets `ops.geo`, else the
-    // enclosing-ball rows): produces `u`, `v_h` and `e_proj`.
+    // (G1) basis: produces `u`, `v_h` and `e_proj`.
     let v_ray: Vec<f64> = (0..pts.len())
         .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
         .collect();
-    let (u, e_proj) = if prm.basis == "geometry-adapted" {
-        ops.project_velocity(&v_ray)?
-    } else {
-        project_rows(ops, &v_ray)?
-    };
+    let (u, e_proj) = ops.project_velocity(&v_ray)?;
     finish(ops, ld, prm, m, eps, &eta, u, e_proj)
 }
 
@@ -589,8 +606,8 @@ fn finish(
         eta: eta_final,
         p_tilde: pr.ptil,
         p_surface,
-        picard_iterations: 0,
-        eps_picard: e_proj,
+        sweeps: 0,
+        eps_relax: e_proj,
         eps_momentum,
         eps_lambda,
         eps_rot,
@@ -602,41 +619,5 @@ fn finish(
         dilatancy: None,
         e_proj,
     })
-}
-
-/// Mass-Gram projection of `v^ray` onto the enclosing-ball rows: the same
-/// normal-equation solve as `gbasis::project`, against the GPU `v` rows.
-fn project_rows(ops: &Operators, v_ray: &[f64]) -> Result<(Vec<f64>, f64), SimError> {
-    let s: Vec<f64> = ops
-        .vol
-        .w
-        .iter()
-        .zip(&ops.vol.rho)
-        .map(|(w, r)| w * r)
-        .collect();
-    let gram = linalg::weighted_gram(&ops.rows.v, 3, &s);
-    let mut wr = vec![0.0; 3 * ops.vol.pts.len()];
-    for p in 0..ops.vol.pts.len() {
-        for a in 0..3 {
-            wr[3 * p + a] = s[p] * v_ray[3 * p + a];
-        }
-    }
-    let rhs = linalg::tr_mul(&ops.rows.v, &DVector::from_column_slice(&wr));
-    let ch = Cholesky::new(gram)
-        .ok_or_else(|| SimError::solver("the velocity mass matrix is not SPD"))?;
-    let u = ch.solve(&rhs);
-    let vh = linalg::mul(&ops.rows.v, &u);
-    let (mut num, mut den) = (0.0, 0.0);
-    for p in 0..ops.vol.pts.len() {
-        for a in 0..3 {
-            let pw = s[p];
-            num += pw * (vh[3 * p + a] - v_ray[3 * p + a]).powi(2);
-            den += pw * v_ray[3 * p + a].powi(2);
-        }
-    }
-    Ok((
-        u.as_slice().to_vec(),
-        (num / den.max(1e-300)).sqrt(),
-    ))
 }
 

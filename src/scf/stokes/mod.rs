@@ -1,19 +1,25 @@
 //! Quasi-static Stokes–pressure solve of the problem of §10.3.2 on the general domain
 //! of hypothesis (G) (§8.1).
 //!
-//! * velocity: the enclosing-ball basis of radius `R_*`, exactly divergence-free,
-//!   restricted to `𝒱` and integrated by the ray-segment rule (G2);
+//! * velocity: the (G1) geometry-adapted family — compact divergence-free
+//!   kernels on the volume and boundary nodes, the six rigid modes, and one
+//!   flux mode per sealed cavity — evaluated on the GPU (`gbasis.wesl`) and
+//!   integrated by the ray-segment rule (G2);
 //! * pressure: the scalar Poisson problem with the free-surface datum `p_Γ` imposed by
 //!   Nitsche's method (G3), whose matrix is factored once per geometry;
-//! * the pair is closed by the primal–dual iteration ([`pd`]), or by the
-//!   fixed-viscosity Picard map kept as a check ([`picard`]);
+//! * the pair is closed by the characteristic pseudo-time relaxation of
+//!   §10.3.2 (8.3-H, [`hyperbolic`]); the primal–dual iteration survives only
+//!   as the `tier2` oracle ([`pd`]);
 //! * the certified bracket of the limit load of §10.0.12.3 ([`limit`]).
 
 pub mod elastic;
 pub mod hyperbolic;
 pub mod limit;
+/// The primal–dual reference solver: test oracle only, compiled under `tier2`.
+/// The file lives with the other test assets under `tests/support/`.
+#[cfg(feature = "tier2")]
+#[path = "../../../tests/support/pd_oracle.rs"]
 mod pd;
-mod picard;
 mod pressure;
 
 use std::f64::consts::PI;
@@ -26,10 +32,7 @@ use crate::rheo::Material;
 use crate::rheo::closure::dynamic_friction;
 use crate::rtfp::mesh::BodyMesh;
 
-use super::basis::{
-    PresLayout, SurfaceStrain, VelLayout, VelRows, Want, eval_pressure, eval_velocity_rays_as,
-    surface_strain,
-};
+use super::basis::{ContractedVelocity, PresLayout, VelRows, Want, eval_pressure};
 use super::domain::{SurfacePoints, VolumeSet};
 use super::evolving::dilatation::Dilatational;
 use super::gbasis::{self, GeoBasis, GramReport};
@@ -39,8 +42,9 @@ use super::surface::SurfaceIndex;
 use crate::common::error::SimError;
 use crate::common::linalg::{self, Entry};
 
-use pd::solve_pd;
-use picard::solve_picard;
+/// The primal–dual reference solver: test oracle only, compiled under `tier2`.
+#[cfg(feature = "tier2")]
+pub use pd::solve_pd;
 
 /// Values and gradients of the pressure space `ℚ_h` at a point set: the interior family
 /// `(1 − r/R_*) ψ_{lk} Y_{lm}` and the family `(r/R_*)^l Y_{lm}`, all free under (G3).
@@ -159,11 +163,28 @@ pub struct Reuse {
     q_vol: QRows<f32>,
 }
 
+/// Scaled strain rows `D` at the face centres: the basis the friction chain
+/// contracts every iteration.
+pub struct FaceStrain {
+    d: DMatrix<f32>,
+}
+
+impl FaceStrain {
+    /// `D(Bu)` at each stored point, six scaled components, point-major.
+    pub fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
+        Ok(linalg::mul(&self.d, &DVector::from_column_slice(u))
+            .as_slice()
+            .to_vec())
+    }
+}
+
 /// Geometry-dependent operators, built once per geometry and density.
 pub struct Operators {
-    /// The enclosing-ball fit `R ≡ R_*` that drives the basis kernels (G1).
+    /// The enclosing-ball fit `R ≡ R_*`: the basis scale and the pressure
+    /// quadrature of (G2).
     pub surf: SurfaceFit,
-    pub lay: VelLayout,
+    /// The retained (G1) mode count: `ops.rows` column count.
+    pub n_u: usize,
     pub play: PresLayout,
     pub vol: VolumeSet,
     /// The boundary rule of the Nitsche terms.
@@ -182,8 +203,8 @@ pub struct Operators {
     /// `γ_N / h_N` and `h_N = R_*`; `C_N` of Proposition 8.1.6 is reported.
     gamma_over_h: f64,
     pub c_nitsche: f64,
-    /// Strain basis at the face centres, resident on the device.
-    pub surf_d: SurfaceStrain,
+    /// Strain basis at the face centres.
+    pub surf_d: FaceStrain,
     pub rigid: DMatrix<f64>,
     /// Smallest singular value of the row-normalised rigid-body constraint matrix.
     pub rigid_sigma_min: f64,
@@ -192,8 +213,8 @@ pub struct Operators {
     /// Gravity at the volume and boundary points; independent of the spin.
     pub vol_field: std::sync::OnceLock<super::forward::PointFields>,
     pub bnd_field: std::sync::OnceLock<super::forward::PointFields>,
-    /// The primal–dual metric `G` (the stiffness at `η ≡ 1`) and its range-space
-    /// factorization: fixed by the geometry, so a spin-only step reuses them.
+    /// The stiffness metric `G` at `η ≡ 1` and its range-space factorization:
+    /// fixed by the geometry, so a spin-only step reuses them.
     pd_metric: std::sync::OnceLock<(DMatrix<f64>, RangeSolve)>,
     /// The (G1) geometry-adapted family: compact kernels on the volume nodes
     /// and face quadrature points, the six rigid modes, and one flux mode per
@@ -243,7 +264,6 @@ impl Operators {
         prev: Option<Reuse>,
         cavity_centres: &[DVec3],
     ) -> Result<Self, SimError> {
-        let lay = VelLayout::new(prm.l_velocity);
         let play = PresLayout {
             l_max: prm.l_pressure,
             k_max: prm.k_pressure,
@@ -263,6 +283,33 @@ impl Operators {
             .collect();
         let bnd = SurfacePoints::clustered(&face_triples, prm.n_boundary);
         drop(span);
+        // (G1): the geometry-adapted family on this mesh. Kernel centres are
+        // thinned so the Prop 8.1.3 Gram check stays a bounded dense solve;
+        // `h_kernel` is the CellBVH support diameter `h_vol` of §11.2. Every
+        // velocity row below is the GPU evaluation of this family.
+        let geo = {
+            let centres = thin(&vol.pts, &bnd.pts, MAX_GEO_CENTRES);
+            let h = geo_support(&centres);
+            let basis = GeoBasis::build(&centres, &[], h, cavity_centres.to_vec());
+            gbasis::prune(
+                basis,
+                &vol.pts,
+                &vol.w,
+                Some(&vol.rho),
+                1e-8,
+                centres.len().max(8),
+            )
+        };
+        let (geo, geo_gram) = geo;
+        if geo_gram.rank < 6 {
+            return Err(SimError::solver(
+                "the (G1) basis lost the rigid modes on this geometry",
+            ));
+        }
+        let n_u = geo.n();
+        let g_rows = |pts: &[DVec3]| -> Result<VelRows<f32>, SimError> {
+            super::gbasis_gpu::rows(&geo, pts, Want::ALL).map_err(SimError::gpu)
+        };
         let span = super::timing::span("operators_volume_rows");
         // Rows of another basis scale are other functions: they are never taken over.
         let h_n = surf.coeff[0] / (4.0 * PI).sqrt();
@@ -270,7 +317,7 @@ impl Operators {
         let (rows, q_vol) = match prev {
             Some(old) => {
                 let (src, fresh) = reuse_map(&vol.pts, &old.pts, REUSE_DISTANCE * old.r_ref);
-                let r = eval_velocity_rays_as::<f32>(surf, &lay, &fresh, 1, Want::ALL);
+                let r = g_rows(&fresh)?;
                 let q = QRows::<f32>::eval(surf, &play, &fresh);
                 let _gather = super::timing::span("operators_volume_gather");
                 (
@@ -287,17 +334,18 @@ impl Operators {
                     },
                 )
             }
-            None => (
-                eval_velocity_rays_as(surf, &lay, &vol.pts, 1, Want::ALL),
-                QRows::eval(surf, &play, &vol.pts),
-            ),
+            None => (g_rows(&vol.pts)?, QRows::eval(surf, &play, &vol.pts)),
         };
-        let rigid = rigid_matrix(&vol, &rows, lay.n_u);
+        let rigid = rigid_matrix(&vol, &rows, n_u);
         let rigid_sigma_min = rigid_rank(&rigid, prm.rigid_sigma_min)?;
         drop(span);
         let span = super::timing::span("operators_boundary_rows");
-        let bnd_rows = eval_velocity_rays_as(surf, &lay, &bnd.pts, 1, Want::ALL);
-        let surf_d = surface_strain(surf, &lay, &faces.pts).map_err(SimError::gpu)?;
+        let bnd_rows = g_rows(&bnd.pts)?;
+        let surf_d = FaceStrain {
+            d: super::gbasis_gpu::rows(&geo, &faces.pts, Want::D)
+                .map_err(SimError::gpu)?
+                .d,
+        };
         drop(span);
         let _span = super::timing::span("operators_nitsche");
 
@@ -320,32 +368,9 @@ impl Operators {
         let a_n = &stiff - &flux - flux.transpose() + mass * gamma_over_h;
         let nitsche = Cholesky::new(a_n)
             .ok_or_else(|| SimError::solver("the Nitsche pressure matrix is not positive definite"))?;
-        let _span = super::timing::span("operators_geo_basis");
-        // (G1): the geometry-adapted family on this mesh. Kernel centres are
-        // thinned so the Prop 8.1.3 Gram check stays a bounded dense solve;
-        // `h_kernel` is the CellBVH support diameter `h_vol` of §11.2.
-        let geo = {
-            let centres = thin(&vol.pts, &bnd.pts, MAX_GEO_CENTRES);
-            let h = geo_support(&centres);
-            let basis = GeoBasis::build(&centres, &[], h, cavity_centres.to_vec());
-            gbasis::prune(
-                basis,
-                &vol.pts,
-                &vol.w,
-                Some(&vol.rho),
-                1e-8,
-                centres.len().max(8),
-            )
-        };
-        let (geo, geo_gram) = geo;
-        if geo_gram.rank < 6 {
-            return Err(SimError::solver(
-                "the (G1) basis lost the rigid modes on this geometry",
-            ));
-        }
         Ok(Self {
             surf: surf.clone(),
-            lay,
+            n_u,
             play,
             bnd_rho: bnd.pts.iter().map(|p| density.rho(*p)).collect(),
             bnd_grho: bnd.pts.iter().map(|p| density.grad(*p)).collect(),
@@ -373,16 +398,49 @@ impl Operators {
     }
 
     /// The Galerkin projection bridge of §8.3: the (G1) coefficients and the
-    /// reported `e_proj` of a sample field `v_ray` (point-major `3n`).
+    /// reported `e_proj` of a sample field `v_ray` (point-major `3n` on the
+    /// volume nodes). A mass-Gram solve on the GPU `v` rows.
     pub fn project_velocity(&self, v_ray: &[f64]) -> Result<(Vec<f64>, f64), SimError> {
-        gbasis::project(
-            &self.geo,
-            &self.vol.pts,
-            &self.vol.w,
-            Some(&self.vol.rho),
-            v_ray,
-        )
-        .map_err(SimError::solver)
+        let s: Vec<f64> = self
+            .vol
+            .w
+            .iter()
+            .zip(&self.vol.rho)
+            .map(|(w, r)| w * r)
+            .collect();
+        let gram = linalg::weighted_gram(&self.rows.v, 3, &s);
+        let mut wr = vec![0.0; 3 * self.vol.pts.len()];
+        for p in 0..self.vol.pts.len() {
+            for a in 0..3 {
+                wr[3 * p + a] = s[p] * v_ray[3 * p + a];
+            }
+        }
+        let rhs = linalg::tr_mul(&self.rows.v, &DVector::from_column_slice(&wr));
+        let ch = Cholesky::new(gram)
+            .ok_or_else(|| SimError::solver("the velocity mass matrix is not SPD"))?;
+        let u = ch.solve(&rhs);
+        let vh = linalg::mul(&self.rows.v, &u);
+        let (mut num, mut den) = (0.0, 0.0);
+        for p in 0..self.vol.pts.len() {
+            for a in 0..3 {
+                let pw = s[p];
+                num += pw * (vh[3 * p + a] - v_ray[3 * p + a]).powi(2);
+                den += pw * v_ray[3 * p + a].powi(2);
+            }
+        }
+        Ok((u.as_slice().to_vec(), (num / den.max(1e-300)).sqrt()))
+    }
+
+    /// The `want` row blocks of the (G1) basis at `pts`.
+    pub fn eval_velocity(&self, pts: &[DVec3], want: Want) -> Result<VelRows<f32>, SimError> {
+        super::gbasis_gpu::rows(&self.geo, pts, want).map_err(SimError::gpu)
+    }
+
+    /// `Σ u_b B_b` at `pts`: the velocity and scaled strain of one coefficient
+    /// vector of this geometry's (G1) basis.
+    pub fn contract_velocity(&self, pts: &[DVec3], want: Want, u: &[f64]) -> ContractedVelocity {
+        super::gbasis_gpu::contract(&self.geo, pts, want, u)
+            .unwrap_or_else(|err| panic!("(G1) contraction GPU: {err}"))
     }
 }
 
@@ -626,8 +684,8 @@ pub struct StokesSolution {
     pub p_tilde: Vec<f64>,
     /// `p_Γ = p_ext + n·τ·n` at the face centres.
     pub p_surface: Vec<f64>,
-    pub picard_iterations: usize,
-    pub eps_picard: f64,
+    pub sweeps: usize,
+    pub eps_relax: f64,
     pub eps_momentum: f64,
     pub eps_lambda: f64,
     pub eps_rot: f64,
@@ -770,7 +828,7 @@ pub(super) fn assemble_f(ops: &Operators, ld: &Loads) -> DVector<f64> {
 /// meaningless.
 pub(super) fn load_scale(ops: &Operators, ld: &Loads) -> f64 {
     let np = ops.vol.pts.len();
-    let n_u = ops.lay.n_u;
+    let n_u = ops.n_u;
     let mut acc = DVector::<f64>::zeros(n_u);
     for p in 0..np {
         let wg = ops.vol.w[p] * ops.vol.rho[p] * ld.g_eff[p].length();
@@ -821,8 +879,10 @@ pub(super) fn solve_range(ops: &Operators, rs: &RangeSolve, f: &DVector<f64>) ->
     (u, lam)
 }
 
-/// The Stokes–pressure pair at fixed geometry (§10.3.2): the primal–dual iteration, or the
-/// fixed-viscosity Picard map that has the same fixed points.
+/// The Stokes–pressure pair at fixed geometry (§10.3.2): the characteristic
+/// pseudo-time relaxation (8.3-H), the sole rheology solver of the normative
+/// loop. Non-convergence is reported as a bounded `RheologyNotConverged`
+/// rather than propagated NaNs.
 pub fn solve(
     ops: &Operators,
     ld: &Loads,
@@ -830,11 +890,6 @@ pub fn solve(
     m: &Material,
     guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
-    match prm.solver.as_str() {
-        "picard" => solve_picard(ops, ld, prm, m, guess),
-        "primal-dual" => solve_pd(ops, ld, prm, m, guess),
-        "hyperbolic" => hyperbolic::solve_hyperbolic(ops, ld, prm, m, guess),
-        other => Err(SimError::solver(format!("unknown Stokes solver {other:?}"))),
-    }
+    hyperbolic::solve_hyperbolic(ops, ld, prm, m, guess)
 }
 

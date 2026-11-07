@@ -390,6 +390,7 @@ fn velocity_kernel(ord: usize, l_max: usize, rays: bool) -> Result<VelKernel, St
     }
 }
 
+#[cfg(feature = "tier2")]
 pub(crate) fn velocity<T: Entry>(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -678,6 +679,7 @@ pub(crate) struct ContractedVelocity {
 /// The basis matrix is not stored and is not copied back. `want` may ask for
 /// `v` and `d` only; Laplacian rows stay on the matrix path used by the Stokes
 /// operator.
+#[cfg(feature = "tier2")]
 pub(crate) fn contract_velocity(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -785,6 +787,7 @@ pub(crate) fn contract_velocity(
 /// the device. One buffer for every point is about a gigabyte, which does not
 /// fit the worker transfer, so the points are split and only the GEMV result
 /// comes back. `contract` returns `6 * n_points` values.
+#[cfg(feature = "tier2")]
 pub(crate) struct GpuStrain {
     pieces: Vec<Res>,
     counts: Vec<usize>,
@@ -795,6 +798,7 @@ pub(crate) struct GpuStrain {
 
 /// Velocity (`want.v`) and strain (`want.d`) basis rows at fixed points, resident on
 /// the device; `contract` returns the selected components per point, `v` first.
+#[cfg(feature = "tier2")]
 pub(crate) fn resident_basis(
     surf: &SurfaceFit,
     lay: &VelLayout,
@@ -884,6 +888,7 @@ struct GemvParams {
     pad: u32,
 }
 
+#[cfg(feature = "tier2")]
 impl GpuStrain {
     pub(crate) fn contract(&self, u: &[f64]) -> Result<Vec<f64>, String> {
         if self.n_points == 0 || self.n_u == 0 {
