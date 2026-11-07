@@ -1,12 +1,12 @@
-//! The fast operator of the time-scale split (§10.4.4 step S, hypothesis A-T1): after a
+//! The fast operator of the time-scale split (§10.3.4 step S, hypothesis A-T1): after a
 //! creep step the surface settles to quasi-static equilibrium on the frozen yield state.
 //!
 //! Erosion, runout and shallow slides act on minutes to hours; creep on the step of the
 //! slow operator. Each sweep takes the face gravity of the current shape, erodes the loose
 //! layer of the yielded surface by the exact exponential over the step `τ` (first sweep only:
 //! material laid on yielding ground leaves with the next step), runs the packets out, and
-//! relieves the supercritical loose faces (slope promotion, §2.8c) with the routed cone of
-//! §10.4.3. Sweeps stop when no loose face is supercritical and nothing erodes, when a sweep
+//! relieves the supercritical loose faces (slope promotion, §10.0.3) with the routed cone of
+//! §10.3.3. Sweeps stop when no loose face is supercritical and nothing erodes, when a sweep
 //! no longer reduces the supercritical set (the rest is unrelievable), or when the geometry
 //! admits no further increment. Time does not advance.
 
@@ -49,7 +49,7 @@ pub struct SettleReport {
     pub eroded_mass: f64,
     /// Mass the relief removed from promoted vertices and routed (kg).
     pub relief_mass: f64,
-    /// Loose-layer mass the relief moved through the ledger of §2.8c (kg).
+    /// Loose-layer mass the relief moved through the ledger of §10.0.3 (kg).
     pub layer_mass: f64,
     /// Largest normal displacement of a vertex over all sweeps (m).
     pub max_displacement: f64,
@@ -82,8 +82,8 @@ pub struct Settled {
 /// Settle `body` under `load` on the frozen yield state `yielded`, `f_delta` (per vertex)
 /// of the creep step of length `tau` (= λΔt). With the `necks` of A-O, packets beyond a
 /// neck plane leave the body, and a loose layer pulled outward harder than its cohesion
-/// holds detaches (§10.4.6). With the `cycle` of A-Λ and its phases, repose is tested at
-/// the steepest phase and packets fly in the field of their launch phase (§10.4.7).
+/// holds detaches (§10.3.6). With the `cycle` of A-Λ and its phases, repose is tested at
+/// the steepest phase and packets fly in the field of their launch phase (§10.3.7).
 #[allow(clippy::too_many_arguments)]
 pub fn settle(
     project: &Project,
@@ -208,7 +208,7 @@ pub fn settle(
         packets.extend(arrivals);
 
         // Promoted vertices are free; the erosion and deposit of the others is their
-        // fixed increment Δh*_C (§2.8). Yielded vertices keep d = 0 here: they moved with
+        // fixed increment Δh*_C (§10.0). Yielded vertices keep d = 0 here: they moved with
         // the creep step, and their loose layer leaves by Mode C.
         let mut d_pred = vec![0.0; nv];
         let mut kind = vec![Kind::Locked; nv];
@@ -341,7 +341,7 @@ pub fn settle(
     })
 }
 
-/// The vertices whose loose layer detaches (§10.4.6): `ρ_s g_n > c_Γ`, with `g_n` the
+/// The vertices whose loose layer detaches (§10.3.6): `ρ_s g_n > c_Γ`, with `g_n` the
 /// area-weighted mean of `g_eff · n` over the incident faces and `c_Γ` their mean shallow
 /// cohesion.
 fn detachment(project: &Project, body: &Body, gravity: &[DVec3], laws: Option<&[FaceLaw]>) -> Vec<bool> {
@@ -361,7 +361,7 @@ fn detachment(project: &Project, body: &Body, gravity: &[DVec3], laws: Option<&[
         .collect()
 }
 
-/// Slope promotion (§2.8c, hypothesis A-C4): the vertices of a face whose repose slack
+/// Slope promotion (§10.0.3, hypothesis A-C4): the vertices of a face whose repose slack
 /// exceeds `tol`, that are not yielded and carry loose material (`ρ_s > 0`). Returns the
 /// movable set (yielded or promoted) and the promoted flags.
 pub fn slope_promotion(

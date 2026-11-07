@@ -14,7 +14,7 @@ pub const STREAMLINE_STEPS: usize = 8;
 /// Direction ticks of the tension layer, spread evenly over the vertices.
 pub const TENSION_GLYPHS: usize = 3072;
 
-/// Scalar acceptance numbers of one geological step (§2.15, §10.4).
+/// Scalar acceptance numbers of one geological step (§10.0.10, §10.3).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct StepAudit {
     pub eps_momentum: f64,
@@ -42,7 +42,7 @@ pub struct StepAudit {
     pub max_locked_step: f64,
     pub max_deposit_miss: f64,
     pub rheo_unconverged: u32,
-    /// Runout of the eroded packets (§2.8b): count, mass-weighted mean distance (m),
+    /// Runout of the eroded packets (§10.0.2): count, mass-weighted mean distance (m),
     /// mean change of |latitude| (rad, negative equatorward), packets that hopped.
     pub runout_traced: usize,
     pub runout_distance: f64,
@@ -143,7 +143,7 @@ pub struct StepSnapshot {
     pub field: Vec<VertexSample>,
     /// `PARTICLE_COUNT` seeds, `STREAMLINE_STEPS` samples each.
     pub stream: Vec<StreamPoint>,
-    /// Runout paths of this step (§2.8b), `runout::PATH_SAMPLES` points each, view units;
+    /// Runout paths of this step (§10.0.2), `runout::PATH_SAMPLES` points each, view units;
     /// `w = 1` while airborne.
     pub runout: Vec<[f32; 4]>,
     /// Interior density in view units: the matrix, and per core three rows

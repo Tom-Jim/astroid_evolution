@@ -1,5 +1,5 @@
 //! Tier 2: quasi-static geometric self-consistent-field (SCF) evolution of a rotating
-//! granular body on the general polyhedral domain of hypothesis (G) (MS §2.8–2.16, §8–§10).
+//! granular body on the general polyhedral domain of hypothesis (G) (MS §10.0–10.0.11, §8–§10).
 //!
 //! Gravity is Tier 1 (`rtfp`) and the friction-angle chain is `rheo`; both are
 //! called, never re-implemented.

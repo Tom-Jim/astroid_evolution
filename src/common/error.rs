@@ -29,23 +29,23 @@ macro_rules! kinds {
 }
 
 kinds! {
-    /// A required constant or input is missing or out of range (§10.4.4 step 0).
+    /// A required constant or input is missing or out of range (§10.3.4 step 0).
     /// Callers must not substitute a default.
     model_not_closed => "ModelNotClosed", 10;
-    /// The body is not an admissible star-shaped solid.
+    /// The body is not an admissible polyhedral solid of hypothesis (G).
     geometry => "GeometryInvalid", 11;
     invalid_input => "InvalidInput", 12;
-    /// `B_rb` lost rank, or the load is incompatible with the rigid modes (§8.5, A.3).
+    /// `B_rb` lost rank, or the load is incompatible with the rigid modes (§A.3).
     rigid_rank => "RigidRankDeficient", 13;
     /// The Picard iteration, the weak momentum balance, or the friction chain
-    /// did not converge (§2.15 a, b).
+    /// did not converge (§10.0.10 a, b).
     rheology_not_converged => "RheologyNotConverged", 20;
-    /// The load exceeds the limit load at the frozen pressure (`L* > 1`, §2.17.1): no
+    /// The load exceeds the limit load at the frozen pressure (`L* > 1`, §10.0.12.1): no
     /// quasi-static state exists; the primal–dual iteration showed the certificate.
     limit_load_collapse => "LimitLoadCollapse", 21;
-    /// The outer geometry acceptance failed at the trust-radius floor (§10.4.3).
+    /// The outer geometry acceptance failed at the trust-radius floor (§10.3.3).
     trust_exhausted => "TrustRadiusExhausted", 23;
-    /// The configured `step.max_steps` limit was reached before `T_end` (§10.4.4 step 9).
+    /// The configured `step.max_steps` limit was reached before `T_end` (§10.3.4 step 9).
     step_limit_exhausted => "StepLimitExhausted", 24;
     solver => "SolverFailure", 30;
     io => "Io", 31;

@@ -209,7 +209,7 @@ impl RtfpSolver {
     ) -> Result<FieldBatch, SimError> {
         if role == PointRole::SurfaceVertex && want.hessian {
             return Err(SimError::model_not_closed(
-                "MS §10.3: a vertex or edge Hessian must not be sampled; use SurfaceFace",
+                "MS §10.2: a vertex or edge Hessian must not be sampled; use SurfaceFace",
             ));
         }
         if !(want.potential || want.gradient || want.hessian) {

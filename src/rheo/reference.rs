@@ -1,8 +1,8 @@
 //! f64 reference of the surface velocity trace, built from the definitions
-//! rather than from the closed-form trace of Proposition 10.2.
+//! rather than from the closed-form trace of Section 10.1.
 //!
 //! The potentials `Phi = R^2 sum q psi Y`, `Psi = R sum s psi Y` are evaluated at
-//! arbitrary radius and direction, and the identities of Lemma 5.5,
+//! arbitrary radius and direction, and the identities of Section 10.1,
 //! `v_r = L^2 Phi / r`, `v_S = r^-1 grad d_r(r Phi)`, `v^T = grad Psi x e_r`,
 //! are differentiated on the unit sphere by fourth-order great-circle stencils.
 //! This checks the trace formula of the GPU kernel independently of the jets.

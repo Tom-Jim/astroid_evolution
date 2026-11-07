@@ -1,4 +1,4 @@
-//! Unit tests of `scf::cycle` (§10.4.7, hypothesis A-Λ) and of the primary's light (§11.6).
+//! Unit tests of `scf::cycle` (§10.3.7, hypothesis A-Λ) and of the primary's light (§11.6).
 
 use astroid_evolution::common::math::{DMat3, DVec3};
 use astroid_evolution::scf::cycle::{Cycle, Libration, chi_of, eccentricity_coefficient};
@@ -6,7 +6,7 @@ use astroid_evolution::scf::evolving::thermal::{PrimaryLight, eclipse_visible, p
 use astroid_evolution::scf::orbit::{OrbitLaw, OrbitParams};
 use astroid_evolution::scf::spin::SpinSchedule;
 
-/// Proposition 10.4.7.1(1): the classical 19/8 above 3n/2, 25/8 when every lag is reversed
+/// Proposition 10.3.7.1(1): the classical 19/8 above 3n/2, 25/8 when every lag is reversed
 /// (Phobos), and the regime of a primary between n/2 and n.
 #[test]
 fn the_eccentricity_coefficient_follows_the_signs_of_the_lags() {
@@ -20,7 +20,7 @@ fn the_eccentricity_coefficient_follows_the_signs_of_the_lags() {
     assert!((eccentricity_coefficient(0.7 * n, n) - want).abs() < 1e-15);
 }
 
-/// Proposition 10.4.7.1(2): over any steps of A-O, `e = e₀ (a/a₀)^x` exactly.
+/// Proposition 10.3.7.1(2): over any steps of A-O, `e = e₀ (a/a₀)^x` exactly.
 #[test]
 fn the_eccentricity_follows_the_semi_major_axis_exactly() {
     let spin = SpinSchedule::parse("orbit:4.282837e13,9.376e6,-1.1879e-9,1.2e15").unwrap();
@@ -38,7 +38,7 @@ fn the_eccentricity_follows_the_semi_major_axis_exactly() {
     assert!(s.a < 0.9 * a0 && s.e < 0.6 * 0.0151, "the orbit and e did not decay: {s:?}");
 }
 
-/// Proposition 10.4.7.2: the steady state of the damped libration equation, integrated
+/// Proposition 10.3.7.2: the steady state of the damped libration equation, integrated
 /// directly from rest over many damping times, is `Γ`, amplitude and phase.
 #[test]
 fn the_libration_is_the_steady_state_of_its_equation() {
@@ -103,7 +103,7 @@ fn exact_cycle(n: f64, e: f64, lib: Libration, x: DVec3, m: f64) -> DVec3 {
     total - mean
 }
 
-/// The boxed `δg` of §10.4.7 is the exact load to first order: its error falls as `e²`.
+/// The boxed `δg` of §10.3.7 is the exact load to first order: its error falls as `e²`.
 #[test]
 fn the_cyclic_load_is_the_exact_field_to_first_order() {
     let n = 2.28e-4;
@@ -130,7 +130,7 @@ fn the_cyclic_load_is_the_exact_field_to_first_order() {
     assert!((s1 / s2 - 2.0).abs() < 0.05, "the cycle is not linear in e");
 }
 
-/// Proposition 10.4.7.3 on a uniform ellipsoid: no net force, no torque about x or y, and
+/// Proposition 10.3.7.3 on a uniform ellipsoid: no net force, no torque about x or y, and
 /// about z only the damping torque C (√χ n / Q) γ̇.
 #[test]
 fn the_cyclic_load_is_self_equilibrated() {

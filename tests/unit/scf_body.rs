@@ -1,4 +1,4 @@
-//! Unit tests of `scf::body` (§8.0, G4).
+//! Unit tests of `scf::body` (§8.1, G4).
 
 use std::f64::consts::PI;
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-//! Loose-layer density `ρ_s` on the polyhedral surface (§2.8, §8.0 G5, §9.2): Mode C
+//! Loose-layer density `ρ_s` on the polyhedral surface (§10.0.3, §8.1 G5, §10.0.3): Mode C
 //! erosion and deposition, the deposition spread `G_w` as a heat kernel on the mesh, and
 //! conservative semi-Lagrangian transport along the tangential slip.
 //!
@@ -219,7 +219,7 @@ pub fn transport(
     (out, fix)
 }
 
-/// The isotropic spread `G_w` of §2.8 on `Γ`: diffusion `∂_t u = Δ_Γ u` for `t = w²/2` (a
+/// The isotropic spread `G_w` of §10.0.3 on `Γ`: diffusion `∂_t u = Δ_Γ u` for `t = w²/2` (a
 /// Gaussian of width `w` on a flat surface), in `SUBSTEPS` implicit steps of the
 /// barycentric-dual finite-volume Laplacian. Its weights are positive, so the spread is
 /// positive, and `Σ A u` is conserved by construction.
@@ -365,7 +365,7 @@ impl ModeC {
 ///
 /// Erosion is a per-vertex scale; deposition is the spread `G_w` of the eroded rate.
 ///
-/// With `arrivals` (§2.8b, A-C3) each source's eroded mass is first moved to where its
+/// With `arrivals` (§10.0.2, A-C3) each source's eroded mass is first moved to where its
 /// packet came to rest; the spread is then the same.
 pub fn mode_c(
     spread: &Spread,
@@ -410,7 +410,7 @@ pub fn mode_c_over(
 /// Erosion rate averaged over a step `dt` (`dt = 0`: the instantaneous rate).
 /// `J_ero = λ ρ_s` with `λ = k_e [F_δ]_+ / σ₀` frozen in the step is linear in
 /// `ρ_s`, so the layer decays exactly as `ρ_s e^{−λ t}` and the step average is
-/// `ρ_s (1 − e^{−λ dt}) / dt` (§10.4.1): positive for every `dt`.
+/// `ρ_s (1 − e^{−λ dt}) / dt` (§10.3.1): positive for every `dt`.
 pub fn erosion_over(
     area: &[f64],
     rho_s: &[f64],

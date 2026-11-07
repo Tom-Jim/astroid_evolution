@@ -234,7 +234,7 @@ fn a_headless_viewer_records_the_input_and_does_not_start_tier2() {
 ///
 /// Hard checks are the exogenous spin, criterion (b), mode C balance, the locked
 /// and deposition sets, and the displayed endpoints. Slack, yield, and the mass
-/// residual are printed. They are not convergence tests (§2.15).
+/// residual are printed. They are not convergence tests (§10.0.10).
 #[test]
 fn ryugu_step_matches_the_quasi_static_audit() {
     timing::ensure_enabled();
@@ -323,7 +323,7 @@ fn ryugu_step_matches_the_quasi_static_audit() {
     }
 
     let audit = &snap.audit;
-    // Printed quantities are not convergence tests (§2.15), but each must be a number in
+    // Printed quantities are not convergence tests (§10.0.10), but each must be a number in
     // its range: a NaN would pass every `<=` above unnoticed.
     for (name, v) in [
         ("max_slack", snap.max_slack),

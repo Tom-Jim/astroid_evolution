@@ -1,9 +1,9 @@
-//! Hypothesis A-Λ (§10.4.7): the eccentricity of a synchronous satellite, its forced
+//! Hypothesis A-Λ (§10.3.7): the eccentricity of a synchronous satellite, its forced
 //! libration, and the tidal cycle they impose in the body frame, at first order in `e`.
 //!
 //! The cyclic body force per unit mass is `δg(x, M) = H(M) x + E(M) e_z × x` with
 //! `H(M) = H_c cos M + H_s sin M` and `E(M) = E_c cos M + E_s sin M` (the boxed formula of
-//! §10.4.7); its elastic response, the brackets and the steady cycle are in
+//! §10.3.7); its elastic response, the brackets and the steady cycle are in
 //! [`super::stokes::elastic`].
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ pub struct CycleParams {
     /// Phases `N_M` of the sampled cycle, and the largest admissible libration angle (rad).
     pub phases: usize,
     pub psi_max: f64,
-    /// Algorithm 10.4.7.6: cycles allowed, the tolerance of the return at a phase and of
+    /// Algorithm 10.3.7.6: cycles allowed, the tolerance of the return at a phase and of
     /// the periodic residual stress (relative to the strength).
     pub cycles_max: usize,
     pub tol: f64,
@@ -88,7 +88,7 @@ impl CycleParams {
     }
 }
 
-/// `C_e` of Proposition 10.4.7.1: `ė/e = C_e ȧ_p/a` for the primary's tide at constant `Q`.
+/// `C_e` of Proposition 10.3.7.1: `ė/e = C_e ȧ_p/a` for the primary's tide at constant `Q`.
 pub fn eccentricity_coefficient(primary_spin: f64, n: f64) -> f64 {
     let sgn = |x: f64| if x >= 0.0 { 1.0 } else { -1.0 };
     let (s1, s2, s3) = (sgn(primary_spin - n), sgn(2.0 * primary_spin - n), sgn(2.0 * primary_spin - 3.0 * n));
@@ -101,7 +101,7 @@ pub fn love_number(rigidity: f64, rho: f64, g: f64, r: f64) -> f64 {
     1.5 / (1.0 + 19.0 * rigidity / (2.0 * rho * g * r))
 }
 
-/// The libration `γ = γ_s sin M + γ_c cos M` of Proposition 10.4.7.2.
+/// The libration `γ = γ_s sin M + γ_c cos M` of Proposition 10.3.7.2.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Libration {
     pub chi: f64,
@@ -198,7 +198,7 @@ pub struct CycleReport {
     pub chi: f64,
     pub libration: f64,
     pub psi: f64,
-    /// Relative torque residual of Proposition 10.4.7.3.
+    /// Relative torque residual of Proposition 10.3.7.3.
     pub torque_residual: f64,
     /// `nR/√(μ_e/ρ)`, `1/μ̃`, `1/Q_s`.
     pub inertia: f64,
@@ -208,7 +208,7 @@ pub struct CycleReport {
     pub peak_lo: f64,
     pub shakedown_lo: f64,
     pub shakedown_hi: f64,
-    /// Algorithm 10.4.7.6: cycles run (0: the cycle is elastic), volume fractions that
+    /// Algorithm 10.3.7.6: cycles run (0: the cycle is elastic), volume fractions that
     /// ratchet and that alternate, the largest ratchet speed (m/s) and fatigue rate (s⁻¹).
     pub cycles: usize,
     pub ratchet_fraction: f64,
@@ -236,7 +236,7 @@ pub struct CycleOut {
 }
 
 /// The cycle of the step at mean motion `n` and eccentricity `e` on the deep state `mech`
-/// of the body bound to `fwd` (the principal frame of §10.4.4, step 8).
+/// of the body bound to `fwd` (the principal frame of §10.3.4, step 8).
 pub fn evaluate(project: &Project, prm: &CycleParams, mech: &Mechanics, fwd: &Forward, n: f64, e: f64) -> Result<CycleOut, SimError> {
     let _span = super::timing::span("cycle");
     let mo = &fwd.moments;
@@ -302,7 +302,7 @@ pub fn evaluate(project: &Project, prm: &CycleParams, mech: &Mechanics, fwd: &Fo
     Ok(CycleOut { cycle, elastic, ratchet, alternating, fatigue, report })
 }
 
-/// `C_e + β` of Proposition 10.4.7.1 for the satellite bound to `fwd` at `(a, mass)`.
+/// `C_e + β` of Proposition 10.3.7.1 for the satellite bound to `fwd` at `(a, mass)`.
 pub fn eccentricity_exponent(project: &Project, prm: &CycleParams, law: &OrbitLaw, fwd: &Forward, gm: f64, mass: f64, n: f64) -> f64 {
     let mo = &fwd.moments;
     let r_s = (3.0 * mo.volume / (4.0 * std::f64::consts::PI)).cbrt();

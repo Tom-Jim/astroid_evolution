@@ -1,4 +1,4 @@
-//! Unit tests of `scf::socp` (§2.13, §10.4.3) in normal increments (G4).
+//! Unit tests of `scf::socp` (§10.0.8, §10.3.3) in normal increments (G4).
 
 use astroid_evolution::common::math::DVec3;
 use astroid_evolution::scf::body::Body;

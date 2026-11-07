@@ -1,6 +1,6 @@
 //! Supercritical-slope relaxation with crater protection.
 //!
-//! Relaxation is the geometric SOCP of §10.4.3 with a zero predictor (`d_pred = 0`).
+//! Relaxation is the geometric SOCP of §10.3.3 with a zero predictor (`d_pred = 0`).
 //! The slope cone is imposed only on faces whose slack exceeds `tol_slack` and that
 //! are not fully crater-locked. Every other vertex is in the locked set for that
 //! sweep, so a subcritical face stays in static friction (`d = 0`). That is the
@@ -150,10 +150,10 @@ pub fn protection(project: &Project, body: &Body) -> Result<Protection, SimError
 #[derive(Clone, Debug)]
 pub enum AcceptError {
     /// Positive volume or topology failure.
-    /// The caller must shrink `Δ` and re-solve the SOCP (§2.13, §10.4.3).
+    /// The caller must shrink `Δ` and re-solve the SOCP (§10.0.8, §10.3.3).
     Geometry(String),
     /// Mass residual `|ℳ − M| > ε_M`.  The caller must apply a conservative
-    /// correction in the mobile set; `Δ` must **not** be shrunk (§2.14).
+    /// correction in the mobile set; `Δ` must **not** be shrunk (§10.0.9).
     Mass(f64),
 }
 
@@ -182,7 +182,7 @@ pub fn accept(fwd: &Forward, mass_target: f64, eps_mass: f64) -> Result<f64, Acc
     Ok(resid)
 }
 
-/// The one mass correction of §2.14 on the mobile set: `X_i ← X_i + α (Dℳ)_i N_i` with
+/// The one mass correction of §10.0.9 on the mobile set: `X_i ← X_i + α (Dℳ)_i N_i` with
 /// `α = clip((M − ℳ)/Σ (Dℳ)_i², ±Δ/max|(Dℳ)_i|)`, so every increment stays in the box.
 pub fn mass_correction(
     positions: &[DVec3],
@@ -250,7 +250,7 @@ pub struct SlopeState {
 
 /// Face gravity of the current shape and the friction chain at rest (`v = 0`, `D = 0`).
 /// Under A-Λ each face takes the steepest of the sampled phases of its gravity
-/// (Proposition 10.4.7.8).
+/// (Proposition 10.3.7.8).
 pub fn slope_state(
     project: &Project,
     body: &Body,
@@ -453,7 +453,7 @@ pub fn relax(
                 varrho: g.varrho,
             };
             // A cone solve that misses the KKT tolerance is a rejected attempt
-            // (§10.4.3): the smaller box is a better-conditioned program.
+            // (§10.3.3): the smaller box is a better-conditioned program.
             let out = match solve(&inp) {
                 Ok(out) => out,
                 Err(err) if err.kind == "SolverFailure" => {
@@ -496,7 +496,7 @@ pub fn relax(
                     continue;
                 }
                 Err(AcceptError::Mass(resid)) => {
-                    // §2.14: the nonlinear remainder is corrected in the mobile set.
+                    // §10.0.9: the nonlinear remainder is corrected in the mobile set.
                     // A degenerate Jacobian is reported; it is not turned into a
                     // smaller trust radius.
                     let dm = bound.moments.mass - mass_target;
@@ -536,7 +536,7 @@ pub fn relax(
                     }
                 }
             };
-            // §2.8c: a sweep that raises the largest loose-face slack is rejected like a
+            // §10.0.3: a sweep that raises the largest loose-face slack is rejected like a
             // geometric failure; once the box is exhausted the relaxation stops where it is.
             let cand_state = slope_state(project, &cand, &mut cand_fwd, load, None, None)?;
             let (cand_slack, _, _) = measure(&cand_state);

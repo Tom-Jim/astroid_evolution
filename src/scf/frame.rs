@@ -1,11 +1,10 @@
-//! Step 8b of §10.4.4: re-alignment of the standard frame.
+//! Step 8b of §10.3.4: re-alignment of the standard frame.
 //!
 //! The standard frame has the centroid at the origin, `e_z` along the largest principal
 //! axis of inertia (the spin axis) and `e_x` along the smallest. When the body drifts out of
 //! it, the **whole** model is rigidly moved: the mesh vertices, and the centres of the Cauchy
-//! density kernels with the same map `x' = Q (x − x_cm)`. Radii along the fixed directions are
-//! then re-sampled by hardware ray casting from the new origin, the loose layer `ρ_s` is
-//! transferred barycentrically, and the residuals are re-verified.
+//! density kernels with the same map `x' = Q (x − x_cm)`. Nothing is re-sampled and no
+//! surface field is remapped; only the residuals are re-verified against the new frame.
 
 use nalgebra::{Matrix3, SymmetricEigen, Vector3};
 
@@ -69,7 +68,7 @@ pub fn needs_realign(m: &Moments, r_ref: f64, prm: &GeometryParams) -> bool {
 }
 
 /// Rotation `Q` (rows `e_x', e_y', e_z'`) of the principal frame of the inertia `ic`,
-/// with the sign and degeneracy conventions of §10.4.4 step 8b. The old frame is the identity.
+/// with the sign and degeneracy conventions of §10.3.4 step 8b. The old frame is the identity.
 pub fn principal_rotation(ic: &Matrix3<f64>, eps_deg: f64) -> Matrix3<f64> {
     let eig = SymmetricEigen::new(*ic);
     let mut idx = [0usize, 1, 2];
@@ -186,7 +185,7 @@ pub fn undo_frame(
 ///
 /// After three passes, the residual departure is verified. If it still exceeds
 /// `ε_frame · R_ref` (centroid) or `ε_frame · I₁` (off-diagonal), the function returns
-/// `RigidRankDeficient` per §10.4.4 step 8b (vii) and §A.3.
+/// `RigidRankDeficient` per §10.3.4 step 8b (vii) and §A.3.
 pub fn realign(
     body: &Body,
     forward: Option<Forward>,
@@ -226,7 +225,7 @@ pub fn realign(
         passes += 1;
     }
     let after = departure(&fwd.moments, r_ref, prm.eps_deg);
-    // §10.4.4 step 8b (vii): re-verify after at most three passes.
+    // §10.3.4 step 8b (vii): re-verify after at most three passes.
     // If the frame is still out of tolerance, the rigid-body condition is incompatible.
     if passes > 0 && (after.centroid > prm.eps_frame || after.off_diagonal > prm.eps_frame) {
         return Err(SimError::rigid_rank(format!(

@@ -1,8 +1,8 @@
-//! Hypothesis A-O (§10.4.6): the tidal decay of a synchronous satellite coupled to its mass,
+//! Hypothesis A-O (§10.3.6): the tidal decay of a synchronous satellite coupled to its mass,
 //! the necks of its Hill region through which it loses mass, and the failure orbit of a
-//! frozen body (§2.17.3).
+//! frozen body (§10.0.12.3).
 //!
-//! The orbit is the `orbit` spin schedule of §10.4.1 with its rate scale tied to the mass:
+//! The orbit is the `orbit` spin schedule of §10.3.1 with its rate scale tied to the mass:
 //! `d(a^{13/2})/dt = −κ m`, integrated exactly over each step at the mass of the step.
 
 use nalgebra::{Matrix3, SymmetricEigen};
@@ -27,7 +27,7 @@ use super::stokes::limit::{self, Bracket, LimitData};
 pub struct OrbitParams {
     /// Radius of the primary (m): the run stops when the semi-major axis reaches it.
     pub primary_radius: f64,
-    /// Steps between certified limit-load brackets of the run (§2.17.3); 0 for none.
+    /// Steps between certified limit-load brackets of the run (§10.0.12.3); 0 for none.
     #[serde(default)]
     pub limit_every: usize,
 }
@@ -70,7 +70,7 @@ pub struct OrbitReport {
     pub r_hill: f64,
     /// Largest distance of `Γ` beyond a neck plane over `r_H` (positive: overflow).
     pub lobe_margin: f64,
-    /// Bound on `|Δa|/a` from the neglected recoil (Remark 10.4.6.4).
+    /// Bound on `|Δa|/a` from the neglected recoil (Remark 10.3.6.4).
     pub recoil_bound: f64,
     /// Certified bracket of `L*` with the strength `c + μ₂ p̃` (zero when not evaluated).
     pub limit_lo: f64,
@@ -134,7 +134,7 @@ impl OrbitLaw {
         self.floor
     }
 
-    /// `β_n` of Proposition 10.4.7.1 for a satellite of mass `mass` and radius `r_s` whose
+    /// `β_n` of Proposition 10.3.7.1 for a satellite of mass `mass` and radius `r_s` whose
     /// own tide has `k2_over_q`, about a primary of mass `m_p`.
     pub fn beta(&self, m_p: f64, k2_over_q: f64, r_s: f64, mass: f64) -> f64 {
         68.25 * k2_over_q * m_p * r_s.powi(5) * self.gm.sqrt() / (self.kappa * mass * mass)
@@ -146,7 +146,7 @@ impl OrbitLaw {
     }
 
     /// The exact update over `tau` at the mass of the step, then the loss `lost`. The
-    /// eccentricity follows `e ∝ a^exponent` (Proposition 10.4.7.1; zero without A-Λ).
+    /// eccentricity follows `e ∝ a^exponent` (Proposition 10.3.7.1; zero without A-Λ).
     pub fn advance(&self, s: &mut OrbitState, tau: f64, lost: f64, exponent: f64) -> Result<(), SimError> {
         let base = s.a.powf(6.5) - self.kappa * s.mass * tau;
         let a = if base > 0.0 { base.powf(1.0 / 6.5) } else { 0.0 };
@@ -184,7 +184,7 @@ pub struct Neck {
     pub axis: DVec3,
 }
 
-/// The two necks of the Hill region of a synchronous satellite (Definition 10.4.6.2).
+/// The two necks of the Hill region of a synchronous satellite (Definition 10.3.6.2).
 #[derive(Clone, Debug)]
 pub struct Necks {
     pub necks: [Neck; 2],
@@ -317,7 +317,7 @@ impl Necks {
     }
 }
 
-/// The certified bracket of `L*` (strength `c + μ₂ p̃`, rest pressure; §2.17.3) of `body`,
+/// The certified bracket of `L*` (strength `c + μ₂ p̃`, rest pressure; §10.0.12.3) of `body`,
 /// bound to `fwd`, frozen under `load`, with the operators of its geometry.
 pub fn certify(project: &Project, body: &Body, fwd: &mut Forward, load: Loading) -> Result<(Bracket, std::sync::Arc<super::stokes::Operators>), SimError> {
     fwd.eval_faces(body)?;
@@ -330,7 +330,7 @@ pub fn certify(project: &Project, body: &Body, fwd: &mut Forward, load: Loading)
     Ok((b, ops))
 }
 
-/// Algorithm 2.17.4: where a frozen body first fails as its orbit shrinks.
+/// Algorithm 10.0.12.4: where a frozen body first fails as its orbit shrinks.
 #[derive(Clone, Debug, Serialize)]
 pub struct FailureOrbit {
     /// The smallest certified-stable and the largest certified-failed semi-major axis (m);
@@ -342,7 +342,7 @@ pub struct FailureOrbit {
     /// Shear rates of the collapse mechanism at the failed orbit, normalized to `N(u) = 1`,
     /// as `[x, y, z, γ̇]` per volume node.
     pub mechanism: Vec<[f64; 4]>,
-    /// Under A-Λ (§10.4.7) `stable` is certified shakedown and `failed` a certified peak
+    /// Under A-Λ (§10.3.7) `stable` is certified shakedown and `failed` a certified peak
     /// collapse; `ratchet` is the largest semi-major axis certified not to shake down, and
     /// `cycle_scan` holds `(a, e, L_peak lower bound, L_sd lo, L_sd hi)` per orbit.
     pub ratchet: Option<f64>,
@@ -369,7 +369,7 @@ pub struct FailureOptions {
     pub a_ref: Option<(f64, f64)>,
 }
 
-/// The failure orbit of `body` frozen (Algorithm 2.17.4).
+/// The failure orbit of `body` frozen (Algorithm 10.0.12.4).
 pub fn failure_orbit(project: &Project, body: &Body, opt: &FailureOptions) -> Result<FailureOrbit, SimError> {
     let mut fwd = Forward::bind(body, project.g)?;
     fwd.eval_faces(body)?;
@@ -437,7 +437,7 @@ pub fn failure_orbit(project: &Project, body: &Body, opt: &FailureOptions) -> Re
     Ok(FailureOrbit { stable, failed, scan, mechanism, ratchet: None, cycle_scan: Vec::new() })
 }
 
-/// The frozen body's tidal cycle of unit `n² e` and the law `e(a)` (Proposition 10.4.7.1).
+/// The frozen body's tidal cycle of unit `n² e` and the law `e(a)` (Proposition 10.3.7.1).
 struct CycleScan {
     unit: ElasticCycle,
     phases: usize,
@@ -478,8 +478,8 @@ impl CycleScan {
     }
 }
 
-/// Algorithm 2.17.4 under A-Λ: the scan down to the first certified peak collapse, then
-/// bisections of the shakedown and peak boundaries (Proposition 10.4.7.5).
+/// Algorithm 10.0.12.4 under A-Λ: the scan down to the first certified peak collapse, then
+/// bisections of the shakedown and peak boundaries (Proposition 10.3.7.5).
 #[allow(clippy::too_many_arguments)]
 fn cycle_failure_orbit(
     ops: &Operators,

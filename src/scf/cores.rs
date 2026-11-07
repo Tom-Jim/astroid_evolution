@@ -1,4 +1,4 @@
-//! Lagrangian transport and adaptive refit of the Cauchy density cores (MS §9.10).
+//! Lagrangian transport and adaptive refit of the Cauchy density cores (MS §9.2).
 //!
 //! * Level 0 (`predict`): exact 2-jet transport of every core along the masked
 //!   slip velocity, `c' = Φ(c)`, `S' = F⁻ᵀ S F⁻¹`, `F = exp(τ dev ∇v)`, midpoint rule.
@@ -19,7 +19,7 @@ use crate::common::error::SimError;
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoreParams {
-    /// `"lagrangian_cores"` (hypothesis A-ρL, §9.10) or `"frozen"` (hypothesis A-ρ,
+    /// `"lagrangian_cores"` (hypothesis A-ρL, §9.2) or `"frozen"` (hypothesis A-ρ,
     /// regression only).
     pub density_mode: String,
     /// `"anisotropic"` (full metric) or `"isotropic"` (`σ'² = det(S')^{1/3}`).
@@ -54,7 +54,7 @@ impl CoreParams {
     }
 }
 
-/// Reported quantities of §9.10.7.
+/// Reported quantities of §9.2.7.
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct CoreReport {
     pub anchored: usize,
@@ -86,7 +86,7 @@ fn dmat(m: Matrix3<f64>) -> DMat3 {
 }
 
 /// `max ‖dev ∇v_adv(c_k)‖_F` over the moving cores at their current centres: the rate
-/// of the core step bound `Δt_core` (§10.4.1). Zero when every core is anchored.
+/// of the core step bound `Δt_core` (§10.3.1). Zero when every core is anchored.
 pub fn strain_rate(
     kernels: &[CauchyKernel],
     v_adv: &Velocity<'_>,
@@ -124,7 +124,7 @@ pub fn strain_rate(
     rate
 }
 
-/// Level 0 (§9.10.3). `inside(c)` tells a core centre inside the moving material;
+/// Level 0 (§9.2.3). `inside(c)` tells a core centre inside the moving material;
 /// a core outside it, or where the velocity is masked, is anchored.
 pub fn predict(
     kernels: &[CauchyKernel],
@@ -206,7 +206,7 @@ fn condition(k: &CauchyKernel) -> f64 {
     e.max() / e.min().max(1e-300)
 }
 
-/// Level 1 (§9.10.4): scale the core weights so the total mass is `target`.
+/// Level 1 (§9.2.4): scale the core weights so the total mass is `target`.
 /// `mass` is the mass of the current density on the new body and `bulk_mass`
 /// its constant part. Returns `ξ` relative to the core mass.
 pub fn close_mass(kernels: &mut [CauchyKernel], mass: f64, bulk_mass: f64, target: f64) -> f64 {
@@ -391,7 +391,7 @@ fn blocks(len: usize) -> impl IndexedParallelIterator<Item = std::ops::Range<usi
     (0..len.div_ceil(size)).into_par_iter().map(move |b| b * size..((b + 1) * size).min(len))
 }
 
-/// `e_ρ` of §9.10.5 between a density and target values on a quadrature.
+/// `e_ρ` of §9.2.5 between a density and target values on a quadrature.
 pub fn misfit(density: &CauchyDensity, quad: &Quadrature, target: &[f64]) -> f64 {
     let parts: Vec<(f64, f64)> = blocks(quad.pts.len())
         .map(|range| {
@@ -406,7 +406,7 @@ pub fn misfit(density: &CauchyDensity, quad: &Quadrature, target: &[f64]) -> f64
     (num / den.max(1e-300)).sqrt()
 }
 
-/// Level 2 (§9.10.5): Gauss–Newton with Levenberg–Marquardt damping and the
+/// Level 2 (§9.2.5): Gauss–Newton with Levenberg–Marquardt damping and the
 /// quadrature mass held at its current value. Returns the refitted cores.
 pub fn refit(
     bulk: f64,
@@ -531,7 +531,7 @@ pub fn refit(
 }
 
 /// The transported target `ρ̃_q = ρ_K(X_d(x_q); θ⁽ⁿ⁾)` with the midpoint departure
-/// point `X_d(x) = x − τ v(x − τ/2 v(x))` (§9.10.5).
+/// point `X_d(x) = x − τ v(x − τ/2 v(x))` (§9.2.5).
 pub fn departure_density(
     old: &CauchyDensity,
     quad: &Quadrature,

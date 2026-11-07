@@ -1,7 +1,7 @@
-//! The elastic cycle of A-Λ (§10.4.7): its stress (Proposition 10.4.7.4), the peak and
-//! shakedown brackets (Proposition 10.4.7.5), and the steady cycle (Algorithm 10.4.7.6).
+//! The elastic cycle of A-Λ (§10.3.7): its stress (Proposition 10.3.7.4), the peak and
+//! shakedown brackets (Proposition 10.3.7.5), and the steady cycle (Algorithm 10.3.7.6).
 //!
-//! Stress samples use the convention of Proposition 2.17.3: `σ̂ = τ/√2` in the Mandel
+//! Stress samples use the convention of Proposition 10.0.12.3: `σ̂ = τ/√2` in the Mandel
 //! six-vector, so `|σ̂|` is the equivalent stress and `σ̂ · E u` the work with `E = √2 D`.
 
 use std::f64::consts::{PI, SQRT_2};
@@ -42,7 +42,7 @@ impl ElasticCycle {
     }
 }
 
-/// Proposition 10.4.7.4: the incompressible elastic response to each component of `cycle`,
+/// Proposition 10.3.7.4: the incompressible elastic response to each component of `cycle`,
 /// solved with the unit-viscosity stiffness of this geometry. `tide_coef` scales the
 /// backstress `C_T ρ_p ν d² dev H`.
 pub fn elastic_cycle(ops: &Operators, cycle: &Cycle, m: &Material, strength: &Strengths, g_const: f64) -> Result<ElasticCycle, SimError> {
@@ -90,7 +90,7 @@ fn dot(a: &[f64; 6], b: &[f64]) -> f64 {
     (0..6).map(|c| a[c] * b[c]).sum()
 }
 
-/// The bound of `L_peak` and the bracket of `L_sd` (Proposition 10.4.7.5).
+/// The bound of `L_peak` and the bracket of `L_sd` (Proposition 10.3.7.5).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CycleBracket {
     pub peak_lo: f64,
@@ -98,7 +98,7 @@ pub struct CycleBracket {
     pub shakedown_hi: f64,
 }
 
-/// Proposition 10.4.7.5 about the mean bracket `mean` of the load `load`, with the cyclic
+/// Proposition 10.3.7.5 about the mean bracket `mean` of the load `load`, with the cyclic
 /// fields of `el` scaled by `scale`, the cohesion and friction of the frozen strength at the
 /// rest pressure `p0`, and `phases` samples of the Melan bound.
 #[allow(clippy::too_many_arguments)]
@@ -148,7 +148,7 @@ pub fn cycle_bracket(
     }
 }
 
-/// Options of Algorithm 10.4.7.6.
+/// Options of Algorithm 10.3.7.6.
 #[derive(Clone, Copy, Debug)]
 pub struct CycleOptions {
     pub rigidity: f64,
@@ -172,7 +172,7 @@ pub struct SteadyCycle {
 /// Initial-stress iterations allowed at one phase.
 const RETURN_MAX: usize = 50;
 
-/// Algorithm 10.4.7.6 on the mean stress `creep` (σ̂ per volume node) at the pressure
+/// Algorithm 10.3.7.6 on the mean stress `creep` (σ̂ per volume node) at the pressure
 /// `p_bar`. The phase loop runs only if a node of `trigger` leaves the yield surface at
 /// some phase; otherwise the cycle is elastic.
 #[allow(clippy::too_many_arguments)]

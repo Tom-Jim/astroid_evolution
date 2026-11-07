@@ -1,4 +1,4 @@
-//! The divergence-free modal basis of §8 and the scalar pressure basis of §8.7.
+//! The divergence-free modal basis of §8 and the scalar pressure basis of §8.1.3.
 //!
 //! Evaluation runs on the GPU in double-single arithmetic. The operators are the
 //! Taylor jets of `P[Φ] = ∇(Φ + x·∇Φ) − x ΔΦ` and `T[Ψ] = ∇Ψ × x`.

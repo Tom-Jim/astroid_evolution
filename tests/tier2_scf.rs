@@ -157,7 +157,7 @@ fn relaxation_and_stage_run_on_gpu() {
     mark("mass check gravity", t);
     assert!(((m1 - mass0) / mass0).abs() <= p.geometry.eps_mass * 1.0001);
 
-    // At 3.8 h this body is past its limit load (L* > 1, §2.17.1): no quasi-static state
+    // At 3.8 h this body is past its limit load (L* > 1, §10.0.12.1): no quasi-static state
     // exists, and the solver must say so instead of iterating on.
     let schedule = SpinSchedule::parse(&format!("const:{omega:.8e}@1e5")).unwrap();
     let t = std::time::Instant::now();
@@ -213,7 +213,7 @@ fn relaxation_and_stage_run_on_gpu() {
 }
 
 /// Ryugu at icosphere level 4 (`level = 5` in the project) at a spin of `hours`, slowly
-/// varying so that there is no stage target (§2.15) and the run goes on; and its start.
+/// varying so that there is no stage target (§10.0.10) and the run goes on; and its start.
 fn ryugu_level4(hours: f64) -> (Project, SpinSchedule, State, f64) {
     let text = include_str!("../dist/.stage/assets/projects/ryugu.toml").replacen("level = 5", "level = 4", 1);
     let p = Project::parse(&text, projects()).expect("ryugu project");
@@ -228,7 +228,7 @@ fn run_from(p: &Project, schedule: &SpinSchedule, state: &State, steps: usize, l
     evolve::run(p, schedule, state.clone(), fwd, &opts(steps, lag), &mut |_, _, _| Ok(())).unwrap()
 }
 
-/// The lagged deep state (§10.4.4 step 4+) is reused only while the surface and the
+/// The lagged deep state (§10.3.4 step 4+) is reused only while the surface and the
 /// density cores stay within `θ_lag h_Γ,min` and the loads within `ε_ω`. On Ryugu's quiet
 /// surface at its present 7.63 h spin nothing moves, every step after the first lags,
 /// and the run is exactly the one that evaluates every step.
@@ -263,7 +263,7 @@ fn a_rerun_in_the_same_process_repeats_the_run() {
     assert_eq!(again.state.body.positions, first.state.body.positions, "a rerun ends elsewhere");
 }
 
-/// Hypothesis A-O (§10.4.6) on Phobos at icosphere level 4 and velocity degree 5, at 6.6 Mm:
+/// Hypothesis A-O (§10.3.6) on Phobos at icosphere level 4 and velocity degree 5, at 6.6 Mm:
 /// its tip has passed L₁, and the tide dominates even at its underdense centre, so the far
 /// neck sits at the centroid. A 1 m skin of 0.5 Pa over a 100 kPa interior keeps the deep
 /// state at rest, which isolates A-O: loose layer beyond the necks detaches, and runout and
@@ -426,7 +426,7 @@ fn cauchy_meshes_evolve_past_relax() {
             // Deimos at 4 h with glass-bead friction is at its limit load: the certified bracket
             // at the iteration's pressure lies just below 1 (about [0.92, 0.99]), and the
             // quasi-static route either certifies the collapse or does not reach the state
-            // (§2.17, §10.4.2); neither is a solver defect. Ryugu and Phobos have a state.
+            // (§10.0.12, §10.3.2); neither is a solver defect. Ryugu and Phobos have a state.
             Err(e) if name == "deimos" && (e.kind == "LimitLoadCollapse" || e.kind == "RheologyNotConverged") => {
                 eprintln!("{name}: limit load reached ({})", e.detail);
                 continue;
@@ -505,7 +505,7 @@ fn cauchy_meshes_evolve_past_relax() {
 
 const PHOBOS_CYCLE: &str = "\n[cycle]\neccentricity = 0.0151\nprimary_spin = 7.0882e-5\nrigidity = 1.69e8\nq_satellite = 100.0\nphases = 16\npsi_max = 0.2\ncycles_max = 30\ntol = 1.0e-3\ntol_cycle = 1.0e-3\n";
 
-/// A-Λ (§10.4.7) in the A-O run of Phobos: the cycle is evaluated every step, the
+/// A-Λ (§10.3.7) in the A-O run of Phobos: the cycle is evaluated every step, the
 /// eccentricity decays as a power of the semi-major axis, the libration is Phobos', the
 /// indicators allow the quasi-static elastic cycle, and the brackets of the cycle are ordered.
 #[test]
@@ -551,7 +551,7 @@ fn phobos_librates_and_its_eccentricity_decays_with_the_orbit() {
     assert!(o.a < a0 && o.e < 0.0151);
 }
 
-/// Algorithm 2.17.4 under A-Λ on the sample body: an eccentric orbit fails it at a larger
+/// Algorithm 10.0.12.4 under A-Λ on the sample body: an eccentric orbit fails it at a larger
 /// semi-major axis than the circular one, and the shakedown orbit lies outside the ratchet
 /// orbit, which lies outside the peak collapse.
 #[test]

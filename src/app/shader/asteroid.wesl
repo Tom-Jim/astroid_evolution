@@ -147,7 +147,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     }
 
     if tag == 3u {
-        // Runout trail (§2.8b): segment k of path p, a thin ribbon lifted off the surface.
+        // Runout trail (§10.0.2): segment k of path p, a thin ribbon lifted off the surface.
         // `tension` carries the coordinate along the path, `extras.x` the airborne flag.
         out.marker = 3.0;
         let seg = u32(vertex.position.z + 0.5);

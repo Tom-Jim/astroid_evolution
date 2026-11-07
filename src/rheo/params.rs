@@ -1,13 +1,13 @@
-//! Material constants of the joint rheology (mathstrict.md §4, §10.3).
+//! Material constants of the joint rheology (mathstrict.md §4, §10.2).
 //!
 //! Every constant is required: there are no defaults, and a missing or
-//! out-of-range one is `ModelNotClosed` (§10.4.4 step 0).
+//! out-of-range one is `ModelNotClosed` (§10.3.4 step 0).
 
 use serde::Deserialize;
 
 use crate::common::error::SimError;
 
-/// How the friction angle is projected (§10.3 flow-chain switch).
+/// How the friction angle is projected (§10.2 flow-chain switch).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MuProjMode {
     /// `mu_proj = mu_d`: the shear-rate chain acts on the geometric angle.
@@ -71,7 +71,7 @@ pub struct Material {
     pub rho_bulk: f64,
     /// `p_c = C_c Z_0 nu_0 F_H / d_p^2`.
     pub p_c: f64,
-    /// `mu_y = mu_s` (§2.8 B2).
+    /// `mu_y = mu_s` (§10.0 B2).
     pub mu_y: f64,
     /// `C_T rho_p nu_0 d_p^2`, the factor of `T_tide = coef * dev H_W`.
     pub tide_coef: f64,

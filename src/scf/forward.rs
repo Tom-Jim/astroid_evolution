@@ -1,7 +1,7 @@
-//! Step 1 of §10.4.4: the Tier 1 forward model on the current polyhedron.
+//! Step 1 of §10.3.4: the Tier 1 forward model on the current polyhedron.
 //!
 //! * surface: `SurfaceFace` role at the face centres (gradient and finite-part Hessian);
-//!   a vertex or edge Hessian is never requested (MS §10.3);
+//!   a vertex or edge Hessian is never requested (MS §10.2);
 //! * interior: `Field` role at the Stokes quadrature points (gradient and Hessian);
 //! * moments: mass, centroid and inertia of `ρ_K` from `density_integrals`.
 
@@ -146,7 +146,7 @@ impl Forward {
         Ok(())
     }
 
-    /// The GPU acceleration structure of the bound polyhedron (ray queries of §8.0).
+    /// The GPU acceleration structure of the bound polyhedron (ray queries of §8.1).
     pub fn body_mesh(&self) -> &crate::rtfp::mesh::BodyMesh {
         &self.solver.body
     }
@@ -196,7 +196,7 @@ impl Forward {
     }
 
     /// Gravity and its Hessian at points outside the body: the exterior route of the
-    /// runout flights (§2.8b).
+    /// runout flights (§10.0.2).
     pub fn eval_exterior(&self, points: &[DVec3]) -> Result<Vec<(DVec3, DMat3)>, SimError> {
         let f = self.eval_field(points, true)?;
         Ok(f.grad_u.into_iter().zip(f.hess_u).map(|(g, h)| (g, sym_mat(h))).collect())

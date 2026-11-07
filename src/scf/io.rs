@@ -203,7 +203,7 @@ fn ensure_parent(path: &Path) -> Result<(), SimError> {
     Ok(())
 }
 
-/// `ρ_s⁰ = ρ_bulk h_s` and the initial star-shaped polyhedron of the project.
+/// `ρ_s⁰ = ρ_bulk h_s` and the initial polyhedron of the project.
 pub fn initial_body(project: &Project) -> Result<Body, SimError> {
     let _span = super::timing::span("mesh_load");
     match project.body.shape.as_str() {
@@ -229,7 +229,7 @@ pub fn initial_body(project: &Project) -> Result<Body, SimError> {
 /// `shape = "mesh"` uses the mesh itself; `"mesh_rays"` re-triangulates it on the
 /// icosphere of `body.level`. Cauchy centres move by the same translation, so the
 /// density stays attached to the polyhedron. The returned origin is the centroid in
-/// the input frame (§10.4.4 step 8b maps the evolved body back by this shift).
+/// the input frame (§10.3.4 step 8b maps the evolved body back by this shift).
 pub fn mesh_body(
     project: &Project,
     vertices: &[DVec3],

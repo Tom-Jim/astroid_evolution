@@ -202,7 +202,7 @@ pub struct FrameStats {
     pub dt_bound: crate::app::snapshot::Tag,
     /// Largest principal Cauchy stress on the surface (Pa, tension positive).
     pub tension_max: f64,
-    /// Runout of the eroded packets (§2.8b): packets, mass-weighted mean distance (m),
+    /// Runout of the eroded packets (§10.0.2): packets, mass-weighted mean distance (m),
     /// mean change of |latitude| (rad, negative equatorward), packets that hopped.
     pub runout_traced: usize,
     pub runout_distance: f64,

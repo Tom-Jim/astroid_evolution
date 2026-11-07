@@ -1,4 +1,4 @@
-//! The cone program of §2.13 by the interior-point method (Clarabel, a primal–dual
+//! The cone program of §10.0.8 by the interior-point method (Clarabel, a primal–dual
 //! homogeneous-embedding conic solver with a sparse quasi-definite LDLᵀ).
 //!
 //! The program is `min ½ xᵀ P x + qᵀ x` subject to `A x + s = b`, `s ∈ K`, with `P`
@@ -34,7 +34,7 @@ pub struct Solution {
 }
 
 /// Iteration cap: an interior-point method converges in tens of iterations; reaching
-/// the cap is a failed solve, which the outer level answers by halving `Δ` (§2.13).
+/// the cap is a failed solve, which the outer level answers by halving `Δ` (§10.0.8).
 const MAX_ITER: u32 = 200;
 
 pub fn solve(problem: Problem) -> Result<Solution, SimError> {
@@ -74,7 +74,7 @@ pub fn solve(problem: Problem) -> Result<Solution, SimError> {
     let sol = &solver.solution;
     match sol.status {
         // `AlmostSolved` meets the reduced tolerances (feasibility 1e-4, gap 5e-5),
-        // inside the acceptance bound of §2.13 item 5.
+        // inside the acceptance bound of §10.0.8 item 5.
         SolverStatus::Solved | SolverStatus::AlmostSolved => Ok(Solution {
             x: sol.x.clone(),
             status: format!("{:?}", sol.status),

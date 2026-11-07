@@ -1,4 +1,4 @@
-//! The quasi-static evolution loop of §10.4.4.
+//! The quasi-static evolution loop of §10.3.4.
 //!
 //! One pass of [`run`] is steps 1–9 of the doc: forward gravity (Tier 1), the
 //! Stokes–pressure solve, yield classification, friction-angle chain, mode C, step size,
@@ -55,7 +55,7 @@ pub struct State {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct StepRecord {
-    /// Core transport and refit of §9.10.7.
+    /// Core transport and refit of §9.2.7.
     pub cores: CoreReport,
     pub step: usize,
     pub t: f64,
@@ -112,19 +112,19 @@ pub struct StepRecord {
     pub rho_s_total: f64,
     pub frame_applied: bool,
     /// The deep state (Stokes, classification, face chain) was reused from an earlier
-    /// step within the lag budget (§10.4.4).
+    /// step within the lag budget (§10.3.4).
     pub lagged: bool,
     pub frame_angle_deg: f64,
     pub frame_mass_change: f64,
-    /// `C_N` of Proposition 8.0.6 for the Nitsche pressure problem of this geometry.
+    /// `C_N` of Proposition 8.1.6 for the Nitsche pressure problem of this geometry.
     pub nitsche_c: f64,
     pub rheo_unconverged: u32,
     pub rheo_seconds: f64,
     pub mass: f64,
     pub centroid_offset: f64,
-    /// Runout of the eroded and the routed packets together (§2.8b).
+    /// Runout of the eroded and the routed packets together (§10.0.2).
     pub runout: RunoutReport,
-    /// Mass the slope relief removed and routed (kg, §2.8b).
+    /// Mass the slope relief removed and routed (kg, §10.0.2).
     pub relief_mass: f64,
     /// The surface settling after the creep step (step S).
     pub settle: SettleReport,
@@ -135,10 +135,10 @@ pub struct StepRecord {
     /// A-Θ (§11.6); inactive without the thermal section.
     #[serde(skip_serializing_if = "ThermalReport::inactive")]
     pub thermal: ThermalReport,
-    /// A-O (§10.4.6); inactive without the orbit section.
+    /// A-O (§10.3.6); inactive without the orbit section.
     #[serde(skip_serializing_if = "OrbitReport::inactive")]
     pub orbit: OrbitReport,
-    /// A-Λ (§10.4.7); inactive without the cycle section.
+    /// A-Λ (§10.3.7); inactive without the cycle section.
     #[serde(skip_serializing_if = "CycleReport::inactive")]
     pub cycle: CycleReport,
     /// The state markers, A-ϖ and A-Ξ (§11.1–11.5); inactive without them.
@@ -151,7 +151,7 @@ pub struct RunOptions {
     pub max_steps: Option<usize>,
     /// Stop at this time instead of `T_end` of the schedule.
     pub until: Option<f64>,
-    /// Reuse the deep state within the lag budget (§10.4.4 step 4+); `false` evaluates it
+    /// Reuse the deep state within the lag budget (§10.3.4 step 4+); `false` evaluates it
     /// on every step (audit runs).
     pub lag: bool,
 }
@@ -168,7 +168,7 @@ pub struct RunResult {
 /// the observer receives. `d_normal` is `λ d` on a geometry step and zero on a spin or
 /// stage-equilibrium step. `movable` is the classifier flag (true means the vertex is
 /// outside the rigid core).
-/// Runout paths handed to the viewer per step (§2.8b).
+/// Runout paths handed to the viewer per step (§10.0.2).
 pub const RUNOUT_PATHS: usize = 256;
 
 #[derive(Clone, Debug)]
@@ -287,7 +287,7 @@ pub fn run(
     let mut fresh_deep = true;
     // Chapter 11 state follows the fresh fields every step, so it never lags.
     let mut geometry_cache = super::mechanics::GeometryCache::default();
-    // A-O (§10.4.6): the orbit follows the ledger mass, which leaves through the necks.
+    // A-O (§10.3.6): the orbit follows the ledger mass, which leaves through the necks.
     let orbit_law = match &project.orbit {
         Some(p) => {
             let o = *state
@@ -332,7 +332,7 @@ pub fn run(
         };
         state.omega = omega;
         let r_star = state.body.r_star();
-        // Steps 1–4: the deep state of the slow operator (§10.4.4).
+        // Steps 1–4: the deep state of the slow operator (§10.3.4).
         let load = match orbit {
             Some((l, o)) => l.load(o.a),
             None => Loading { omega, tide: spin.tide(state.t) },
@@ -372,7 +372,7 @@ pub fn run(
             (mech, field.map_or(0, |f| f.fallbacks.into_inner()))
         };
         fresh_deep = false;
-        // A-Λ (§10.4.7): the tidal cycle on the deep state, and its ratchet.
+        // A-Λ (§10.3.7): the tidal cycle on the deep state, and its ratchet.
         let cyc: Option<CycleOut> = match (&project.cycle, orbit) {
             (Some(p), Some((l, o))) if o.e > 0.0 => Some(cycle::evaluate(project, p, &mech, &fwd, l.mean_motion(o.a), o.e)?),
             _ => None,
@@ -409,7 +409,7 @@ pub fn run(
             state.body.vertex_areas()
         };
         let r_mean = state.body.r_mean();
-        // χ_Y from the unyielded core is authoritative for creep (§2.8 B3). Erosion, runout
+        // χ_Y from the unyielded core is authoritative for creep (§10.0 B3). Erosion, runout
         // and slope promotion are the fast operator: they settle after the creep step (S).
         let yielded = cl.movable.clone();
         let slack: Vec<f64> = mech.rheo.iter().map(|node| node.slack).collect();
@@ -478,8 +478,8 @@ pub fn run(
                 lobe_margin: nk.margin(&state.body.positions),
                 ..OrbitReport::default()
             };
-            // §2.17.3: a certified L* > 1 ends the quasi-static route; under A-Λ the peak
-            // multiplier of the cycle does (Proposition 10.4.7.5).
+            // §10.0.12.3: a certified L* > 1 ends the quasi-static route; under A-Λ the peak
+            // multiplier of the cycle does (Proposition 10.3.7.5).
             let every = project.orbit.as_ref().map_or(0, |p| p.limit_every);
             if every > 0 && !lagged && state.step % every == 0 {
                 let (lo, what) = match (&cyc, &project.cycle) {
@@ -488,12 +488,12 @@ pub fn run(
                         (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
                         rec.cycle.peak_lo = cb.peak_lo;
                         (rec.cycle.shakedown_lo, rec.cycle.shakedown_hi) = (cb.shakedown_lo, cb.shakedown_hi);
-                        (cb.peak_lo, "L_peak (Proposition 10.4.7.5)")
+                        (cb.peak_lo, "L_peak (Proposition 10.3.7.5)")
                     }
                     _ => {
                         let b = super::mechanics::limit_bracket(project, &mech, &fwd, load)?;
                         (rec.orbit.limit_lo, rec.orbit.limit_hi) = (b.lo, b.hi);
-                        (b.lo, "L* (§2.17.3)")
+                        (b.lo, "L* (§10.0.12.3)")
                     }
                 };
                 if lo > 1.0 {
@@ -577,7 +577,7 @@ pub fn run(
 
         // Definition 11.3: the driving rate on the volume nodes of this geometry, shared by
         // Δt_ϖ, J_ν and the markers.
-        // A-Λ adds the alternating plastic shear of the cycle and the fatigue rate (§10.4.7).
+        // A-Λ adds the alternating plastic shear of the cycle and the fatigue rate (§10.3.7).
         let plastic: Vec<f64> = match &cyc {
             Some(c) => mech.class.plastic_rate.iter().zip(&c.alternating).map(|(p, a)| p + a).collect(),
             None => mech.class.plastic_rate.clone(),
@@ -646,7 +646,7 @@ pub fn run(
         };
         // A-O: the step that brings the orbit to the primary ends exactly there.
         let primary_bound = orbit.map_or(f64::INFINITY, |(l, o)| l.time_to_floor(&o) / st.lambda);
-        // A-Λ: e ∝ a^(C_e + β) over the step (Proposition 10.4.7.1), and the step in which e
+        // A-Λ: e ∝ a^(C_e + β) over the step (Proposition 10.3.7.1), and the step in which e
         // changes by the fraction ε_ω.
         let e_exponent = match (&project.cycle, orbit) {
             (Some(p), Some((l, o))) if o.e > 0.0 => {
@@ -659,7 +659,7 @@ pub fn run(
             Some((l, o)) if e_exponent != 0.0 => omega_bound.min(st.eps_omega * o.a / (e_exponent.abs() * l.adot(o.a, o.mass).abs())),
             _ => omega_bound,
         };
-        // The ratchet moves every vertex: θ_CFL h / |v_r · N| (§10.4.7).
+        // The ratchet moves every vertex: θ_CFL h / |v_r · N| (§10.3.7).
         let dt_ratchet = if ratchet_v.is_empty() {
             f64::INFINITY
         } else {
@@ -667,7 +667,7 @@ pub fn run(
         };
         rec.dt_omega = omega_bound;
         // Single-valued core map: τ ‖dev ∇v_adv‖_F ≤ θ_ch at every moving core, with the
-        // gradient at the current centres (§10.4.1); step 6b rechecks it at the midpoints.
+        // gradient at the current centres (§10.3.1); step 6b rechecks it at the midpoints.
         let cores_on = project.cores.lagrangian() && !state.body.kernels.is_empty();
         let probe_h = 1e-3 * r_mean;
         let v_adv = |p: &[DVec3]| advection(&mech, p);
@@ -770,7 +770,7 @@ pub fn run(
             fwd = new_fwd;
             (vec![0.0; nv], frep, creep_m)
         } else {
-            // §10.4.1 writes θ h_Γ,min / max s, with θ ≤ 1/2. That product is a
+            // §10.3.1 writes θ h_Γ,min / max s, with θ ≤ 1/2. That product is a
             // sufficient bound. The accuracy it protects is local: a movable node
             // advances by at most θ times its own nearest spacing. The per-node
             // minimum is that bound, and it is larger whenever the fastest node
@@ -806,7 +806,7 @@ pub fn run(
             }
             // 6b before the step is used anywhere: the cone's mass row sees the predicted
             // density ρ_cand, so dense material carried outward is not mistaken for a
-            // geometric mass error (§9.10.7).
+            // geometric mass error (§9.2.7).
             let chosen = dt;
             let kernels_pred = predict_cores(&mut dt, &mut rec.cores);
             if dt < chosen {
@@ -829,7 +829,7 @@ pub fn run(
             }
             rec.n_locked = nv - n_mobile;
             // The repose rows of the loose faces of the yielded set keep creep from
-            // steepening them past repose (§2.8c, S_slope).
+            // steepening them past repose (§10.0.3, S_slope).
             let slope_row: Vec<bool> = mech
                 .rheo
                 .iter()
@@ -843,7 +843,7 @@ pub fn run(
                 .collect();
             let sin_phi: Vec<f64> = mech.rheo.iter().map(|n| n.sin_phi).collect();
             // Dimensionless fidelity weights around 1 (area over its mean), so that the
-            // exact-penalty scale ϱ ≥ 10 h̄² of §2.13 holds with d in metres.
+            // exact-penalty scale ϱ ≥ 10 h̄² of §10.0.8 holds with d in metres.
             let mean_area = area.iter().sum::<f64>() / nv as f64;
             let weight: Vec<f64> = area.iter().map(|a| a / mean_area).collect();
             let density_cand =
@@ -879,7 +879,7 @@ pub fn run(
                 g.theta_g,
                 &vec![f64::NEG_INFINITY; nv],
             )?;
-            // A-O lobe cap (§10.4.6): movable material carried beyond a neck plane is in
+            // A-O lobe cap (§10.3.6): movable material carried beyond a neck plane is in
             // the outer region at rest and leaves; the cap bounds the increment there.
             if let Some(nk) = &necks {
                 for i in 0..nv {
@@ -951,7 +951,7 @@ pub fn run(
             if ratchet(&mut body, &ratchet_v, &cl.normal, rec.advance) {
                 new_fwd = Forward::bind(&body, project.g)?;
             }
-            // 8c: Levels 1 and 2 of the core transport (§9.10.4–5).
+            // 8c: Levels 1 and 2 of the core transport (§9.2.4–5).
             if cores_on || dil_ratio.is_some() {
                 close_cores(
                     project,
@@ -1097,7 +1097,7 @@ pub fn run(
 }
 
 /// Largest vertex displacement since the deep state, as a fraction of the shortest edge,
-/// that still reuses it (§10.4.4): the lag error is then of the order of one explicit step.
+/// that still reuses it (§10.3.4): the lag error is then of the order of one explicit step.
 const LAG_THETA: f64 = 0.1;
 
 /// Where a deep state (Stokes solution, classification, face chain) was evaluated.
@@ -1146,7 +1146,7 @@ struct Deep {
     origin: DeepOrigin,
 }
 
-/// The masked slip velocity `v_adv = χ_Y (v − a − θ × x)` at arbitrary points (§9.10.2).
+/// The masked slip velocity `v_adv = χ_Y (v − a − θ × x)` at arbitrary points (§9.2.2).
 /// `χ_Y` is read at the nearest point of the classification grid `X_Y`.
 fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
     let cl = &mech.class;
@@ -1160,7 +1160,7 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
     pts.iter()
         .enumerate()
         .map(|(k, x)| {
-            // A-Λ: the ratchet is real everywhere, so it is not masked (§10.4.7).
+            // A-Λ: the ratchet is real everywhere, so it is not masked (§10.3.7).
             let vr = r.as_ref().map_or(DVec3::ZERO, |r| DVec3::new(r[3 * k], r[3 * k + 1], r[3 * k + 2]));
             if !cl.movable_near(*x) {
                 return vr;
@@ -1175,7 +1175,7 @@ fn advection(mech: &Mechanics, pts: &[DVec3]) -> Vec<DVec3> {
 }
 
 /// A-Λ: every vertex of `body` moves by `τ (v_r·N) N`, with `v_r` and `N` at its
-/// start-of-step position (§10.4.7): the tangential part only relabels the surface, as for
+/// start-of-step position (§10.3.7): the tangential part only relabels the surface, as for
 /// the creep predictor. Whether anything moved.
 fn ratchet(body: &mut Body, v: &[DVec3], normal: &[DVec3], tau: f64) -> bool {
     if v.is_empty() {
@@ -1187,10 +1187,10 @@ fn ratchet(body: &mut Body, v: &[DVec3], normal: &[DVec3], tau: f64) -> bool {
     true
 }
 
-/// Levels 1–2 of §9.10: mass closure of the predicted cores on the new body,
+/// Levels 1–2 of §9.2: mass closure of the predicted cores on the new body,
 /// then, when the misfit or the closure exceeds its threshold, the refit.
 #[allow(clippy::too_many_arguments)]
-/// 8c: Levels 1 and 2 of the core transport (§9.10.4–5) on the new body, which carries
+/// 8c: Levels 1 and 2 of the core transport (§9.2.4–5) on the new body, which carries
 /// the predicted cores; `fwd` is bound to it and gets the closed density. Under A-Ξ
 /// the closure is the two-scalar fit of §11.4, which may rescale `ρ_b`, and Level 3 may
 /// spawn signed cores.

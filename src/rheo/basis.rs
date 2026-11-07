@@ -1,4 +1,4 @@
-//! Radial Jacobi basis traces (mathstrict.md §10.1, §10.2.1), real spherical
+//! Radial Jacobi basis traces (mathstrict_EN.md §8.1.3, §10.1), real spherical
 //! harmonics, and the host-side reduction of a velocity field to the mode sums
 //! the GPU consumes.
 //!
@@ -23,7 +23,7 @@ pub fn sigma(l: usize, k: usize) -> f64 {
     l + k * (k + 2.0 * l + 3.0)
 }
 
-/// `kappa_{lk} = psi''_{lk}(1)` (§10.2.1 table).
+/// `kappa_{lk} = psi''_{lk}(1)` (§10.1 table).
 pub fn kappa(l: usize, k: usize) -> f64 {
     let l = l as f64;
     match k {
@@ -40,7 +40,7 @@ pub fn lambda(l: usize) -> f64 {
     (l * (l + 1)) as f64
 }
 
-/// `c^P_{lk} = Lambda + kappa - 2` of the sphere constraint `D_rS = 0` (§10.2.4).
+/// `c^P_{lk} = Lambda + kappa - 2` of the sphere constraint `D_rS = 0` (§10.1).
 pub fn constraint_poloidal(l: usize, k: usize) -> f64 {
     lambda(l) + kappa(l, k) - 2.0
 }
@@ -113,7 +113,7 @@ pub fn pack_dirs(vs: &[crate::common::math::DVec3]) -> Vec<f32> {
 /// Number of DS values per mode in the table.
 pub const MODE_DS: usize = 9;
 
-/// Per-mode sums that turn Proposition 10.2 into linear combinations of `Y_lm`:
+/// Per-mode sums that turn Section 10.1 into linear combinations of `Y_lm`:
 /// `[r, -Lambda r, z1, z3, z4, z5, z6, z7, p0]` with
 /// `z1 = sum (2-sigma) q`, `z3 = sum (2-2 sigma+kappa) q`, `z4 = sum (1+sigma) q`,
 /// `z5 = sum (2-kappa) q`, `z6 = sum s`, `z7 = sum (1-sigma) s`, `p0 = Lambda sum q`.

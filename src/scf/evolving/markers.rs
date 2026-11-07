@@ -296,7 +296,7 @@ pub struct Driving<'a> {
     /// `γ̇_{p,q}^⋆` at the volume nodes.
     pub rate: Vec<f64>,
     inertial: Vec<f64>,
-    /// The fatigue rate `r_F` of A-Λ at the volume nodes (§10.4.7); zero without it.
+    /// The fatigue rate `r_F` of A-Λ at the volume nodes (§10.3.7); zero without it.
     pub fatigue: Vec<f64>,
     rec: Reconstruction<'a>,
 }

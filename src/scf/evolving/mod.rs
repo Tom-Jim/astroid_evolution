@@ -1,7 +1,7 @@
 //! Evolving material state and angular momentum (MS Chapter 11).
 //!
 //! Each hypothesis is an optional project section; an absent section is the switch in
-//! its off position, and the loop then reduces exactly to §10.4.4 (Theorem 11.13).
+//! its off position, and the loop then reduces exactly to §10.3.4 (Theorem 11.13).
 //!
 //! * `spin`, A-L (§11.7): the spin follows the angular momentum and the settled inertia.
 //! * `thermal`, A-Θ (§11.6): diurnal thermal fatigue of the surface skin and the
@@ -37,7 +37,7 @@ pub struct Evolving {
     /// A-ϖ, A-Ξ: the state markers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub markers: Option<Markers>,
-    /// A-O (§10.4.6): the semi-major axis and the mass ledger.
+    /// A-O (§10.3.6): the semi-major axis and the mass ledger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orbit: Option<super::orbit::OrbitState>,
 }

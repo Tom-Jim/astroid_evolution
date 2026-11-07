@@ -246,6 +246,7 @@ impl RheoGpu {
             });
         }
         let t = {
+            #[cfg(feature = "tier2")]
             let _span = crate::scf::timing::span("rheology_tables");
             tables(surface, velocity)?
         };

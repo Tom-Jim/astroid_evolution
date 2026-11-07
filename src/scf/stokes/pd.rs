@@ -1,4 +1,4 @@
-//! The primal–dual iteration of §10.4.2: Chambolle–Pock in the metric
+//! The primal–dual iteration of §10.3.2: Chambolle–Pock in the metric
 //! `P = G + γ_AL B_rbᵀB_rb` on the strain samples, with the pressure updated every `N_p`
 //! iterations.
 
@@ -16,7 +16,7 @@ use super::{
     pd_metric, solve_range, strain_fields, strain_fields_with,
 };
 
-/// `φ'(s) = s η(s)` and `φ''(s) = η + s ∂η/∂γ̇` at frozen `c`, `p̃` (Proposition 2.17.1).
+/// `φ'(s) = s η(s)` and `φ''(s) = η + s ∂η/∂γ̇` at frozen `c`, `p̃` (Proposition 10.0.12.1).
 fn flow_slope(m: &Material, l: &Local, p_tilde: f64, eps: f64, s: f64) -> (f64, f64) {
     let ev = eta_eval(m, l, s, p_tilde, eps);
     (s * ev.eta, ev.eta + s * ev.d_shear)
@@ -126,7 +126,7 @@ fn strain_adjoint(ops: &Operators, sig: &DVector<f64>) -> DVector<f64> {
     linalg::tr_mul(&ops.rows.d, &ws)
 }
 
-/// Primal–dual iteration of §10.4.2 (Chambolle–Pock in the metric `P = G + γ_AL B_rbᵀB_rb`).
+/// Primal–dual iteration of §10.3.2 (Chambolle–Pock in the metric `P = G + γ_AL B_rbᵀB_rb`).
 ///
 /// The strain samples are `e_i = √2 D(x_i)` (six scaled components, `|e_i| = γ̇`), so
 /// `G = Σ w_i e_iᵀ e_i` is the stiffness at `η ≡ 1`. The dual `ς_i` is the flow stress over
@@ -203,7 +203,7 @@ pub(super) fn solve_pd(
         }
         let mut p_prev = pr.p_vals.clone();
         // ς⁰ = η e(u⁰); the dual step τ_d is η_ref, the weighted geometric mean of η⁰, and
-        // τ_p τ_d < 1 (Proposition 10.4).
+        // τ_p τ_d < 1 (Section 10.3.2).
         let e0 = strain(&u);
         let mut sig = DVector::zeros(6 * np);
         let mut rate = vec![0.0; np];
@@ -313,7 +313,7 @@ pub(super) fn solve_pd(
             if eps_lambda > prm.tol_momentum {
                 return Err(SimError::rigid_rank(format!(
                     "rigid-body multiplier {eps_lambda:.3e} exceeds tol_momentum {:.1e}: \
-                     the load is incompatible with the rigid modes (§2.15(b), §A.3)",
+                     the load is incompatible with the rigid modes (§10.0.10(b), §A.3)",
                     prm.tol_momentum
                 )));
             }
@@ -353,10 +353,10 @@ pub(super) fn solve_pd(
                 dilatancy: shift.state,
             });
         }
-        // Collapse (Proposition 2.17.1): ‖u‖_P growing while the stress is pinned at
+        // Collapse (Proposition 10.0.12.1): ‖u‖_P growing while the stress is pinned at
         // τ_max = c + (μ_2 + ξ + K_Ξ Δν_c) p̃ somewhere only suggests L* > 1; a near-critical
         // state also converges slowly at large rates. The certified bracket of
-        // Proposition 2.17.3 at this frozen pressure decides. L* does not depend on γ̇_ε, so
+        // Proposition 10.0.12.3 at this frozen pressure decides. L* does not depend on γ̇_ε, so
         // the continuation ladder cannot help.
         let tau_max: Vec<f64> = (0..np)
             .map(|i| {
@@ -426,7 +426,7 @@ pub(super) fn solve_pd(
     }
 }
 
-/// `τ_p τ_d` of the primal–dual steps (below 1, Proposition 10.4).
+/// `τ_p τ_d` of the primal–dual steps (below 1, Section 10.3.2).
 const PD_THETA: f64 = 0.99;
 /// Collapse certificate: `max |ς_i| / τ_max,i` at least this, and `‖u‖_P` at least this
 /// many times its value halfway through the level (linear growth gives 2, convergence 1).

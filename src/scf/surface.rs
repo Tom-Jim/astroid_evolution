@@ -1,4 +1,4 @@
-//! CPU queries on the polyhedral surface `Γ` (§8.0, G6, G9): closest points, first
+//! CPU queries on the polyhedral surface `Γ` (§8.1, G6, G9): closest points, first
 //! crossings of rays and segments, and barycentric coordinates.
 //!
 //! A bounding-volume hierarchy over the triangles, built once per geometry. The GPU

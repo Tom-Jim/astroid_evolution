@@ -125,7 +125,7 @@ pub fn spawn_scene(
         Mesh3d(meshes.add(quad_mesh(PARTICLE_COUNT))),
         MeshMaterial3d(material.clone()),
     ));
-    // Runout trails: tag 3, one segment per pair of path samples (§2.8b).
+    // Runout trails: tag 3, one segment per pair of path samples (§10.0.2).
     commands.spawn((
         NoFrustumCulling,
         Pickable::IGNORE,

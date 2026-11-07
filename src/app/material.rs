@@ -44,7 +44,7 @@ pub struct PlaybackParams {
     pub sigma_p95: f32,
     /// Direction glyphs (`TENSION_GLYPHS` at most) spread over the vertices.
     pub glyph_count: u32,
-    /// Runout paths in the `runout` buffer, `PATH_SAMPLES` points each (§2.8b).
+    /// Runout paths in the `runout` buffer, `PATH_SAMPLES` points each (§10.0.2).
     pub runout_count: u32,
     pub runout_samples: u32,
 }

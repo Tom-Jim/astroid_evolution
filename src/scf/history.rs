@@ -1,6 +1,6 @@
 //! Reconstruction of a pre-evolution state from a present-day one.
 //!
-//! The forward model `F` (the quasi-static evolution of §10.4 under an exogenous
+//! The forward model `F` (the quasi-static evolution of §10.3 under an exogenous
 //! schedule) maps an initial body `X₀` to a final one. Given the observed present
 //! body `X_p`, the pre-evolution state is the fixed point of
 //!
@@ -218,7 +218,7 @@ pub fn invert(
             },
             &mut |r, s, f| observer(k, r, s, f),
         )?;
-        // A frame re-alignment during the run (§10.4.4 step 8b) leaves the final body in a
+        // A frame re-alignment during the run (§10.3.4 step 8b) leaves the final body in a
         // turned and shifted frame; the misfit and the update are taken in the frame of
         // the initial and present bodies.
         let fin_body = undo_frame(

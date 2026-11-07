@@ -1,4 +1,4 @@
-//! Quadrature rules of §9.4: Gauss–Jacobi in `ζ` with weight `ζ²`, and a product
+//! Quadrature rules of §8.1.3: Gauss–Jacobi in `ζ` with weight `ζ²`, and a product
 //! Gauss–Legendre × uniform rule on the sphere.
 
 use std::f64::consts::PI;

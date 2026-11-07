@@ -111,7 +111,7 @@ pub struct NodeBatch {
     pub dirs: Vec<DVec3>,
     /// Effective gravity `g_eff` at the node.
     pub gravity: Vec<DVec3>,
-    /// `H_W = Hess U + omega^2 diag(1,1,0)` at the face centre (§10.3), `(xx,yy,zz,xy,xz,yz)`.
+    /// `H_W = Hess U + omega^2 diag(1,1,0)` at the face centre (§10.2), `(xx,yy,zz,xy,xz,yz)`.
     pub hessian_w: Vec<Sym6>,
     /// Pressure at the node (`p_ext + n.tau.n`).
     pub pressure: Vec<f64>,

@@ -83,7 +83,7 @@ pub fn params() -> StokesParams {
     }
 }
 
-/// The Stokes operators of a uniform polyhedral sphere of radius `r0` (§8.0).
+/// The Stokes operators of a uniform polyhedral sphere of radius `r0` (§8.1).
 pub fn sphere_ops(r0: f64, rho: f64, prm: &StokesParams) -> Operators {
     let (_, dirs) = Topology::icosphere(4);
     let positions: Vec<DVec3> = dirs.iter().map(|d| *d * r0).collect();
@@ -245,7 +245,7 @@ impl Hill {
     }
 }
 
-/// The certified bracket of `L*` (§2.17.3) on a uniform sphere of radius 1 km in a Hill
+/// The certified bracket of `L*` (§10.0.12.3) on a uniform sphere of radius 1 km in a Hill
 /// tide. Its exact properties:
 /// - `lo ≤ hi`, closing as the reweighting proceeds;
 /// - without a tide the load has no deviatoric part and `L*` is the small discretization
@@ -367,7 +367,7 @@ fn chart_strain_rebuilds_the_cartesian_tensor() {
     }
 }
 
-/// Proposition 10.4.7.4 against Kelvin's incompressible sphere: under the body force
+/// Proposition 10.3.7.4 against Kelvin's incompressible sphere: under the body force
 /// `ρ∇V`, `V = ½ xᵀGx` with `G` symmetric and traceless, the traction-free solution is
 /// `u = α[(5/42) r² G x − (2/21) x V] + β G x` with `α = −21ρ/19`, `β = 4ρR²/19` (unit
 /// modulus), and the pressure `q = −(2/19) ρ V`. Without physical libration both components
@@ -415,7 +415,7 @@ fn the_elastic_cycle_of_a_sphere_is_kelvins() {
     }
 }
 
-/// Proposition 10.4.7.5 on the Hill sphere: without a cycle the brackets are the mean one;
+/// Proposition 10.3.7.5 on the Hill sphere: without a cycle the brackets are the mean one;
 /// with one, the peak bound lies below the shakedown bound, the shakedown bracket holds,
 /// and the bounds grow with the cycle.
 #[test]
@@ -449,7 +449,7 @@ fn the_cycle_brackets_are_ordered_and_reduce_to_the_mean() {
     }
 }
 
-/// Algorithm 10.4.7.6 on the Hill sphere: a cycle inside the strength is elastic; one beyond
+/// Algorithm 10.3.7.6 on the Hill sphere: a cycle inside the strength is elastic; one beyond
 /// it is plastic, and its plastic strains scale exactly as load over modulus (Proposition
 /// 10.4.7.7(4)).
 #[test]

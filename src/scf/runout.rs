@@ -1,10 +1,10 @@
-//! Rotating-frame runout of eroded regolith (§2.8b, hypothesis A-C3).
+//! Rotating-frame runout of eroded regolith (§10.0.2, hypothesis A-C3).
 //!
 //! A packet eroded at a vertex slides over the frozen polyhedron in the frozen effective
 //! gravity, with the depth-averaged `μ(I)` basal friction and the Coriolis acceleration
 //! of the body frame `Ω = ω e_z`. Where the normal reaction vanishes it leaves on a
 //! ballistic hop and lands inelastically. Its arrival point carries the eroded mass to
-//! the deposition spread of §2.8, so the mass balance is unchanged.
+//! the deposition spread of §10.0.2, so the mass balance is unchanged.
 
 use rayon::prelude::*;
 
@@ -17,7 +17,7 @@ use super::body::Topology;
 use super::forward::Loading;
 use super::surface::{SurfaceIndex, barycentric};
 
-/// Substep fraction `θ_r` (§2.8b).
+/// Substep fraction `θ_r` (§10.0.2).
 pub const THETA: f64 = 0.2;
 /// Escape radius as a multiple of the largest surface radius.
 const ESCAPE: f64 = 3.0;
@@ -25,7 +25,7 @@ const ESCAPE: f64 = 3.0;
 /// gravity has escaped.
 const EARLY: f64 = 1.05;
 /// Above this fraction of the mean radius a flight takes the exterior self-gravity
-/// instead of the face expansion, whose error grows as `(h/R̄)²` (§2.8b).
+/// instead of the face expansion, whose error grows as `(h/R̄)²` (§10.0.2).
 pub const FAR: f64 = 0.1;
 /// A far flight uses the linear expansion `g₀ + H₀ (x − x₀)` of an exterior value at `x₀`
 /// while `|x − x₀| ≤ REUSE h`: the same `O((|x − x₀|/h)²)` budget as the face expansion.
@@ -57,10 +57,10 @@ pub struct RunoutField<'a> {
     pub grav_const: f64,
     pub load: Loading,
     pub material: &'a Material,
-    /// A-O (§10.4.6): the necks of the Hill region. A packet beyond a neck plane has left
-    /// and its mass is lost; without them escape is the heuristic count of §2.8b.
+    /// A-O (§10.3.6): the necks of the Hill region. A packet beyond a neck plane has left
+    /// and its mass is lost; without them escape is the heuristic count of §10.0.2.
     pub necks: Option<&'a super::orbit::Necks>,
-    /// A-Λ (§10.4.7): the tidal cycle; a packet flies in the field of its launch phase,
+    /// A-Λ (§10.3.7): the tidal cycle; a packet flies in the field of its launch phase,
     /// spread over the packets by a low-discrepancy sequence, and the necks follow it.
     pub cycle: Option<&'a super::cycle::Cycle>,
     /// `T_run` (s) and `ε_stop`.
@@ -177,7 +177,7 @@ impl RunoutField<'_> {
     }
 
     /// Trace every source vertex. A flight higher than `FAR R̄` above `Γ` takes its
-    /// self-gravity from `exterior` (§2.8b). The packets run in parallel until each is done
+    /// self-gravity from `exterior` (§10.0.2). The packets run in parallel until each is done
     /// or waits for such a value; the waiting points go to `exterior` as one batch, and the
     /// round repeats.
     pub fn trace_with(
@@ -252,7 +252,7 @@ impl RunoutField<'_> {
     }
 
     /// Self-gravity at `x` from the face expansion `g(c_f) + H⁺_f (x − c_f)` about the
-    /// closest face (§2.8b), and the height `|x − π(x)|` above `Γ`.
+    /// closest face (§10.0.2), and the height `|x − π(x)|` above `Γ`.
     fn expansion(&self, faces: &Faces, f: usize, foot: DVec3, x: DVec3) -> (DVec3, f64) {
         let g = faces.grav[f] + faces.hess[f] * (x - faces.centre[f]);
         (g, (x - foot).length())
@@ -645,7 +645,7 @@ fn frame_terms(x: DVec3, l: Loading) -> DVec3 {
     DVec3::new(o2 * x.x, o2 * x.y, 0.0) + DVec3::new(2.0 * x.x, -x.y, -x.z) * l.tide
 }
 
-/// Depth-averaged basal `μ(I)` of a Bagnold layer of thickness `h_s` (§2.8b): basal shear
+/// Depth-averaged basal `μ(I)` of a Bagnold layer of thickness `h_s` (§10.0.2): basal shear
 /// rate `5|v|/(2h_s)`, basal pressure `ρ_bulk N h_s`, plus `p_c` in the inertial number.
 fn friction(m: &Material, speed: f64, normal: f64) -> f64 {
     let s = &m.spec;
@@ -717,7 +717,7 @@ pub fn eroded_masses(area: &[f64], j_ero: &[f64], arrivals: &[Arrival], dt: f64)
         .collect()
 }
 
-/// The relief of one cone solution, routed (§2.8b, second part).
+/// The relief of one cone solution, routed (§10.0.2, second part).
 pub struct Routing {
     /// Radial deposit `δ` per vertex.
     pub delta: Vec<f64>,
@@ -728,7 +728,7 @@ pub struct Routing {
 
 /// Route the mass that the cone removed from the slope vertices: `removed[i] = r_i`
 /// (radial, zero off the slope set), `jac[i] = (DM)_i`. The packets run out, their mass
-/// is spread by the kernel of §2.8, and `δ_j = (K m)_j A_j / (DM)_j`, so that
+/// is spread by the kernel of §10.0.2, and `δ_j = (K m)_j A_j / (DM)_j`, so that
 /// `Σ (DM)_j δ_j = Σ m_i`.
 pub fn route_relief(
     field: &RunoutField,

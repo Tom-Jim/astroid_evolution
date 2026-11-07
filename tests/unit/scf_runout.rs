@@ -1,4 +1,4 @@
-//! Unit tests of `scf::runout` (mathstrict §2.8b, hypothesis A-C3).
+//! Unit tests of `scf::runout` (mathstrict §10.0.2, hypothesis A-C3).
 
 use astroid_evolution::common::math::{DMat3, DVec3, mat_sym};
 use astroid_evolution::rheo::{Material, MaterialSpec, SolverSpec};
@@ -228,7 +228,7 @@ fn point_mass(gm: f64, x: DVec3) -> (DVec3, DMat3) {
     (x * (-gm / r.powi(3)), (xx * 3.0 - DMat3::IDENTITY * (r * r)) * (gm / r.powi(5)))
 }
 
-/// A far flight takes its self-gravity from the exterior field (§2.8b). Off a
+/// A far flight takes its self-gravity from the exterior field (§10.0.2). Off a
 /// non-rotating sphere a packet ejected straight up at `v² = 1.2 GM/R` rises to
 /// `R / (1 − v² R / 2GM) − R` and falls back onto its source; ejected at 45° it reaches the
 /// apoapsis of its Kepler ellipse, both to 2 % at `θ_r = 0.2` (the velocity-Verlet flight is
@@ -290,9 +290,9 @@ fn a_far_flight_follows_the_kepler_orbit_in_few_exterior_calls() {
     assert!(gone.escaped && gone.distance == 0.0, "{gone:?}");
 }
 
-/// The necks of A-O (§10.4.6) on a sphere in the Hill field `W = U + ½ n²(3x² − z²)` with
+/// The necks of A-O (§10.3.6) on a sphere in the Hill field `W = U + ½ n²(3x² − z²)` with
 /// `r_H = 2.5 R`. A packet ejected toward the primary below the critical Jacobi energy
-/// `−W(L₁)` cannot leave (Proposition 10.4.6.3): it falls back and keeps its mass. Above
+/// `−W(L₁)` cannot leave (Proposition 10.3.6.3): it falls back and keeps its mass. Above
 /// it the packet transits the neck, is lost, and its mass is laid down nowhere.
 #[test]
 fn a_packet_leaves_through_a_neck_only_above_the_critical_energy() {
@@ -341,7 +341,7 @@ fn a_packet_leaves_through_a_neck_only_above_the_critical_energy() {
 }
 
 /// Moving the sources and spreading them conserves mass exactly; arrivals at their own
-/// sources reproduce the isotropic kernel of §2.8.
+/// sources reproduce the isotropic kernel of §10.0.
 #[test]
 fn the_runout_kernel_conserves_mass_and_reduces_to_the_isotropic_kernel() {
     let (gm, r, omega) = (30.0, 450.0, 5.29e-4);

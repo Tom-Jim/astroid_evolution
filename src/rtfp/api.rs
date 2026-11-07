@@ -5,7 +5,7 @@ use crate::common::math::{DVec3, Sym6};
 /// What kind of point is evaluated; it fixes the contact term of the Hessian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointRole {
-    /// A mesh node. The Hessian is refused: MS §10.3 forbids a vertex or edge Hessian.
+    /// A mesh node. The Hessian is refused: MS §10.2 forbids a vertex or edge Hessian.
     SurfaceVertex,
     /// A face interior point. The one-sided finite-part Hessian has `θ = 1/2`.
     SurfaceFace,

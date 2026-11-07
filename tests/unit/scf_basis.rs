@@ -127,7 +127,7 @@ fn pressure_basis_vanishes_on_the_surface() {
 }
 
 /// The hydrostatic modes `(1 − ζ²) P_k^{(0,1/2)}(2ζ² − 1)` are even in `r`:
-/// their gradient vanishes linearly at the centre (no cusp, §8.7).
+/// their gradient vanishes linearly at the centre (no cusp, §8.1.3).
 #[test]
 fn hydrostatic_pressure_modes_are_smooth_at_the_centre() {
     let surf = bumpy_surface();

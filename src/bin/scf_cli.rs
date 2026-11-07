@@ -110,7 +110,7 @@ enum Command {
         #[arg(long)]
         fields: Option<PathBuf>,
     },
-    /// The failure orbit of a frozen body about a primary (§2.17.3, Algorithm 2.17.4): the
+    /// The failure orbit of a frozen body about a primary (§10.0.12.3, Algorithm 10.0.12.4): the
     /// semi-major axis below which the certified limit load L* exceeds 1. JSON report.
     FailureOrbit {
         #[arg(long)]
@@ -657,7 +657,7 @@ fn run(cli: Cli) -> Result<(), SimError> {
                     "max_phi": m.rheo.iter().map(|n| n.phi).fold(0.0, f64::max),
                 },
                 // Binding of the surface: −g_eff·n at the face centres (positive inward). A
-                // non-positive value is a face the spin would shed (§2.8b, lift-off).
+                // non-positive value is a face the spin would shed (§10.0.2, lift-off).
                 "surface_binding": {
                     "min_inward": inward.iter().copied().fold(f64::INFINITY, f64::min),
                     "mean_inward": inward.iter().sum::<f64>() / inward.len().max(1) as f64,

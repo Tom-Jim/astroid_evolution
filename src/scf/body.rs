@@ -1,4 +1,4 @@
-//! The body: a closed polyhedron carried by its vertex positions `X_i` (§8.0, G4).
+//! The body: a closed polyhedron carried by its vertex positions `X_i` (§8.1, G4).
 //!
 //! Connectivity is fixed for a run; a geological step moves vertices along their
 //! area-weighted normals `N_i`, and the frame realignment of step 8b is a rigid
@@ -334,7 +334,7 @@ impl Body {
         self.positions.iter().map(|p| p.length()).sum::<f64>() / self.positions.len().max(1) as f64
     }
 
-    /// Smallest nearest-vertex spacing, `h_{Γ,min}` of the CFL bound (§10.4.1).
+    /// Smallest nearest-vertex spacing, `h_{Γ,min}` of the CFL bound (§10.3.1).
     pub fn min_edge(&self) -> f64 {
         let p = &self.positions;
         let mut h = f64::INFINITY;

@@ -1,6 +1,6 @@
-//! Steps 1–4 of §10.4.4 on a frozen geometry: forward gravity (Tier 1), the quasi-static
+//! Steps 1–4 of §10.3.4 on a frozen geometry: forward gravity (Tier 1), the quasi-static
 //! Stokes–pressure solve, yield classification, and the friction-angle chain at the face
-//! centres (§10.3), all on the general domain of hypothesis (G).
+//! centres (§10.2), all on the general domain of hypothesis (G).
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
@@ -72,7 +72,7 @@ pub struct Mechanics {
     /// Cauchy stress `σ = −p I + T_tide + 2η D` at the face centres (Pa,
     /// `(xx, yy, zz, xy, xz, yz)`).
     pub surface_stress: Vec<[f64; 6]>,
-    /// A-Λ: velocity coefficients of the ratchet `v_r` (§10.4.7), unmasked; empty for none.
+    /// A-Λ: velocity coefficients of the ratchet `v_r` (§10.3.7), unmasked; empty for none.
     pub ratchet: Vec<f64>,
 }
 
@@ -144,8 +144,8 @@ pub fn surface_cauchy(node: &NodeResult, pressure: f64, tide: [f64; 6]) -> [f64;
     ]
 }
 
-/// The friction chain of §10.3 at one face centre from the analytic strain `D` there
-/// (§10.2): `M` is the tangential block of `D`, and the traction condition gives `D_na`.
+/// The friction chain of §10.2 at one face centre from the analytic strain `D` there
+/// (§10.1): `M` is the tangential block of `D`, and the traction condition gives `D_na`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn face_node(
     m: &crate::rheo::Material,
@@ -172,7 +172,7 @@ pub(crate) fn face_node(
     };
     let d_ab = [quad(e1, e1), quad(e1, e2), quad(e2, e2)];
     let tr = d_ab[0] + d_ab[2];
-    // §10.2.3 with `tr D = ε̇_v` (A-Ξ, §11.4): D_nn = ε̇_v − g^{ab} D_ab and
+    // §10.1.1 with `tr D = ε̇_v` (A-Ξ, §11.4): D_nn = ε̇_v − g^{ab} D_ab and
     // γ̇² = 2[D_nn² + D_ab D^ab + 2 D_na D^na − ε̇_v²/3]; the D_na part comes from the tide.
     let d_nn = eps_v - tr;
     let s0 = 2.0
@@ -425,8 +425,8 @@ impl LoadSet {
     }
 }
 
-/// The certified bracket of `L*` (§2.17.3) of the deep state `mech` under `load`, with the
-/// strength `c + μ₂ p̃` of Proposition 2.17.1.
+/// The certified bracket of `L*` (§10.0.12.3) of the deep state `mech` under `load`, with the
+/// strength `c + μ₂ p̃` of Proposition 10.0.12.1.
 pub fn limit_bracket(project: &Project, mech: &Mechanics, fwd: &Forward, load: Loading) -> Result<super::stokes::limit::Bracket, SimError> {
     let mut set = LoadSet::of(project, &mech.ops, fwd, load)?;
     set.strength = mech.strength.clone();
@@ -436,7 +436,7 @@ pub fn limit_bracket(project: &Project, mech: &Mechanics, fwd: &Forward, load: L
 }
 
 /// The mean bracket of `L*` (as [`limit_bracket`]) and the brackets of the tidal cycle `el`
-/// about it (Proposition 10.4.7.5), sampled at `phases`.
+/// about it (Proposition 10.3.7.5), sampled at `phases`.
 pub fn limit_cycle(
     project: &Project,
     mech: &Mechanics,

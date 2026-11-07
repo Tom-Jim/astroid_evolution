@@ -1,4 +1,4 @@
-//! The integration domain `𝒱` of hypothesis (G) (§8.0): the volume rule on ray segments
+//! The integration domain `𝒱` of hypothesis (G) (§8.1): the volume rule on ray segments
 //! from the origin (G2) with adaptive refinement of cut angular cells, the depth (G6),
 //! and the boundary rule on `Γ` of the Nitsche terms (G3).
 

@@ -69,7 +69,7 @@ pub struct SurfaceFit {
 }
 
 impl SurfaceFit {
-    /// The constant radius `R ≡ r`: the enclosing ball of the general basis (§8.0, G1).
+    /// The constant radius `R ≡ r`: the enclosing ball of the general basis (§8.1, G1).
     pub fn sphere(r: f64) -> Self {
         Self {
             l_max: 0,

@@ -1,4 +1,4 @@
-//! Unit tests of `scf::transport` (§2.8, §8.0 G5): erosion, the mesh heat-kernel spread,
+//! Unit tests of `scf::transport` (§10.0, §8.1 G5): erosion, the mesh heat-kernel spread,
 //! geodesic foot points and conservative transport of `ρ_s`.
 
 use std::sync::Arc;
@@ -53,7 +53,7 @@ fn step_averaged_erosion_is_exact_and_positive() {
     assert!((j0[0] - j1[0]).abs() < 1e-9 * j0[0]);
 }
 
-/// `∫ J_dep = ∫ J_ero` to rounding, and the deposit is nonnegative (§2.8).
+/// `∫ J_dep = ∫ J_ero` to rounding, and the deposit is nonnegative (§10.0).
 #[test]
 fn mode_c_conserves_mass_exactly() {
     let body = sphere(3, 100.0);

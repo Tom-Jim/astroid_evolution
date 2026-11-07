@@ -1,13 +1,13 @@
-//! Quasi-static Stokes–pressure solve of §8.4′, §8.7 and §10.4.2 on the general domain
-//! of hypothesis (G) (§8.0).
+//! Quasi-static Stokes–pressure solve of the problem of §10.3.2 on the general domain
+//! of hypothesis (G) (§8.1).
 //!
-//! * velocity: the enclosing-ball basis of radius `R_*` (G1), exactly divergence-free,
+//! * velocity: the enclosing-ball basis of radius `R_*`, exactly divergence-free,
 //!   restricted to `𝒱` and integrated by the ray-segment rule (G2);
 //! * pressure: the scalar Poisson problem with the free-surface datum `p_Γ` imposed by
 //!   Nitsche's method (G3), whose matrix is factored once per geometry;
 //! * the pair is closed by the primal–dual iteration ([`pd`]), or by the
 //!   fixed-viscosity Picard map kept as a check ([`picard`]);
-//! * the certified bracket of the limit load of §2.17.3 ([`limit`]).
+//! * the certified bracket of the limit load of §10.0.12.3 ([`limit`]).
 
 pub mod elastic;
 pub mod limit;
@@ -177,7 +177,7 @@ pub struct Operators {
     q_bnd: QRows,
     q_bnd_dn: DMatrix<f64>,
     nitsche: Cholesky<f64, Dyn>,
-    /// `γ_N / h_N` and `h_N = R_*`; `C_N` of Proposition 8.0.6 is reported.
+    /// `γ_N / h_N` and `h_N = R_*`; `C_N` of Proposition 8.1.6 is reported.
     gamma_over_h: f64,
     pub c_nitsche: f64,
     /// Strain basis at the face centres, resident on the device.
@@ -363,7 +363,7 @@ fn rigid_rank(rigid: &DMatrix<f64>, sigma_min: f64) -> Result<f64, SimError> {
     Ok(smin)
 }
 
-/// `C_N = max h_N ‖∂_n q‖²_Γ / ‖∇q‖²_𝒱` (Proposition 8.0.6): the largest eigenvalue of
+/// `C_N = max h_N ‖∂_n q‖²_Γ / ‖∇q‖²_𝒱` (Proposition 8.1.6): the largest eigenvalue of
 /// `boundary` relative to `stiff`. Constants (`∇q = 0`, `∂_n q = 0`) are removed by a
 /// relative shift of `stiff` that does not change the other eigenvalues materially.
 fn nitsche_constant(stiff: &DMatrix<f64>, boundary: &DMatrix<f64>) -> f64 {
@@ -377,7 +377,7 @@ fn nitsche_constant(stiff: &DMatrix<f64>, boundary: &DMatrix<f64>) -> f64 {
     c.symmetric_eigen().eigenvalues.iter().copied().fold(0.0, f64::max)
 }
 
-/// `B_rb` of §8.5: rows `∫ρ B·e_a`, `∫ρ (x × B)·e_a`.
+/// `B_rb` of §A.3: rows `∫ρ B·e_a`, `∫ρ (x × B)·e_a`.
 fn rigid_matrix(vol: &VolumeSet, rows: &VelRows<f32>, n_u: usize) -> DMatrix<f64> {
     let mut b = DMatrix::zeros(6, n_u);
     for (p, x) in vol.pts.iter().enumerate() {
@@ -397,7 +397,7 @@ fn rigid_matrix(vol: &VolumeSet, rows: &VelRows<f32>, n_u: usize) -> DMatrix<f64
 
 /// Local strength of the viscoplastic law at a point: the cohesion `c` (§4.3a, under A-ϖ
 /// `(1 − ϖ) c`), the static dilatancy shift `ξ = K_Ξ (ν − ν_c⁰)` of the friction (A-Ξ,
-/// §11.3), and their gradients for `∇η` (§8.7).
+/// §11.3), and their gradients for `∇η` (§8.1.3).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Local {
     pub c: f64,
@@ -727,7 +727,7 @@ pub(super) fn solve_range(ops: &Operators, rs: &RangeSolve, f: &DVector<f64>) ->
     (u, lam)
 }
 
-/// The Stokes–pressure pair at fixed geometry (§10.4.2): the primal–dual iteration, or the
+/// The Stokes–pressure pair at fixed geometry (§10.3.2): the primal–dual iteration, or the
 /// fixed-viscosity Picard map that has the same fixed points.
 pub fn solve(
     ops: &Operators,

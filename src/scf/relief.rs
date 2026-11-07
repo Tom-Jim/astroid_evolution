@@ -1,7 +1,7 @@
-//! One geometric increment of §10.4.3 with its outer acceptance (§10.4.4 step 8a): the cone
-//! program, the routing of the relief (§2.8b), the trust-radius retries, the mass correction
-//! of §2.14, and the loose-layer ledger of the promoted vertices (§2.8c). The creep step and
-//! the surface settling of §10.4.4 both call it.
+//! One geometric increment of §10.3.3 with its outer acceptance (§10.3.4 step 8a): the cone
+//! program, the routing of the relief (§10.0.2), the trust-radius retries, the mass correction
+//! of §10.0.9, and the loose-layer ledger of the promoted vertices (§10.0.3). The creep step and
+//! the surface settling of §10.3.4 both call it.
 
 use std::borrow::Cow;
 
@@ -95,7 +95,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
                     trust / g.trust_shrink,
                 )));
             }
-            // §10.4.3: the cone program itself, not the geometry, failed at the floor.
+            // §10.3.3: the cone program itself, not the geometry, failed at the floor.
             // The geometry is kept and the increment is flagged.
             eprintln!("step {}: geometry kept, {why}", r.step);
             let body = build(r.body.positions.clone(), r.body)?;
@@ -150,7 +150,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
             }
             Err(err) => return Err(err),
         };
-        // §2.8b: route the mass the relief removed from the slope vertices, then solve
+        // §10.0.2: route the mass the relief removed from the slope vertices, then solve
         // again from the first solution with the deposit added to the prediction.
         let removed: Vec<f64> = match &r.routing {
             Some(rt) => (0..nv)
@@ -225,7 +225,7 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
             }
         };
         let dmax = out.d.iter().fold(0.0_f64, |m, v| m.max(v.abs())) * r.scale;
-        // Mass misses get one mobile-set correction (§2.14). That correction is not a
+        // Mass misses get one mobile-set correction (§10.0.9). That correction is not a
         // second cone solve; a residual that remains is recorded.
         let target = r.mass_target - lost;
         let (body, fwd, mass_residual) = match accept(&f, target, g.eps_mass) {
@@ -268,8 +268,8 @@ pub fn relieve(r: &Relief, fwd: &Forward) -> Result<Relieved, SimError> {
     }
 }
 
-/// §2.8c: the relief of a promoted vertex comes out of its loose layer and is laid down
-/// where the routing of §2.8b sends it, so `Σ A ρ_s` is unchanged. Returns the debited
+/// §10.0.3: the relief of a promoted vertex comes out of its loose layer and is laid down
+/// where the routing of §10.0.2 sends it, so `Σ A ρ_s` is unchanged. Returns the debited
 /// and credited masses per vertex.
 pub fn layer_ledger(
     promoted: &[bool],
@@ -308,7 +308,7 @@ pub fn layer_ledger(
     (debit, credit)
 }
 
-/// The loose-mass bound of §2.8c: a promoted vertex cannot cut below its carried layer plus
+/// The loose-mass bound of §10.0.3: a promoted vertex cannot cut below its carried layer plus
 /// the step's deposit, `d_i ≥ min(d_pred,i, 0) − ρ_s,i A_i / (DM)_i ≤ 0`, so `d = 0` stays
 /// feasible; `−∞` elsewhere.
 pub fn floor_of(promoted: &[bool], d_pred: &[f64], rho_s: &[f64], area: &[f64], jac: &[f64]) -> Vec<f64> {

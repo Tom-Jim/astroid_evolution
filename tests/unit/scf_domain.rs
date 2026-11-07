@@ -1,4 +1,4 @@
-//! Unit tests of `scf::domain` and `scf::surface` (§8.0 G2, G3, G6) on a body that is not
+//! Unit tests of `scf::domain` and `scf::surface` (§8.1 G2, G3, G6) on a body that is not
 //! star-shaped: a torus, whose origin lies outside `𝒱`.
 
 use std::f64::consts::PI;

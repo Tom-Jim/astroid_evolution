@@ -3,7 +3,7 @@
 //! `ρ_K(y) = bulk + Σ_k w_k [1 + (y − c_k)ᵀ S_k (y − c_k)]^{−α_k}` with a symmetric
 //! positive-definite metric `S_k` (dimension L⁻²). The isotropic core is
 //! `S_k = σ_k² I`. The core value at `c_k` is `w_k` and its Hessian there is
-//! `−2 α_k w_k S_k`; MS §9.10 transports exactly these.
+//! `−2 α_k w_k S_k`; MS §9.2 transports exactly these.
 
 use crate::common::error::SimError;
 use crate::common::math::{DMat3, DVec3, Sym6, mat_sym, sym_mat};

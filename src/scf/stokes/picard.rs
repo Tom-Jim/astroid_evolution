@@ -1,5 +1,5 @@
-//! The fixed-viscosity Picard map of §8.7, kept as a check of the primal–dual iteration
-//! (Proposition 2.17.1(1): the same fixed points).
+//! The fixed-viscosity Picard map of §8.1.3, kept as a check of the primal–dual iteration
+//! (Proposition 10.0.12.1(1): the same fixed points).
 
 use nalgebra::DVector;
 
@@ -13,7 +13,7 @@ use super::{
     solve_range, strain_fields,
 };
 
-/// Picard solve at fixed geometry: the fixed-viscosity check of §10.4.2.
+/// Picard solve at fixed geometry: the fixed-viscosity check of §10.3.2.
 pub(super) fn solve_picard(
     ops: &Operators,
     ld: &Loads,
@@ -50,7 +50,7 @@ pub(super) fn solve_picard(
     let mut theta_retries = 0u32;
     let u_guess = u.clone();
     let theta_guess = theta;
-    // §10.4.2: solve the target γ̇_ε first. The coarse-to-fine ladder runs only
+    // §10.3.2: solve the target γ̇_ε first. The coarse-to-fine ladder runs only
     // when that attempt does not converge, and it restarts from the incoming guess.
     let mut plan = vec![(0usize, prm.continuation == 0)];
     let mut plan_at = 0usize;
@@ -118,7 +118,7 @@ pub(super) fn solve_picard(
             if converged {
                 break;
             }
-            // §10.4.2: on the finest γ̇_ε, decrease θ_η and retry this level only.
+            // §10.3.2: on the finest γ̇_ε, decrease θ_η and retry this level only.
             if retry_theta && theta > 0.25 + 1e-12 && theta_retries < 3 {
                 theta = (0.5 * theta).max(0.25);
                 theta_retries += 1;
@@ -168,11 +168,11 @@ pub(super) fn solve_picard(
     if eps_lambda > prm.tol_momentum {
         return Err(SimError::rigid_rank(format!(
             "rigid-body multiplier {eps_lambda:.3e} exceeds tol_momentum {:.1e}: \
-             the load is incompatible with the rigid modes (§2.15(b), §A.3)",
+             the load is incompatible with the rigid modes (§10.0.10(b), §A.3)",
             prm.tol_momentum
         )));
     }
-    // Strong-form rotational residual f - ∇p (diagnostic of §8.7).
+    // Strong-form rotational residual f - ∇p (diagnostic of §8.1.3).
     let eps_rot = pr.rotational_residual(ops, ld, m, eps_used, &u, &fields, None);
     let p_surface = pr.face_traction(ops, ld, prm, m, eps_used, &u, None)?;
     let (pres_c, lift) = pr.split(ops);

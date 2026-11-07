@@ -1,4 +1,4 @@
-//! Closed TOML project of Tier 2 (§10.4.4 step 0). Every constant is required: a missing or
+//! Closed TOML project of Tier 2 (§10.3.4 step 0). Every constant is required: a missing or
 //! out-of-range one is `ModelNotClosed` and the run is refused. There are no defaults.
 //!
 //! Units are SI. The spin schedule is *not* part of the project; it is a CLI input.
@@ -73,9 +73,9 @@ pub struct DensitySpec {
 pub struct StokesParams {
     /// Degree of the harmonic surface `R_SH` shared by the Stokes basis and `rheo_friction`.
     pub l_surface: usize,
-    /// `L_max` of the velocity basis (§8.2).
+    /// `L_max` of the velocity basis (§8.1.3).
     pub l_velocity: usize,
-    /// `L_p`, `K_p` of the pressure space (§8.7).
+    /// `L_p`, `K_p` of the pressure space (§8.1.3).
     pub l_pressure: usize,
     pub k_pressure: usize,
     /// Product angular rule: Gauss–Legendre points in `cos θ` and uniform points in `φ`.
@@ -96,7 +96,7 @@ pub struct StokesParams {
     pub continuation: usize,
     /// Largest accepted `η_hi / η_lo` is reported, not limited; this bounds the Cholesky condition.
     pub rigid_sigma_min: f64,
-    /// Velocity solver at frozen pressure: `"primal-dual"` (§10.4.2) or `"picard"`, the
+    /// Velocity solver at frozen pressure: `"primal-dual"` (§10.3.2) or `"picard"`, the
     /// fixed-viscosity map kept as a check.
     #[serde(default = "default_solver")]
     pub solver: String,
@@ -144,7 +144,7 @@ fn default_pd_pressure_every() -> usize {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct YieldParams {
-    /// Yield tolerance `δ_Y ∈ (0, 1)` of `F_δ` (§2.8 B2).
+    /// Yield tolerance `δ_Y ∈ (0, 1)` of `F_δ` (§10.0.2 B2).
     pub delta_y: f64,
 }
 
@@ -157,8 +157,8 @@ pub struct ModeCParams {
     pub sigma_0: f64,
     /// Angular width (rad) of the deposition kernel `K`.
     pub kernel_width: f64,
-    /// Rotating-frame runout of the eroded packets (§2.8b, A-C3); `false` keeps the
-    /// isotropic kernel of §2.8.
+    /// Rotating-frame runout of the eroded packets (§10.0.2, A-C3); `false` keeps the
+    /// isotropic kernel of §10.0.2.
     pub runout: bool,
     /// `T_run` (s): a packet still moving then stops where it is.
     pub runout_time: f64,
@@ -257,13 +257,13 @@ struct ProjectFile {
     damage: Option<DamageParams>,
     #[serde(default)]
     dilatancy: Option<DilatancyParams>,
-    /// A-O (§10.4.6): mass-coupled orbital decay and loss through the Hill necks.
+    /// A-O (§10.3.6): mass-coupled orbital decay and loss through the Hill necks.
     #[serde(default)]
     orbit: Option<OrbitParams>,
     /// Chapter 12: breakup, fragments and the debris ring.
     #[serde(default)]
     breakup: Option<BreakupParams>,
-    /// A-Λ (§10.4.7): eccentricity, forced libration and the tidal cycle.
+    /// A-Λ (§10.3.7): eccentricity, forced libration and the tidal cycle.
     #[serde(default)]
     cycle: Option<CycleParams>,
 }
@@ -286,7 +286,7 @@ pub struct Project {
     pub step: StepParams,
     pub geometry: GeometryParams,
     pub relief: ReliefParams,
-    /// Lagrangian transport and refit of the density cores (§9.10).
+    /// Lagrangian transport and refit of the density cores (§9.2).
     pub cores: CoreParams,
     /// A-L (§11.7): spin from the angular momentum; `None` keeps the exogenous table.
     pub spin_law: Option<SpinLawParams>,
@@ -298,11 +298,11 @@ pub struct Project {
     pub damage: Option<DamageParams>,
     /// A-Ξ (§11.3–11.4): rate-type dilatancy.
     pub dilatancy: Option<DilatancyParams>,
-    /// A-O (§10.4.6): the orbit follows the mass, which leaves through the Hill necks.
+    /// A-O (§10.3.6): the orbit follows the mass, which leaves through the Hill necks.
     pub orbit: Option<OrbitParams>,
     /// Chapter 12: how a failed satellite breaks, its fragments move, and its debris spreads.
     pub breakup: Option<BreakupParams>,
-    /// A-Λ (§10.4.7): the tidal cycle of an eccentric synchronous satellite.
+    /// A-Λ (§10.3.7): the tidal cycle of an eccentric synchronous satellite.
     pub cycle: Option<CycleParams>,
     pub base_dir: PathBuf,
 }

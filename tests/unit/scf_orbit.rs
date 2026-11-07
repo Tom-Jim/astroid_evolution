@@ -1,4 +1,4 @@
-//! Unit tests of `scf::orbit` (§10.4.6, hypothesis A-O).
+//! Unit tests of `scf::orbit` (§10.3.6, hypothesis A-O).
 
 use std::sync::Arc;
 
@@ -14,8 +14,8 @@ fn phobos() -> (SpinSchedule, OrbitParams) {
     (spin, OrbitParams { primary_radius: 3.3895e6, limit_every: 0 })
 }
 
-/// Without mass loss the exact update is the closed law of §10.4.1 at every step boundary
-/// (Proposition 10.4.6.1), whatever the steps.
+/// Without mass loss the exact update is the closed law of §10.3.1 at every step boundary
+/// (Proposition 10.3.6.1), whatever the steps.
 #[test]
 fn without_loss_the_update_is_the_closed_orbit_law() {
     let (spin, prm) = phobos();

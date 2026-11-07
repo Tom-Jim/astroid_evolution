@@ -1,9 +1,9 @@
-//! The certified bracket of the limit-load multiplier `L*` (§2.17.3).
+//! The certified bracket of the limit-load multiplier `L*` (§10.0.12.3).
 //!
 //! `L* = 1 / min{N(u) : ℓᵀu = 1, B u = 0}` with `N(u) = Σ_i w_i τ_i γ̇_i(u)`. For any positive
 //! weights `q`, the solution of `Σ q_i E_iᵀE_i u = λ ℓ + Bᵀμ` gives the kinematic bound
 //! `ℓᵀu / N(u) ≤ L*` and the static bound `L* ≤ max_i q_i γ̇_i(u) / (w_i τ_i)`
-//! (Proposition 2.17.3); the weights of the smoothed minimizer close the gap.
+//! (Proposition 10.0.12.3); the weights of the smoothed minimizer close the gap.
 
 use nalgebra::DVector;
 
@@ -32,7 +32,7 @@ impl LimitData {
     }
 }
 
-/// `ℓ` of Proposition 2.17.1 and `p₀`, the Nitsche pressure (§8.7) with `τ = T_tide`.
+/// `ℓ` of Proposition 10.0.12.1 and `p₀`, the Nitsche pressure (§8.1.3) with `τ = T_tide`.
 pub fn data(ops: &Operators, ld: &Loads, prm: &StokesParams, m: &Material) -> Result<LimitData, SimError> {
     let np = ops.vol.pts.len();
     let mut pr = Pressure::new(ops, m.spec.p_min);

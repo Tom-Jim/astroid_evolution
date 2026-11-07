@@ -1,4 +1,4 @@
-//! The convex step of §2.13 and §10.4.3, solved by the interior-point method (`socp_ipm`).
+//! The convex step of §10.0.8 and §10.3.3, solved by the interior-point method (`socp_ipm`).
 //!
 //! The boxed program is in metres and kilograms:
 //!
@@ -15,9 +15,9 @@
 //! quadratic is `½ w R₀² (x − d_pred/R₀)²`. The mass row is divided by `M`
 //! and the slack unknown is the relative mass `σ = s_M / M`, so its column
 //! is `±1` and its linear coefficient is `ϱ M`. That product is `ϱ |s_M|`.
-//! The trust region is the box `|d_i| ≤ Δ` on the free nodes (§2.13: the
+//! The trust region is the box `|d_i| ≤ Δ` on the free nodes (§10.0.8: the
 //! linearization error is per node). Slope cones stay on face centres, where
-//! §10.3 evaluates the Hessian. Star-shapedness `n · e_r ≥ c_0` is an outer
+//! §10.2 evaluates the Hessian. Star-shapedness `n · e_r ≥ c_0` is an outer
 //! acceptance test, not a row of this program. `n̂(d)` is the first-order
 //! expansion of `face_frame`.
 
@@ -62,7 +62,7 @@ pub struct SocpInput<'a> {
     pub trust: f64,
     /// Bounds on `d_i` (metres) per vertex inside the box `|d_i| ≤ Δ`, or empty: the
     /// clearance rows `−θ_g t⁻ ≤ d ≤ θ_g t⁺` of (G4) and the loose-mass bound of a
-    /// promoted vertex (§2.8c). `±∞` where there is none.
+    /// promoted vertex (§10.0.3). `±∞` where there is none.
     pub lower: &'a [f64],
     pub upper: &'a [f64],
     pub eps_n: f64,
@@ -84,7 +84,7 @@ pub struct SocpOutput {
 
 impl SocpOutput {
     /// No geometric correction: the cone program could not be solved down to the
-    /// trust-radius floor, and the step keeps its geometry (§10.4.3).
+    /// trust-radius floor, and the step keeps its geometry (§10.3.3).
     pub fn unresolved(nv: usize) -> Self {
         Self {
             d: vec![0.0; nv],
@@ -212,7 +212,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let p = body.positions();
     let ps: Vec<DVec3> = p.iter().map(|x| *x * (1.0 / r0)).collect();
     // The slope cones and the anti-overhang rows use n̂ and ∂n̂/∂R. Every face with a
-    // free vertex carries the anti-overhang row (§2.8c), so its frame is needed even
+    // free vertex carries the anti-overhang row (§10.0.3), so its frame is needed even
     // when it has no slope row.
     let has_free = |f: usize| {
         topo.faces[f]
@@ -231,7 +231,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     for (slot, &f) in active.iter().enumerate() {
         frames[f] = Some(computed[slot]);
     }
-    // §10.4.3 fixes d = d_pred on the deposition set. The trust ball
+    // §10.3.3 fixes d = d_pred on the deposition set. The trust ball
     // constrains only the free variables, so this value is not clipped.
     let delta = inp.trust / r0;
     let known: Vec<f64> = (0..nv)
@@ -273,7 +273,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
     let sm = sp + 1;
     let nx = sm + 1;
 
-    // §10.4.3: ½ Σ w_i (d_i − d_pred,i)² + ϱ (Σ t_i + |s_M|).
+    // §10.3.3: ½ Σ w_i (d_i − d_pred,i)² + ϱ (Σ t_i + |s_M|).
     // x = d/R₀, so the quadratic in x is ½ (w R₀²) x² − (w R₀ d_pred) x.
     // The mass row is divided by M and the unknown is σ = s_M / M, so each
     // equality column is ±1 and the linear coefficient is ϱ M. t is the
@@ -343,12 +343,12 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
         let gn = g.length();
         if gn <= 1e-14 {
             // A zero effective gravity direction has no defined slope or overhang
-            // constraint (§2.8); do not divide by zero or manufacture a NaN row.
+            // constraint (§10.0); do not divide by zero or manufacture a NaN row.
             continue;
         }
         let ghat = g * (1.0 / gn);
         // Anti-overhang, only where the current face already satisfies it.
-        // A face that already violates the row is dropped before the SOCP (§2.13).
+        // A face that already violates the row is dropped before the SOCP (§10.0.8).
         // n·e_r ≥ c_0 is an outer check, not a row of this program.
         if n.dot(ghat) <= -inp.eps_n {
             let r = nn.row(-inp.eps_n - n0.dot(ghat));
@@ -383,7 +383,7 @@ pub fn solve(inp: &SocpInput) -> Result<SocpOutput, SimError> {
 
     // |d_i| ≤ Δ on the free nodes, written |x| ≤ Δ/R₀. Two nonnegative rows
     // per mobile vertex. A Euclidean ball of the same radius would also force
-    // the patch RMS down by √N, which §2.13's per-node linearization does not ask for.
+    // the patch RMS down by √N, which §10.0.8's per-node linearization does not ask for.
     // `x_box[j]` keeps the interval of free column j for the fold test below.
     let mut x_box = vec![(0.0, 0.0); na];
     for i in 0..nv {

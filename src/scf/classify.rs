@@ -1,4 +1,4 @@
-//! Yield classification, rigid core and sliding velocity (§2.8 B2–B4, B6) on the
+//! Yield classification, rigid core and sliding velocity (§10.0 B2–B4, B6) on the
 //! classification mesh `X_Y` of (G7).
 //!
 //! The single stress field of the converged solution is evaluated on `X_Y`: the volume
@@ -163,7 +163,7 @@ pub struct Classification {
 }
 
 impl Classification {
-    /// `χ_Y` at `x`, read at the nearest point of `X_Y` (§9.10.2).
+    /// `χ_Y` at `x`, read at the nearest point of `X_Y` (§9.2.2).
     pub fn movable_near(&self, x: DVec3) -> bool {
         !self.in_core[self.grid.nearest(x)]
     }
@@ -324,7 +324,7 @@ pub fn classify(
 }
 
 /// A probe of a midpoint vertex inherits when both parent probes of its layer are below
-/// yield by this fraction of `(1 − δ_Y) τ_y` (§2.8 B3, G7).
+/// yield by this fraction of `(1 − δ_Y) τ_y` (§10.0 B3, G7).
 const INHERIT_MARGIN: f64 = 0.05;
 
 /// For a subdivided icosphere: the vertex count of the previous level and the two

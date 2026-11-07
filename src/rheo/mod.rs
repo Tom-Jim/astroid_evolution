@@ -1,8 +1,8 @@
-//! Standalone rheology and friction-angle solver (mathstrict.md §4, §10.2, §10.3).
+//! Standalone rheology and friction-angle solver (mathstrict.md §4, §10.1, §10.2).
 //!
 //! The chain runs on the GPU in double-single arithmetic:
 //! velocity coefficients -> surface velocity trace (Prop. 10.2) -> curvature-aware
-//! surface shear rate (§10.2.3) -> `I_c`, `mu_d`, `eta` (§4) -> `mu_eff`, `phi` (§10.3).
+//! surface shear rate (§10.1.1) -> `I_c`, `mu_d`, `eta` (§4) -> `mu_eff`, `phi` (§10.2).
 //! It is independent of the RTFP tier: the gravity, pressure and tide tensor it
 //! reads are plain per-node inputs.
 

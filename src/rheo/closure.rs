@@ -1,9 +1,9 @@
 //! f64 reference of the scalar rheology and friction-angle closure
-//! (§4.1–§4.6, §10.3), and the classical-limit checks of §4.7–§4.20.
+//! (§4.1–§4.6, §10.2), and the classical-limit checks of §4.7–§4.20.
 //!
 //! The GPU evaluates the same formulas in double-single; the acceptance checks
 //! compare the two, and the f64 path is the `f32` implementation's required
-//! recheck (§10.3).
+//! recheck (§10.2).
 
 use super::params::{Material, MuProjMode};
 
@@ -28,7 +28,7 @@ pub fn cohesive_pressure(c_c: f64, z: f64, nu: f64, f_h: f64, d: f64) -> f64 {
     c_c * z * nu * f_h / (d * d)
 }
 
-/// `mu_d` of §10.3 as the rational form that stays finite as `p_* -> 0`.
+/// `mu_d` of §10.2 as the rational form that stays finite as `p_* -> 0`.
 pub fn dynamic_friction(m: &Material, shear: f64, p_star: f64) -> (f64, f64) {
     let s = &m.spec;
     let scale = (p_star / s.rho_p).sqrt();
@@ -59,7 +59,7 @@ pub struct ClosureInput {
     pub tide_frob: f64,
     /// Continuum cohesion `c` at the node (flow strength), `c_s` of §4.3a when undamaged.
     pub cohesion: f64,
-    /// Shallow cohesion `c_Γ` of the repose proxy (§10.3, §11.6), `c_s` when undamaged.
+    /// Shallow cohesion `c_Γ` of the repose proxy (§10.2, §11.6), `c_s` when undamaged.
     pub shallow_cohesion: f64,
     /// Static dilatancy shift `ξ = K_Ξ (ν − ν_c⁰)` of the friction (A-Ξ), zero without it.
     pub xi: f64,

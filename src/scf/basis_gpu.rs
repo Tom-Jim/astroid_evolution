@@ -151,7 +151,7 @@ fn blank_params() -> BasisParams {
 
 /// Jacobi coefficients, one `poly_stride` slot per `(l, k)`. `top` is the last power index.
 /// Radial polynomial table: row `(l, k)` holds `ψ_{lk}` (§8.1). With `pressure`,
-/// row `l = 0` holds instead `ψ_{0k}(ζ) = (1 + ζ) P_k^{(0,1/2)}(2ζ² − 1)` of §8.7, so
+/// row `l = 0` holds instead `ψ_{0k}(ζ) = (1 + ζ) P_k^{(0,1/2)}(2ζ² − 1)` of §8.1.3, so
 /// that `(1 − ζ) ψ_{0k}` is even in `r` and the pressure is smooth at the centre.
 fn pack_polys(l_max: usize, k_count: usize, pressure: bool) -> Result<(Vec<f32>, u32), String> {
     let stride = if pressure {

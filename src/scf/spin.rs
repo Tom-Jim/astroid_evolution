@@ -1,4 +1,4 @@
-//! Exogenous spin `t -> omega(t)` (§10.4.1). It is a command-line input of `scf-cli`.
+//! Exogenous spin `t -> omega(t)` (§10.3.1). It is a command-line input of `scf-cli`.
 //!
 //! The spin axis is the body `z` axis (assumption A-S); `omega` is never updated from
 //! the inertia tensor or from any angular momentum.
@@ -12,7 +12,7 @@
 //! * `table-file:PATH`         the same table, one `t w` pair per line.
 //! * `orbit:GM,a0,adot0,T`      synchronous rotation on a tidally decaying orbit
 //!   about a primary of gravitational parameter `GM` on the body `+x` axis
-//!   (MS §2.8, `g_ext`): `ω = n = √(GM/a³)`, and the tidal Hill potential
+//!   (MS §10.0, `g_ext`): `ω = n = √(GM/a³)`, and the tidal Hill potential
 //!   `n²(x² − (y² + z²)/2)` enters the effective potential. The semi-major axis
 //!   follows the classical tidal law `ȧ ∝ a^{−11/2}`, i.e.
 //!   `a(t)^{13/2} = a0^{13/2} + (13/2) a0^{11/2} ȧ0 t`, with `ȧ0` its rate at `t = 0`.

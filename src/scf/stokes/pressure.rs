@@ -1,4 +1,4 @@
-//! The pressure problem of §8.7 by Nitsche's method (G3), the free-surface datum, and the
+//! The pressure problem of §8.1.3 by Nitsche's method (G3), the free-surface datum, and the
 //! strong-form residual. Shared by both velocity solvers.
 
 use std::f64::consts::PI;
@@ -16,7 +16,7 @@ use super::super::evolving::dilatation::{Dilatational, deviator};
 use super::{Fields, Loads, Local, Operators, d_apply, d6_dot, eta_eval};
 
 /// `f = ρ g_eff + ∇·T_tide + η Δv + 2 D ∇η` at one point, with `∇η` by the chain rule
-/// through `γ̇`, `p̃` and `c` (§8.7). `p` is the unclipped pressure there.
+/// through `γ̇`, `p̃` and `c` (§8.1.3). `p` is the unclipped pressure there.
 #[allow(clippy::too_many_arguments)]
 fn body_force(
     m: &Material,
@@ -245,7 +245,7 @@ impl Pressure {
             .collect())
     }
 
-    /// `ε_rot = ‖f − ∇p‖ / ‖f‖` over the volume points (strong-form diagnostic of §8.7).
+    /// `ε_rot = ‖f − ∇p‖ / ‖f‖` over the volume points (strong-form diagnostic of §8.1.3).
     #[allow(clippy::too_many_arguments)]
     pub fn rotational_residual(
         &self,
@@ -284,7 +284,7 @@ impl Pressure {
 }
 
 /// The pressure of a uniform viscosity `eta` at the volume nodes for the coefficients `u`
-/// under the body force of `ld` (Proposition 10.4.7.4): the Nitsche solve of `update` with
+/// under the body force of `ld` (Proposition 10.3.7.4): the Nitsche solve of `update` with
 /// `f = ρ g + η Δv` and `p_Γ = n·T·n + 2η n·D·n`. A uniform `T` has no divergence.
 pub(super) fn uniform(ops: &Operators, ld: &Loads, eta: f64, u: &DVector<f64>) -> Vec<f64> {
     let (np, nb) = (ops.vol.pts.len(), ops.bnd.pts.len());
@@ -312,7 +312,7 @@ pub(super) fn uniform(ops: &Operators, ld: &Loads, eta: f64, u: &DVector<f64>) -
     linalg::mul(&ops.q_vol.val, &coeff).as_slice().to_vec()
 }
 
-/// `∇·T_tide = −(8π/3) G C_T ρ_p ν₀ d_p² ∇ρ_K` per unit `∇ρ_K` (§8.7).
+/// `∇·T_tide = −(8π/3) G C_T ρ_p ν₀ d_p² ∇ρ_K` per unit `∇ρ_K` (§8.1.3).
 fn tide_divergence(ld: &Loads, m: &Material) -> f64 {
     -(8.0 * PI / 3.0) * ld.g_const * m.tide_coef
 }

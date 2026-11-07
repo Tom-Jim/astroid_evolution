@@ -153,7 +153,7 @@ pub fn radius_recursion(gpu: &RheoGpu) -> Result<Check, SimError> {
     Ok(check("radius recursion (l<=24): relative", worst, 1.0e-12))
 }
 
-/// Surface velocity trace of Proposition 10.2 against the definition `v_r = L^2 Phi / r`,
+/// Surface velocity trace of Section 10.1 against the definition `v_r = L^2 Phi / r`,
 /// `v_S = r^-1 grad d_r(r Phi)`, `v^T = grad Psi x e_r` on a non-spherical surface.
 pub fn velocity_trace(gpu: &RheoGpu) -> Result<Check, SimError> {
     let material = reference_material(0.0, "dynamic")?;

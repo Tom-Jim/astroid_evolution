@@ -1,4 +1,4 @@
-// Mass, first and second moments of the density on the body (MS §8.3, §9.4).
+// Mass, first and second moments of the density on the body (MS §3, §8.1.3).
 //
 // Rays leave one origin inside the body; one thread per direction. The radial
 // weight is R² (the volume element). The host integrates a constant c exactly by
