@@ -70,11 +70,14 @@ pub fn bracket(
     gap: f64,
 ) -> Result<Bracket, SimError> {
     let tau: Vec<f64> = (0..cohesion.len()).map(|i| cohesion[i] + mu * data.p0[i].max(p_min)).collect();
-    bracket_with(ops, &data.load, &tau, gap)
+    bracket_with(ops, &data.load, &tau, gap, false)
 }
 
 /// The bracket of `L*` for the load vector `load` and the strengths `tau` at the volume nodes.
-pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64) -> Result<Bracket, SimError> {
+/// `certify = false` exits as soon as the bracket excludes 1; `certify = true` keeps
+/// tightening until the relative width meets `gap` (or `MAX_PASSES`), so the caller
+/// decides on a converged bracket instead of an early-exit bound.
+pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64, certify: bool) -> Result<Bracket, SimError> {
     let _span = super::super::timing::span("limit_load");
     let np = ops.vol.pts.len();
     let cw: Vec<f64> = (0..np).map(|i| ops.vol.w[i] * tau[i]).collect();
@@ -117,7 +120,7 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64)
             let s2 = std::f64::consts::SQRT_2;
             stress = (0..np).map(|i| std::array::from_fn(|c| q[i] / ops.vol.w[i] * s2 * d[6 * i + c])).collect();
         }
-        if lo > 1.0 || hi < 1.0 || hi - lo <= gap * hi {
+        if (hi - lo <= gap * hi) || (!certify && (lo > 1.0 || hi < 1.0)) {
             return Ok(Bracket { lo, hi, iterations: pass, rates, u: mech, stress });
         }
         // Smoothed-stationarity weights with a shrinking smoothing ε = θ · rms γ̇.

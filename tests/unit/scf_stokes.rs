@@ -619,3 +619,26 @@ fn the_g1_gpu_rows_match_the_cpu_reference() {
     }
     let _ = nm;
 }
+
+/// A/B diagnostic: how many G1 modes survive `thin` + `prune`, and the bracket
+/// the same load gets on the enclosing-ball rows vs the G1 rows.
+#[test]
+fn report_basis_size_and_bracket() {
+    let (r0, rho, g) = (1000.0, 2000.0, 6.6743e-11);
+    let k = 4.0 * PI / 3.0 * g * rho;
+    let prm = params();
+    let m = material();
+    let ops = sphere_ops(r0, rho, &prm);
+    eprintln!(
+        "G1: n_u={} gram_rank={} sigma_min={:.3e} cond={:.3e}",
+        ops.n_u, ops.geo_gram.rank, ops.geo_gram.sigma_min, ops.geo_gram.cond
+    );
+    let h = Hill::new(&ops, &m, k, 0.3 * k);
+    let d = astroid_evolution::scf::stokes::limit::data(&ops, &h.loads(g), &prm, &m).unwrap();
+    let cohesion: Vec<f64> = Strengths::profile(&ops, &m).vol.iter().map(|l| l.c).collect();
+    let b = astroid_evolution::scf::stokes::limit::bracket(
+        &ops, &d, &cohesion, m.spec.mu_2, m.spec.p_min, 1e-3,
+    )
+    .unwrap();
+    eprintln!("G1 bracket s=0.3k: [{:.4}, {:.4}]", b.lo, b.hi);
+}

@@ -260,6 +260,10 @@ fn sweep_axis(
             rho[i].max(1e-30) * sp.p,
             rho[i].max(1e-30) * sp.s,
         );
+        // The P family transports the single combined amplitude
+        // `σ̃ = S_aa − p` on `v_a`; writing it into both slots would double it
+        // every sweep. p persists between the AC corrections instead.
+        let mut sig = 0.0;
         for &sign in &[1.0f64, -1.0] {
             let back = |c: f64| {
                 let mut xu = x;
@@ -272,8 +276,7 @@ fn sweep_axis(
             let w_p = 0.5 * (up_p[axis] + sgn * (up_p[3 + axis] - up_p[9]) / r_p)
                 + 0.5 * sgn * dt * g_eff[i][axis] * rho[i] / r_p;
             new[axis] += w_p;
-            new[3 + axis] += sgn * r_p * w_p;
-            new[9] += -sgn * r_p * w_p;
+            sig += sgn * r_p * w_p;
             // The two S families on `v_{j1}, v_{j2}`.
             let up_s = back(sp.s);
             for (j, cix) in [(j1, owned[1]), (j2, owned[2])] {
@@ -283,6 +286,8 @@ fn sweep_axis(
                 new[3 + cix] += sgn * r_s * w_s;
             }
         }
+        new[9] = old[NDIM * i + 9];
+        new[3 + axis] = sig + new[9];
         ray.u[NDIM * i..NDIM * i + NDIM].copy_from_slice(&new);
     }
 }
@@ -408,24 +413,34 @@ fn relax(
     n_p: usize,
     bnd_pts: &[usize],
     ray: &mut Ray,
-) -> usize {
+) -> (usize, f64, f64) {
     let (w, rho, vol) = (&ops.vol.w, &ops.vol.rho, ops.vol.pts.len());
     let mut prev = ray.u.clone();
     let mut sweeps = 0;
+    // `η` is frozen for the whole relaxation, so the P-speed cap is too.
+    let cmax = eta
+        .iter()
+        .zip(rho.iter())
+        .map(|(&e, &r)| speeds(e, r, t_s, kappa).p)
+        .fold(0.0, f64::max)
+        .max(1e-300);
     // Δτ adaptation: a sweep that grows the state change instead of shrinking
     // it is rolled back and retried at half the step; a few rollbacks are the
     // cheap version of the §10.3.2 pseudo-time line search.
     let mut dt_fac = 1.0;
     let mut prev_eps = f64::INFINITY;
     let mut rollbacks = 0;
+    // The CFL step is a guess; keep halving while rollback still rescues the
+    // sweep rather than giving up after a fixed count.
+    const MAX_ROLLBACKS: usize = 30;
+    let mut half = f64::NAN;
+    let mut converged = false;
     for s in 0..max_sweeps {
+        if s == max_sweeps / 2 {
+            half = v_norm(ray, w, rho);
+        }
+        let dt = 0.4 * ray.bvh.side / cmax * dt_fac;
         for axis in 0..3 {
-            let cmax = eta
-                .iter()
-                .zip(rho.iter())
-                .map(|(&e, &r)| speeds(e, r, t_s, kappa).p)
-                .fold(0.0, f64::max);
-            let dt = 0.4 * ray.bvh.side / cmax.max(1e-300) * dt_fac;
             sweep_axis(ray, axis, dt, eta, rho, t_s, kappa, ld.tide, ld.g_eff);
         }
         // Traction BC on the boundary-adjacent samples (§10.3.2 boundary hit).
@@ -441,21 +456,25 @@ fn relax(
             rigid_project(ray, w, rho);
         }
         sweeps = s + 1;
-        let eps = rel_change(&prev, &ray.u, w, rho);
+        // Steady-state test on the *rate* ‖Δv‖/(3Δτ·‖v‖): a pseudo-time step
+        // that merely shrinks Δτ cannot fake convergence at a non-equilibrium.
+        let eps = rel_change(&prev, &ray.u, w, rho) / (3.0 * dt).max(1e-300);
         if !eps.is_finite() || !ray.u.iter().all(|v| v.is_finite()) {
-            if rollbacks < 8 {
+            if rollbacks < MAX_ROLLBACKS {
                 ray.u.copy_from_slice(&prev);
                 dt_fac *= 0.5;
                 prev_eps = f64::INFINITY;
                 rollbacks += 1;
                 continue;
             }
-            return 0; // diverged: report, never propagate a NaN state
+            ray.u.copy_from_slice(&prev); // keep the last finite state for the caller's diagnosis
+            return (0, half, v_norm(ray, w, rho));
         }
         if eps < tol {
+            converged = true;
             break;
         }
-        if eps > 1.5 * prev_eps && rollbacks < 8 {
+        if eps > 1.5 * prev_eps && rollbacks < MAX_ROLLBACKS {
             ray.u.copy_from_slice(&prev);
             dt_fac *= 0.5;
             prev_eps = f64::INFINITY;
@@ -465,7 +484,76 @@ fn relax(
         prev_eps = eps;
         prev.copy_from_slice(&ray.u);
     }
-    sweeps
+    (if converged { sweeps } else { 0 }, half, v_norm(ray, w, rho))
+}
+
+/// Mass-weighted `L²(ρ)` norm of the velocity block of the ray state.
+fn v_norm(ray: &Ray, w: &[f64], rho: &[f64]) -> f64 {
+    (0..ray.u.len() / NDIM)
+        .map(|i| {
+            w[i] * rho[i]
+                * (ray.u[NDIM * i].powi(2) + ray.u[NDIM * i + 1].powi(2) + ray.u[NDIM * i + 2].powi(2))
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// The collapse detector of Proposition 10.0.12.1 for the ray path, mirroring
+/// the tier-2 oracle: the stress pinned at `τ_max = c + (μ_2 + ξ + K_Ξ Δν_c) p̃`
+/// is the numerical signature of `L* > 1`, and the certified bracket of
+/// §10.0.12.3 is the judge — so a merely stiff state is never misclassified.
+/// `growth` (velocity amplification through the `what`) goes into the report.
+/// Returns the error detail when collapse is certified, `None` otherwise.
+fn certified_collapse(
+    ops: &Operators,
+    ld: &Loads,
+    m: &Material,
+    coh: &[super::Local],
+    stress: &[f64],
+    data: &super::limit::LimitData,
+    growth: f64,
+    what: &str,
+) -> Result<Option<String>, SimError> {
+    let np = ops.vol.pts.len();
+    // τ_max on the rest pressure `p₀`, the same strength field the production
+    // `limit::bracket` certifies with — independent of the converged state.
+    let tau_max: Vec<f64> = (0..np)
+        .map(|i| {
+            let mu_max = m.spec.mu_2 + coh[i].xi + m.dilatancy.map_or(0.0, |d| d[0]);
+            coh[i].c + mu_max * data.p0[i].max(m.spec.p_min)
+        })
+        .collect();
+    let saturation = (0..np)
+        .map(|i| {
+            let s = &stress[6 * i..6 * i + 6];
+            d6_dot(s, s).sqrt() / tau_max[i].max(1e-300)
+        })
+        .fold(0.0, f64::max);
+    // Certify only on a finite saturated state: a diverged (NaN) ray means
+    // the relaxation itself was unstable, not that L* > 1.
+    if !(saturation.is_finite() && saturation >= 0.999) {
+        return Ok(None);
+    }
+    let suspect = format!(
+        "the ray velocity grew {growth:.2}× through the {what} with the stress at \
+         {saturation:.4} of τ_max"
+    );
+    if ld.dilatancy.is_some() {
+        return Ok(Some(format!("{suspect}: no quasi-static state at this pressure")));
+    }
+    // Certification, not a heuristic: the bracket must tighten to `gap`
+    // (consistent, `lo ≤ hi`) with the whole interval above 1 before the
+    // collapse verdict is returned — an early-exit bound is not enough for a
+    // marginal state.
+    const CERTIFY_GAP: f64 = 1e-2;
+    let b = super::limit::bracket_with(ops, &data.load, &tau_max, CERTIFY_GAP, true)?;
+    if b.lo > 1.0 && b.lo <= b.hi && b.hi - b.lo <= CERTIFY_GAP * b.hi {
+        return Ok(Some(format!(
+            "{suspect}; certified L* in [{:.4}, {:.4}] > 1: no quasi-static state",
+            b.lo, b.hi
+        )));
+    }
+    Ok(None)
 }
 
 fn dt_scale(ray: &Ray, eta: &[f64], rho: &[f64], t_s: f64, kappa: f64) -> f64 {
@@ -494,7 +582,7 @@ pub fn solve_hyperbolic(
     // η/ρ fixes the speeds. Chosen so `c_P` is a few c_S.
     let t_s = 1.0;
     let kappa = 0.25;
-    let (_w, _rho, pts) = (&ops.vol.w, &ops.vol.rho, &ops.vol.pts);
+    let (w, rho, pts) = (&ops.vol.w, &ops.vol.rho, &ops.vol.pts);
     let mut ray = Ray::build(pts, {
         let (mut lo, mut hi) = (pts[0], pts[0]);
         for p in pts {
@@ -513,38 +601,117 @@ pub fn solve_hyperbolic(
     // converged ray state — the `m` loop of §10.3.2.
     let coh = &ld.strength.vol;
     let eps = m.spec.gamma_eps;
+    // `ℓ` and the rest pressure `p₀` once — the strength reference of every
+    // collapse certification below (§10.0.12.3).
+    let ldata = super::limit::data(ops, ld, prm, m)?;
     let mut eta: Vec<f64> = (0..pts.len())
         .map(|p| eta_eval(m, &coh[p], 0.0, m.spec.p_min.max(ld.g_const), eps).eta)
         .collect();
-    for _outer in 0..(prm.continuation + 1).max(2) {
-        let ok = relax(
-            ops, ld, prm.p_ext, &eta, t_s, kappa, prm.tol_relax, prm.max_sweeps.min(2000),
-            prm.pressure_every.max(2), &bnd_pts, &mut ray,
-        );
-        if ok == 0 {
-            return Err(SimError::rheology_not_converged(
-                "the characteristic relaxation did not converge within the sweep budget (PO-19)",
-            ));
+    // Continuation ladder of §10.3.2 (mirroring the oracle): try the target
+    // `γ̇_ε` first; on a stall that the bracket does not certify, restart the
+    // ray state at the easiest level `10^c γ̇_ε` and step down level to level.
+    // Each level runs its own η-map (relax → η recompute at that level's ε).
+    let mut levels = vec![0usize];
+    let mut ladder = prm.continuation > 0;
+    let mut at = 0usize;
+    let mut settled0 = false;
+    while at < levels.len() {
+        let level = levels[at];
+        at += 1;
+        let eps_l = eps * 10f64.powi(level as i32);
+        let mut done = false;
+        let mut stuck = false;
+        let mut v_first = f64::NAN;
+        let mut v_last = f64::NAN;
+        for _pass in 0..4 {
+            let (ok, u_half, u_end) = relax(
+                ops, ld, prm.p_ext, &eta, t_s, kappa, prm.tol_relax, prm.max_sweeps,
+                prm.pressure_every.max(2), &bnd_pts, &mut ray,
+            );
+            if ok == 0 {
+                let growth = u_end / u_half.max(1e-300);
+                let stress: Vec<f64> = (0..pts.len())
+                    .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
+                    .collect();
+                if let Some(detail) =
+                    certified_collapse(ops, ld, m, coh, &stress, &ldata, growth, "sweeps")?
+                {
+                    return Err(SimError::limit_load_collapse(detail));
+                }
+                stuck = true;
+                break;
+            }
+            let vn = v_norm(&ray, w, rho);
+            if !v_first.is_finite() {
+                v_first = vn;
+            }
+            v_last = vn;
+            // Recompute η from (p̃, γ̇) of the ray state at this level's ε.
+            // `p̃` takes the ray pressure plus the tidal trace, as §8.1.3.
+            let mut new_eta = vec![0.0; pts.len()];
+            for i in 0..pts.len() {
+                let d = ray.strain(i);
+                let gamma = (2.0 * d6_dot(&d, &d)).sqrt();
+                let ptil = ray.u[NDIM * i + 9]
+                    + (ld.tide[i][0] + ld.tide[i][1] + ld.tide[i][2]) / 3.0
+                    + ld.g_const;
+                new_eta[i] = eta_eval(m, &coh[i], gamma, ptil.max(m.spec.p_min), eps_l).eta;
+            }
+            done = new_eta
+                .iter()
+                .zip(eta.iter())
+                .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_relax);
+            eta = new_eta;
+            if done {
+                break;
+            }
         }
-        // Recompute η from (p̃, γ̇) of the ray state. `p̃` takes the ray
-        // pressure plus the trace of the tidal prestress, as §8.1.3.
-        let mut new_eta = vec![0.0; pts.len()];
-        for i in 0..pts.len() {
-            let d = ray.strain(i);
-            let gamma = (2.0 * d6_dot(&d, &d)).sqrt();
-            let ptil = ray.u[NDIM * i + 9]
-                + (ld.tide[i][0] + ld.tide[i][1] + ld.tide[i][2]) / 3.0
-                + ld.g_const;
-            new_eta[i] = eta_eval(m, &coh[i], gamma, ptil.max(m.spec.p_min), eps).eta;
-        }
-        let done = new_eta
-            .iter()
-            .zip(eta.iter())
-            .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_relax);
-        eta = new_eta;
-        if done {
+        if done && level == 0 {
+            settled0 = true;
             break;
         }
+        if !done && !stuck {
+            // The η-map stalled at this level — the collapse signature of
+            // Proposition 10.0.12.1 in this discretization. Certify on the
+            // projected viscous stress `2ηD + T_tide`; only a tightened
+            // bracket fully above 1 convicts.
+            let growth = v_last / v_first.max(1e-300);
+            let v_ray: Vec<f64> = (0..pts.len())
+                .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
+                .collect();
+            if let Ok((u_l, _)) = ops.project_velocity(&v_ray) {
+                let ud = DVector::from_column_slice(&u_l);
+                let fields = strain_fields(ops, &ud);
+                let mut stress = vec![0.0; 6 * pts.len()];
+                for i in 0..pts.len() {
+                    for c in 0..6 {
+                        stress[6 * i + c] = 2.0 * eta[i] * fields.d[6 * i + c] + ld.tide[i][c];
+                    }
+                }
+                if let Some(detail) = certified_collapse(
+                    ops, ld, m, coh, &stress, &ldata, growth, "rheology passes",
+                )? {
+                    return Err(SimError::limit_load_collapse(detail));
+                }
+            }
+        }
+        if level == 0 && ladder {
+            // Restart at the easiest level, like the oracle's `warm = start`.
+            ladder = false;
+            levels.extend((1..=prm.continuation).rev());
+            levels.push(0);
+            for v in &mut ray.u {
+                *v = 0.0;
+            }
+            for (i, e) in eta.iter_mut().enumerate() {
+                *e = eta_eval(m, &coh[i], 0.0, m.spec.p_min.max(ld.g_const), eps).eta;
+            }
+        }
+    }
+    if !settled0 {
+        return Err(SimError::rheology_not_converged(
+            "the characteristic relaxation did not settle the η-map at any continuation level (PO-19)",
+        ));
     }
     // Galerkin projection of the converged ray velocity onto the retained
     // (G1) basis: produces `u`, `v_h` and `e_proj`.

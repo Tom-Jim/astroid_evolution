@@ -383,7 +383,7 @@ pub fn solve_pd(
             if ld.dilatancy.is_some() {
                 return Err(SimError::limit_load_collapse(format!("{suspect}: no quasi-static state at this pressure")));
             }
-            let b = super::limit::bracket_with(ops, &f_load, &tau_max, CERTIFY_GAP)?;
+            let b = super::limit::bracket_with(ops, &f_load, &tau_max, CERTIFY_GAP, false)?;
             if b.lo > 1.0 {
                 return Err(SimError::limit_load_collapse(format!(
                     "{suspect}; certified L* in [{:.4}, {:.4}] > 1: no quasi-static state at this pressure",

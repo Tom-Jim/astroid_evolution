@@ -226,7 +226,7 @@ fn jac_curl_kernel(x: DVec3, c: DVec3, e: DVec3, h: f64) -> nalgebra::Matrix3<f6
     }
     // B = k(s)·(r × e) with k = W'/s.  ∂B/∂r_j = k'(s) r̂_j (r×e) + k (e_j × e).
     let k = kernel_dw_ds(s, h) / s;
-    let dk = (kernel_d2w(s, h) - k) / (s * s); // d/ds(W'/s) · 1/s = (W''−W'/s)/s²
+    let dk = (kernel_d2w(s, h) - k) / s; // d/ds(W'/s) = (W''−W'/s)/s
     let rx_e = r.cross(e);
     let unit = r / s;
     let axes = [DVec3::X, DVec3::Y, DVec3::Z];
