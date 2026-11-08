@@ -551,12 +551,18 @@ pub fn gram_check(
     tol: f64,
 ) -> GramReport {
     let m = gram_matrix(basis, pts, w, rho);
+    gram_report(&m, basis.n(), tol)
+}
+
+/// The rank report of [`gram_check`] on an already assembled mass Gram.
+#[cfg(feature = "tier2")]
+pub(crate) fn gram_report(m: &DMatrix<f64>, n_modes: usize, tol: f64) -> GramReport {
     // Rank is read on the correlation Gram `D^{-1/2} M D^{-1/2}`: the raw
     // spectrum mixes the natural scales of the families — a rigid rotation's
     // |B| is ~R against a kernel's ~h^{-1} — so `tol·σ_max` measures a unit
     // mismatch, not dependence. Prop 8.1.3 asks whether the retained
     // *functions* are independent, which is the normalized matrix.
-    let c = correlation(&m);
+    let c = correlation(m);
     let svd = c.svd(true, true);
     let s = svd.singular_values;
     let sigma_max = s.iter().cloned().fold(0.0, f64::max);
@@ -566,7 +572,7 @@ pub fn gram_check(
         sigma_min,
         sigma_max,
         rank,
-        n_modes: basis.n(),
+        n_modes,
         cond: if sigma_min > 0.0 {
             sigma_max / sigma_min
         } else {
@@ -578,7 +584,8 @@ pub fn gram_check(
 /// `D^{-1/2} M D^{-1/2}`: the Gram matrix of the modes normalized to unit
 /// `L²(ρ w)` on the quadrature — the angle between the functions, their scale
 /// removed. A zero diagonal (an unsupported mode) maps to a zero row.
-pub(crate) fn correlation(m: &DMatrix<f64>) -> DMatrix<f64> {
+/// Public for the `ggram.wesl` oracle tests.
+pub fn correlation(m: &DMatrix<f64>) -> DMatrix<f64> {
     let n = m.nrows();
     // The floor must survive a product of two: `1e-300²` underflows to 0
     // and a zero-norm mode (rigid under the strain metric) would turn the
@@ -620,7 +627,20 @@ pub fn prune(
     // kernel combination that merely resembles it. Energy-independence
     // implies mass-independence (a zero field has zero strain), which is what
     // lets the second stage leave the vetted global layer alone.
-    let sgram = strain_gram_matrix(&basis, pts, w, rho);
+    // Both Grams of the full family are assembled once — on the GPU where the
+    // support-list kernel of `ggram.wesl` is available, on the CPU reference
+    // path otherwise. The stage-two and rank-check Grams of the pruned family
+    // are then *submatrices* of these full Grams (the retained modes restrict
+    // the same bilinear form): no re-assembly.
+    let _span = super::timing::span("gbasis_grams");
+    let (mgram, sgram) = match super::ggram_gpu::grams(&basis, pts, w, rho, true) {
+        Ok(g) => g,
+        Err(_) => (
+            gram_matrix(&basis, pts, w, rho),
+            strain_gram_matrix(&basis, pts, w, rho),
+        ),
+    };
+    drop(_span);
     let scorr = correlation(&sgram);
     let (kept_s, drops) = pivoted_select(&scorr, &basis.modes, res2_tol, max_drops, &[]);
     basis.modes = kept_s.iter().map(|&b| basis.modes[b].clone()).collect();
@@ -634,7 +654,8 @@ pub fn prune(
         .iter()
         .map(|m| !matches!(m, Mode::Kernel { .. }))
         .collect();
-    let corr = correlation(&gram_matrix(&basis, pts, w, rho));
+    let mass_s = submatrix(&mgram, &kept_s);
+    let corr = correlation(&mass_s);
     let (kept, _) = pivoted_select(
         &corr,
         &basis.modes,
@@ -643,8 +664,13 @@ pub fn prune(
         &protected,
     );
     basis.modes = kept.iter().map(|&b| basis.modes[b].clone()).collect();
-    let rep = gram_check(&basis, pts, w, rho, tol);
+    let rep = gram_report(&submatrix(&mass_s, &kept), basis.n(), tol);
     (basis, rep)
+}
+
+/// `m[i,j] -> m[k_i,k_j]` restricted to the retained modes.
+fn submatrix(m: &DMatrix<f64>, kept: &[usize]) -> DMatrix<f64> {
+    DMatrix::from_fn(kept.len(), kept.len(), |i, j| m[(kept[i], kept[j])])
 }
 
 /// Greedy pivoted Gram–Schmidt on a correlation matrix: keep the modes whose
@@ -702,8 +728,9 @@ fn pivoted_select(
     (kept, drops)
 }
 
-/// The assembled `M_Γ` of `gram_check`, reused by `prune`.
-pub(crate) fn gram_matrix(
+/// The assembled `M_Γ` of `gram_check`, reused by `prune`. Public as the CPU
+/// reference oracle the `ggram.wesl` assembly is verified against.
+pub fn gram_matrix(
     basis: &GeoBasis,
     pts: &[DVec3],
     w: &[f64],
@@ -736,7 +763,8 @@ pub(crate) fn gram_matrix(
 /// The strain Gram `∫ρ w D B_b·D B_c` on the same quadrature: the stiffness
 /// metric of the flow solves. A mode can be mass-independent yet
 /// strain-dependent — its coefficient is then determined by noise alone.
-pub(crate) fn strain_gram_matrix(
+/// Public as the CPU reference oracle of `ggram.wesl`'s strain block.
+pub fn strain_gram_matrix(
     basis: &GeoBasis,
     pts: &[DVec3],
     w: &[f64],

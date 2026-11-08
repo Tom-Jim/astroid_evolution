@@ -645,6 +645,85 @@ fn the_g1_gpu_rows_match_the_cpu_reference() {
     let _ = nm;
 }
 
+/// The `ggram.wesl` Gram assembly must reproduce the CPU reference
+/// `gram_matrix` / `strain_gram_matrix` entry by entry — same quadrature,
+/// same weights, f32 tolerance on a relative scale.
+#[test]
+fn the_g1_gpu_grams_match_the_cpu_reference() {
+    use astroid_evolution::scf::gbasis::{gram_matrix, strain_gram_matrix, GeoBasis};
+    use astroid_evolution::scf::ggram_gpu;
+    let centres = vec![
+        DVec3::new(0.2, -0.3, 0.1),
+        DVec3::new(-0.5, 0.2, 0.4),
+        DVec3::new(0.1, 0.4, -0.6),
+        DVec3::new(0.55, -0.15, 0.25), // overlaps the first support
+        DVec3::new(-0.45, 0.15, 0.35), // overlaps the second
+    ];
+    let geo = GeoBasis::build(&centres, &[], 0.9, vec![DVec3::new(0.0, 0.0, 0.0)]);
+    let pts: Vec<DVec3> = (0..97)
+        .map(|i| {
+            let t = i as f64 * 0.37 - 4.0;
+            DVec3::new(t.cos(), t.sin(), t.cos() * t.sin())
+        })
+        .collect();
+    let w: Vec<f64> = (0..pts.len()).map(|i| 0.01 * (1.0 + (i % 7) as f64)).collect();
+    let rho: Vec<f64> = (0..pts.len()).map(|i| 1.0 + 0.3 * (i % 5) as f64).collect();
+    let m_cpu = gram_matrix(&geo, &pts, &w, Some(&rho));
+    let s_cpu = strain_gram_matrix(&geo, &pts, &w, Some(&rho));
+    let (m_gpu, s_gpu) =
+        ggram_gpu::grams(&geo, &pts, &w, Some(&rho), true).expect("G1 GPU grams");
+    let n = geo.n();
+    assert_eq!((m_gpu.nrows(), m_gpu.ncols()), (n, n));
+    let cmp = |a: &DMatrix<f64>, b: &DMatrix<f64>, name: &str| {
+        let scale = a.iter().cloned().fold(0.0, f64::max);
+        for i in 0..n {
+            for j in 0..n {
+                let err = (a[(i, j)] - b[(i, j)]).abs();
+                assert!(
+                    err < 1e-4 * scale.max(1e-9) + 1e-9,
+                    "{name}[{i},{j}]: gpu {} vs cpu {}",
+                    b[(i, j)],
+                    a[(i, j)]
+                );
+            }
+        }
+    };
+    cmp(&m_cpu, &m_gpu, "mass");
+    cmp(&s_cpu, &s_gpu, "strain");
+    // `want_strain=false` must not touch the mass block.
+    let (m_only, s_skip) =
+        ggram_gpu::grams(&geo, &pts, &w, Some(&rho), false).expect("G1 GPU mass gram");
+    cmp(&m_cpu, &m_only, "mass-only");
+    assert!(s_skip.iter().all(|v| *v == 0.0));
+    // The `prune` path itself must keep a working basis: the CPU-reference
+    // rank report on the pruned family should agree with the GPU Gram's to
+    // within the borderline singular value the f32 assembly can smear.
+    let (pruned, _) = astroid_evolution::scf::gbasis::prune(
+        geo.clone(),
+        &pts,
+        &w,
+        Some(&rho),
+        1e-8,
+        geo.n(),
+    );
+    let (pm_gpu, _) = ggram_gpu::grams(&pruned, &pts, &w, Some(&rho), false).expect("pruned gram");
+    let pm_cpu = astroid_evolution::scf::gbasis::gram_matrix(&pruned, &pts, &w, Some(&rho));
+    let sv = |m: &DMatrix<f64>| -> Vec<f64> {
+        let c = astroid_evolution::scf::gbasis::correlation(m);
+        let mut s: Vec<f64> = c.svd(true, true).singular_values.iter().cloned().collect();
+        s.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        s
+    };
+    let (sg, sc) = (sv(&pm_gpu), sv(&pm_cpu));
+    let smax = sc.iter().cloned().fold(0.0, f64::max);
+    for (i, (a, b)) in sg.iter().zip(&sc).enumerate() {
+        assert!(
+            (a - b).abs() < 1e-4 * smax + 1e-7,
+            "singular value {i}: gpu {a} vs cpu {b}"
+        );
+    }
+}
+
 /// A/B diagnostic: how many G1 modes survive `thin` + `prune`, and the bracket
 /// the same load gets on the enclosing-ball rows vs the G1 rows.
 #[test]

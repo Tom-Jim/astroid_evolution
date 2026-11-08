@@ -21,6 +21,7 @@ pub mod limit;
 #[path = "../../../tests/support/pd_oracle.rs"]
 mod pd;
 mod pressure;
+mod sweep_gpu;
 
 use std::f64::consts::PI;
 
@@ -269,6 +270,10 @@ pub struct Operators {
     /// The stiffness metric `G` at `η ≡ 1` and its range-space factorization:
     /// fixed by the geometry, so a spin-only step reuses them.
     pd_metric: std::sync::OnceLock<(DMatrix<f64>, RangeSolve)>,
+    /// The correlation-scaled factorization of the projection mass Gram of
+    /// `project_velocity`: `D^{-1/2} M D^{-1/2} = LLᵀ` with the `d` scales —
+    /// geometry-fixed, so every projection of this `Operators` reuses it.
+    proj_gram: std::sync::OnceLock<(Vec<f64>, Option<Cholesky<f64, Dyn>>)>,
     /// The (G1) geometry-adapted family: compact kernels on the volume nodes
     /// and face quadrature points, the six rigid modes, and one flux mode per
     /// sealed cavity. It is the Galerkin-projection target of §8.3 and the
@@ -484,6 +489,7 @@ impl Operators {
             vol_field: std::sync::OnceLock::new(),
             bnd_field: std::sync::OnceLock::new(),
             pd_metric: std::sync::OnceLock::new(),
+            proj_gram: std::sync::OnceLock::new(),
             geo,
             geo_gram,
         })
@@ -500,7 +506,6 @@ impl Operators {
             .zip(&self.vol.rho)
             .map(|(w, r)| w * r)
             .collect();
-        let gram = linalg::weighted_gram(&self.rows.v, 3, &s);
         let mut wr = vec![0.0; 3 * self.vol.pts.len()];
         for p in 0..self.vol.pts.len() {
             for a in 0..3 {
@@ -512,12 +517,23 @@ impl Operators {
         // rotation's Gram entry is ~R² against a kernel's — so the raw Gram
         // is stiff even when the functions are independent. Solving on the
         // correlation system `(D^{-1/2} M D^{-1/2})(D^{1/2}u) = D^{-1/2}b`
-        // is the same projection with the scale removed.
-        let n = gram.nrows();
-        let d: Vec<f64> = (0..n).map(|i| gram[(i, i)].sqrt().max(1e-300)).collect();
-        let corr = DMatrix::from_fn(n, n, |b, c| gram[(b, c)] / (d[b] * d[c]));
+        // is the same projection with the scale removed. The Gram and its
+        // factorization are geometry-fixed: cached on `Operators` like
+        // `pd_metric`.
+        if self.proj_gram.get().is_none() {
+            let gram = linalg::weighted_gram(&self.rows.v, 3, &s);
+            let n = gram.nrows();
+            let d: Vec<f64> =
+                (0..n).map(|i| gram[(i, i)].sqrt().max(1e-300)).collect();
+            let corr = DMatrix::from_fn(n, n, |b, c| gram[(b, c)] / (d[b] * d[c]));
+            let ch = Cholesky::new(corr);
+            self.proj_gram.get_or_init(|| (d, ch));
+        }
+        let (d, ch) = self.proj_gram.get().unwrap();
+        let n = d.len();
         let rhs_n = DVector::from_fn(n, |b, _| rhs[b] / d[b]);
-        let ch = Cholesky::new(corr)
+        let ch = ch
+            .as_ref()
             .ok_or_else(|| SimError::solver("the velocity mass matrix is not SPD"))?;
         let un = ch.solve(&rhs_n);
         let u = DVector::from_fn(n, |b, _| un[b] / d[b]);

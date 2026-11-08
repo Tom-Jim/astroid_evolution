@@ -109,3 +109,45 @@ Where the time goes:
 
 Note: fast-binary test counts shifted between suites during the migration
 (cases moved/merged); only like-for-like totals are compared above.
+
+## Desktop run-sim acceleration (post-sweep-GPU)
+
+Same Ryugu level-5 one-step settle benchmark (`scf-cli run-sim`, release,
+`SCF_TIMING`). Wall time varies with how many settle sweeps the state
+physics needs (relief_routing calls scale with it), so the module times are
+the controlled comparison.
+
+| Module | Original (CPU) | After GPU pipeline | Speedup |
+|---|---|---|---|
+| `gbasis_grams` (G1 Gram assembly) | ~354 s (sampled) | 1.66 s | **~213×** |
+| `relax_inner` (hyperbolic sweeps) | 8.87 s | 2.13 s | **4.2×** |
+| `stokes` total | 21.76 s | 13.29 s | 1.6× |
+| `pd_metric` | 6.19 s | 5.81 s | cached factorization |
+| `stokes_finish` | 6.44 s | 6.48 s | unchanged |
+| `collapse_cert` | 3.09 s | 4.24 s | bracket-path dependent |
+| wall (this run's settle path) | 416 s (first measured) | 40–45 s | ~9–12× |
+
+What changed:
+
+- **`ggram.wesl` + `ggram_gpu.rs`**: the `n_b²` pair scan and per-pair
+  support-union sort (the 27%-of-runtime quicksort) are replaced by
+  support-list-driven pair assembly — count → prefix → fill → value
+  precompute → pair dispatch, all in one `Job`, f32 kernels with the exact
+  mode formulas and `√2` strain scaling of the CPU oracle. CPU Gram code
+  stays as the test oracle (`gram_matrix`, `strain_gram_matrix`,
+  `correlation` are `pub` for that purpose).
+- **`relax.wesl` + `sweep_gpu.rs`**: each relax sweep is one fused `Job` —
+  upload of the f64 state as f32, the three axis-characteristic dispatches
+  ping-ponging `u_a`/`u_b`, read-back at the boundary. Geometry (points,
+  neighbour CSR, LSQ `G⁻¹`, dense cell index, member CSR) lives in `Res`
+  buffers as operator implementation details; device arrays are stored in
+  **cell order** so the 27-cell backtrace neighbourhood reads contiguous
+  spans (GPU sweep 46 → 25 ms). Convergence control (traction fix, AC
+  correction, rigid projection, norms, Δτ rollbacks, kick-cycle mean) stays
+  on the host in f64; the operator retires to the CPU path on failure, a
+  non-finite state, or repeated rollback trips. Jacobi+rayon sweeps remain
+  the f64 fallback and the reference path.
+- `hyperbolic` sweeps were Jacobi-ised earlier: per-sample `new` computed
+  from the frozen `u`, LSQ `G⁻¹` precomputed per stencil, `Guess` wired as
+  warm start, traction/AC/rigid/norm passes Rayon-parallel with ordered
+  partial folding.

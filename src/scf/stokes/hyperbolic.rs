@@ -16,6 +16,7 @@
 //! test oracle.
 
 use nalgebra::{Cholesky, DMatrix, DVector};
+use rayon::prelude::*;
 
 use crate::common::error::SimError;
 use crate::common::linalg;
@@ -60,6 +61,20 @@ struct Ray {
     /// Neighbouring sample indices within `radius`, for the upstream
     /// interpolation and the local `D(v)` least-squares.
     nbr: Vec<Vec<u32>>,
+    /// Per-sample inverse of the least-squares normal matrix
+    /// `Σ w·dx⊗dx` of `strain` (9 per sample, row-major); all zeros where
+    /// the neighbour set is degenerate. The stencil is fixed at build, so
+    /// the inverse is computed once instead of every call.
+    g_inv: Vec<f64>,
+    /// Scratch of the Jacobi sweep: the `new` state `sweep_axis` fills while
+    /// reading only `u`, swapped in afterwards.
+    next: Vec<f64>,
+    /// The device-resident mirror used by the `relax_sweep` operator —
+    /// `Some` after the first relax when a GPU is present, `None` once the
+    /// operator has been declined (no GPU) or deliberately retired for the
+    /// f64 convergence polish / a Δτ rollback.
+    gpu: Option<super::sweep_gpu::SweepGpu>,
+    gpu_checked: bool,
 }
 
 impl Ray {
@@ -67,9 +82,10 @@ impl Ray {
     /// mean nodal spacing, and the neighbour set covers the cells sharing a
     /// face.
     fn build(pts: &[DVec3], side: f64) -> Self {
+        use rayon::prelude::*;
         let bvh = CellBvh::build(pts, side);
-        let nbr = pts
-            .iter()
+        let nbr: Vec<Vec<u32>> = pts
+            .par_iter()
             .enumerate()
             .map(|(i, p)| {
                 let c = bvh.cell_of(*p).map(|c| c as usize).unwrap_or(0);
@@ -90,42 +106,67 @@ impl Ray {
                 out
             })
             .collect();
+        // The LSQ normal matrix `Σ w·dx⊗dx` depends only on the fixed
+        // stencil: factor it once.
+        let g_inv: Vec<f64> = nbr
+            .par_iter()
+            .enumerate()
+            .flat_map(|(i, js)| {
+                let x0 = pts[i];
+                let mut g = nalgebra::Matrix3::<f64>::zeros();
+                for &j in js {
+                    let dx = pts[j as usize] - x0;
+                    let w = 1.0 / dx.length_squared().max(1e-30);
+                    for a in 0..3 {
+                        for b in 0..3 {
+                            g[(a, b)] += w * dx[a] * dx[b];
+                        }
+                    }
+                }
+                match g.try_inverse() {
+                    Some(inv) => (0..9).map(|k| inv[(k / 3, k % 3)]).collect::<Vec<_>>(),
+                    None => vec![0.0; 9],
+                }
+            })
+            .collect();
         Self {
             pts: pts.to_vec(),
             bvh,
             u: vec![0.0; NDIM * pts.len()],
+            next: vec![0.0; NDIM * pts.len()],
             nbr,
+            g_inv,
+            gpu: None,
+            gpu_checked: false,
         }
     }
 
-    /// `D(v)` from a local linear fit over the neighbour set: the
-    /// least-squares gradient of each velocity component at sample `i`.
-    fn strain(&self, i: usize) -> [f64; 6] {
+    /// `D(v)` of the state `u` from a local linear fit over the neighbour
+    /// set: the least-squares gradient of each velocity component at sample
+    /// `i`, `G⁻¹` having been precomputed at build.
+    fn strain(&self, i: usize, u: &[f64]) -> [f64; 6] {
         const S2: f64 = std::f64::consts::FRAC_1_SQRT_2;
         let x0 = self.pts[i];
-        let mut g = nalgebra::Matrix3::<f64>::zeros();
+        let inv = &self.g_inv[9 * i..9 * i + 9];
+        if inv.iter().all(|&v| v == 0.0) {
+            return [0.0; 6];
+        }
         let mut rhs = nalgebra::Matrix3::<f64>::zeros();
         for &j in &self.nbr[i] {
             let dx = self.pts[j as usize] - x0;
             let dv = DVec3::new(
-                self.u[NDIM * j as usize] - self.u[NDIM * i],
-                self.u[NDIM * j as usize + 1] - self.u[NDIM * i + 1],
-                self.u[NDIM * j as usize + 2] - self.u[NDIM * i + 2],
+                u[NDIM * j as usize] - u[NDIM * i],
+                u[NDIM * j as usize + 1] - u[NDIM * i + 1],
+                u[NDIM * j as usize + 2] - u[NDIM * i + 2],
             );
             let w = 1.0 / dx.length_squared().max(1e-30);
             for a in 0..3 {
-                for b in 0..3 {
-                    g[(a, b)] += w * dx[a] * dx[b];
-                }
                 for k in 0..3 {
                     rhs[(a, k)] += w * dx[a] * dv[k];
                 }
             }
         }
-        let Some(inv) = g.try_inverse() else {
-            return [0.0; 6];
-        };
-        let grad = inv * rhs; // grad[k][a] = ∂_a v_k
+        let grad = nalgebra::Matrix3::from_row_slice(inv) * rhs; // grad[k][a] = ∂_a v_k
         let d = |a: usize, b: usize| 0.5 * (grad[(a, b)] + grad[(b, a)]);
         [
             grad[(0, 0)],
@@ -137,7 +178,157 @@ impl Ray {
         ]
     }
 
-    /// Index of the sample nearest `x` (used as the boundary ghost).
+}
+
+/// The shear six-vector indices owned by axis `a`: pairs (a, j) for `j ≠ a`.
+fn shear_of_axis(axis: usize) -> [usize; 2] {
+    match axis {
+        0 => [3, 4], // xy, xz
+        1 => [3, 5], // xy, yz
+        _ => [4, 5], // xz, yz
+    }
+}
+
+/// One axis family sweep for the `{P±, S_a±}` characteristics of §10.3.2,
+/// directional splitting with the eigenvector refresh at every sample.
+/// Jacobi form: every sample's update reads only the incoming state `u` and
+/// writes its own slot of `next`, so the samples are updated in parallel —
+/// the same fixed point the frozen-coefficient splitting of §10.3.2 defines,
+/// and the only form the GPU operator of the sweep supports.
+#[allow(clippy::too_many_arguments)]
+fn sweep_axis(
+    ray: &mut Ray,
+    axis: usize,
+    dt: f64,
+    eta: &[f64],
+    rho: &[f64],
+    t_s: f64,
+    kappa: f64,
+    tide: &[[f64; 6]],
+    g_eff: &[DVec3],
+) {
+    use rayon::prelude::*;
+    let (j1, j2) = ((axis + 1) % 3, (axis + 2) % 3);
+    // Stress components the axis families own: S_aa plus the two S_aj.
+    let owned = [axis, shear_of_axis(axis)[0], shear_of_axis(axis)[1]];
+    let owned_at = |c: usize| owned.contains(&c);
+    let (pts, nbr, g_inv, bvh) = (&ray.pts, &ray.nbr, &ray.g_inv, &ray.bvh);
+    let u = &ray.u;
+    // A read-only view of `ray` the worker threads share: `next` is the only
+    // mutable destination.
+    let view = RayView { pts, nbr, g_inv, bvh, u };
+    ray.next
+        .par_chunks_mut(NDIM)
+        .enumerate()
+        .for_each(|(i, slot)| {
+            // The accumulations (`+=`) need a zeroed state: compute into a
+            // fresh array, then hand it to the slot.
+            let mut new = [0.0f64; NDIM];
+            let x = pts[i];
+            let sp = speeds(eta[i], rho[i], t_s, kappa);
+            let old = &u[NDIM * i..NDIM * i + NDIM];
+            // Off-axis (stationary) stress components relax in place toward
+            // `2ηD + T_tide` — the exponential integrator of §10.3.2.
+            let d_loc = view.strain(i);
+            let ex = (-dt / t_s).exp();
+            for c in 0..6 {
+                if owned_at(c) {
+                    continue;
+                }
+                let src = 2.0 * eta[i] * d_loc[c] + tide[i][c];
+                new[3 + c] = ex * old[3 + c] + (1.0 - ex) * src;
+            }
+            // Moving families at both signs: reconstruct `v` and the owned
+            // stress from the upwind characteristic amplitudes.
+            let (r_p, r_s) = (rho[i].max(1e-30) * sp.p, rho[i].max(1e-30) * sp.s);
+            // The P family transports the single combined amplitude
+            // `σ̃ = S_aa − p` on `v_a`; writing it into both slots would
+            // double it every sweep. p persists between the AC corrections
+            // instead.
+            let mut sig = 0.0;
+            for &sign in &[1.0f64, -1.0] {
+                let back = |c: f64| {
+                    let mut xu = x;
+                    xu[axis] -= sign * c * dt;
+                    view.at(xu)
+                };
+                // P family: w_± = ½(v_a ± (S_aa − p)/(ρc_P)) with the
+                // momentum load `f_a` of (10.3.2-H) integrated over the
+                // segment.
+                let (up_p, sgn) = (back(sp.p), sign);
+                let w_p = 0.5 * (up_p[axis] + sgn * (up_p[3 + axis] - up_p[9]) / r_p)
+                    + 0.5 * sgn * dt * g_eff[i][axis] * rho[i] / r_p;
+                new[axis] += w_p;
+                sig += sgn * r_p * w_p;
+                // The two S families on `v_{j1}, v_{j2}`.
+                let up_s = back(sp.s);
+                for (j, cix) in [(j1, owned[1]), (j2, owned[2])] {
+                    let w_s = 0.5 * (up_s[j] + sgn * up_s[3 + cix] / r_s)
+                        + 0.5 * sgn * dt * g_eff[i][j] * rho[i] / r_s;
+                    new[j] += w_s;
+                    new[3 + cix] += sgn * r_s * w_s;
+                }
+            }
+            new[9] = old[9];
+            new[3 + axis] = sig + new[9];
+            slot.copy_from_slice(&new);
+        });
+    std::mem::swap(&mut ray.u, &mut ray.next);
+}
+
+/// The read-only parts of `Ray` a parallel sweep shares — the point set,
+/// stencil, LSQ inverse, cell index and the incoming state `u`.
+struct RayView<'a> {
+    pts: &'a [DVec3],
+    nbr: &'a [Vec<u32>],
+    g_inv: &'a [f64],
+    bvh: &'a CellBvh,
+    u: &'a [f64],
+}
+
+impl<'a> RayView<'a> {
+    /// `D(v)` of the state `u` at sample `i` — `Ray::strain` over the view.
+    fn strain(&self, i: usize) -> [f64; 6] {
+        const S2: f64 = std::f64::consts::FRAC_1_SQRT_2;
+        let x0 = self.pts[i];
+        let inv = &self.g_inv[9 * i..9 * i + 9];
+        if inv.iter().all(|&v| v == 0.0) {
+            return [0.0; 6];
+        }
+        let mut rhs = nalgebra::Matrix3::<f64>::zeros();
+        for &j in &self.nbr[i] {
+            let dx = self.pts[j as usize] - x0;
+            let dv = DVec3::new(
+                self.u[NDIM * j as usize] - self.u[NDIM * i],
+                self.u[NDIM * j as usize + 1] - self.u[NDIM * i + 1],
+                self.u[NDIM * j as usize + 2] - self.u[NDIM * i + 2],
+            );
+            let w = 1.0 / dx.length_squared().max(1e-30);
+            for a in 0..3 {
+                for k in 0..3 {
+                    rhs[(a, k)] += w * dx[a] * dv[k];
+                }
+            }
+        }
+        let grad = nalgebra::Matrix3::from_row_slice(inv) * rhs;
+        let d = |a: usize, b: usize| 0.5 * (grad[(a, b)] + grad[(b, a)]);
+        [
+            grad[(0, 0)],
+            grad[(1, 1)],
+            grad[(2, 2)],
+            d(0, 1) / S2,
+            d(0, 2) / S2,
+            d(1, 2) / S2,
+        ]
+    }
+
+    /// The state `u` at `x` — `Ray::at` over the view.
+    fn at(&self, x: DVec3) -> [f64; NDIM] {
+        self.interp(x)
+            .unwrap_or_else(|| self.u[NDIM * self.nearest(x)..][..NDIM].try_into().unwrap())
+    }
+
+    /// `Ray::nearest` over the view.
     fn nearest(&self, x: DVec3) -> usize {
         if let Some(c) = self.bvh.cell_of(x) {
             let mut best = (usize::MAX, f64::INFINITY);
@@ -169,17 +360,7 @@ impl Ray {
             .unwrap_or(0)
     }
 
-    /// The state at `x`: the interpolated value inside the sampled region, or
-    /// the nearest-sample ghost at a boundary exit (zeroth-order ghost; the
-    /// traction of the ghost cell itself is corrected by the BC pass).
-    fn at(&self, x: DVec3) -> [f64; NDIM] {
-        self.interp(x)
-            .unwrap_or_else(|| self.u[NDIM * self.nearest(x)..][..NDIM].try_into().unwrap())
-    }
-
-    /// The interpolated state at `x`: the inverse-distance-weighted mean of
-    /// the occupied cell's members and the 26 neighbours, or `None` outside
-    /// the sampled region (a boundary exit).
+    /// `Ray::interp` over the view.
     fn interp(&self, x: DVec3) -> Option<[f64; NDIM]> {
         let mut acc = [0.0; NDIM];
         let mut wsum = 0.0;
@@ -211,101 +392,25 @@ impl Ray {
     }
 }
 
-/// The shear six-vector indices owned by axis `a`: pairs (a, j) for `j ≠ a`.
-fn shear_of_axis(axis: usize) -> [usize; 2] {
-    match axis {
-        0 => [3, 4], // xy, xz
-        1 => [3, 5], // xy, yz
-        _ => [4, 5], // xz, yz
-    }
-}
-
-/// One axis family sweep for the `{P±, S_a±}` characteristics of §10.3.2,
-/// directional splitting with the eigenvector refresh at every sample.
-#[allow(clippy::too_many_arguments)]
-fn sweep_axis(
-    ray: &mut Ray,
-    axis: usize,
-    dt: f64,
-    eta: &[f64],
-    rho: &[f64],
-    t_s: f64,
-    kappa: f64,
-    tide: &[[f64; 6]],
-    g_eff: &[DVec3],
-) {
-    let n = ray.pts.len();
-    let old = ray.u.clone();
-    let (j1, j2) = ((axis + 1) % 3, (axis + 2) % 3);
-    // Stress components the axis families own: S_aa plus the two S_aj.
-    let owned = [axis, shear_of_axis(axis)[0], shear_of_axis(axis)[1]];
-    let owned_at = |c: usize| owned.contains(&c);
-    for i in 0..n {
-        let x = ray.pts[i];
-        let sp = speeds(eta[i], rho[i], t_s, kappa);
-        let mut new = [0.0f64; NDIM];
-        // Off-axis (stationary) stress components relax in place toward
-        // `2ηD + T_tide` — the exponential integrator of §10.3.2.
-        let d_loc = ray.strain(i);
-        let ex = (-dt / t_s).exp();
-        for c in 0..6 {
-            if owned_at(c) {
-                continue;
-            }
-            let src = 2.0 * eta[i] * d_loc[c] + tide[i][c];
-            new[3 + c] = ex * old[NDIM * i + 3 + c] + (1.0 - ex) * src;
-        }
-        // Moving families at both signs: reconstruct `v` and the owned stress
-        // from the upwind characteristic amplitudes.
-        let (r_p, r_s) = (rho[i].max(1e-30) * sp.p, rho[i].max(1e-30) * sp.s);
-        // The P family transports the single combined amplitude
-        // `σ̃ = S_aa − p` on `v_a`; writing it into both slots would double it
-        // every sweep. p persists between the AC corrections instead.
-        let mut sig = 0.0;
-        for &sign in &[1.0f64, -1.0] {
-            let back = |c: f64| {
-                let mut xu = x;
-                xu[axis] -= sign * c * dt;
-                ray.at(xu)
-            };
-            // P family: w_± = ½(v_a ± (S_aa − p)/(ρc_P)) with the momentum
-            // load `f_a` of (10.3.2-H) integrated over the segment.
-            let (up_p, sgn) = (back(sp.p), sign);
-            let w_p = 0.5 * (up_p[axis] + sgn * (up_p[3 + axis] - up_p[9]) / r_p)
-                + 0.5 * sgn * dt * g_eff[i][axis] * rho[i] / r_p;
-            new[axis] += w_p;
-            sig += sgn * r_p * w_p;
-            // The two S families on `v_{j1}, v_{j2}`.
-            let up_s = back(sp.s);
-            for (j, cix) in [(j1, owned[1]), (j2, owned[2])] {
-                let w_s = 0.5 * (up_s[j] + sgn * up_s[3 + cix] / r_s)
-                    + 0.5 * sgn * dt * g_eff[i][j] * rho[i] / r_s;
-                new[j] += w_s;
-                new[3 + cix] += sgn * r_s * w_s;
-            }
-        }
-        new[9] = old[NDIM * i + 9];
-        new[3 + axis] = sig + new[9];
-        ray.u[NDIM * i..NDIM * i + NDIM].copy_from_slice(&new);
-    }
-}
-
 /// The traction residual of boundary-adjacent samples:
 /// `(-pI + S + T_tide) n − t_ext` with `t_ext = −p_ext n` at free faces.
 /// `n` here is the inward depth gradient `∇d` of the volume set (−n of Γ).
-fn traction_fix(ray: &mut Ray, bnd_pts: &[usize], gdepth: &[DVec3], p_ext: f64, tide: &[[f64; 6]]) {
+/// Each flagged sample owns its update: the pass is a parallel map over the
+/// state slots.
+fn traction_fix(ray: &mut Ray, is_bnd: &[bool], gdepth: &[DVec3], p_ext: f64, tide: &[[f64; 6]]) {
     const S2: f64 = std::f64::consts::FRAC_1_SQRT_2;
-    for &i in bnd_pts {
+    ray.u.par_chunks_mut(NDIM).enumerate().for_each(|(i, slot)| {
+        if !is_bnd[i] {
+            return;
+        }
         let n = -gdepth[i];
         let mut s = [
-            ray.u[NDIM * i + 3],
-            ray.u[NDIM * i + 4],
-            ray.u[NDIM * i + 5],
-            ray.u[NDIM * i + 6] * S2,
-            ray.u[NDIM * i + 7] * S2,
-            ray.u[NDIM * i + 8] * S2,
+            slot[3], slot[4], slot[5],
+            slot[6] * S2,
+            slot[7] * S2,
+            slot[8] * S2,
         ];
-        let p = ray.u[NDIM * i + 9];
+        let p = slot[9];
         // Normal stress target: `σ_nn = n(−pI + S + T_tide)n = −p_ext`.
         let t = tide[i];
         let cur = n.x * (s[0] + t[0] - p) * n.x
@@ -320,49 +425,68 @@ fn traction_fix(ray: &mut Ray, bnd_pts: &[usize], gdepth: &[DVec3], p_ext: f64, 
         for a in 0..3 {
             s[a] += fix * n[a] * n[a];
         }
-        ray.u[NDIM * i + 3] = s[0];
-        ray.u[NDIM * i + 4] = s[1];
-        ray.u[NDIM * i + 5] = s[2];
-    }
+        slot[3] = s[0];
+        slot[4] = s[1];
+        slot[5] = s[2];
+    });
 }
 
 /// Project out the six rigid modes (Appendix A.3, mass-weighted): the
-/// least-squares rigid velocity of `v` is subtracted on the samples.
+/// least-squares rigid velocity of `v` is subtracted on the samples. The
+/// normal equations assemble in per-chunk partials folded in order — the
+/// result is bitwise identical to the serial accumulation.
 fn rigid_project(ray: &mut Ray, w: &[f64], rho: &[f64]) {
     let n = ray.pts.len();
-    // Normal equations for the rigid fit `v_r = a + θ×x`.
+    // Normal equations for the rigid fit `v_r = a + θ×x`, accumulated in
+    // contiguous chunks so every partial covers an ordered sample range.
+    let chunk = n.div_ceil(rayon::current_num_threads() * 4).max(1);
+    let partials: Vec<(DMatrix<f64>, DVector<f64>)> = (0..n)
+        .step_by(chunk)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|start| {
+            let mut m = DMatrix::<f64>::zeros(6, 6);
+            let mut rhs = DVector::<f64>::zeros(6);
+            for i in start..(start + chunk).min(n) {
+                let x = ray.pts[i];
+                let rows = [
+                    [1.0, 0.0, 0.0, 0.0, x.z, -x.y],
+                    [0.0, 1.0, 0.0, -x.z, 0.0, x.x],
+                    [0.0, 0.0, 1.0, x.y, -x.x, 0.0],
+                ];
+                let wgt = w[i] * rho[i].max(0.0);
+                let v = [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]];
+                for a in 0..6 {
+                    for b in 0..6 {
+                        let mut s = 0.0;
+                        for k in 0..3 {
+                            s += rows[k][a] * rows[k][b];
+                        }
+                        m[(a, b)] += wgt * s;
+                    }
+                    let mut r = 0.0;
+                    for k in 0..3 {
+                        r += rows[k][a] * v[k];
+                    }
+                    rhs[a] += wgt * r;
+                }
+            }
+            (m, rhs)
+        })
+        .collect();
     let mut m = DMatrix::<f64>::zeros(6, 6);
     let mut rhs = DVector::<f64>::zeros(6);
-    for i in 0..n {
-        let x = ray.pts[i];
-        let rows = [
-            [1.0, 0.0, 0.0, 0.0, x.z, -x.y],
-            [0.0, 1.0, 0.0, -x.z, 0.0, x.x],
-            [0.0, 0.0, 1.0, x.y, -x.x, 0.0],
-        ];
-        let wgt = w[i] * rho[i].max(0.0);
-        let v = [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]];
-        for a in 0..6 {
-            for b in 0..6 {
-                let mut s = 0.0;
-                for k in 0..3 {
-                    s += rows[k][a] * rows[k][b];
-                }
-                m[(a, b)] += wgt * s;
-            }
-            let mut r = 0.0;
-            for k in 0..3 {
-                r += rows[k][a] * v[k];
-            }
-            rhs[a] += wgt * r;
-        }
+    for (pm, pr) in partials {
+        m += pm;
+        rhs += pr;
     }
     let Some(ch) = m.cholesky() else {
         return;
     };
     let c = ch.solve(&rhs);
-    for i in 0..n {
-        let x = ray.pts[i];
+    let pts = &ray.pts;
+    ray.u.par_chunks_mut(NDIM).enumerate().for_each(|(i, slot)| {
+        let x = pts[i];
         let rows = [
             [1.0, 0.0, 0.0, 0.0, x.z, -x.y],
             [0.0, 1.0, 0.0, -x.z, 0.0, x.x],
@@ -373,27 +497,39 @@ fn rigid_project(ray: &mut Ray, w: &[f64], rho: &[f64]) {
             for a in 0..6 {
                 s += rows[k][a] * c[a];
             }
-            ray.u[NDIM * i + k] -= s;
+            slot[k] -= s;
         }
-    }
+    });
 }
 
-/// `L²(ρ)` norm of the velocity difference between two sweeps.
+/// `L²(ρ)` norm of the velocity difference between two sweeps. Chunked
+/// partial sums folded in order — bitwise deterministic.
 fn dv_norm(old: &[f64], new: &[f64], w: &[f64], rho: &[f64]) -> f64 {
-    let mut num = 0.0;
-    for i in 0..new.len() / NDIM {
-        let pw = w[i] * rho[i];
-        for k in 0..3 {
-            num += pw * (new[NDIM * i + k] - old[NDIM * i + k]).powi(2);
-        }
-    }
+    let n = new.len() / NDIM;
+    let chunk = n.div_ceil(rayon::current_num_threads() * 4).max(1);
+    let num: f64 = (0..n)
+        .step_by(chunk)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|start| {
+            let mut s = 0.0;
+            for i in start..(start + chunk).min(n) {
+                let pw = w[i] * rho[i];
+                for k in 0..3 {
+                    s += pw * (new[NDIM * i + k] - old[NDIM * i + k]).powi(2);
+                }
+            }
+            s
+        })
+        .collect::<Vec<f64>>()
+        .iter()
+        .sum();
     num.sqrt()
 }
 
 /// The frozen-coefficient hyperbolic ray solve of §10.3.2 for a fixed `η`:
 /// axis sweeps until the relative velocity change falls under `tol`, with the
 /// AC correction and rigid projection every `n_p` sweeps.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn relax(
     ops: &Operators,
@@ -405,7 +541,7 @@ fn relax(
     tol: f64,
     max_sweeps: usize,
     n_p: usize,
-    bnd_pts: &[usize],
+    is_bnd: &[bool],
     ray: &mut Ray,
 ) -> (usize, f64, f64) {
     let (w, rho, vol) = (&ops.vol.w, &ops.vol.rho, ops.vol.pts.len());
@@ -440,24 +576,59 @@ fn relax(
     // state of a periodically kicked iteration is a periodic orbit, whose
     // time mean is the representative state for the caller.
     let mut hist: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
+    // The device mirror builds once per `Ray`; the per-relax fields (`η`
+    // changes every η-map pass, `T_tide`, `g_eff`) upload at the boundary.
+    if !ray.gpu_checked {
+        ray.gpu =
+            super::sweep_gpu::SweepGpu::build(&ray.pts, &ray.nbr, &ray.g_inv, &ray.bvh, rho);
+        ray.gpu_checked = true;
+    }
+    if let Some(g) = ray.gpu.as_mut() {
+        if g.set_fields(eta, ld.tide, ld.g_eff).is_err() {
+            ray.gpu = None;
+        }
+    }
+    // GPU transports sweeps for the whole relax. A Δτ rollback only halves
+    // the step — the operator survives it (the state is re-uploaded anyway);
+    // a non-finite state or repeated trips retire it for this relax.
+    let mut gpu_live = ray.gpu.is_some();
+    let mut gpu_trips = 0u32;
     for s in 0..max_sweeps {
         if s == max_sweeps / 2 {
             half = v_norm(ray, w, rho);
         }
         let dt = 0.4 * ray.bvh.side / cmax * dt_fac;
-        for axis in 0..3 {
-            sweep_axis(ray, axis, dt, eta, rho, t_s, kappa, ld.tide, ld.g_eff);
+        // The three axis families as one fused operator when the device
+        // mirror is live; the f64 sweep_axis path otherwise.
+        let gpu_u = match if gpu_live { ray.gpu.as_mut() } else { None } {
+            Some(g) => g.sweep(&ray.u, dt, t_s, kappa).ok(),
+            None => None,
+        };
+        match gpu_u {
+            Some(u2) => ray.u = u2,
+            None => {
+                gpu_live = false; // operator failed mid-relax: retire it
+                for axis in 0..3 {
+                    sweep_axis(ray, axis, dt, eta, rho, t_s, kappa, ld.tide, ld.g_eff);
+                }
+            }
         }
         // Traction BC on the boundary-adjacent samples (§10.3.2 boundary hit).
-        traction_fix(ray, bnd_pts, &ops.vol.gdepth, p_ext, ld.tide);
+        traction_fix(ray, is_bnd, &ops.vol.gdepth, p_ext, ld.tide);
         let kick = s % n_p == n_p - 1;
         if kick {
             // AC correction: `p ← p − κ^{-1}(∇·v − g)·(κΔτ)` — the local
             // divergence relaxes pressure directly (g ≡ 0 without A-Ξ).
-            for i in 0..vol {
-                let d = ray.strain(i);
-                let div = d[0] + d[1] + d[2];
-                ray.u[NDIM * i + 9] -= dt_scale(ray, eta, rho, t_s, kappa) * div / kappa;
+            let dts = dt_scale(ray, eta, rho, t_s, kappa) / kappa;
+            let divs: Vec<f64> = (0..vol)
+                .into_par_iter()
+                .map(|i| {
+                    let d = ray.strain(i, &ray.u);
+                    d[0] + d[1] + d[2]
+                })
+                .collect();
+            for (i, div) in divs.iter().enumerate() {
+                ray.u[NDIM * i + 9] -= dts * div;
             }
             rigid_project(ray, w, rho);
         }
@@ -474,6 +645,7 @@ fn relax(
         if !step.is_finite() || !ray.u.iter().all(|v| v.is_finite()) {
             if rollbacks < MAX_ROLLBACKS {
                 ray.u.copy_from_slice(&prev);
+                gpu_live = false;
                 dt_fac *= 0.5;
                 prev_eps = f64::INFINITY;
                 rollbacks += 1;
@@ -501,6 +673,8 @@ fn relax(
         // Δτ recover.
         if s % n_p != 0 && step > 1.5 * prev_eps && rollbacks < MAX_ROLLBACKS {
             ray.u.copy_from_slice(&prev);
+            gpu_trips += 1;
+            gpu_live = gpu_live && gpu_trips < 8;
             dt_fac *= 0.5;
             prev_eps = f64::INFINITY;
             rollbacks += 1;
@@ -508,6 +682,11 @@ fn relax(
         }
         prev_eps = step;
         prev.copy_from_slice(&ray.u);
+        // The f32 device state transports the whole relaxation: its
+        // round-trip floor (~1e-7·‖v‖ per sweep → a rate of ~1e-7/Δτ) sits
+        // orders of magnitude under any practical `tol`, and the delivered
+        // state is anyway the n_p-window mean. A spurious Δτ rollback is the
+        // only way noise can hurt — and it retires the operator by itself.
         dt_fac = (dt_fac * 1.15).min(1.0);
         hist.push_back(ray.u.clone());
         if hist.len() > n_p {
@@ -531,13 +710,24 @@ fn relax(
 
 /// Mass-weighted `L²(ρ)` norm of the velocity block of the ray state.
 fn v_norm(ray: &Ray, w: &[f64], rho: &[f64]) -> f64 {
-    (0..ray.u.len() / NDIM)
-        .map(|i| {
-            w[i] * rho[i]
-                * (ray.u[NDIM * i].powi(2)
-                    + ray.u[NDIM * i + 1].powi(2)
-                    + ray.u[NDIM * i + 2].powi(2))
+    let n = ray.u.len() / NDIM;
+    let chunk = n.div_ceil(rayon::current_num_threads() * 4).max(1);
+    (0..n)
+        .step_by(chunk)
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .map(|start| {
+            (start..(start + chunk).min(n))
+                .map(|i| {
+                    w[i] * rho[i]
+                        * (ray.u[NDIM * i].powi(2)
+                            + ray.u[NDIM * i + 1].powi(2)
+                            + ray.u[NDIM * i + 2].powi(2))
+                })
+                .sum::<f64>()
         })
+        .collect::<Vec<f64>>()
+        .iter()
         .sum::<f64>()
         .sqrt()
 }
@@ -626,7 +816,7 @@ pub fn solve_hyperbolic(
     ld: &Loads,
     prm: &StokesParams,
     m: &Material,
-    _guess: Option<&Guess>,
+    guess: Option<&Guess>,
 ) -> Result<StokesSolution, SimError> {
     // Pseudo-time parameters of (10.3.2-H): `T_s` sets the relaxation scale,
     // `κ` the artificial compressibility. Both are artificial; their ratio to
@@ -646,16 +836,42 @@ pub fn solve_hyperbolic(
     // Boundary-adjacent samples: a neighbour set thinner than the stencil
     // means the ray exits 𝒱 within one step.
     let bnd_pts: Vec<usize> = (0..pts.len()).filter(|&i| ray.nbr[i].len() < 20).collect();
+    let mut is_bnd = vec![false; pts.len()];
+    for &i in &bnd_pts {
+        is_bnd[i] = true;
+    }
     // Outer rheology passes: η frozen per pass, recomputed from (p̃, γ̇) of the
     // converged ray state — the `m` loop of §10.3.2.
     let coh = &ld.strength.vol;
     let eps = m.spec.gamma_eps;
     // `ℓ` and the rest pressure `p₀` once — the strength reference of every
     // collapse certification below (§10.0.12.3).
-    let ldata = super::limit::data(ops, ld, prm, m)?;
+    let ldata = {
+        let _span = super::super::timing::span("limit_data");
+        super::limit::data(ops, ld, prm, m)?
+    };
     let mut eta: Vec<f64> = (0..pts.len())
         .map(|p| eta_eval(m, &coh[p], 0.0, m.spec.p_min.max(ld.g_const), eps).eta)
         .collect();
+    // Warm start: a `Guess` of the previous step's (G1) coefficients seeds the
+    // ray state — `v` from the basis rows, `S` at the viscous value `2ηD+T`
+    // the relaxation converges toward. A dimensionless guess is ignored.
+    if let Some(g) = guess {
+        if g.u.len() == ops.rows.v.ncols() {
+            let ud = DVector::from_column_slice(&g.u);
+            let vv = linalg::mul(&ops.rows.v, &ud);
+            let fields = strain_fields(ops, &ud);
+            for i in 0..pts.len() {
+                for k in 0..3 {
+                    ray.u[NDIM * i + k] = vv[3 * i + k];
+                }
+                for c in 0..6 {
+                    ray.u[NDIM * i + 3 + c] =
+                        2.0 * eta[i] * fields.d[6 * i + c] + ld.tide[i][c];
+                }
+            }
+        }
+    }
     // Continuation ladder of §10.3.2 (mirroring the oracle): try the target
     // `γ̇_ε` first; on a stall that the bracket does not certify, restart the
     // ray state at the easiest level `10^c γ̇_ε` and step down level to level.
@@ -675,6 +891,7 @@ pub fn solve_hyperbolic(
         let mut v_peak = 0.0_f64;
         let mut prev_v: Vec<f64> = Vec::new();
         for _pass in 0..8 {
+            let _relax_span = super::super::timing::span("relax_inner");
             let (ok, u_half, u_end) = relax(
                 ops,
                 ld,
@@ -685,20 +902,22 @@ pub fn solve_hyperbolic(
                 prm.tol_relax,
                 prm.max_sweeps,
                 prm.pressure_every.max(2),
-                &bnd_pts,
+                &is_bnd,
                 &mut ray,
             );
+            drop(_relax_span);
             if ok == 0 {
                 let growth = u_end / u_half.max(1e-300);
                 let stress: Vec<f64> = (0..pts.len())
                     .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
                     .collect();
                 let flow = (0..pts.len())
+                    .into_par_iter()
                     .map(|i| {
-                        let d = ray.strain(i);
+                        let d = ray.strain(i, &ray.u);
                         (2.0 * d6_dot(&d, &d)).sqrt()
                     })
-                    .fold(0.0, f64::max)
+                    .reduce(|| 0.0, f64::max)
                     / eps_l.max(1e-300);
                 if let Some(detail) =
                     certified_collapse(ops, ld, m, coh, &stress, &ldata, growth, flow, "sweeps")?
@@ -733,16 +952,22 @@ pub fn solve_hyperbolic(
                 num.sqrt() / v_peak.max(1e-300)
             };
             prev_v = v_ray;
+            let _eta_span = super::super::timing::span("eta_map");
             // Recompute η from (p̃, γ̇) of the ray state at this level's ε.
             // `p̃` takes the ray pressure plus the tidal trace, as §8.1.3.
             let mut new_eta = vec![0.0; pts.len()];
-            for i in 0..pts.len() {
-                let d = ray.strain(i);
-                let gamma = (2.0 * d6_dot(&d, &d)).sqrt();
+            let gammas: Vec<f64> = (0..pts.len())
+                .into_par_iter()
+                .map(|i| {
+                    let d = ray.strain(i, &ray.u);
+                    (2.0 * d6_dot(&d, &d)).sqrt()
+                })
+                .collect();
+            for (i, gamma) in gammas.iter().enumerate() {
                 let ptil = ray.u[NDIM * i + 9]
                     + (ld.tide[i][0] + ld.tide[i][1] + ld.tide[i][2]) / 3.0
                     + ld.g_const;
-                new_eta[i] = eta_eval(m, &coh[i], gamma, ptil.max(m.spec.p_min), eps_l).eta;
+                new_eta[i] = eta_eval(m, &coh[i], *gamma, ptil.max(m.spec.p_min), eps_l).eta;
             }
             let deta = new_eta
                 .iter()
@@ -750,6 +975,7 @@ pub fn solve_hyperbolic(
                 .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_relax);
             eta = new_eta;
             done = deta || dv < prm.tol_relax;
+            drop(_eta_span);
             if done {
                 break;
             }
@@ -759,6 +985,7 @@ pub fn solve_hyperbolic(
         // signature — `certified_collapse` returns early on unsaturated
         // states, so ordinary loads pay no bracket.
         let projected_collapse = |growth: f64, what: &str| -> Result<Option<String>, SimError> {
+            let _span = super::super::timing::span("collapse_cert");
             let v_ray: Vec<f64> = (0..pts.len())
                 .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
                 .collect();
@@ -842,6 +1069,7 @@ pub fn solve_hyperbolic(
     let s_ray: Vec<f64> = (0..pts.len())
         .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
         .collect();
+    let _finish_span = super::super::timing::span("stokes_finish");
     finish(ops, ld, prm, m, eps, &eta, u, e_proj, &s_ray, rest)
 }
 
