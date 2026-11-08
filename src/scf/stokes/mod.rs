@@ -635,11 +635,6 @@ fn nitsche_constant(stiff: &DMatrix<f64>, boundary: &DMatrix<f64>) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// `B_rb` of §A.3 on explicit rows — the A/B oracle path against another basis.
-pub fn rigid_rows(vol: &VolumeSet, rows: &VelRows<f32>, n_u: usize) -> DMatrix<f64> {
-    rigid_matrix(vol, rows, n_u)
-}
-
 /// `B_rb` of §A.3: rows `∫ρ B·e_a`, `∫ρ (x × B)·e_a`.
 fn rigid_matrix(vol: &VolumeSet, rows: &VelRows<f32>, n_u: usize) -> DMatrix<f64> {
     let mut b = DMatrix::zeros(6, n_u);
@@ -923,8 +918,8 @@ pub(super) fn strain_fields(ops: &Operators, u: &DVector<f64>) -> Fields {
     Fields { shear, d }
 }
 
-/// `G` and its range-space factorization, built on the first primal–dual solve of this
-/// geometry.
+/// `G` and its range-space factorization, built on the first elastic solve of this
+/// geometry and reused by every elastic path (cycle, steady, Kelvin).
 pub(super) fn pd_metric(ops: &Operators) -> Result<&(DMatrix<f64>, RangeSolve), SimError> {
     if let Some(m) = ops.pd_metric.get() {
         return Ok(m);

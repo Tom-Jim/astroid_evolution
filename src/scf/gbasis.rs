@@ -504,12 +504,6 @@ pub struct GramReport {
     pub cond: f64,
 }
 
-impl GramReport {
-    pub fn full_rank(&self) -> bool {
-        self.rank == self.n_modes
-    }
-}
-
 /// Kernel modes centred further apart than the sum of their supports do not
 /// overlap: their Gram entry is exactly zero. That is most pairs — skipping
 /// them is what makes the Prop 8.1.3 assembly tractable.

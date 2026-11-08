@@ -616,11 +616,11 @@ fn dt_scale(ray: &Ray, eta: &[f64], rho: &[f64], t_s: f64, kappa: f64) -> f64 {
     0.4 * ray.bvh.side / cmax.max(1e-300)
 }
 
-/// `solver = "hyperbolic"`: the ray-relaxation path of §10.3.2. The outer
-/// η-updating loop matches the PD loop; the converged `v^ray` is projected
-/// onto the retained basis and `e_proj` is reported through `eps_momentum`.
-/// Falls back to `solve_pd` on a singular configuration so the caller never
-/// loses a step (the reference-oracle role of PD).
+/// The ray-relaxation path of §10.3.2, the sole rheology solver. The outer
+/// η-updating loop mirrors the reference primal–dual loop (the tier-2 oracle
+/// `solve_pd` of `tests/support/pd_oracle.rs`); the converged `v^ray` is
+/// projected onto the retained basis and `e_proj` is reported through
+/// `eps_momentum`. Non-convergence is a bounded `RheologyNotConverged`.
 pub fn solve_hyperbolic(
     ops: &Operators,
     ld: &Loads,

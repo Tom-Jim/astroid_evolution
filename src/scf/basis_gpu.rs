@@ -783,10 +783,11 @@ pub(crate) fn contract_velocity(
 
 /// Face-centre strain basis kept on the GPU.
 ///
-/// Picard changes `u` every sweep, so the basis has to stay, but it stays on
-/// the device. One buffer for every point is about a gigabyte, which does not
-/// fit the worker transfer, so the points are split and only the GEMV result
-/// comes back. `contract` returns `6 * n_points` values.
+/// The fixed-point sweeps change `u` every iteration, so the basis has to
+/// stay, but it stays on the device. One buffer for every point is about a
+/// gigabyte, which does not fit the worker transfer, so the points are split
+/// and only the GEMV result comes back. `contract` returns `6 * n_points`
+/// values.
 #[cfg(feature = "tier2")]
 pub(crate) struct GpuStrain {
     pieces: Vec<Res>,

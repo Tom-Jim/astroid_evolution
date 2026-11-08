@@ -63,20 +63,6 @@ impl CauchyKernel {
         sym_mat(self.metric)
     }
 
-    /// Isotropic equivalent `σ = det(S)^{1/6}` (geometric mean of the principal values).
-    pub fn sigma_mean(&self) -> f64 {
-        self.metric_mat().determinant().max(0.0).powf(1.0 / 6.0)
-    }
-
-    /// Largest principal value of `S`, `σ_max²`: the narrowest core direction is `1/σ_max`.
-    pub fn sigma_max2(&self) -> f64 {
-        let m = &self.metric;
-        // Gershgorin bound, exact for a diagonal metric and an upper bound otherwise.
-        (m[0] + m[3].abs() + m[4].abs())
-            .max(m[1] + m[3].abs() + m[5].abs())
-            .max(m[2] + m[4].abs() + m[5].abs())
-    }
-
     /// `w ∫_{ℝ³} [1 + xᵀSx]^{−α} dx = w π^{3/2} Γ(α − 3/2)/Γ(α) / √det S` for α > 3/2.
     pub fn total_mass(&self) -> Option<f64> {
         if self.alpha <= 1.5 {

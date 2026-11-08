@@ -120,14 +120,6 @@ pub enum WorkerMessage {
     Failed(String),
 }
 
-/// File the project will hand to Tier 2, before Tier 2 centres it.
-pub struct MeshSummary {
-    pub path: PathBuf,
-    pub unit: String,
-    pub vertices: usize,
-    pub faces: usize,
-}
-
 /// The imported file in metres, with the view fit around its bounding centre.
 ///
 /// Axes are the file's axes. glTF Y is up, which is already Bevy's up.
@@ -180,30 +172,6 @@ pub fn view_fit(project: &Project) -> Result<ViewFit, String> {
         faces: doc.mesh.faces,
         center,
         scale: 1.0 / reach,
-    })
-}
-
-pub fn mesh_summary(project: &Project) -> Result<MeshSummary, String> {
-    let Some(mesh) = project.body.mesh.as_deref() else {
-        return Err("the project must use body.shape = \"mesh\"".into());
-    };
-    let path = project.resolve(mesh);
-    let unit = project
-        .body
-        .mesh_unit
-        .clone()
-        .unwrap_or_else(|| "m".to_string());
-    let doc = load_mesh_file(ImportRequest {
-        path: &path,
-        length_unit: project.body.mesh_unit.as_deref(),
-        reconstruct: None,
-    })
-    .map_err(|err| err.to_string())?;
-    Ok(MeshSummary {
-        path,
-        unit,
-        vertices: doc.mesh.vertices.len(),
-        faces: doc.mesh.faces.len(),
     })
 }
 

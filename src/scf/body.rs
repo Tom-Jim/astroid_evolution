@@ -333,16 +333,4 @@ impl Body {
     pub fn r_mean(&self) -> f64 {
         self.positions.iter().map(|p| p.length()).sum::<f64>() / self.positions.len().max(1) as f64
     }
-
-    /// Smallest nearest-vertex spacing, `h_{Γ,min}` of the CFL bound (§10.3.1).
-    pub fn min_edge(&self) -> f64 {
-        let p = &self.positions;
-        let mut h = f64::INFINITY;
-        for (i, nb) in self.topo.vertex_neighbors.iter().enumerate() {
-            for &j in nb {
-                h = h.min((p[i] - p[j]).length());
-            }
-        }
-        h
-    }
 }

@@ -37,11 +37,11 @@ kinds! {
     invalid_input => "InvalidInput", 12;
     /// `B_rb` lost rank, or the load is incompatible with the rigid modes (§A.3).
     rigid_rank => "RigidRankDeficient", 13;
-    /// The Picard iteration, the weak momentum balance, or the friction chain
-    /// did not converge (§10.0.10 a, b).
+    /// The characteristic-ray relaxation, the weak momentum balance, or the
+    /// friction chain did not converge (§10.0.10 a, b).
     rheology_not_converged => "RheologyNotConverged", 20;
     /// The load exceeds the limit load at the frozen pressure (`L* > 1`, §10.0.12.1): no
-    /// quasi-static state exists; the primal–dual iteration showed the certificate.
+    /// quasi-static state exists; the certified bracket showed the certificate.
     limit_load_collapse => "LimitLoadCollapse", 21;
     /// The outer geometry acceptance failed at the trust-radius floor (§10.3.3).
     trust_exhausted => "TrustRadiusExhausted", 23;
