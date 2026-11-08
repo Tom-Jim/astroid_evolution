@@ -75,7 +75,7 @@ impl SegmentTable {
         let pairs = Res::zeroed((rows * 2 * SEG_CAP * 4) as u64).map_err(&gpu)?;
         let mut job = Job::new();
         let points_res = job.input(&pts);
-        let params = job.value(&solver.chord_params(rows as u32, false, false, false, 0));
+        let params = job.value(&solver.chord_params(rows as u32, false, false, false, 0, 0));
         job.run(
             &kernels::RTFP_SEGMENTS,
             kernels::RTFP_SEGMENTS.groups(rows),

@@ -63,7 +63,9 @@ struct Chords {
     // (seg_base + m)·ray_count + q.
     use_segs: u32,
     seg_base: u32,
-    pad0: f32,
+    // First float of this launch's output block: the field kernel can share a
+    // buffer with the uniform kernel, writing into its second half.
+    out_base: u32,
     pad1: f32,
 }
 

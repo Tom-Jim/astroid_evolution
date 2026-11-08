@@ -100,10 +100,27 @@ impl SurfaceIndex {
 
     /// The closest point of `Γ` to `x`.
     pub fn closest(&self, x: DVec3) -> Closest {
-        let mut best = Closest {
-            face: 0,
-            point: self.tris.first().map_or(DVec3::ZERO, |t| t[0]),
-            dist2: f64::INFINITY,
+        self.closest_seeded(x, usize::MAX)
+    }
+
+    /// `closest` seeded with a hint face: its triangle already bounds the
+    /// search, so a nearby `x` prunes almost the whole tree. The result is
+    /// identical to an unseeded query.
+    pub fn closest_seeded(&self, x: DVec3, face: usize) -> Closest {
+        let mut best = match self.tris.get(face) {
+            Some(&[a, b, c]) => {
+                let p = closest_on_triangle(x, a, b, c);
+                Closest {
+                    face,
+                    point: p,
+                    dist2: (p - x).length_squared(),
+                }
+            }
+            None => Closest {
+                face: 0,
+                point: self.tris.first().map_or(DVec3::ZERO, |t| t[0]),
+                dist2: f64::INFINITY,
+            },
         };
         let mut stack = vec![0usize];
         while let Some(at) = stack.pop() {

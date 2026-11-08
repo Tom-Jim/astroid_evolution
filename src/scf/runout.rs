@@ -224,6 +224,7 @@ impl RunoutField<'_> {
         let scale = Scale::of(self.positions);
         let far = exterior.is_some();
         let v_e = if self.optics { self.effective_speeds(&faces) } else { Vec::new() };
+        let mut pool = AnchorPool::new(scale.r_bar);
         let mut waiting: Vec<Vec<DVec3>> = packets
             .par_iter_mut()
             .map(|p| {
@@ -238,7 +239,7 @@ impl RunoutField<'_> {
                     *p = Packet::new(self, p.source, p.v0);
                     p.via_ode = true;
                 }
-                p.run(self, &faces, scale, far)
+                p.run(self, &faces, scale, far, &pool)
             })
             .collect();
         if let Some(exterior) = exterior {
@@ -257,22 +258,31 @@ impl RunoutField<'_> {
                 for (p, w) in packets.iter_mut().zip(&waiting) {
                     p.anchors.extend(w.iter().map(|x| {
                         let (g, h) = values.next().expect("one value per point");
-                        (*x, g, h)
+                        let a = (*x, g, h);
+                        pool.push(a);
+                        a
                     }));
                 }
                 waiting = packets
                     .par_iter_mut()
                     .zip(&waiting)
-                    .map(|(p, w)| if w.is_empty() { Vec::new() } else { p.run(self, &faces, scale, far) })
+                    .map(|(p, w)| {
+                        if w.is_empty() {
+                            Vec::new()
+                        } else {
+                            p.run(self, &faces, scale, far, &pool)
+                        }
+                    })
                     .collect();
             }
         }
         Ok(packets.into_iter().map(|p| p.finish(self)).collect())
     }
 
-    /// `π(x)`, the closest point of `Γ`, and its face (G9).
-    fn ground(&self, x: DVec3) -> (usize, DVec3) {
-        let c = self.index.closest(x);
+    /// `π(x)`, the closest point of `Γ`, and its face (G9). `seed` bounds the
+    /// BVH query with the caller's last face.
+    fn ground(&self, x: DVec3, seed: usize) -> (usize, DVec3) {
+        let c = self.index.closest_seeded(x, seed);
         (c.face, c.point)
     }
 
@@ -366,6 +376,9 @@ struct Packet {
     substeps: usize,
     /// Exterior values `(x₀, g₀, H₀)` received for this packet's far flights.
     anchors: Vec<(DVec3, DVec3, DMat3)>,
+    /// Cache of the last `nearest_anchor` hit — the value itself, so pooled
+    /// anchors need no adoption into `anchors`: consecutive substeps reuse it.
+    last_anchor: Option<(DVec3, DVec3, DMat3)>,
     /// `(g_n, τ_n)` of the last flight substep, whose velocity still lacks the end-point
     /// half of its kick (velocity Verlet).
     kick: Option<(DVec3, f64)>,
@@ -379,10 +392,70 @@ struct Packet {
     phase: f64,
 }
 
+/// Every exterior value received by any packet of the routing, on a fixed-cell
+/// hash grid. A flight that drifts out of its own anchors often still sits
+/// inside another packet's corridor: the same `REUSE` rule over the shared
+/// pool keeps the point covered instead of starting another evaluation round
+/// (§10.0.2). Cells are append-only — new anchors insert in O(1).
+struct AnchorPool {
+    anchors: Vec<(DVec3, DVec3, DMat3)>,
+    cell: f64,
+    cells: std::collections::HashMap<(i64, i64, i64), Vec<u32>>,
+}
+
+impl AnchorPool {
+    fn new(r_bar: f64) -> Self {
+        Self {
+            anchors: Vec::new(),
+            cell: REUSE * r_bar,
+            cells: std::collections::HashMap::new(),
+        }
+    }
+
+    fn key(&self, p: DVec3) -> (i64, i64, i64) {
+        (
+            (p.x / self.cell).floor() as i64,
+            (p.y / self.cell).floor() as i64,
+            (p.z / self.cell).floor() as i64,
+        )
+    }
+
+    fn push(&mut self, a: (DVec3, DVec3, DMat3)) {
+        let i = self.anchors.len() as u32;
+        self.cells.entry(self.key(a.0)).or_default().push(i);
+        self.anchors.push(a);
+    }
+
+    /// The pooled value nearest to `x`, if it lies within `reach`. Callers use
+    /// `reach ≤ cell`, so one cell ring always bounds the scan.
+    fn nearest(&self, x: DVec3, reach: f64) -> Option<(DVec3, DVec3, DMat3)> {
+        let r = ((reach / self.cell).ceil() as i64).min(2);
+        let c = self.key(x);
+        let mut best: Option<(f64, &(DVec3, DVec3, DMat3))> = None;
+        for k in -r..=r {
+            for j in -r..=r {
+                for i in -r..=r {
+                    let Some(cell) = self.cells.get(&(c.0 + i, c.1 + j, c.2 + k)) else {
+                        continue;
+                    };
+                    for &p in cell {
+                        let a = &self.anchors[p as usize];
+                        let d2 = (a.0 - x).length_squared();
+                        if d2 <= reach * reach && best.is_none_or(|(b, _)| d2 < b) {
+                            best = Some((d2, a));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, a)| *a)
+    }
+}
+
 impl Packet {
     fn new(field: &RunoutField, source: usize, v0: DVec3) -> Self {
         let start = field.positions[source];
-        let (face, x) = field.ground(start);
+        let (face, x) = field.ground(start, usize::MAX);
         // Outward against the vertex normal: a tangential `v0` slides on any facet.
         let normal: DVec3 = field.topo.vertex_faces[source]
             .iter()
@@ -407,6 +480,7 @@ impl Packet {
             max_hop: 0.0,
             substeps: 0,
             anchors: Vec::new(),
+            last_anchor: None,
             kick: None,
             v0,
             via_ode: false,
@@ -420,8 +494,15 @@ impl Packet {
     /// Substeps until the packet stops (empty), or, with `far`, until a flight above
     /// `FAR R̄` has no exterior value within `REUSE h`; it then returns the points of its
     /// prefetch row, the first being the current position.
-    fn run(&mut self, field: &RunoutField, faces: &Faces, scale: Scale, far: bool) -> Vec<DVec3> {
-        self.run_inner(field, faces, scale, far, None)
+    fn run(
+        &mut self,
+        field: &RunoutField,
+        faces: &Faces,
+        scale: Scale,
+        far: bool,
+        pool: &AnchorPool,
+    ) -> Vec<DVec3> {
+        self.run_inner(field, faces, scale, far, None, pool)
     }
 
     /// `run`, or with `row` the prediction of `prefetch`: missing exterior values are
@@ -433,6 +514,7 @@ impl Packet {
         scale: Scale,
         far: bool,
         mut row: Option<&mut Vec<DVec3>>,
+        pool: &AnchorPool,
     ) -> Vec<DVec3> {
         let m = field.material;
         let s = &m.spec;
@@ -476,7 +558,8 @@ impl Packet {
                 v = if sp > drop { v * ((sp - drop) / sp) } else { DVec3::ZERO };
                 // Back onto Γ at the closest point, and onto the new tangent plane at the same
                 // speed. Trapezoidal drift: exact for a constant deceleration.
-                let (next_face, next) = field.ground(self.x + (v_old + v) * (0.5 * tau));
+                let (next_face, next) =
+                    field.ground(self.x + (v_old + v) * (0.5 * tau), self.face);
                 let step = next - self.x;
                 let len = step.length();
                 let n_next = faces.normal[next_face];
@@ -497,14 +580,17 @@ impl Packet {
                 self.t += tau;
             } else {
                 let x = self.x;
-                let (below, ground) = field.ground(x);
+                let (below, ground) = field.ground(x, self.face);
                 self.face = below;
                 // Near Γ the expansion about the closest face, higher up the exterior field.
                 let (near, height) = field.expansion(faces, below, ground, x);
                 let g_self = if far && height > FAR * scale.r_bar {
-                    match (self.nearest_anchor(x, REUSE * height), row.as_deref_mut()) {
+                    match (
+                        self.nearest_anchor(x, REUSE * height, Some(pool)),
+                        row.as_deref_mut(),
+                    ) {
                         (Some((x0, g0, h0)), _) => g0 + h0 * (x - x0),
-                        (None, None) => return self.prefetch(field, faces, scale),
+                        (None, None) => return self.prefetch(field, faces, scale, pool),
                         (None, Some(row)) => {
                             if row.last().is_none_or(|p| (x - *p).length() > PREFETCH * REUSE * height) {
                                 row.push(x);
@@ -512,7 +598,8 @@ impl Packet {
                                     return Vec::new();
                                 }
                             }
-                            self.nearest_anchor(x, height).map_or(near, |(x0, g0, h0)| g0 + h0 * (x - x0))
+                            self.nearest_anchor(x, height, None)
+                                .map_or(near, |(x0, g0, h0)| g0 + h0 * (x - x0))
                         }
                     }
                 } else {
@@ -647,7 +734,7 @@ impl Packet {
             dir = (dir * bend.cos() + n.cross(dir) * bend.sin()).try_normalize().unwrap_or(dir);
             // March and re-locate on the triangulation (the BVH query after the
             // segment, which also finds the next facet, cavity mouth, or silhouette).
-            let (next_face, next) = field.ground(self.x + dir * dl);
+            let (next_face, next) = field.ground(self.x + dir * dl, self.face);
             if next_face != f {
                 // Snell at the facet edge: `p·e = (n t̂ + A)·e` conserved.
                 let n_opt = |ve_: f64| 1.0 / ve_;
@@ -712,29 +799,54 @@ impl Packet {
     }
 
     /// The received exterior value nearest to `x`, if it lies within `reach`.
-    fn nearest_anchor(&self, x: DVec3, reach: f64) -> Option<(DVec3, DVec3, DMat3)> {
-        self.anchors
+    /// The last hit is cached: consecutive substeps almost always reuse it.
+    /// A miss falls back to the routing-wide pool — the same `REUSE` rule over
+    /// every packet's anchors (§10.0.2).
+    fn nearest_anchor(
+        &mut self,
+        x: DVec3,
+        reach: f64,
+        pool: Option<&AnchorPool>,
+    ) -> Option<(DVec3, DVec3, DMat3)> {
+        if let Some(a) = self.last_anchor {
+            if (a.0 - x).length_squared() <= reach * reach {
+                return Some(a);
+            }
+        }
+        let hit = self
+            .anchors
             .iter()
-            .map(|a| ((a.0 - x).length_squared(), a))
-            .filter(|(d2, _)| *d2 <= reach * reach)
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, a)| *a)
+            .map(|a| ((a.0 - x).length_squared(), *a))
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let a = match hit {
+            Some((d2, a)) if d2 <= reach * reach => Some(a),
+            _ => pool?.nearest(x, reach),
+        }?;
+        self.last_anchor = Some(a);
+        Some(a)
     }
 
     /// The prefetch row of a far flight: the current position and the points where the
     /// rest of the packet's run, predicted by a copy of it with estimated exterior values
     /// (the nearest received one within `h`, else the face expansion), needs one, at least
     /// `PREFETCH · REUSE h` apart. The prediction only places the points; a miss asks again.
-    fn prefetch(&self, field: &RunoutField, faces: &Faces, scale: Scale) -> Vec<DVec3> {
+    fn prefetch(
+        &self,
+        field: &RunoutField,
+        faces: &Faces,
+        scale: Scale,
+        pool: &AnchorPool,
+    ) -> Vec<DVec3> {
         let mut row = vec![self.x];
-        self.clone().run_inner(field, faces, scale, true, Some(&mut row));
+        self.clone()
+            .run_inner(field, faces, scale, true, Some(&mut row), pool);
         row
     }
 
     fn finish(self, field: &RunoutField) -> Arrival {
         let escaped = matches!(self.end, Some(End::Escaped));
         let (x, distance) = if escaped { (self.start, 0.0) } else { (self.x, self.distance) };
-        let (face, foot) = field.ground(x);
+        let (face, foot) = field.ground(x, self.face);
         let [a, b, c] = field.topo.faces[face].map(|v| v as usize);
         let w = barycentric(foot, field.positions[a], field.positions[b], field.positions[c])
             .map(|w| w.max(0.0));
