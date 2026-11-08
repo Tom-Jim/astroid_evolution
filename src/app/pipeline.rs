@@ -4,7 +4,7 @@
 //! and the packing of a snapshot use the global Rayon pool. The Bevy thread only receives the
 //! snapshot. A full channel blocks the solver, so a fast mesh does not drop steps.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
