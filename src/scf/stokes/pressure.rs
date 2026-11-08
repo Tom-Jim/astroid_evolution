@@ -147,7 +147,10 @@ impl Pressure {
         let (np, nb) = (ops.vol.pts.len(), ops.bnd.pts.len());
         let p_min = m.spec.p_min;
         let tide_div = tide_divergence(ld, m);
-        let [_, lap, gd] = strains(&ops.rows, u);
+        // `fields.d` already holds `D u` on the volume rule — only the two
+        // higher derivatives are still needed here.
+        let lap = linalg::mul(&ops.rows.lap, u);
+        let gd = linalg::mul(&ops.rows.gd, u);
         let mut wf = DVector::zeros(3 * np);
         for p in 0..np {
             // `fields.d` already holds the total deviatoric strain.
@@ -258,7 +261,10 @@ impl Pressure {
         dil: Option<&Dilatational>,
     ) -> f64 {
         let tide_div = tide_divergence(ld, m);
-        let [_, lap, gd] = strains(&ops.rows, u);
+        // `fields.d` already holds `D u` on the volume rule — only the two
+        // higher derivatives are still needed here.
+        let lap = linalg::mul(&ops.rows.lap, u);
+        let gd = linalg::mul(&ops.rows.gd, u);
         let (mut num, mut den) = (0.0, 0.0);
         for p in 0..ops.vol.pts.len() {
             let (mut d6, mut lp, mut g) = point(
