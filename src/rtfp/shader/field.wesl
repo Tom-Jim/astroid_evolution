@@ -144,7 +144,7 @@ fn rtfp_field(@builtin(global_invocation_id) gid: vec3<u32>) {
             part[9] = ds_add(part[9], ds_mul(ds_f(3.0 * dir.y * dir.z), wh));
         }
     }
-    let base = p.out_base + pid * FIELD_STRIDE;
+    let base = pid * FIELD_STRIDE;
     for(var m = 0u; m < 10u; m = m + 1u) {
         out[base + 2u * m] = part[m].hi;
         out[base + 2u * m + 1u] = part[m].lo;

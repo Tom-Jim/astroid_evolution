@@ -87,18 +87,8 @@ pub(crate) struct ChordParams {
     pub use_segs: u32,
     /// First point index covered by `seg_counts`/`seg_pairs`.
     pub seg_base: u32,
-    /// First float of the launch's output block inside `out`.
-    pub out_base: u32,
+    pub pad0: f32,
     pub pad1: f32,
-}
-
-/// Capacity-reuse device buffers for `eval_group`: points in, both kernel
-/// outputs (uniform half, ray half) in one `out` buffer.
-struct EvalScratch {
-    points: Res,
-    own: Res,
-    out: Res,
-    cap: usize,
 }
 
 pub struct RtfpSolver {
@@ -116,8 +106,6 @@ pub struct RtfpSolver {
     /// and reused from then on. Density updates (`set_density`) leave the
     /// tables valid (Proposition 3.15.1).
     segs: std::sync::Mutex<std::collections::HashMap<u64, SegState>>,
-    /// Device buffers reused across `eval` calls (`EvalScratch`).
-    scratch: std::sync::Mutex<Option<EvalScratch>>,
 }
 
 /// Double-single pair to f64.
@@ -172,7 +160,6 @@ impl RtfpSolver {
             density,
             body,
             segs: std::sync::Mutex::new(std::collections::HashMap::new()),
-            scratch: std::sync::Mutex::new(None),
         })
     }
 
@@ -236,7 +223,6 @@ impl RtfpSolver {
         want_h: bool,
         use_segs: bool,
         seg_base: u32,
-        out_base: u32,
     ) -> ChordParams {
         ChordParams {
             kernel_count: self.density.kernels.len() as u32,
@@ -253,7 +239,7 @@ impl RtfpSolver {
             launch: LAUNCH_OFFSET,
             use_segs: u32::from(use_segs),
             seg_base,
-            out_base,
+            pad0: 0.0,
             pad1: 0.0,
         }
     }
@@ -359,47 +345,35 @@ impl RtfpSolver {
                 .collect::<Result<_, _>>()?,
             _ => vec![u32::MAX; n],
         };
-        // Capacity-reuse scratch: one resident buffer per role, grown to the
-        // largest batch seen. A call is then two writes, the two dispatches
-        // sharing one output buffer, and a single read-back — the Metal
-        // round-trip floor dominates everything else.
-        let mut guard = self.scratch.lock().unwrap();
-        if guard.as_ref().is_none_or(|s: &EvalScratch| s.cap < n) {
-            let cap = n.next_power_of_two();
-            *guard = Some(EvalScratch {
-                points: Res::zeroed((cap * 16) as u64).map_err(SimError::gpu)?,
-                own: Res::zeroed((cap * 4) as u64).map_err(SimError::gpu)?,
-                out: Res::zeroed((2 * cap * FIELD_STRIDE * 4) as u64).map_err(SimError::gpu)?,
-                cap,
-            });
-        }
-        let s = guard.as_ref().expect("scratch just ensured");
         let mut job = Job::new();
-        job.write(&s.points, 0, &pts);
-        job.write(&s.own, 0, &own);
-        // Exact part ρ(x) Φ_V (Werner–Scheeres), first half of `out`.
+        let points = job.input(&pts);
+        // Exact part ρ(x) Φ_V (Werner–Scheeres).
         let ku = &kernels::RTFP_UNIFORM;
+        let own = job.input(&own);
         let uparams = job.value(&[
             n as u32,
             self.body.node_count as u32,
             (self.options.theta as f32).to_bits(),
             0,
         ]);
+        let ures = job.zeros::<f32>(n * FIELD_STRIDE);
         job.run(
             ku,
             ku.groups(n),
             &[
-                (&s.points).into(),
-                (&s.own).into(),
+                points,
+                own,
                 (&self.body.faces).into(),
                 (&self.body.nodes).into(),
                 uparams,
-                (&s.out).into(),
+                ures,
             ],
         );
-        // Ray part of ρ − ρ(x), second half of `out`; uniform density skips it.
-        let has_rays = !self.density.kernels.is_empty();
-        if has_rays {
+        let ur = job.read_all::<f32>(ures, n * FIELD_STRIDE);
+        // Ray part of ρ − ρ(x); nothing to integrate for a uniform density.
+        let rays = if self.density.kernels.is_empty() {
+            None
+        } else {
             let k = &kernels::RTFP_FIELD;
             let cores = job.input(&self.unit_kernels());
             let params = job.value(&self.chord_params(
@@ -408,36 +382,28 @@ impl RtfpSolver {
                 want.hessian,
                 table.is_some(),
                 offset as u32,
-                (n * FIELD_STRIDE) as u32,
             ));
+            let res = job.zeros::<f32>(n * FIELD_STRIDE);
             job.run(
                 k,
                 k.groups(n),
                 &[
-                    (&s.points).into(),
+                    points,
                     (&self.rays).into(),
                     cores,
                     (&self.nodes).into(),
                     params,
-                    (&s.out).into(),
+                    res,
                     table.map_or((&self.nodes).into(), |t| (&t.counts).into()),
                     table.map_or((&self.nodes).into(), |t| (&t.pairs).into()),
                     (&self.body.accel).into(),
                 ],
             );
-        }
-        let rd = job.read_all::<f32>(
-            &s.out,
-            if has_rays { 2 } else { 1 } * n * FIELD_STRIDE,
-        );
-        let outs = job.submit().map_err(SimError::gpu)?;
-        let halves = outs.get::<f32>(rd);
-        let (uni, ray) = if has_rays {
-            let (u, r) = halves.split_at(n * FIELD_STRIDE);
-            (u.to_vec(), Some(r.to_vec()))
-        } else {
-            (halves, None)
+            Some(job.read_all::<f32>(res, n * FIELD_STRIDE))
         };
+        let outs = job.submit().map_err(SimError::gpu)?;
+        let uni = outs.get::<f32>(ur);
+        let ray = rays.map(|r| outs.get::<f32>(r));
         // Unit frame → world: U scales with L², ∇U with L, the Hessian not at all (§3.1).
         let g = self.options.g;
         let (s1, s2) = (frame.scale, frame.scale * frame.scale);

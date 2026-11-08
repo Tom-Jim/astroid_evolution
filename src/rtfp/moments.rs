@@ -47,7 +47,7 @@ impl RtfpSolver {
         let mut job = Job::new();
         let origin = job.value(&[o.x as f32, o.y as f32, o.z as f32, 0.0]);
         let cores = job.input(&kerns);
-        let mut chord = self.chord_params(n as u32, false, false, false, 0, 0);
+        let mut chord = self.chord_params(n as u32, false, false, false, 0);
         chord.bulk = (self.density.bulk - c_rho) as f32;
         let params = job.value(&chord);
         let res = job.zeros::<f32>(n * STRIDE);
