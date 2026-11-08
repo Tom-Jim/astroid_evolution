@@ -13,9 +13,9 @@ use crate::common::linalg;
 use crate::rheo::Material;
 
 use super::super::cycle::Cycle;
-use crate::common::math::mat_sym;
 use super::limit::Bracket;
 use super::{Loads, Operators, Strengths, assemble_f, pd_metric, pressure, solve_range};
+use crate::common::math::{DVec3, mat_sym};
 
 /// The two components (cos, sin) of the cycle at the volume nodes, modulus-free.
 pub struct ElasticCycle {
@@ -45,22 +45,38 @@ impl ElasticCycle {
 /// Proposition 10.3.7.4: the incompressible elastic response to each component of `cycle`,
 /// solved with the unit-viscosity stiffness of this geometry. `tide_coef` scales the
 /// backstress `C_T ρ_p ν d² dev H`.
-pub fn elastic_cycle(ops: &Operators, cycle: &Cycle, m: &Material, strength: &Strengths, g_const: f64) -> Result<ElasticCycle, SimError> {
+pub fn elastic_cycle(
+    ops: &Operators,
+    cycle: &Cycle,
+    m: &Material,
+    strength: &Strengths,
+    g_const: f64,
+) -> Result<ElasticCycle, SimError> {
     let _span = super::super::timing::span("elastic_cycle");
     let (_, rs) = pd_metric(ops)?;
     let np = ops.vol.pts.len();
     let mut out: Vec<(DVector<f64>, Vec<[f64; 6]>, Vec<f64>)> = Vec::with_capacity(2);
     for k in 0..2 {
         let g_vol: Vec<_> = ops.vol.pts.iter().map(|x| cycle.component(k, *x)).collect();
+        // `component = h·x + euler·(ẑ×x)`: the symmetric part is a gradient
+        // and the libration part curls to `2·euler·ẑ`, which `assemble_f`'s
+        // kernel identity needs to be exact.
+        let g_curl = vec![DVec3::Z * (2.0 * cycle.euler[k]); np];
         let g_bnd: Vec<_> = ops.bnd.pts.iter().map(|x| cycle.component(k, *x)).collect();
         let h = mat_sym(cycle.h[k]);
         let tr = (h[0] + h[1] + h[2]) / 3.0;
         let t = [h[0] - tr, h[1] - tr, h[2] - tr, h[3], h[4], h[5]].map(|v| m.tide_coef * v);
         let tide = vec![t; np];
         let tide_bnd = vec![t; ops.bnd.pts.len()];
-        let tide_nn: Vec<f64> = ops.faces.normals.iter().map(|n| super::super::mechanics::quad_form(t, *n)).collect();
+        let tide_nn: Vec<f64> = ops
+            .faces
+            .normals
+            .iter()
+            .map(|n| super::super::mechanics::quad_form(t, *n))
+            .collect();
         let ld = Loads {
             g_eff: &g_vol,
+            g_curl: &g_curl,
             tide: &tide,
             g_bnd: &g_bnd,
             tide_bnd: &tide_bnd,
@@ -70,16 +86,22 @@ pub fn elastic_cycle(ops: &Operators, cycle: &Cycle, m: &Material, strength: &St
             dilatancy: None,
         };
         let f = assemble_f(ops, &ld);
-        let (u, _) = solve_range(ops, rs, &f);
+        let (u, _) = solve_range(&ops.rigid, rs, &f);
         let d = linalg::mul(&ops.rows.d, &u);
         // Unit viscosity: τ = 2 D(u), σ̂ = √2 D(u).
-        let sigma = (0..np).map(|i| std::array::from_fn(|c| SQRT_2 * d[6 * i + c])).collect();
+        let sigma = (0..np)
+            .map(|i| std::array::from_fn(|c| SQRT_2 * d[6 * i + c]))
+            .collect();
         let dp = pressure::uniform(ops, &ld, 1.0, &u);
         out.push((f, sigma, dp));
     }
     let (f1, s1, p1) = out.pop().expect("sin");
     let (f0, s0, p0) = out.pop().expect("cos");
-    Ok(ElasticCycle { load: [f0, f1], sigma: [s0, s1], dp: [p0, p1] })
+    Ok(ElasticCycle {
+        load: [f0, f1],
+        sigma: [s0, s1],
+        dp: [p0, p1],
+    })
 }
 
 fn norm(v: &[f64; 6]) -> f64 {
@@ -115,13 +137,29 @@ pub fn cycle_bracket(
     phases: usize,
 ) -> CycleBracket {
     let np = ops.vol.pts.len();
-    let tau = |i: usize, sign: f64| cohesion[i] + mu * (p0[i] + sign * scale * el.dp_amplitude(i)).max(p_min);
+    let tau = |i: usize, sign: f64| {
+        cohesion[i] + mu * (p0[i] + sign * scale * el.dp_amplitude(i)).max(p_min)
+    };
     let u = DVector::from_column_slice(&mean.u);
     let d = linalg::mul(&ops.rows.d, &u);
     let eu = |i: usize| -> [f64; 6] { std::array::from_fn(|c| SQRT_2 * d[6 * i + c]) };
-    let n_plus: f64 = (0..np).map(|i| ops.vol.w[i] * tau(i, 1.0) * mean.rates[i]).sum();
+    let n_plus: f64 = (0..np)
+        .map(|i| ops.vol.w[i] * tau(i, 1.0) * mean.rates[i])
+        .sum();
     let lbar = load.dot(&u);
-    let (lc, ls) = (scale * el.load[0].dot(&u), scale * el.load[1].dot(&u));
+    // The cyclic work `ℓ_c u` is evaluated on the delivered stress:
+    // `uᵀf_c = ∫σ_c : D(u)` holds exactly in exact arithmetic, and only this
+    // form keeps `|(l_c, l_s)| ≤ Σ w |(σ_c : e, σ_s : e)|` — the ordering of
+    // Proposition 10.3.7.5 — invariant under the range solve's residual.
+    let (lc, ls) = {
+        let (mut c, mut s) = (0.0, 0.0);
+        for i in 0..np {
+            let e = eu(i);
+            c += ops.vol.w[i] * dot(&el.sigma[0][i], &e);
+            s += ops.vol.w[i] * dot(&el.sigma[1][i], &e);
+        }
+        (scale * c, scale * s)
+    };
     let koiter: f64 = (0..np)
         .map(|i| {
             let e = eu(i);
@@ -194,18 +232,34 @@ pub fn steady_cycle(
     let tau: Vec<Vec<f64>> = (0..nm)
         .map(|j| {
             let m = Cycle::phase(j, nm);
-            (0..np).map(|i| cohesion[i] + mu * (p_bar[i] + el.dp_at(i, m)).max(p_min)).collect()
+            (0..np)
+                .map(|i| cohesion[i] + mu * (p_bar[i] + el.dp_at(i, m)).max(p_min))
+                .collect()
         })
         .collect();
     let elastic: Vec<Vec<[f64; 6]>> = (0..nm)
-        .map(|j| (0..np).map(|i| el.sigma_at(i, Cycle::phase(j, nm))).collect())
+        .map(|j| {
+            (0..np)
+                .map(|i| el.sigma_at(i, Cycle::phase(j, nm)))
+                .collect()
+        })
         .collect();
-    let total = |j: usize, i: usize, r: &[f64]| -> [f64; 6] { std::array::from_fn(|c| creep[i][c] + elastic[j][i][c] + r[6 * i + c]) };
+    let total = |j: usize, i: usize, r: &[f64]| -> [f64; 6] {
+        std::array::from_fn(|c| creep[i][c] + elastic[j][i][c] + r[6 * i + c])
+    };
     let zero = vec![0.0; 6 * np];
     let utilization = |r: &[f64]| -> Vec<f64> {
-        (0..np).map(|i| (0..nm).map(|j| norm(&total(j, i, r)) / tau[j][i]).fold(0.0, f64::max)).collect()
+        (0..np)
+            .map(|i| {
+                (0..nm)
+                    .map(|j| norm(&total(j, i, r)) / tau[j][i])
+                    .fold(0.0, f64::max)
+            })
+            .collect()
     };
-    let leaves = (0..np).any(|i| trigger[i] && (0..nm).any(|j| norm(&total(j, i, &zero)) > tau[j][i] * (1.0 + opt.tol)));
+    let leaves = (0..np).any(|i| {
+        trigger[i] && (0..nm).any(|j| norm(&total(j, i, &zero)) > tau[j][i] * (1.0 + opt.tol))
+    });
     if !leaves {
         return Ok(SteadyCycle {
             cycles: 0,
@@ -218,13 +272,18 @@ pub fn steady_cycle(
     let mu_e = opt.rigidity;
     // `u_ε` of a plastic strain field: K₁ u = Σ w √2 Dᵀ ε̂ (the modulus cancels in u).
     let displacement = |eps: &[f64]| -> DVector<f64> {
-        let wv = DVector::from_iterator(6 * np, (0..6 * np).map(|k| ops.vol.w[k / 6] * SQRT_2 * eps[k]));
-        solve_range(ops, rs, &linalg::tr_mul(&ops.rows.d, &wv)).0
+        let wv = DVector::from_iterator(
+            6 * np,
+            (0..6 * np).map(|k| ops.vol.w[k / 6] * SQRT_2 * eps[k]),
+        );
+        solve_range(&ops.rigid, rs, &linalg::tr_mul(&ops.rows.d, &wv)).0
     };
     // σ̂ᴿ = μ_e (E u_ε − ε̂).
     let residual = |eps: &[f64]| -> Vec<f64> {
         let d = linalg::mul(&ops.rows.d, &displacement(eps));
-        (0..6 * np).map(|k| mu_e * (SQRT_2 * d[k] - eps[k])).collect()
+        (0..6 * np)
+            .map(|k| mu_e * (SQRT_2 * d[k] - eps[k]))
+            .collect()
     };
     let mut eps = vec![0.0; 6 * np];
     let mut r = vec![0.0; 6 * np];
@@ -254,7 +313,11 @@ pub fn steady_cycle(
                 r = residual(&eps);
             }
         }
-        let change = r.iter().zip(&r_start).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        let change = r
+            .iter()
+            .zip(&r_start)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
         if change <= opt.tol_cycle * tau_max {
             break;
         }
@@ -267,5 +330,11 @@ pub fn steady_cycle(
         })
         .collect();
     let ratchet = displacement(&delta).as_slice().to_vec();
-    Ok(SteadyCycle { cycles, ratchet, ratcheting, range, utilization: utilization(&r) })
+    Ok(SteadyCycle {
+        cycles,
+        ratchet,
+        ratcheting,
+        range,
+        utilization: utilization(&r),
+    })
 }

@@ -5,12 +5,14 @@
 //! `ℓᵀu / N(u) ≤ L*` and the static bound `L* ≤ max_i q_i γ̇_i(u) / (w_i τ_i)`
 //! (Proposition 10.0.12.3); the weights of the smoothed minimizer close the gap.
 
-use nalgebra::DVector;
+use nalgebra::{DMatrix, DVector};
 
 use crate::common::error::SimError;
 use crate::common::linalg;
 use crate::rheo::Material;
 
+use super::super::basis::VelRows;
+use super::super::domain::VolumeSet;
 use super::super::params::StokesParams;
 use super::pressure::Pressure;
 use super::{Fields, Loads, Operators, assemble_f, factor_range, solve_range};
@@ -27,19 +29,35 @@ impl LimitData {
     pub fn lerp(a: &Self, b: &Self, t: f64) -> Self {
         Self {
             load: &a.load + (&b.load - &a.load) * t,
-            p0: a.p0.iter().zip(&b.p0).map(|(x, y)| x + t * (y - x)).collect(),
+            p0: a
+                .p0
+                .iter()
+                .zip(&b.p0)
+                .map(|(x, y)| x + t * (y - x))
+                .collect(),
         }
     }
 }
 
 /// `ℓ` of Proposition 10.0.12.1 and `p₀`, the Nitsche pressure (§8.1.3) with `τ = T_tide`.
-pub fn data(ops: &Operators, ld: &Loads, prm: &StokesParams, m: &Material) -> Result<LimitData, SimError> {
+pub fn data(
+    ops: &Operators,
+    ld: &Loads,
+    prm: &StokesParams,
+    m: &Material,
+) -> Result<LimitData, SimError> {
     let np = ops.vol.pts.len();
     let mut pr = Pressure::new(ops, m.spec.p_min);
     let zero = DVector::zeros(ops.n_u);
-    let rest = Fields { shear: vec![0.0; np], d: DVector::zeros(6 * np) };
+    let rest = Fields {
+        shear: vec![0.0; np],
+        d: DVector::zeros(6 * np),
+    };
     pr.update(ops, ld, prm, m, m.spec.gamma_eps, &zero, &rest, None)?;
-    Ok(LimitData { load: assemble_f(ops, ld), p0: pr.p_vals })
+    Ok(LimitData {
+        load: assemble_f(ops, ld),
+        p0: pr.p_vals,
+    })
 }
 
 /// A certified bracket `lo ≤ L* ≤ hi`, and the mechanism of its kinematic bound: velocity
@@ -69,7 +87,9 @@ pub fn bracket(
     p_min: f64,
     gap: f64,
 ) -> Result<Bracket, SimError> {
-    let tau: Vec<f64> = (0..cohesion.len()).map(|i| cohesion[i] + mu * data.p0[i].max(p_min)).collect();
+    let tau: Vec<f64> = (0..cohesion.len())
+        .map(|i| cohesion[i] + mu * data.p0[i].max(p_min))
+        .collect();
     bracket_with(ops, &data.load, &tau, gap, false)
 }
 
@@ -77,31 +97,112 @@ pub fn bracket(
 /// `certify = false` exits as soon as the bracket excludes 1; `certify = true` keeps
 /// tightening until the relative width meets `gap` (or `MAX_PASSES`), so the caller
 /// decides on a converged bracket instead of an early-exit bound.
-pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64, certify: bool) -> Result<Bracket, SimError> {
+pub fn bracket_with(
+    ops: &Operators,
+    load: &DVector<f64>,
+    tau: &[f64],
+    gap: f64,
+    certify: bool,
+) -> Result<Bracket, SimError> {
+    bracket_on(&ops.rows, &ops.vol, &ops.rigid, load, tau, gap, certify)
+}
+
+/// The bracket of `L*` on explicit velocity rows, quadrature and rigid
+/// constraints: the A/B oracle evaluates the same load on another basis
+/// family (the enclosing-ball spectral rows of `basis::eval_velocity_rays`).
+/// The solve stays unregularized here: the static bound is only valid for the
+/// minimizer of the weighted problem itself, and a kernel-mass regularizer can
+/// invert the ordering `lo ≤ hi` the certificate relies on.
+pub fn bracket_on(
+    rows: &VelRows<f32>,
+    vol: &VolumeSet,
+    rigid: &DMatrix<f64>,
+    load: &DVector<f64>,
+    tau: &[f64],
+    gap: f64,
+    certify: bool,
+) -> Result<Bracket, SimError> {
     let _span = super::super::timing::span("limit_load");
-    let np = ops.vol.pts.len();
-    let cw: Vec<f64> = (0..np).map(|i| ops.vol.w[i] * tau[i]).collect();
+    let np = vol.pts.len();
+    let cw: Vec<f64> = (0..np).map(|i| vol.w[i] * tau[i]).collect();
     if cw.iter().any(|c| !(*c > 0.0)) {
-        return Err(SimError::model_not_closed("limit load: the strength must be positive"));
+        return Err(SimError::model_not_closed(
+            "limit load: the strength must be positive",
+        ));
     }
     let mut q = cw.clone();
     let (mut lo, mut hi) = (0.0_f64, f64::INFINITY);
     let mut rates = vec![0.0; np];
-    let mut mech = vec![0.0; ops.n_u];
+    let mut mech = vec![0.0; rows.d.ncols()];
     let mut stress = vec![[0.0; 6]; np];
     let mut theta = 1.0;
+    let mut rms0 = 0.0;
     for pass in 1..=MAX_PASSES {
         // Σ q_i E_iᵀE_i with E_i = √2 D_i, so that |E_i u| = γ̇_i(u).
         let two_q: Vec<f64> = q.iter().map(|v| 2.0 * v).collect();
-        let k = linalg::weighted_gram(&ops.rows.d, 6, &two_q);
-        let rs = factor_range(ops, &k)?;
-        let (u, _) = solve_range(ops, &rs, load);
+        let k = linalg::weighted_gram(&rows.d, 6, &two_q);
+        if !k.iter().all(|x| x.is_finite()) {
+            // The reweighting diverged: the bounds accumulated so far remain
+            // valid certificates (each pass's lo/hi is bound-valid for any
+            // positive q), so certify mode returns them instead of failing.
+            if certify && (lo > 0.0 || hi.is_finite()) {
+                return Ok(Bracket {
+                    lo,
+                    hi,
+                    iterations: pass,
+                    rates,
+                    u: mech,
+                    stress,
+                });
+            }
+            return Err(SimError::rigid_rank(format!(
+                "limit load: non-finite K at pass {pass}"
+            )));
+        }
+        let rs = match factor_range(rigid, &k, None) {
+            Ok(rs) => rs,
+            Err(e) if certify && (lo > 0.0 || hi.is_finite()) => {
+                let _ = e;
+                return Ok(Bracket {
+                    lo,
+                    hi,
+                    iterations: pass,
+                    rates,
+                    u: mech,
+                    stress,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        let (u, _) = solve_range(rigid, &rs, load);
+        if !u.iter().all(|x| x.is_finite()) {
+            if certify && (lo > 0.0 || hi.is_finite()) {
+                return Ok(Bracket {
+                    lo,
+                    hi,
+                    iterations: pass,
+                    rates,
+                    u: mech,
+                    stress,
+                });
+            }
+            return Err(SimError::rigid_rank(format!(
+                "limit load: the pass-{pass} solve overflowed"
+            )));
+        }
         let c = load.dot(&u);
         if !(c > 0.0) {
             // ℓ vanishes on the admissible velocities: no load, L* = 0.
-            return Ok(Bracket { lo: 0.0, hi: 0.0, iterations: pass, rates, u: mech, stress });
+            return Ok(Bracket {
+                lo: 0.0,
+                hi: 0.0,
+                iterations: pass,
+                rates,
+                u: mech,
+                stress,
+            });
         }
-        let d = linalg::mul(&ops.rows.d, &u);
+        let d = linalg::mul(&rows.d, &u);
         let shear: Vec<f64> = (0..np)
             .map(|i| {
                 let s = &d.as_slice()[6 * i..6 * i + 6];
@@ -109,7 +210,9 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64,
             })
             .collect();
         let norm: f64 = cw.iter().zip(&shear).map(|(c, g)| c * g).sum();
-        let stat = (0..np).map(|i| q[i] * shear[i] / cw[i]).fold(0.0_f64, f64::max);
+        let stat = (0..np)
+            .map(|i| q[i] * shear[i] / cw[i])
+            .fold(0.0_f64, f64::max);
         if c / norm > lo {
             lo = c / norm;
             rates = shear.iter().map(|g| g / norm).collect();
@@ -118,18 +221,41 @@ pub fn bracket_with(ops: &Operators, load: &DVector<f64>, tau: &[f64], gap: f64,
         if stat < hi {
             hi = stat;
             let s2 = std::f64::consts::SQRT_2;
-            stress = (0..np).map(|i| std::array::from_fn(|c| q[i] / ops.vol.w[i] * s2 * d[6 * i + c])).collect();
+            stress = (0..np)
+                .map(|i| std::array::from_fn(|c| q[i] / vol.w[i] * s2 * d[6 * i + c]))
+                .collect();
         }
         if (hi - lo <= gap * hi) || (!certify && (lo > 1.0 || hi < 1.0)) {
-            return Ok(Bracket { lo, hi, iterations: pass, rates, u: mech, stress });
+            return Ok(Bracket {
+                lo,
+                hi,
+                iterations: pass,
+                rates,
+                u: mech,
+                stress,
+            });
         }
         // Smoothed-stationarity weights with a shrinking smoothing ε = θ · rms γ̇.
+        // The shear floor is a fraction of the current γ̇_max: a localized
+        // mechanism collapses rms while γ̇_max stays large, and only the peak
+        // shear bounds the weight contrast (and the conditioning of K).
         let rms = (shear.iter().map(|g| g * g).sum::<f64>() / np as f64).sqrt();
-        let eps = theta * rms;
+        let smax = shear.iter().cloned().fold(0.0_f64, f64::max);
+        if rms0 == 0.0 && rms.is_finite() {
+            rms0 = rms;
+        }
+        let eps = (theta * rms).max(1e-4 * smax).max(1e-10 * rms0);
         theta = (theta * 0.5).max(1e-8);
         for i in 0..np {
             q[i] = cw[i] / (shear[i] * shear[i] + eps * eps).sqrt();
         }
     }
-    Ok(Bracket { lo, hi, iterations: MAX_PASSES, rates, u: mech, stress })
+    Ok(Bracket {
+        lo,
+        hi,
+        iterations: MAX_PASSES,
+        rates,
+        u: mech,
+        stress,
+    })
 }

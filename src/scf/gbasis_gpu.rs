@@ -37,9 +37,22 @@ fn pack_modes(geo: &GeoBasis) -> Vec<f32> {
             Mode::Rigid { a, w } => (a, w, 0.0, 0.0),
             Mode::Kernel { c, e, h } => (c, e, h as f32, 1.0),
             Mode::Flux { z } => (z, DVec3::ZERO, 0.0, 2.0),
+            Mode::Poly { e, ijk } => (
+                e,
+                DVec3::new(ijk[0] as f64, ijk[1] as f64, ijk[2] as f64),
+                0.0,
+                3.0,
+            ),
         };
         out.extend([
-            f0.x as f32, f0.y as f32, f0.z as f32, f1.x as f32, f1.y as f32, f1.z as f32, h, kind,
+            f0.x as f32,
+            f0.y as f32,
+            f0.z as f32,
+            f1.x as f32,
+            f1.y as f32,
+            f1.z as f32,
+            h,
+            kind,
         ]);
     }
     out
@@ -91,11 +104,7 @@ pub fn rows(geo: &GeoBasis, pts: &[DVec3], want: Want) -> Result<VelRows<f32>, S
         pad1: 0,
     };
     let size = |block: usize, wanted: bool| {
-        if wanted {
-            block * np * nm * 4
-        } else {
-            4
-        }
+        if wanted { block * np * nm * 4 } else { 4 }
     };
     let back = gpu::once(
         gpu::kernel("gbasis_rows")?,

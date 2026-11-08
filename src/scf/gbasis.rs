@@ -27,9 +27,34 @@ pub enum Mode {
     /// The cavity-flux mode `∇|x − z_j|⁻¹` of Proposition 8.1.5: harmonic and
     /// divergence-free on `𝒱`, with unit flux `±4π` through `∂C_j`.
     Flux { z: DVec3 },
+    /// A global polynomial swirl `B = ∇×(m·e)`, `m = x^i y^j z^k`: the
+    /// coarsest scale of the same curl construction. Compact swirls alone
+    /// approximate a smooth field only through near-dependent combinations —
+    /// the low-degree part is carried exactly by a few global modes.
+    Poly { e: DVec3, ijk: [u32; 3] },
 }
 
 impl Mode {
+    /// The vector potential `A(x)` with `B = ∇×A`: `W(s)·e` of a kernel,
+    /// `Zero` where the potential has no canonical representative (rigid
+    /// translations have none; a harmonic field's is not needed).
+    pub fn potential(&self, x: DVec3) -> DVec3 {
+        match *self {
+            Mode::Kernel { c, e, h } => {
+                let r = x - c;
+                let s = r.length();
+                if s >= h {
+                    DVec3::ZERO
+                } else {
+                    let q = 1.0 - s / h;
+                    e * (q.powi(4) * (4.0 * s / h + 1.0))
+                }
+            }
+            Mode::Poly { e, ijk } => e * mono_dn(ijk, &[], x),
+            _ => DVec3::ZERO,
+        }
+    }
+
     /// The value `B(x)`.
     pub fn value(&self, x: DVec3) -> DVec3 {
         match *self {
@@ -46,6 +71,12 @@ impl Mode {
                     r / -(rn * rn * rn)
                 }
             }
+            Mode::Poly { e, ijk } => DVec3::new(
+                mono_dn(ijk, &[0], x),
+                mono_dn(ijk, &[1], x),
+                mono_dn(ijk, &[2], x),
+            )
+            .cross(e),
         }
     }
 
@@ -81,6 +112,27 @@ impl Mode {
                     S2 * j(r.y, r.z, 0.0),
                 ]
             }
+            Mode::Poly { e, ijk } => {
+                // ∂_b B = (∂_b ∇m) × e: Jacobian row b is the Hessian column
+                // crossed with the axis.
+                let j = |b: usize| {
+                    DVec3::new(
+                        mono_dn(ijk, &[b, 0], x),
+                        mono_dn(ijk, &[b, 1], x),
+                        mono_dn(ijk, &[b, 2], x),
+                    )
+                    .cross(e)
+                };
+                let (r0, r1, r2) = (j(0), j(1), j(2));
+                [
+                    r0.x,
+                    r1.y,
+                    r2.z,
+                    S2 * 0.5 * (r0.y + r1.x),
+                    S2 * 0.5 * (r0.z + r2.x),
+                    S2 * 0.5 * (r1.z + r2.y),
+                ]
+            }
         }
     }
 
@@ -97,6 +149,19 @@ impl Mode {
                 let (_, dk, ddk) = kernel_k(s, h);
                 (r.cross(e)) * (ddk + 2.0 * dk / s) + (r / s).cross(e) * (2.0 * dk)
             }
+            // ΔB = ∇(Δm) × e for the polynomial swirl.
+            Mode::Poly { e, ijk } => DVec3::new(
+                mono_dn(ijk, &[0, 0, 0], x)
+                    + mono_dn(ijk, &[1, 1, 0], x)
+                    + mono_dn(ijk, &[2, 2, 0], x),
+                mono_dn(ijk, &[0, 0, 1], x)
+                    + mono_dn(ijk, &[1, 1, 1], x)
+                    + mono_dn(ijk, &[2, 2, 1], x),
+                mono_dn(ijk, &[0, 0, 2], x)
+                    + mono_dn(ijk, &[1, 1, 2], x)
+                    + mono_dn(ijk, &[2, 2, 2], x),
+            )
+            .cross(e),
             // Rigid modes and the harmonic flux mode are harmonic.
             _ => DVec3::ZERO,
         }
@@ -170,10 +235,55 @@ impl Mode {
                     out[6 * kk + 5] = S2 * 0.5 * (t[(1, 2)] + t[(2, 1)]);
                 }
             }
+            Mode::Poly { e, ijk } => {
+                for kk in 0..3 {
+                    let mut t = nalgebra::Matrix3::<f64>::zeros();
+                    for i in 0..3 {
+                        let row = DVec3::new(
+                            mono_dn(ijk, &[kk, i, 0], x),
+                            mono_dn(ijk, &[kk, i, 1], x),
+                            mono_dn(ijk, &[kk, i, 2], x),
+                        )
+                        .cross(e);
+                        for j in 0..3 {
+                            t[(i, j)] = row[j];
+                        }
+                    }
+                    out[6 * kk] = t[(0, 0)];
+                    out[6 * kk + 1] = t[(1, 1)];
+                    out[6 * kk + 2] = t[(2, 2)];
+                    out[6 * kk + 3] = S2 * 0.5 * (t[(0, 1)] + t[(1, 0)]);
+                    out[6 * kk + 4] = S2 * 0.5 * (t[(0, 2)] + t[(2, 0)]);
+                    out[6 * kk + 5] = S2 * 0.5 * (t[(1, 2)] + t[(2, 1)]);
+                }
+            }
             Mode::Rigid { .. } => {}
         }
         out
     }
+}
+
+/// Mixed partial of the monomial `x^i y^j z^k` at `x`: `ders` lists the
+/// derivative coordinates (e.g. `[0,0,1]` for `∂²_x ∂_z`). Falling-factorial
+/// coefficient included; an over-differentiated coordinate yields 0.
+fn mono_dn(ijk: [u32; 3], ders: &[usize], x: DVec3) -> f64 {
+    let mut n = [0u32; 3];
+    for &a in ders {
+        n[a] += 1;
+    }
+    let xs = [x.x, x.y, x.z];
+    let mut v = 1.0;
+    for c in 0..3 {
+        if ijk[c] < n[c] {
+            return 0.0;
+        }
+        let mut coef = 1.0;
+        for t in 0..n[c] {
+            coef *= (ijk[c] - t) as f64;
+        }
+        v *= coef * xs[c].powi((ijk[c] - n[c]) as i32);
+    }
+    v
 }
 
 /// `(k, k', k'')` of `B = k(s)·(r × e)`, `k = W'(s)/s` for the Wendland
@@ -182,7 +292,11 @@ impl Mode {
 fn kernel_k(s: f64, h: f64) -> (f64, f64, f64) {
     let q = 1.0 - s / h;
     let h2 = h * h;
-    (-20.0 * q * q * q / h2, 60.0 * q * q / (h2 * h), -120.0 * q / (h2 * h2))
+    (
+        -20.0 * q * q * q / h2,
+        60.0 * q * q / (h2 * h),
+        -120.0 * q / (h2 * h2),
+    )
 }
 
 /// The compact kernel `W(s) = (1 − s/h)⁴ (4s/h + 1)`, `s = |x − c|`: the
@@ -255,10 +369,19 @@ impl GeoBasis {
     ///
     /// `h_kernel` is the common compact support radius; the caller ties it to
     /// the cell size (≈ `h_vol` of the CellBVH) so that every kernel overlaps
-    /// several quadrature nodes. `cavity_centres` are the interior points of
-    /// the sealed components of `TriMesh::cavities()`; with none, the family
-    /// is complete in the connected-`Γ` sense of Proposition 8.1.5(1).
-    pub fn build(vol_pts: &[DVec3], face_pts: &[DVec3], h_kernel: f64, cavity_centres: Vec<DVec3>) -> Self {
+    /// several quadrature nodes. Every fourth centre is additionally given a
+    /// kernel at `3·h_kernel`: a single support scale cannot carry both the
+    /// smooth part of the field and its detail — wide swirls approximate the
+    /// former at a mass-Gram conditioning price the narrow ones do not pay
+    /// (Prop 8.1.3 is checked on the union). `cavity_centres` are the interior
+    /// points of the sealed components of `TriMesh::cavities()`; with none,
+    /// the family is complete in the connected-`Γ` sense of Prop 8.1.5(1).
+    pub fn build(
+        vol_pts: &[DVec3],
+        face_pts: &[DVec3],
+        h_kernel: f64,
+        cavity_centres: Vec<DVec3>,
+    ) -> Self {
         assert!(h_kernel > 0.0 && h_kernel.is_finite());
         let axes = [DVec3::X, DVec3::Y, DVec3::Z];
         let mut modes = Vec::new();
@@ -269,9 +392,47 @@ impl GeoBasis {
         for w in axes {
             modes.push(Mode::Rigid { a: DVec3::ZERO, w });
         }
-        for &c in vol_pts.iter().chain(face_pts.iter()) {
+        // The global polynomial scale: `∇×(m·e)` for monomials of degree
+        // 2..=4 — `B` then spans the cubic swirls (a Kelvin mode, a tide);
+        // degree 1 repeats the rigid translations and a pure-power monomial
+        // with its own axis is identically zero. Asking the compact kernels
+        // to carry the smooth part forces near-dependent combinations the
+        // Prop 8.1.3 check then has to pay for.
+        for deg in 2..=4u32 {
+            for i in 0..=deg {
+                for j in 0..=(deg - i) {
+                    let ijk = [i, j, deg - i - j];
+                    for (a, &e) in axes.iter().enumerate() {
+                        if ijk[a] == deg {
+                            continue;
+                        }
+                        modes.push(Mode::Poly { e, ijk });
+                    }
+                }
+            }
+        }
+        let n_c = vol_pts.len() + face_pts.len();
+        for (i, &c) in vol_pts.iter().chain(face_pts.iter()).enumerate() {
             for e in axes {
                 modes.push(Mode::Kernel { c, e, h: h_kernel });
+            }
+            if n_c > 64 && i % 4 == 0 {
+                for e in axes {
+                    modes.push(Mode::Kernel {
+                        c,
+                        e,
+                        h: 3.0 * h_kernel,
+                    });
+                }
+            }
+            if n_c > 64 && i % 16 == 0 {
+                for e in axes {
+                    modes.push(Mode::Kernel {
+                        c,
+                        e,
+                        h: 6.0 * h_kernel,
+                    });
+                }
             }
         }
         for &z in &cavity_centres {
@@ -287,7 +448,6 @@ impl GeoBasis {
     pub fn n(&self) -> usize {
         self.modes.len()
     }
-
 
     /// The basis matrix `B` at `pts`: row `3p + a` of `v`, `6p + c` of `d`
     /// — the same layout `VelRows` uses for the spectral family.
@@ -396,6 +556,165 @@ pub fn gram_check(
     rho: Option<&[f64]>,
     tol: f64,
 ) -> GramReport {
+    let m = gram_matrix(basis, pts, w, rho);
+    // Rank is read on the correlation Gram `D^{-1/2} M D^{-1/2}`: the raw
+    // spectrum mixes the natural scales of the families — a rigid rotation's
+    // |B| is ~R against a kernel's ~h^{-1} — so `tol·σ_max` measures a unit
+    // mismatch, not dependence. Prop 8.1.3 asks whether the retained
+    // *functions* are independent, which is the normalized matrix.
+    let c = correlation(&m);
+    let svd = c.svd(true, true);
+    let s = svd.singular_values;
+    let sigma_max = s.iter().cloned().fold(0.0, f64::max);
+    let sigma_min = s.iter().cloned().fold(f64::INFINITY, f64::min);
+    let rank = s.iter().filter(|&&v| v > tol * sigma_max).count();
+    GramReport {
+        sigma_min,
+        sigma_max,
+        rank,
+        n_modes: basis.n(),
+        cond: if sigma_min > 0.0 {
+            sigma_max / sigma_min
+        } else {
+            f64::INFINITY
+        },
+    }
+}
+
+/// `D^{-1/2} M D^{-1/2}`: the Gram matrix of the modes normalized to unit
+/// `L²(ρ w)` on the quadrature — the angle between the functions, their scale
+/// removed. A zero diagonal (an unsupported mode) maps to a zero row.
+pub(crate) fn correlation(m: &DMatrix<f64>) -> DMatrix<f64> {
+    let n = m.nrows();
+    // The floor must survive a product of two: `1e-300²` underflows to 0
+    // and a zero-norm mode (rigid under the strain metric) would turn the
+    // whole correlation row into NaN.
+    let d: Vec<f64> = (0..n).map(|i| m[(i, i)].sqrt().max(1e-150)).collect();
+    DMatrix::from_fn(n, n, |b, c| m[(b, c)] / (d[b] * d[c]))
+}
+
+/// Drop modes until the retained family is independent in both of the
+/// metrics it serves. The orthogonalization of §8.1 is a pivoted
+/// Gram–Schmidt on the correlation Gram `D^{-1/2} M D^{-1/2}`: walk the
+/// modes, keep the ones whose weighted-orthogonal residual against the
+/// retained span exceeds the tolerance, and grow the Cholesky factor of the
+/// retained block as we go. Independence is then by construction — no
+/// iterative peeling of an SVD. Stage one selects in the mass metric (the
+/// projector's); stage two in the strain metric (the solves'): a mode whose
+/// strain is already spanned sits in the stiffness Gram's numerical null
+/// space and is handed a noise-determined coefficient. Rigid and flux modes
+/// are never dropped: a deficient rigid block or a dependent flux mode means
+/// the geometry is wrong, not the basis.
+pub fn prune(
+    mut basis: GeoBasis,
+    pts: &[DVec3],
+    w: &[f64],
+    rho: Option<&[f64]>,
+    tol: f64,
+    max_drops: usize,
+) -> (GeoBasis, GramReport) {
+    // Keep modes whose orthogonal residual against the retained span exceeds
+    // ~3%: a chained sequence of barely-independent pivots still leaves the
+    // correlation Gram below the rank threshold, which poisons every solve
+    // built on the basis.
+    let res2_tol = 1e-3_f64.max(tol.sqrt());
+    // Stage one selects in the strain metric (the solves'): a mode whose
+    // strain is already spanned sits in the stiffness Gram's numerical null
+    // space and is handed a noise-determined coefficient. The candidate order
+    // puts the global layer — rigid, flux, polynomial — ahead of the compact
+    // kernels, so an energy-distinct polynomial direction is never lost to a
+    // kernel combination that merely resembles it. Energy-independence
+    // implies mass-independence (a zero field has zero strain), which is what
+    // lets the second stage leave the vetted global layer alone.
+    let sgram = strain_gram_matrix(&basis, pts, w, rho);
+    let scorr = correlation(&sgram);
+    let (kept_s, drops) = pivoted_select(&scorr, &basis.modes, res2_tol, max_drops, &[]);
+    basis.modes = kept_s.iter().map(|&b| basis.modes[b].clone()).collect();
+    // Stage two re-vets only the compact kernels in the mass metric (the
+    // projector's). The strain-vetted global layer is protected: its modes
+    // are energy-distinct hence mass-independent, but possibly below the
+    // mass threshold — the price of a complete even layer is a stiffer Gram
+    // condition number, the remedy §8.1's orthonormalization anticipates.
+    let protected: Vec<bool> = basis
+        .modes
+        .iter()
+        .map(|m| !matches!(m, Mode::Kernel { .. }))
+        .collect();
+    let corr = correlation(&gram_matrix(&basis, pts, w, rho));
+    let (kept, _) = pivoted_select(
+        &corr,
+        &basis.modes,
+        res2_tol,
+        max_drops.saturating_sub(drops),
+        &protected,
+    );
+    basis.modes = kept.iter().map(|&b| basis.modes[b].clone()).collect();
+    let rep = gram_check(&basis, pts, w, rho, tol);
+    (basis, rep)
+}
+
+/// Greedy pivoted Gram–Schmidt on a correlation matrix: keep the modes whose
+/// weighted-orthogonal residual against the retained span exceeds `res2_tol`
+/// (squared), mandatory modes first — rigid and flux modes are never dropped.
+/// `protected` modes (the strain-vetted global layer) are kept too, unless
+/// their residual is numerically zero — a true duplicate rather than a
+/// mass-weak direction. Returns the kept indices in keep order and the drop
+/// count.
+fn pivoted_select(
+    corr: &DMatrix<f64>,
+    modes: &[Mode],
+    res2_tol: f64,
+    max_drops: usize,
+    protected: &[bool],
+) -> (Vec<usize>, usize) {
+    let n = modes.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&b| match modes[b] {
+        Mode::Rigid { .. } | Mode::Flux { .. } => 0,
+        Mode::Poly { .. } => 1,
+        Mode::Kernel { .. } => 2,
+    });
+    let mut kept: Vec<usize> = Vec::with_capacity(n);
+    let mut chol = DMatrix::<f64>::zeros(n, n);
+    let mut drops = 0usize;
+    for b in order {
+        let k = kept.len();
+        // y solves the kept block: residual² = corr_bb − ‖L⁻¹ c‖².
+        let mut y = vec![0.0; k];
+        for j in 0..k {
+            let mut s = corr[(b, kept[j])];
+            for t in 0..j {
+                s -= chol[(j, t)] * y[t];
+            }
+            y[j] = s / chol[(j, j)];
+        }
+        let res2 = corr[(b, b)] - y.iter().map(|v| v * v).sum::<f64>();
+        let mandatory = matches!(modes[b], Mode::Rigid { .. } | Mode::Flux { .. });
+        let vetted = protected.get(b).copied().unwrap_or(false) && res2 > 1e-12;
+        if res2 > res2_tol || mandatory || vetted || drops >= max_drops {
+            for t in 0..k {
+                chol[(k, t)] = y[t];
+            }
+            // A mandatory mode kept despite a vanishing residual (a rigid
+            // mode under the strain metric) would inject a near-zero pivot:
+            // its correlation column is identically zero anyway, so a unit
+            // pivot is exact and keeps the forward solves finite.
+            chol[(k, k)] = if res2 > res2_tol { res2.sqrt() } else { 1.0 };
+            kept.push(b);
+        } else {
+            drops += 1;
+        }
+    }
+    (kept, drops)
+}
+
+/// The assembled `M_Γ` of `gram_check`, reused by `prune`.
+pub(crate) fn gram_matrix(
+    basis: &GeoBasis,
+    pts: &[DVec3],
+    w: &[f64],
+    rho: Option<&[f64]>,
+) -> DMatrix<f64> {
     let (n_b, supp) = (basis.n(), support_lists(basis, pts));
     let mut m = DMatrix::<f64>::zeros(n_b, n_b);
     let mut union = Vec::new();
@@ -417,81 +736,18 @@ pub fn gram_check(
             m[(c, b)] = s;
         }
     }
-    let svd = m.clone().svd(true, true);
-    let s = svd.singular_values;
-    let sigma_max = s.iter().cloned().fold(0.0, f64::max);
-    let sigma_min = s.iter().cloned().fold(f64::INFINITY, f64::min);
-    let rank = s.iter().filter(|&&v| v > tol * sigma_max).count();
-    GramReport {
-        sigma_min,
-        sigma_max,
-        rank,
-        n_modes: n_b,
-        cond: if sigma_min > 0.0 {
-            sigma_max / sigma_min
-        } else {
-            f64::INFINITY
-        },
-    }
+    m
 }
 
-/// Drop kernel modes until the retained family passes the Prop 8.1.3 rank
-/// check: from one SVD of `M_Γ` the kernel modes that carry the small
-/// singular vectors are removed in a single pass (the orthogonalization of
-/// §8.1), and the family is re-checked once. Rigid and flux modes are never
-/// dropped — a deficient rigid block or a dependent flux mode means the
-/// geometry is wrong, not the basis.
-pub fn prune(
-    mut basis: GeoBasis,
+/// The strain Gram `∫ρ w D B_b·D B_c` on the same quadrature: the stiffness
+/// metric of the flow solves. A mode can be mass-independent yet
+/// strain-dependent — its coefficient is then determined by noise alone.
+pub(crate) fn strain_gram_matrix(
+    basis: &GeoBasis,
     pts: &[DVec3],
     w: &[f64],
     rho: Option<&[f64]>,
-    tol: f64,
-    max_drops: usize,
-) -> (GeoBasis, GramReport) {
-    let mut rep = gram_check(&basis, pts, w, rho, tol);
-    if rep.full_rank() {
-        return (basis, rep);
-    }
-    let m = gram_matrix(&basis, pts, w, rho);
-    let svd = m.svd(true, true);
-    if let Some(vt) = svd.v_t {
-        let n = svd.singular_values.len();
-        let s_max = svd.singular_values.iter().cloned().fold(0.0, f64::max);
-        let deficiency = svd
-            .singular_values
-            .iter()
-            .filter(|&&s| s <= tol * s_max)
-            .count();
-        // Each small singular vector convicts the kernel mode of its largest
-        // entry; drop that many of the most convicted ones, each once.
-        let mut scores = vec![0.0f64; n];
-        for i in (n - deficiency)..n {
-            for (b, v) in vt.row(i).iter().enumerate() {
-                scores[b] = scores[b].max(v.abs());
-            }
-        }
-        let mut kernels: Vec<usize> = (0..n)
-            .filter(|&b| matches!(basis.modes[b], Mode::Kernel { .. }))
-            .collect();
-        kernels.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
-        for &drop in kernels.iter().take(deficiency.min(max_drops)) {
-            basis.modes[drop] = Mode::Kernel {
-                c: DVec3::splat(f64::INFINITY),
-                e: DVec3::X,
-                h: 1.0,
-            };
-        }
-        basis
-            .modes
-            .retain(|m| !matches!(m, Mode::Kernel { c, .. } if !c.is_finite()));
-        rep = gram_check(&basis, pts, w, rho, tol);
-    }
-    (basis, rep)
-}
-
-/// The assembled `M_Γ` of `gram_check`, reused by `prune`.
-pub(crate) fn gram_matrix(basis: &GeoBasis, pts: &[DVec3], w: &[f64], rho: Option<&[f64]>) -> DMatrix<f64> {
+) -> DMatrix<f64> {
     let (n_b, supp) = (basis.n(), support_lists(basis, pts));
     let mut m = DMatrix::<f64>::zeros(n_b, n_b);
     let mut union = Vec::new();
@@ -506,7 +762,10 @@ pub(crate) fn gram_matrix(basis: &GeoBasis, pts: &[DVec3], w: &[f64], rho: Optio
                 let p = p as usize;
                 let pw = rho.map_or(1.0, |r| r[p]) * w[p];
                 if pw != 0.0 {
-                    s += pw * mb.value(pts[p]).dot(mc.value(pts[p]));
+                    let (sb, sc) = (mb.strain(pts[p]), mc.strain(pts[p]));
+                    for k in 0..6 {
+                        s += pw * sb[k] * sc[k];
+                    }
                 }
             }
             m[(b, c)] = s;
@@ -621,7 +880,11 @@ mod tests {
     fn flux_mode_is_solenoidal_and_harmonic() {
         let m = Mode::Flux { z: DVec3::ZERO };
         let d = m.strain(DVec3::new(0.4, 0.3, -0.2));
-        assert!((d[0] + d[1] + d[2]).abs() < 1e-12, "trace {}", d[0] + d[1] + d[2]);
+        assert!(
+            (d[0] + d[1] + d[2]).abs() < 1e-12,
+            "trace {}",
+            d[0] + d[1] + d[2]
+        );
         let v = m.value(DVec3::new(0.5, 0.0, 0.0));
         assert!((v.x + 4.0).abs() < 1e-12 && v.y.abs() < 1e-15);
     }
@@ -637,7 +900,10 @@ mod tests {
         let mut u = vec![0.0; basis.n()];
         u[0] = 2.5;
         let v = basis.contract(&pts, &u);
-        assert!(v.chunks(3).all(|c| (c[0] - 2.5).abs() < 1e-14 && c[1].abs() < 1e-14));
+        assert!(
+            v.chunks(3)
+                .all(|c| (c[0] - 2.5).abs() < 1e-14 && c[1].abs() < 1e-14)
+        );
         // Rotation about z is mode 5.
         let mut u2 = vec![0.0; basis.n()];
         u2[5] = 1.0;

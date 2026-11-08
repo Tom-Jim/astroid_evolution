@@ -7,6 +7,8 @@
 //                    k = −20q³/h², k′ = 60q²/h³, k″ = −120q/h⁴.
 //                    (f0..f2 = c, f3..f5 = e, f6 = h)
 //   kind 2 — flux:   B = −∇|x − z|⁻¹ = −r/r³  (f0..f2 = z)
+//   kind 3 — poly:   B = ∇×(m·e) = ∇m × e for the monomial m = x^i y^j z^k
+//                    (f0..f2 = e, f3..f5 = i, j, k)
 //
 // One thread per point walks all modes and writes the row blocks column-major
 // like `VelRows<f32>`: out[b * (block_rows * n_points) + block_row * n_points + p].
@@ -37,6 +39,44 @@ fn axis(i: u32) -> vec3<f32> {
     var a = vec3<f32>(0.0);
     a[i] = 1.0;
     return a;
+}
+
+fn ipow(x: f32, n: u32) -> f32 {
+    var r = 1.0;
+    for (var t = 0u; t < n; t = t + 1u) {
+        r = r * x;
+    }
+    return r;
+}
+
+// Mixed partial of the monomial x^i y^j z^k: `nn` counts the derivatives in
+// each coordinate; the falling-factorial coefficient is included.
+fn mono_d(ijk: vec3<u32>, nn: vec3<u32>, x: vec3<f32>) -> f32 {
+    var v = 1.0;
+    let xs = array<f32, 3>(x.x, x.y, x.z);
+    for (var c = 0u; c < 3u; c = c + 1u) {
+        if ijk[c] < nn[c] {
+            return 0.0;
+        }
+        var coef = 1.0;
+        for (var t = 0u; t < nn[c]; t = t + 1u) {
+            coef = coef * f32(ijk[c] - t);
+        }
+        v = v * coef * ipow(xs[c], ijk[c] - nn[c]);
+    }
+    return v;
+}
+
+// The vector whose component a is the derivative `∂_a` of `mono_d(ijk, nn, ·)`:
+// one more derivative per component on top of the base count `nn`.
+fn mono_dercol(ijk: vec3<u32>, nn: vec3<u32>, x: vec3<f32>) -> vec3<f32> {
+    var g = vec3<f32>(0.0);
+    for (var a = 0u; a < 3u; a = a + 1u) {
+        var m = nn;
+        m[a] = m[a] + 1u;
+        g[a] = mono_d(ijk, m, x);
+    }
+    return g;
 }
 
 @compute @workgroup_size(64)
@@ -90,6 +130,56 @@ fn gbasis_rows(@builtin(global_invocation_id) gid: vec3<u32>) {
                             t[i][jj] = 3.0 * r[kk] * dij * ir5
                                 + 3.0 * (dki * r[jj] + r[i] * dkj) * ir5
                                 - 15.0 * r[kk] * r[i] * r[jj] * ir7;
+                        }
+                    }
+                    g18[6u * kk] = t[0][0];
+                    g18[6u * kk + 1u] = t[1][1];
+                    g18[6u * kk + 2u] = t[2][2];
+                    g18[6u * kk + 3u] = SQRT2 * 0.5 * (t[0][1] + t[1][0]);
+                    g18[6u * kk + 4u] = SQRT2 * 0.5 * (t[0][2] + t[2][0]);
+                    g18[6u * kk + 5u] = SQRT2 * 0.5 * (t[1][2] + t[2][1]);
+                }
+            }
+        } else if kind == 3u {
+            let e = f0;
+            let ijk = vec3<u32>(u32(f1.x), u32(f1.y), u32(f1.z));
+            val = cross(mono_dercol(ijk, vec3<u32>(0u), x), e);
+            var j = mat3x3<f32>();
+            for (var b = 0u; b < 3u; b = b + 1u) {
+                var nb = vec3<u32>(0u);
+                nb[b] = 1u;
+                let row = cross(mono_dercol(ijk, nb, x), e);
+                for (var a = 0u; a < 3u; a = a + 1u) {
+                    j[b][a] = row[a];
+                }
+            }
+            d6[0] = j[0][0];
+            d6[1] = j[1][1];
+            d6[2] = j[2][2];
+            d6[3] = SQRT2 * 0.5 * (j[0][1] + j[1][0]);
+            d6[4] = SQRT2 * 0.5 * (j[0][2] + j[2][0]);
+            d6[5] = SQRT2 * 0.5 * (j[1][2] + j[2][1]);
+            // ΔB = ∇(Δm) × e.
+            var dl = vec3<f32>(0.0);
+            for (var c = 0u; c < 3u; c = c + 1u) {
+                for (var a = 0u; a < 3u; a = a + 1u) {
+                    var naa = vec3<u32>(0u);
+                    naa[a] = 2u;
+                    naa[c] = naa[c] + 1u;
+                    dl[c] = dl[c] + mono_d(ijk, naa, x);
+                }
+            }
+            lap = cross(dl, e);
+            if gb_p.want_gd == 1u {
+                for (var kk = 0u; kk < 3u; kk = kk + 1u) {
+                    var t = mat3x3<f32>();
+                    for (var i = 0u; i < 3u; i = i + 1u) {
+                        var nki = vec3<u32>(0u);
+                        nki[kk] = nki[kk] + 1u;
+                        nki[i] = nki[i] + 1u;
+                        let row = cross(mono_dercol(ijk, nki, x), e);
+                        for (var a = 0u; a < 3u; a = a + 1u) {
+                            t[i][a] = row[a];
                         }
                     }
                     g18[6u * kk] = t[0][0];

@@ -365,6 +365,9 @@ pub fn geometry(
 /// boundary rule and the face centres, with the intact strength profile (§4.3a).
 pub struct LoadSet {
     pub g_vol: Vec<DVec3>,
+    /// `∇ × g_vol` at the volume points: the effective loads are all gradients,
+    /// so this is identically zero and only completes `Loads::g_curl`.
+    pub g_curl: Vec<DVec3>,
     pub tide: Vec<[f64; 6]>,
     pub g_bnd: Vec<DVec3>,
     pub tide_bnd: Vec<[f64; 6]>,
@@ -400,6 +403,7 @@ impl LoadSet {
         let tide_face: Vec<[f64; 6]> = fwd.face.hess_u.iter().map(tide_of).collect();
         Ok(Self {
             g_vol: g_of(&ops.vol.pts, &vol.grad_u),
+            g_curl: vec![DVec3::ZERO; ops.vol.pts.len()],
             tide: vol.hess_u.iter().map(tide_of).collect(),
             g_bnd: g_of(&ops.bnd.pts, &bnd.grad_u),
             tide_bnd: bnd.hess_u.iter().map(tide_of).collect(),
@@ -413,6 +417,7 @@ impl LoadSet {
     pub fn loads(&self, g_const: f64) -> Loads<'_> {
         Loads {
             g_eff: &self.g_vol,
+            g_curl: &self.g_curl,
             tide: &self.tide,
             g_bnd: &self.g_bnd,
             tide_bnd: &self.tide_bnd,

@@ -8,12 +8,12 @@ use crate::common::error::SimError;
 use crate::common::linalg;
 use crate::rheo::Material;
 
-use super::super::params::StokesParams;
 use super::super::evolving::dilatation::deviator;
+use super::super::params::StokesParams;
 use super::pressure::Pressure;
 use super::{
-    DilatancyState, Guess, Loads, Local, Operators, StokesSolution, assemble_f, d6_dot, eta_eval, load_scale,
-    pd_metric, solve_range, strain_fields, strain_fields_with,
+    DilatancyState, Guess, Loads, Local, Operators, StokesSolution, assemble_f, d6_dot, eta_eval,
+    load_scale, pd_metric, solve_range, strain_fields, strain_fields_with,
 };
 
 /// `φ'(s) = s η(s)` and `φ''(s) = η + s ∂η/∂γ̇` at frozen `c`, `p̃` (Proposition 10.0.12.1).
@@ -38,7 +38,11 @@ fn prox_rate(m: &Material, l: &Local, p_tilde: f64, eps: f64, tau: f64, t: f64, 
             lo = s;
         }
         let next = s - h / (tau + f2);
-        s = if next > lo && next < hi { next } else { 0.5 * (lo + hi) };
+        s = if next > lo && next < hi {
+            next
+        } else {
+            0.5 * (lo + hi)
+        };
         if hi - lo <= 1e-15 * hi {
             break;
         }
@@ -82,7 +86,11 @@ struct Shift {
 
 impl Shift {
     fn none(np: usize) -> Self {
-        Self { e: DVector::zeros(6 * np), b: DVector::zeros(6), state: None }
+        Self {
+            e: DVector::zeros(6 * np),
+            b: DVector::zeros(6),
+            state: None,
+        }
     }
 
     fn set(ops: &Operators, state: DilatancyState) -> Self {
@@ -102,7 +110,11 @@ impl Shift {
                 b[3 + a] += m[a];
             }
         }
-        Self { e, b, state: Some(state) }
+        Self {
+            e,
+            b,
+            state: Some(state),
+        }
     }
 
     fn active(&self) -> Option<&DVector<f64>> {
@@ -166,10 +178,7 @@ pub fn solve_pd(
     };
     // P-orthogonal projection onto the affine K_ε = {B_rb u = −b_ε} (K = ker B_rb
     // without A-Ξ, Proposition 11.8): the solve step stays in K, so only the start moves.
-    let project = |u: &DVector<f64>, b: &DVector<f64>| {
-        let lam = rs.s_chol.solve(&(&ops.rigid * u + b));
-        u - &rs.y * lam
-    };
+    let project = |u: &DVector<f64>, b: &DVector<f64>| rs.project_onto(u, b);
     let start = project(&start, &DVector::zeros(6));
 
     let mut levels = vec![0usize];
@@ -255,7 +264,7 @@ pub fn solve_pd(
             }
             // (U) u ← u − τ_p Π_K^P P⁻¹ (Σ w_i e_iᵀ ς_i − F), then the extrapolation.
             let r = strain_adjoint(ops, &sig) - &f_load;
-            let (step, _) = solve_range(ops, rs, &r);
+            let (step, _) = solve_range(&ops.rigid, rs, &r);
             let un = &u - step * tau_p;
             let du = p_norm(&(&un - &u)) / p_norm(&un).max(1e-300);
             ubar = &un * 2.0 - &u;
@@ -288,13 +297,18 @@ pub fn solve_pd(
                     u = project(&u, &shift.b);
                     ubar = u.clone();
                 }
-                let num: f64 = (0..np).map(|p| w[p] * (pr.p_vals[p] - p_prev[p]).powi(2)).sum();
+                let num: f64 = (0..np)
+                    .map(|p| w[p] * (pr.p_vals[p] - p_prev[p]).powi(2))
+                    .sum();
                 let den: f64 = (0..np).map(|p| w[p] * pr.p_vals[p].powi(2)).sum();
                 let dp = (num / den.max(1e-300)).sqrt();
                 p_prev.clone_from(&pr.p_vals);
                 last = (du, r_gap, dp);
                 let du_floor = p_norm(&u) <= 1e-300;
-                if (du <= prm.relax_tol || du_floor) && r_gap <= prm.relax_tol && dp <= prm.tol_relax {
+                if (du <= prm.relax_tol || du_floor)
+                    && r_gap <= prm.relax_tol
+                    && dp <= prm.tol_relax
+                {
                     converged = true;
                     break;
                 }
@@ -381,7 +395,9 @@ pub fn solve_pd(
             // Under A-Ξ the admissible set is affine (Proposition 11.8) and the bracket does
             // not apply: the suspicion stands as the verdict.
             if ld.dilatancy.is_some() {
-                return Err(SimError::limit_load_collapse(format!("{suspect}: no quasi-static state at this pressure")));
+                return Err(SimError::limit_load_collapse(format!(
+                    "{suspect}: no quasi-static state at this pressure"
+                )));
             }
             let b = super::limit::bracket_with(ops, &f_load, &tau_max, CERTIFY_GAP, false)?;
             if b.lo > 1.0 {
@@ -439,4 +455,3 @@ const COLLAPSE_GROWTH: f64 = 1.8;
 const CERTIFY_GAP: f64 = 1e-3;
 const PD_EXTENSIONS: usize = 10;
 const PD_PROGRESS: f64 = 0.9;
-

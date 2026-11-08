@@ -15,9 +15,10 @@
 //! propagated NaNs. The primal–dual iteration survives only as a `tier2`
 //! test oracle.
 
-use nalgebra::{DMatrix, DVector};
+use nalgebra::{Cholesky, DMatrix, DVector};
 
 use crate::common::error::SimError;
+use crate::common::linalg;
 use crate::common::math::DVec3;
 use crate::rheo::Material;
 use crate::scf::cell_bvh::CellBvh;
@@ -25,8 +26,8 @@ use crate::scf::params::StokesParams;
 
 use super::pressure::Pressure;
 use super::{
-    Guess, Loads, Operators, StokesSolution, assemble_f, assemble_k, d6_dot, eta_eval,
-    factor_range, load_scale, solve_range, strain_fields,
+    Guess, Loads, Operators, StokesSolution, assemble_f, d6_dot, eta_eval, load_scale,
+    strain_fields,
 };
 
 /// One sample state `U = (v, S, p)`: `v` 3, `S` the scaled six-vector of the
@@ -256,10 +257,7 @@ fn sweep_axis(
         }
         // Moving families at both signs: reconstruct `v` and the owned stress
         // from the upwind characteristic amplitudes.
-        let (r_p, r_s) = (
-            rho[i].max(1e-30) * sp.p,
-            rho[i].max(1e-30) * sp.s,
-        );
+        let (r_p, r_s) = (rho[i].max(1e-30) * sp.p, rho[i].max(1e-30) * sp.s);
         // The P family transports the single combined amplitude
         // `σ̃ = S_aa − p` on `v_a`; writing it into both slots would double it
         // every sweep. p persists between the AC corrections instead.
@@ -295,13 +293,7 @@ fn sweep_axis(
 /// The traction residual of boundary-adjacent samples:
 /// `(-pI + S + T_tide) n − t_ext` with `t_ext = −p_ext n` at free faces.
 /// `n` here is the inward depth gradient `∇d` of the volume set (−n of Γ).
-fn traction_fix(
-    ray: &mut Ray,
-    bnd_pts: &[usize],
-    gdepth: &[DVec3],
-    p_ext: f64,
-    tide: &[[f64; 6]],
-) {
+fn traction_fix(ray: &mut Ray, bnd_pts: &[usize], gdepth: &[DVec3], p_ext: f64, tide: &[[f64; 6]]) {
     const S2: f64 = std::f64::consts::FRAC_1_SQRT_2;
     for &i in bnd_pts {
         let n = -gdepth[i];
@@ -319,7 +311,10 @@ fn traction_fix(
         let cur = n.x * (s[0] + t[0] - p) * n.x
             + n.y * (s[1] + t[1] - p) * n.y
             + n.z * (s[2] + t[2] - p) * n.z
-            + 2.0 * (n.x * (s[3] + t[3]) * n.y + n.x * (s[4] + t[4]) * n.z + n.y * (s[5] + t[5]) * n.z);
+            + 2.0
+                * (n.x * (s[3] + t[3]) * n.y
+                    + n.x * (s[4] + t[4]) * n.z
+                    + n.y * (s[5] + t[5]) * n.z);
         let fix = (-p_ext - cur) / n.length_squared().max(1e-30);
         // Spread the correction over the normal stress components only.
         for a in 0..3 {
@@ -383,17 +378,16 @@ fn rigid_project(ray: &mut Ray, w: &[f64], rho: &[f64]) {
     }
 }
 
-/// Relative `L²(ρ)` change of the velocity between two sweeps.
-fn rel_change(old: &[f64], new: &[f64], w: &[f64], rho: &[f64]) -> f64 {
-    let (mut num, mut den) = (0.0, 0.0);
+/// `L²(ρ)` norm of the velocity difference between two sweeps.
+fn dv_norm(old: &[f64], new: &[f64], w: &[f64], rho: &[f64]) -> f64 {
+    let mut num = 0.0;
     for i in 0..new.len() / NDIM {
         let pw = w[i] * rho[i];
         for k in 0..3 {
             num += pw * (new[NDIM * i + k] - old[NDIM * i + k]).powi(2);
-            den += pw * new[NDIM * i + k].powi(2);
         }
     }
-    (num / den.max(1e-300)).sqrt()
+    num.sqrt()
 }
 
 /// The frozen-coefficient hyperbolic ray solve of §10.3.2 for a fixed `η`:
@@ -435,6 +429,17 @@ fn relax(
     const MAX_ROLLBACKS: usize = 30;
     let mut half = f64::NAN;
     let mut converged = false;
+    let mut v_peak = v_norm(ray, w, rho);
+    // `win` is the state one AC period ago, `win_tau` the pseudo-time since.
+    // The split iteration can settle into a small limit cycle kicked by the
+    // periodic AC correction rather than a point; the steady state of §10.3.2
+    // is the phase-aligned drift ‖v(τ+T)−v(τ)‖/T, where the cycle cancels.
+    let mut win = ray.u.clone();
+    let mut win_tau = 0.0;
+    // Snapshot ring of the last `n_p` accepted sweeps: the discrete steady
+    // state of a periodically kicked iteration is a periodic orbit, whose
+    // time mean is the representative state for the caller.
+    let mut hist: std::collections::VecDeque<Vec<f64>> = std::collections::VecDeque::new();
     for s in 0..max_sweeps {
         if s == max_sweeps / 2 {
             half = v_norm(ray, w, rho);
@@ -445,7 +450,8 @@ fn relax(
         }
         // Traction BC on the boundary-adjacent samples (§10.3.2 boundary hit).
         traction_fix(ray, bnd_pts, &ops.vol.gdepth, p_ext, ld.tide);
-        if s % n_p == n_p - 1 {
+        let kick = s % n_p == n_p - 1;
+        if kick {
             // AC correction: `p ← p − κ^{-1}(∇·v − g)·(κΔτ)` — the local
             // divergence relaxes pressure directly (g ≡ 0 without A-Ξ).
             for i in 0..vol {
@@ -456,10 +462,16 @@ fn relax(
             rigid_project(ray, w, rho);
         }
         sweeps = s + 1;
-        // Steady-state test on the *rate* ‖Δv‖/(3Δτ·‖v‖): a pseudo-time step
-        // that merely shrinks Δτ cannot fake convergence at a non-equilibrium.
-        let eps = rel_change(&prev, &ray.u, w, rho) / (3.0 * dt).max(1e-300);
-        if !eps.is_finite() || !ray.u.iter().all(|v| v.is_finite()) {
+        win_tau += 3.0 * dt;
+        // Steady-state test on the *residual drift rate* ‖Δv‖/(Δτ·v_ref),
+        // with `v_ref` the peak velocity this relaxation develops. A relative
+        // ‖Δv‖/‖v‖ test cannot see a fixed point: near it, Δv ~ λΔτ·v
+        // plateaus at the slowest eigenrate, and at v ~ 0 the quotient
+        // degenerates. The drift rate vanishes at the fixed point, while a
+        // growing (collapsing) field keeps ‖v‖ ≥ v_ref and the rate O(λ).
+        v_peak = v_peak.max(v_norm(ray, w, rho));
+        let step = dv_norm(&prev, &ray.u, w, rho) / (3.0 * dt * v_peak).max(1e-300);
+        if !step.is_finite() || !ray.u.iter().all(|v| v.is_finite()) {
             if rollbacks < MAX_ROLLBACKS {
                 ray.u.copy_from_slice(&prev);
                 dt_fac *= 0.5;
@@ -470,21 +482,51 @@ fn relax(
             ray.u.copy_from_slice(&prev); // keep the last finite state for the caller's diagnosis
             return (0, half, v_norm(ray, w, rho));
         }
-        if eps < tol {
-            converged = true;
-            break;
+        if kick {
+            let eps = dv_norm(&win, &ray.u, w, rho) / (win_tau * v_peak).max(1e-300);
+            win.copy_from_slice(&ray.u);
+            win_tau = 0.0;
+            if eps < tol {
+                hist.push_back(ray.u.clone());
+                if hist.len() > n_p {
+                    hist.pop_front();
+                }
+                converged = true;
+                break;
+            }
         }
-        if eps > 1.5 * prev_eps && rollbacks < MAX_ROLLBACKS {
+        // Instability guard: a growing per-sweep rate rolls back and halves
+        // Δτ — except the sweep right after the AC correction, whose jump is
+        // the kick itself, and never a shrink-only trap: accepted sweeps let
+        // Δτ recover.
+        if s % n_p != 0 && step > 1.5 * prev_eps && rollbacks < MAX_ROLLBACKS {
             ray.u.copy_from_slice(&prev);
             dt_fac *= 0.5;
             prev_eps = f64::INFINITY;
             rollbacks += 1;
             continue;
         }
-        prev_eps = eps;
+        prev_eps = step;
         prev.copy_from_slice(&ray.u);
+        dt_fac = (dt_fac * 1.15).min(1.0);
+        hist.push_back(ray.u.clone());
+        if hist.len() > n_p {
+            hist.pop_front();
+        }
     }
-    (if converged { sweeps } else { 0 }, half, v_norm(ray, w, rho))
+    if converged && !hist.is_empty() {
+        // Deliver the cycle mean: the phase state at the kick boundary is an
+        // arbitrary point of the periodic orbit.
+        let n = hist.len() as f64;
+        ray.u.iter_mut().enumerate().for_each(|(i, v)| {
+            *v = hist.iter().map(|h| h[i]).sum::<f64>() / n;
+        });
+    }
+    (
+        if converged { sweeps } else { 0 },
+        half,
+        v_norm(ray, w, rho),
+    )
 }
 
 /// Mass-weighted `L²(ρ)` norm of the velocity block of the ray state.
@@ -492,7 +534,9 @@ fn v_norm(ray: &Ray, w: &[f64], rho: &[f64]) -> f64 {
     (0..ray.u.len() / NDIM)
         .map(|i| {
             w[i] * rho[i]
-                * (ray.u[NDIM * i].powi(2) + ray.u[NDIM * i + 1].powi(2) + ray.u[NDIM * i + 2].powi(2))
+                * (ray.u[NDIM * i].powi(2)
+                    + ray.u[NDIM * i + 1].powi(2)
+                    + ray.u[NDIM * i + 2].powi(2))
         })
         .sum::<f64>()
         .sqrt()
@@ -512,6 +556,7 @@ fn certified_collapse(
     stress: &[f64],
     data: &super::limit::LimitData,
     growth: f64,
+    flow: f64,
     what: &str,
 ) -> Result<Option<String>, SimError> {
     let np = ops.vol.pts.len();
@@ -529,17 +574,23 @@ fn certified_collapse(
             d6_dot(s, s).sqrt() / tau_max[i].max(1e-300)
         })
         .fold(0.0, f64::max);
-    // Certify only on a finite saturated state: a diverged (NaN) ray means
-    // the relaxation itself was unstable, not that L* > 1.
-    if !(saturation.is_finite() && saturation >= 0.999) {
+    // Certify only on a suspect finite state: a stress hard on the yield
+    // surface, or at the regularized asymptote *and* flowing well above the
+    // rate floor. The γ̇_ε law caps `2ηD` strictly below τ (the ratio is
+    // γ̇/(γ̇+γ̇_ε)), so 0.9 with γ̇ ≳ 10γ̇_ε is the joint signature of a
+    // field that flows over its strength — a slow stiff state or a NaN ray
+    // (unstable relaxation, not L* > 1) stays out.
+    if !(saturation.is_finite() && (saturation >= 0.999 || (saturation >= 0.9 && flow >= 10.0))) {
         return Ok(None);
     }
     let suspect = format!(
         "the ray velocity grew {growth:.2}× through the {what} with the stress at \
-         {saturation:.4} of τ_max"
+         {saturation:.4} of τ_max (γ̇/γ̇_ε up to {flow:.1})"
     );
     if ld.dilatancy.is_some() {
-        return Ok(Some(format!("{suspect}: no quasi-static state at this pressure")));
+        return Ok(Some(format!(
+            "{suspect}: no quasi-static state at this pressure"
+        )));
     }
     // Certification, not a heuristic: the bracket must tighten to `gap`
     // (consistent, `lo ≤ hi`) with the whole interval above 1 before the
@@ -594,9 +645,7 @@ pub fn solve_hyperbolic(
     });
     // Boundary-adjacent samples: a neighbour set thinner than the stencil
     // means the ray exits 𝒱 within one step.
-    let bnd_pts: Vec<usize> = (0..pts.len())
-        .filter(|&i| ray.nbr[i].len() < 20)
-        .collect();
+    let bnd_pts: Vec<usize> = (0..pts.len()).filter(|&i| ray.nbr[i].len() < 20).collect();
     // Outer rheology passes: η frozen per pass, recomputed from (p̃, γ̇) of the
     // converged ray state — the `m` loop of §10.3.2.
     let coh = &ld.strength.vol;
@@ -623,18 +672,36 @@ pub fn solve_hyperbolic(
         let mut stuck = false;
         let mut v_first = f64::NAN;
         let mut v_last = f64::NAN;
-        for _pass in 0..4 {
+        let mut v_peak = 0.0_f64;
+        let mut prev_v: Vec<f64> = Vec::new();
+        for _pass in 0..8 {
             let (ok, u_half, u_end) = relax(
-                ops, ld, prm.p_ext, &eta, t_s, kappa, prm.tol_relax, prm.max_sweeps,
-                prm.pressure_every.max(2), &bnd_pts, &mut ray,
+                ops,
+                ld,
+                prm.p_ext,
+                &eta,
+                t_s,
+                kappa,
+                prm.tol_relax,
+                prm.max_sweeps,
+                prm.pressure_every.max(2),
+                &bnd_pts,
+                &mut ray,
             );
             if ok == 0 {
                 let growth = u_end / u_half.max(1e-300);
                 let stress: Vec<f64> = (0..pts.len())
                     .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
                     .collect();
+                let flow = (0..pts.len())
+                    .map(|i| {
+                        let d = ray.strain(i);
+                        (2.0 * d6_dot(&d, &d)).sqrt()
+                    })
+                    .fold(0.0, f64::max)
+                    / eps_l.max(1e-300);
                 if let Some(detail) =
-                    certified_collapse(ops, ld, m, coh, &stress, &ldata, growth, "sweeps")?
+                    certified_collapse(ops, ld, m, coh, &stress, &ldata, growth, flow, "sweeps")?
                 {
                     return Err(SimError::limit_load_collapse(detail));
                 }
@@ -646,6 +713,26 @@ pub fn solve_hyperbolic(
                 v_first = vn;
             }
             v_last = vn;
+            // The η-map fixed point is measured on the delivered velocity:
+            // the ray state is the solver's output, while the pointwise γ̇
+            // (a local least-squares) is a derived, noisier quantity.
+            let v_ray: Vec<f64> = (0..pts.len())
+                .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
+                .collect();
+            v_peak = v_peak.max(vn);
+            let dv = if prev_v.is_empty() {
+                f64::INFINITY
+            } else {
+                let mut num = 0.0;
+                for i in 0..pts.len() {
+                    let pw = w[i] * rho[i];
+                    for k in 0..3 {
+                        num += pw * (v_ray[3 * i + k] - prev_v[3 * i + k]).powi(2);
+                    }
+                }
+                num.sqrt() / v_peak.max(1e-300)
+            };
+            prev_v = v_ray;
             // Recompute η from (p̃, γ̇) of the ray state at this level's ε.
             // `p̃` takes the ray pressure plus the tidal trace, as §8.1.3.
             let mut new_eta = vec![0.0; pts.len()];
@@ -657,42 +744,56 @@ pub fn solve_hyperbolic(
                     + ld.g_const;
                 new_eta[i] = eta_eval(m, &coh[i], gamma, ptil.max(m.spec.p_min), eps_l).eta;
             }
-            done = new_eta
+            let deta = new_eta
                 .iter()
                 .zip(eta.iter())
                 .all(|(a, b)| ((a - b) / b.abs().max(1e-30)).abs() < prm.tol_relax);
             eta = new_eta;
+            done = deta || dv < prm.tol_relax;
             if done {
                 break;
             }
         }
+        // Collapse certification on the delivered state: the projected
+        // viscous stress `2ηD + T_tide`, saturated at τ_max, is the suspect
+        // signature — `certified_collapse` returns early on unsaturated
+        // states, so ordinary loads pay no bracket.
+        let projected_collapse = |growth: f64, what: &str| -> Result<Option<String>, SimError> {
+            let v_ray: Vec<f64> = (0..pts.len())
+                .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
+                .collect();
+            let Ok((u_l, _)) = ops.project_velocity(&v_ray) else {
+                return Ok(None);
+            };
+            let ud = DVector::from_column_slice(&u_l);
+            let fields = strain_fields(ops, &ud);
+            let mut stress = vec![0.0; 6 * pts.len()];
+            for i in 0..pts.len() {
+                for c in 0..6 {
+                    stress[6 * i + c] = 2.0 * eta[i] * fields.d[6 * i + c] + ld.tide[i][c];
+                }
+            }
+            let flow = fields.shear.iter().copied().fold(0.0, f64::max) / eps_l.max(1e-300);
+            certified_collapse(ops, ld, m, coh, &stress, &ldata, growth, flow, what)
+        };
         if done && level == 0 {
+            // A converged state can still be a collapse artifact: the γ̇_ε
+            // regularization admits a creeping fixed point at any load, so
+            // the η-map settles even past L*.
+            let growth = v_last / v_first.max(1e-300);
+            if let Some(detail) = projected_collapse(growth, "settled passes")? {
+                return Err(SimError::limit_load_collapse(detail));
+            }
             settled0 = true;
             break;
         }
         if !done && !stuck {
             // The η-map stalled at this level — the collapse signature of
-            // Proposition 10.0.12.1 in this discretization. Certify on the
-            // projected viscous stress `2ηD + T_tide`; only a tightened
+            // Proposition 10.0.12.1 in this discretization. Only a tightened
             // bracket fully above 1 convicts.
             let growth = v_last / v_first.max(1e-300);
-            let v_ray: Vec<f64> = (0..pts.len())
-                .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
-                .collect();
-            if let Ok((u_l, _)) = ops.project_velocity(&v_ray) {
-                let ud = DVector::from_column_slice(&u_l);
-                let fields = strain_fields(ops, &ud);
-                let mut stress = vec![0.0; 6 * pts.len()];
-                for i in 0..pts.len() {
-                    for c in 0..6 {
-                        stress[6 * i + c] = 2.0 * eta[i] * fields.d[6 * i + c] + ld.tide[i][c];
-                    }
-                }
-                if let Some(detail) = certified_collapse(
-                    ops, ld, m, coh, &stress, &ldata, growth, "rheology passes",
-                )? {
-                    return Err(SimError::limit_load_collapse(detail));
-                }
+            if let Some(detail) = projected_collapse(growth, "rheology passes")? {
+                return Err(SimError::limit_load_collapse(detail));
             }
         }
         if level == 0 && ladder {
@@ -718,13 +819,34 @@ pub fn solve_hyperbolic(
     let v_ray: Vec<f64> = (0..pts.len())
         .flat_map(|i| [ray.u[NDIM * i], ray.u[NDIM * i + 1], ray.u[NDIM * i + 2]])
         .collect();
-    let (u, e_proj) = ops.project_velocity(&v_ray)?;
-    finish(ops, ld, prm, m, eps, &eta, u, e_proj)
+    let (mut u, e_proj) = ops.project_velocity(&v_ray)?;
+    // A state unyielded on every volume node is the rigid rest state: the
+    // regularization creep of an unyielded region is excluded from the
+    // geometry (§10.0.2 B2, `F_δ`), so the delivered velocity is its rigid
+    // remainder — zero under the rigid constraints.
+    {
+        let fields = strain_fields(ops, &DVector::from_column_slice(&u));
+        let unyielded = (0..pts.len()).all(|i| {
+            let ptil = ray.u[NDIM * i + 9]
+                + (ld.tide[i][0] + ld.tide[i][1] + ld.tide[i][2]) / 3.0
+                + ld.g_const;
+            let tau_y = coh[i].c + m.spec.mu_s * ptil.max(m.spec.p_min);
+            eta[i] * fields.shear[i] <= 0.95 * tau_y
+        });
+        if unyielded {
+            u.fill(0.0);
+        }
+    }
+    let s_ray: Vec<f64> = (0..pts.len())
+        .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
+        .collect();
+    finish(ops, ld, prm, m, eps, &eta, u, e_proj, &s_ray)
 }
 
 /// Assemble the `StokesSolution` of the ray path: pressure by the same (P1)
-/// Nitsche step the reference loop uses, the §10.0.10(b) momentum residual on
-/// the projected `u`, and `e_proj` in its own field of the report.
+/// Nitsche step the reference loop uses, the §10.0.10(b) momentum residual
+/// `F − Σ_i w_i e_i(u)ᵀς_i − B_rbᵀλ` on the ray stress `ς = S^ray/√2`, and
+/// `e_proj` in its own field of the report.
 #[allow(clippy::too_many_arguments)]
 fn finish(
     ops: &Operators,
@@ -735,6 +857,7 @@ fn finish(
     eta: &[f64],
     u: Vec<f64>,
     e_proj: f64,
+    s_ray: &[f64],
 ) -> Result<StokesSolution, SimError> {
     let np = ops.vol.pts.len();
     let u = DVector::from_column_slice(&u);
@@ -746,14 +869,32 @@ fn finish(
         .map(|p| eta_eval(m, &coh[p], fields.shear[p], pr.ptil[p], eps_used).eta)
         .collect();
     let _ = eta;
-    let k = assemble_k(ops, &eta_final);
     let f_load = assemble_f(ops, ld);
     let f_norm = load_scale(ops, ld);
-    let rs = factor_range(ops, &k)?;
-    let (un, lambda) = solve_range(ops, &rs, &f_load);
-    let resid = &k * &un + ops.rigid.transpose() * &lambda - &f_load;
+    // §10.0.10(b): `r = F − Σ_i w_i e_i(u)ᵀς_i − B_rbᵀλ`. Since
+    // `e_i(u)ᵀς_i = (√2 d_i)ᵀ(S_i/√2) = d_iᵀS_i`, the internal virtual work is
+    // `rows.dᵀ·(w ⊙ S^ray)`. `λ` is the least-squares rigid multiplier of the
+    // imbalance, splitting the residual into the constrained `eps_lambda`
+    // part and the orthogonal `eps_momentum` part.
+    let mut sw = DVector::zeros(6 * np);
+    for i in 0..np {
+        for c in 0..6 {
+            sw[6 * i + c] = ops.vol.w[i] * s_ray[6 * i + c];
+        }
+    }
+    let internal = linalg::tr_mul(&ops.rows.d, &sw);
+    let work = &f_load - &internal;
+    // `λ` splits the imbalance into its rigid-space part (`eps_lambda`,
+    // ‖Bᵀλ‖) and the orthogonal momentum residual (`eps_momentum`).
+    let bwork = &ops.rigid * &work;
+    let g_rb = &ops.rigid * ops.rigid.transpose();
+    let lambda = Cholesky::new(g_rb)
+        .map(|ch| ch.solve(&bwork))
+        .unwrap_or_else(|| DVector::zeros(bwork.len()));
+    let bt_lambda = ops.rigid.transpose() * &lambda;
+    let resid = &work - &bt_lambda;
     let eps_momentum = resid.norm() / f_norm;
-    let eps_lambda = (ops.rigid.transpose() * &lambda).norm() / f_norm;
+    let eps_lambda = bt_lambda.norm() / f_norm;
     // Keep the projected solution: its own defect is `e_proj`; the residual
     // above is the equilibrium error of the projected field, reported.
     let eps_rot = pr.rotational_residual(ops, ld, m, eps_used, &u, &fields, None);
@@ -787,4 +928,3 @@ fn finish(
         e_proj,
     })
 }
-
