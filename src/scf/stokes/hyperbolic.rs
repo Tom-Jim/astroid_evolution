@@ -824,6 +824,7 @@ pub fn solve_hyperbolic(
     // regularization creep of an unyielded region is excluded from the
     // geometry (§10.0.2 B2, `F_δ`), so the delivered velocity is its rigid
     // remainder — zero under the rigid constraints.
+    let mut rest = false;
     {
         let fields = strain_fields(ops, &DVector::from_column_slice(&u));
         let unyielded = (0..pts.len()).all(|i| {
@@ -835,12 +836,26 @@ pub fn solve_hyperbolic(
         });
         if unyielded {
             u.fill(0.0);
+            rest = true;
         }
     }
     let s_ray: Vec<f64> = (0..pts.len())
         .flat_map(|i| ray.u[NDIM * i + 3..NDIM * i + 9].iter().copied())
         .collect();
-    finish(ops, ld, prm, m, eps, &eta, u, e_proj, &s_ray)
+    finish(ops, ld, prm, m, eps, &eta, u, e_proj, &s_ray, rest)
+}
+
+/// `w ⊙ s`: the quadrature-weighted six-vector stress samples whose
+/// `rows.dᵀ` product is the discrete internal virtual work of §10.0.10(b).
+fn stress_work(ops: &Operators, s: &[f64]) -> DVector<f64> {
+    let np = ops.vol.pts.len();
+    let mut sw = DVector::zeros(6 * np);
+    for i in 0..np {
+        for c in 0..6 {
+            sw[6 * i + c] = ops.vol.w[i] * s[6 * i + c];
+        }
+    }
+    sw
 }
 
 /// Assemble the `StokesSolution` of the ray path: pressure by the same (P1)
@@ -858,6 +873,7 @@ fn finish(
     u: Vec<f64>,
     e_proj: f64,
     s_ray: &[f64],
+    rest: bool,
 ) -> Result<StokesSolution, SimError> {
     let np = ops.vol.pts.len();
     let u = DVector::from_column_slice(&u);
@@ -876,13 +892,30 @@ fn finish(
     // `rows.dᵀ·(w ⊙ S^ray)`. `λ` is the least-squares rigid multiplier of the
     // imbalance, splitting the residual into the constrained `eps_lambda`
     // part and the orthogonal `eps_momentum` part.
-    let mut sw = DVector::zeros(6 * np);
-    for i in 0..np {
-        for c in 0..6 {
-            sw[6 * i + c] = ops.vol.w[i] * s_ray[6 * i + c];
+    let mut s_eq;
+    let s_ray = if rest {
+        // The rest state (γ̇ = 0) leaves the constitutive stress multi-valued:
+        // equilibrium, not the flow rule, selects it. The delivered stress is
+        // the statically-admissible field nearest the sample — σ̂ = S^ray + D·x
+        // with `x` the constrained minimizer of `(DᵀWD)x = r` on the imbalance
+        // `r = F − Σ_i w_i e_iᵀς_i`. The range-space solve is the cached
+        // `pd_metric` factorization (`K = 2 DᵀWD`); its rigid block carries
+        // the uncorrectable load incompatibility reported as `eps_lambda`.
+        let internal0 = linalg::tr_mul(&ops.rows.d, &stress_work(ops, s_ray));
+        let work0 = &f_load - &internal0;
+        let (_, rs) = super::pd_metric(ops)?;
+        // `K = 2 DᵀWD`, so `(DᵀWD)x = r` is the factored system at `2·r`.
+        let (xc, _) = super::solve_range(&ops.rigid, rs, &(2.0 * &work0));
+        let dc = strain_fields(ops, &xc).d;
+        s_eq = s_ray.to_vec();
+        for (s, d) in s_eq.iter_mut().zip(dc.iter()) {
+            *s += *d;
         }
-    }
-    let internal = linalg::tr_mul(&ops.rows.d, &sw);
+        &s_eq[..]
+    } else {
+        s_ray
+    };
+    let internal = linalg::tr_mul(&ops.rows.d, &stress_work(ops, s_ray));
     let work = &f_load - &internal;
     // `λ` splits the imbalance into its rigid-space part (`eps_lambda`,
     // ‖Bᵀλ‖) and the orthogonal momentum residual (`eps_momentum`).
